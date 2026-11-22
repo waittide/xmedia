@@ -60,8 +60,12 @@ watch(
 
 const backdropCoverUrl = computed(() => {
   const tr = playerStore.currentTrack
-  if (!tr || !tr.cover_key) return null
-  return buildCoverUrl(tr.id, 512)
+  if (!tr) return null
+  if (tr.kind === 'online') {
+    return tr.cover_url || null
+  }
+  if (!tr.cover_key || !tr.cover_id) return null
+  return buildCoverUrl(tr.cover_id, 512)
 })
 
 const backdropStyle = computed<Record<string, string>>(() => {
@@ -77,6 +81,15 @@ const qualityOptions = computed(() => [
   { value: 'mp3320', label: t('player.qualityMp3320') },
   { value: 'aac256', label: t('player.qualityAac256') },
 ])
+
+const onlineQualityOptions = computed(() => {
+  const tr = playerStore.currentTrack
+  if (!tr || tr.kind !== 'online') return []
+  return tr.qualities.map((q) => ({
+    value: q,
+    label: /^\d+$/.test(q) ? `${q}k` : q.toUpperCase(),
+  }))
+})
 
 watch(
   () => [playerStore.activeLyricIndex, playerStore.lyricsOpen, playerStore.lyrics] as const,
@@ -141,16 +154,25 @@ function navigateAndClose(path: string): void {
 
           <div class="flex items-center gap-2">
             <span
+              v-if="playerStore.qualitySummary"
               class="rounded-full bg-[var(--md-sys-color-primary-container)] px-3 py-1 font-mono text-[11px] font-bold text-[var(--md-sys-color-on-primary-container)]"
             >
               {{ playerStore.qualitySummary }}
             </span>
-            <div class="w-44">
+            <div v-if="!playerStore.isCurrentOnline" class="w-44">
               <AppSelect
                 :model-value="playerStore.transcodeProfile"
                 :options="qualityOptions"
                 variant="compact"
                 @change="playerStore.setTranscodeProfile($event as TranscodeProfile)"
+              />
+            </div>
+            <div v-else-if="onlineQualityOptions.length > 1" class="w-32">
+              <AppSelect
+                :model-value="playerStore.currentOnlineItem?.selectedQuality ?? onlineQualityOptions[0]?.value ?? ''"
+                :options="onlineQualityOptions"
+                variant="compact"
+                @change="playerStore.setOnlineQuality($event)"
               />
             </div>
           </div>
@@ -164,7 +186,8 @@ function navigateAndClose(path: string): void {
           <div class="flex min-h-0 flex-col items-center justify-center md:col-span-5">
             <div class="w-full max-w-xs sm:max-w-sm">
               <CoverImage
-                :cover-id="playerStore.currentTrack.id"
+                :src="playerStore.currentTrack.kind === 'online' ? playerStore.currentTrack.cover_url : undefined"
+                :cover-id="playerStore.currentTrack.cover_id"
                 :has-cover="Boolean(playerStore.currentTrack.cover_key)"
                 :size="640"
                 rounded="rounded-3xl"
@@ -179,33 +202,43 @@ function navigateAndClose(path: string): void {
                   <div
                     class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
                   >
-                    <button
-                      type="button"
-                      class="hover:text-[var(--md-sys-color-primary)] hover:underline"
-                      @click="navigateAndClose(`/music/artists/${playerStore.currentTrack.artist_id}`)"
-                    >
-                      {{ playerStore.currentTrack.artist_name }}
-                    </button>
-                    <span>·</span>
-                    <button
-                      type="button"
-                      class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
-                      @click="navigateAndClose(`/music/albums/${playerStore.currentTrack.album_id}`)"
-                    >
-                      {{ playerStore.currentTrack.album_title }}
-                    </button>
+                    <template v-if="playerStore.currentLocalTrack">
+                      <button
+                        type="button"
+                        class="hover:text-[var(--md-sys-color-primary)] hover:underline"
+                        @click="navigateAndClose(`/music/artists/${playerStore.currentLocalTrack.artist_id}`)"
+                      >
+                        {{ playerStore.currentLocalTrack.artist_name }}
+                      </button>
+                      <span>·</span>
+                      <button
+                        type="button"
+                        class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
+                        @click="navigateAndClose(`/music/albums/${playerStore.currentLocalTrack.album_id}`)"
+                      >
+                        {{ playerStore.currentLocalTrack.album_title }}
+                      </button>
+                    </template>
+                    <template v-else>
+                      <span>{{ playerStore.currentTrack.artist_name }}</span>
+                      <template v-if="playerStore.currentTrack.album_title">
+                        <span>·</span>
+                        <span class="truncate">{{ playerStore.currentTrack.album_title }}</span>
+                      </template>
+                    </template>
                   </div>
                 </div>
 
                 <button
+                  v-if="playerStore.currentLocalTrack"
                   type="button"
                   class="md-icon-btn md-state"
-                  @click="musicStore.toggleTrackStar(playerStore.currentTrack)"
+                  @click="musicStore.toggleTrackStar(playerStore.currentLocalTrack)"
                 >
                   <LuHeart
                     class="h-5 w-5"
                     :class="
-                      playerStore.currentTrack.starred_at
+                      playerStore.currentLocalTrack.starred_at
                         ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
                         : 'text-[var(--md-sys-color-on-surface-variant)]'
                     "

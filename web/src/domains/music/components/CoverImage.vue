@@ -8,6 +8,7 @@ const props = withDefaults(
   defineProps<{
     coverId?: string | null
     hasCover?: boolean
+    src?: string | null
     size?: number
     alt?: string
     rounded?: string
@@ -15,19 +16,24 @@ const props = withDefaults(
   {
     coverId: null,
     hasCover: true,
+    src: undefined,
     size: 300,
     alt: '',
     rounded: 'rounded-2xl',
   },
 )
 
-const src = computed(() =>
-  props.hasCover && props.coverId ? buildCoverUrl(props.coverId, props.size) : null,
-)
+const resolvedSrc = computed(() => {
+  if (props.src !== undefined) {
+    const trimmed = props.src?.trim()
+    return trimmed ? trimmed : null
+  }
+  return props.hasCover && props.coverId ? buildCoverUrl(props.coverId, props.size) : null
+})
 </script>
 
 <template>
-  <MediaCoverImage :src="src" :alt="alt" :rounded="rounded" :fallback-icon="LuDisc3">
+  <MediaCoverImage :src="resolvedSrc" :alt="alt" :rounded="rounded" :fallback-icon="LuDisc3">
     <slot />
   </MediaCoverImage>
 </template>

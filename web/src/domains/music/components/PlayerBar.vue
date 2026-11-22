@@ -38,13 +38,16 @@ const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 
 const bookmarkJustSaved = ref(false)
+const audioHostRef = ref<HTMLDivElement | null>(null)
 let bookmarkTimer: ReturnType<typeof setTimeout> | null = null
 
 const EXCLUDED_SHORTCUT_ROUTES = new Set([
   'book-reader',
   'book-online-reader',
   'comic-reader',
+  'comic-online-reader',
   'video-player',
+  'video-online-player',
   'login',
   'setup',
 ])
@@ -55,7 +58,7 @@ const qualityOptions = computed(() => [
   {
     value: 'raw',
     label:
-      playerStore.currentTrack && playerStore.transcodeProfile === 'raw'
+      playerStore.currentLocalTrack && playerStore.transcodeProfile === 'raw'
         ? playerStore.qualitySummary
         : t('player.qualityRaw'),
   },
@@ -64,6 +67,15 @@ const qualityOptions = computed(() => [
   { value: 'mp3320', label: t('player.qualityMp3320') },
   { value: 'aac256', label: t('player.qualityAac256') },
 ])
+
+const onlineQualityOptions = computed(() => {
+  const tr = playerStore.currentTrack
+  if (!tr || tr.kind !== 'online') return []
+  return tr.qualities.map((q) => ({
+    value: q,
+    label: /^\d+$/.test(q) ? `${q}k` : q.toUpperCase(),
+  }))
+})
 
 const playModeTitle = computed(() => {
   if (playerStore.playMode === 'loop_one') return t('player.modeLoopOne')
@@ -75,8 +87,12 @@ function onQualityChange(val: string): void {
   playerStore.setTranscodeProfile(val as TranscodeProfile)
 }
 
+function onOnlineQualityChange(val: string): void {
+  playerStore.setOnlineQuality(val)
+}
+
 async function saveCurrentBookmark(): Promise<void> {
-  const tr = playerStore.currentTrack
+  const tr = playerStore.currentLocalTrack
   if (!tr) return
   await api.saveBookmark(tr.id, Math.round(playerStore.currentTimeSecs * 1000))
   bookmarkJustSaved.value = true
@@ -95,7 +111,9 @@ function isExcludedPlaybackRoute(): boolean {
     p.startsWith('/book/read') ||
     p.startsWith('/book/online/read') ||
     p.startsWith('/comic/read') ||
-    p.startsWith('/video/watch')
+    p.startsWith('/comic/online/read') ||
+    p.startsWith('/video/watch') ||
+    p.startsWith('/video/online/watch')
   )
 }
 
@@ -165,11 +183,13 @@ function handlePlaybackKeydown(ev: KeyboardEvent): void {
 }
 
 onMounted(() => {
+  playerStore.attachAudioElement(audioHostRef.value)
   window.addEventListener('keydown', handlePlaybackKeydown)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handlePlaybackKeydown)
+  playerStore.detachAudioElement(audioHostRef.value)
   if (bookmarkTimer) clearTimeout(bookmarkTimer)
 })
 </script>
@@ -178,6 +198,7 @@ onBeforeUnmount(() => {
   <footer
     class="safe-px fixed inset-x-0 bottom-0 z-30 flex flex-col border-t border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)]/95 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
   >
+    <div ref="audioHostRef" class="hidden" aria-hidden="true" />
     <!-- Mobile Compact Draggable Progress Bar (< sm) -->
     <div class="flex items-center gap-2 px-3 pt-1 sm:hidden">
       <span
@@ -218,7 +239,8 @@ onBeforeUnmount(() => {
             @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
           >
             <CoverImage
-              :cover-id="playerStore.currentTrack.id"
+              :src="playerStore.currentTrack.kind === 'online' ? playerStore.currentTrack.cover_url : undefined"
+              :cover-id="playerStore.currentTrack.cover_id"
               :has-cover="Boolean(playerStore.currentTrack.cover_key)"
               :size="160"
               rounded="rounded-xl"
@@ -243,25 +265,33 @@ onBeforeUnmount(() => {
               {{ playerStore.currentTrack.title }}
             </button>
             <button
+              v-if="playerStore.currentLocalTrack"
               type="button"
               class="mt-0.5 block max-w-full truncate text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)] hover:underline"
-              @click="router.push(`/music/artists/${playerStore.currentTrack.artist_id}`)"
+              @click="router.push(`/music/artists/${playerStore.currentLocalTrack.artist_id}`)"
+            >
+              {{ playerStore.currentLocalTrack.artist_name }}
+            </button>
+            <span
+              v-else
+              class="mt-0.5 block max-w-full truncate text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ playerStore.currentTrack.artist_name }}
-            </button>
+            </span>
           </div>
 
           <button
+            v-if="playerStore.currentLocalTrack"
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
-            :aria-label="playerStore.currentTrack.starred_at ? t('common.unfavorite') : t('common.favorite')"
-            :aria-pressed="Boolean(playerStore.currentTrack.starred_at)"
-            @click="musicStore.toggleTrackStar(playerStore.currentTrack)"
+            :aria-label="playerStore.currentLocalTrack.starred_at ? t('common.unfavorite') : t('common.favorite')"
+            :aria-pressed="Boolean(playerStore.currentLocalTrack.starred_at)"
+            @click="musicStore.toggleTrackStar(playerStore.currentLocalTrack)"
           >
             <LuHeart
               class="h-4 w-4"
               :class="
-                playerStore.currentTrack.starred_at
+                playerStore.currentLocalTrack.starred_at
                   ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
                   : 'text-[var(--md-sys-color-on-surface-variant)]'
               "
@@ -269,6 +299,7 @@ onBeforeUnmount(() => {
           </button>
 
           <button
+            v-if="playerStore.currentLocalTrack"
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state hidden lg:inline-flex"
             :title="bookmarkJustSaved ? t('player.bookmarkSaved') : t('player.bookmarkBtn')"
@@ -372,7 +403,7 @@ onBeforeUnmount(() => {
 
       <!-- Right: Quality Selector (md+), Always-Accessible Lyrics & Queue, Volume (lg+) -->
       <div class="flex shrink-0 items-center justify-end gap-1 md:flex-1 md:max-w-[30%] md:gap-2">
-        <div class="hidden w-40 md:block">
+        <div v-if="!playerStore.isCurrentOnline" class="hidden w-40 md:block">
           <AppSelect
             :model-value="playerStore.transcodeProfile"
             :options="qualityOptions"
@@ -380,6 +411,20 @@ onBeforeUnmount(() => {
             @change="onQualityChange"
           />
         </div>
+        <div v-else-if="onlineQualityOptions.length > 1" class="hidden w-28 md:block">
+          <AppSelect
+            :model-value="playerStore.currentOnlineItem?.selectedQuality ?? onlineQualityOptions[0]?.value ?? ''"
+            :options="onlineQualityOptions"
+            variant="compact"
+            @change="onOnlineQualityChange"
+          />
+        </div>
+        <span
+          v-else-if="playerStore.qualitySummary"
+          class="hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-1 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)] md:inline-flex"
+        >
+          {{ playerStore.qualitySummary }}
+        </span>
 
         <button
           type="button"

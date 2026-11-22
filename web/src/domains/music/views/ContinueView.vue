@@ -39,8 +39,13 @@ const resumeSession = computed(() => {
     const percent = Math.min(100, Math.round((posSecs / durSecs) * 100))
     return {
       source: 'local' as const,
-      track: tr,
-      tracks: playerStore.queue,
+      title: tr.title,
+      subtitle: [tr.artist_name, tr.album_title].filter(Boolean).join(' · '),
+      coverSrc: tr.kind === 'online' ? tr.cover_url : undefined,
+      coverId: tr.cover_id,
+      hasCover: Boolean(tr.cover_key),
+      queueCount: playerStore.queue.length,
+      tracks: [] as TrackDto[],
       index: playerStore.currentIndex,
       posSecs,
       durSecs,
@@ -58,7 +63,12 @@ const resumeSession = computed(() => {
   const percent = Math.min(100, Math.round((posSecs / durSecs) * 100))
   return {
     source: 'remote' as const,
-    track,
+    title: track.title,
+    subtitle: [track.artist_name, track.album_title].filter(Boolean).join(' · '),
+    coverSrc: undefined,
+    coverId: track.id,
+    hasCover: Boolean(track.cover_key),
+    queueCount: q.tracks.length,
     tracks: q.tracks,
     index: idx,
     posSecs,
@@ -182,8 +192,9 @@ watch(() => musicStore.catalogVersion, loadContinueData)
         >
           <div class="flex min-w-0 flex-1 items-center gap-4">
             <CoverImage
-              :cover-id="resumeSession.track.id"
-              :has-cover="Boolean(resumeSession.track.cover_key)"
+              :src="resumeSession.coverSrc"
+              :cover-id="resumeSession.coverId"
+              :has-cover="resumeSession.hasCover"
               :size="240"
               rounded="rounded-2xl"
               class="album-shadow h-20 w-20 shrink-0 sm:h-24 sm:w-24"
@@ -194,7 +205,7 @@ watch(() => musicStore.catalogVersion, loadContinueData)
                   class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
                 >
                   <LuListMusic class="h-3 w-3" />
-                  {{ t('continueView.queueCountBadge', { count: resumeSession.tracks.length }) }}
+                  {{ t('continueView.queueCountBadge', { count: resumeSession.queueCount }) }}
                 </span>
                 <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                   {{
@@ -207,10 +218,10 @@ watch(() => musicStore.catalogVersion, loadContinueData)
               </div>
 
               <h3 class="truncate text-base font-extrabold text-[var(--md-sys-color-on-surface)]">
-                {{ resumeSession.track.title }}
+                {{ resumeSession.title }}
               </h3>
               <p class="truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ resumeSession.track.artist_name }} · {{ resumeSession.track.album_title }}
+                {{ resumeSession.subtitle }}
               </p>
 
               <div

@@ -5,7 +5,7 @@ import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useMusicI18n as useI18n } from '../i18n'
-import { usePlayerStore } from '../player'
+import { resolveOnlineItemCoverUrl, usePlayerStore, type PlayerQueueItem } from '../player'
 import CoverImage from './CoverImage.vue'
 
 const { t } = useI18n()
@@ -18,20 +18,45 @@ const queueSubtitle = computed(() =>
     .join(' · '),
 )
 
+function itemTitle(item: PlayerQueueItem): string {
+  if (item.kind === 'local') return item.track.title
+  return item.resolved?.track.title || item.track.title
+}
+
+function itemSubtitle(item: PlayerQueueItem): string {
+  if (item.kind === 'local') {
+    return [item.track.artist_name, item.track.album_title].filter(Boolean).join(' · ')
+  }
+  const artist = item.resolved?.track.artist || item.track.artist
+  const album = item.resolved?.track.album ?? item.track.album
+  return [artist, album].filter(Boolean).join(' · ')
+}
+
+function itemCoverSrc(item: PlayerQueueItem): string | null | undefined {
+  if (item.kind === 'online') return resolveOnlineItemCoverUrl(item)
+  return undefined
+}
+
 async function handleClearQueue(): Promise<void> {
   if (playerStore.queue.length === 0) return
+  const wasOpen = playerStore.queueOpen
+  playerStore.queueOpen = false
   const ok = await dialogStore.confirm({
     title: t('player.clearQueueConfirmTitle'),
     message: t('player.clearQueueConfirm', { count: playerStore.queue.length }),
     danger: true,
   })
-  if (!ok) return
+  if (!ok) {
+    playerStore.queueOpen = wasOpen
+    return
+  }
   playerStore.clearQueue()
 }
 </script>
 
 <template>
   <MdSideSheet
+    v-if="playerStore.queueOpen"
     :open="playerStore.queueOpen"
     :title="t('player.queueTitle')"
     :subtitle="queueSubtitle"
@@ -71,8 +96,8 @@ async function handleClearQueue(): Promise<void> {
 
     <div v-else class="space-y-1">
       <div
-        v-for="(tr, idx) in playerStore.queue"
-        :key="`${tr.id}-${idx}`"
+        v-for="(item, idx) in playerStore.queue"
+        :key="`${item.key}-${idx}`"
         class="group flex items-center gap-3 rounded-2xl px-3 py-2 text-xs transition hover:bg-[var(--md-sys-color-surface-container-high)]"
         :class="
           idx === playerStore.currentIndex
@@ -81,32 +106,42 @@ async function handleClearQueue(): Promise<void> {
         "
       >
         <CoverImage
-          :cover-id="tr.id"
-          :has-cover="Boolean(tr.cover_key)"
+          :src="itemCoverSrc(item)"
+          :cover-id="item.kind === 'local' ? item.track.id : null"
+          :has-cover="item.kind === 'local' ? Boolean(item.track.cover_key) : false"
           :size="80"
           rounded="rounded-lg"
           class="h-10 w-10 shrink-0 cursor-pointer"
           @click="playerStore.playAtIndex(idx)"
         />
 
-        <div
-          class="min-w-0 flex-1 cursor-pointer"
+        <button
+          type="button"
+          class="min-w-0 flex-1 cursor-pointer text-left"
           @click="playerStore.playAtIndex(idx)"
         >
-          <p
-            class="truncate font-semibold"
-            :class="
-              idx === playerStore.currentIndex
-                ? 'text-[var(--md-sys-color-primary)]'
-                : 'text-[var(--md-sys-color-on-surface)]'
-            "
-          >
-            {{ tr.title }}
-          </p>
+          <div class="flex items-center gap-1.5">
+            <span
+              class="truncate font-semibold"
+              :class="
+                idx === playerStore.currentIndex
+                  ? 'text-[var(--md-sys-color-primary)]'
+                  : 'text-[var(--md-sys-color-on-surface)]'
+              "
+            >
+              {{ itemTitle(item) }}
+            </span>
+            <span
+              v-if="item.kind === 'online'"
+              class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.2 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+            >
+              {{ item.source_name }}
+            </span>
+          </div>
           <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ tr.artist_name }} · {{ tr.album_title }}
+            {{ itemSubtitle(item) }}
           </p>
-        </div>
+        </button>
 
         <LuVolume2
           v-if="idx === playerStore.currentIndex"

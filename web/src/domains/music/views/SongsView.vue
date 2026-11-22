@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
-import { LuPlay, LuShuffle, LuSearch, LuHeart, LuX } from 'vue-icons-plus/lu'
+import { LuPlay, LuShuffle, LuSearch, LuHeart, LuX, LuGlobe, LuMusic } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
@@ -11,6 +11,7 @@ import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
+import OnlineMusicSearchSection from '../components/OnlineMusicSearchSection.vue'
 import TrackTable from '../components/TrackTable.vue'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
@@ -26,6 +27,7 @@ import type {
 } from '../types'
 
 type CatalogTab = 'songs' | 'albums' | 'artists'
+type CatalogScope = 'local' | 'online'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
@@ -37,6 +39,7 @@ const uploadStore = useUploadStore()
 const snackbarStore = useSnackbarStore()
 let fetchSeq = 0
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let syncingRouteQuery = false
 
 function resolveTabFromQuery(): CatalogTab {
   const q = route.query.tab
@@ -44,6 +47,12 @@ function resolveTabFromQuery(): CatalogTab {
   return 'songs'
 }
 
+const searchScope = ref<CatalogScope>(route.query.scope === 'online' ? 'online' : 'local')
+const onlineSourceId = computed(() =>
+  typeof route.query.source === 'string' && route.query.source.trim()
+    ? route.query.source.trim()
+    : null,
+)
 const activeTab = ref<CatalogTab>(resolveTabFromQuery())
 const selectedLibrary = ref(typeof route.query.library === 'string' ? route.query.library : '')
 const selectedGenre = ref(typeof route.query.genre === 'string' ? route.query.genre : '')
@@ -148,6 +157,14 @@ const artistRoleOptions = computed(() => [
   { value: 'track_artist', label: t('catalog.artistRoleTrack') },
 ])
 
+const searchScopeOptions = computed(
+  () =>
+    [
+      { value: 'local', label: t('online.scopeLocal'), icon: LuMusic },
+      { value: 'online', label: t('online.scopeOnline'), icon: LuGlobe },
+    ] as const,
+)
+
 const catalogTabOptions = computed(
   () =>
     [
@@ -166,7 +183,44 @@ function syncRouteQuery(): void {
   if (selectedLibrary.value) nextQuery.library = selectedLibrary.value
   if (selectedGenre.value) nextQuery.genre = selectedGenre.value
   if (selectedTag.value) nextQuery.tag = selectedTag.value
-  void router.replace({ path: '/music/songs', query: nextQuery })
+  syncingRouteQuery = true
+  void router.replace({ path: '/music/songs', query: nextQuery }).finally(() => {
+    syncingRouteQuery = false
+  })
+}
+
+function syncOnlineRouteQuery(kw?: string, sourceId?: string | null): void {
+  const nextQuery: Record<string, string> = { scope: 'online' }
+  const nextSource = sourceId !== undefined ? sourceId : onlineSourceId.value
+  if (nextSource) nextQuery.source = nextSource
+  const nextKw = (kw !== undefined ? kw : musicStore.globalSearchQuery).trim()
+  if (nextKw) nextQuery.q = nextKw
+  syncingRouteQuery = true
+  void router.replace({ path: '/music/songs', query: nextQuery }).finally(() => {
+    syncingRouteQuery = false
+  })
+}
+
+function switchSearchScope(next: CatalogScope): void {
+  if (next === searchScope.value) return
+  searchScope.value = next
+  if (next === 'online') {
+    syncOnlineRouteQuery()
+  } else {
+    syncRouteQuery()
+    void fetchActiveTab()
+  }
+}
+
+function handleOnlineKeywordUpdate(kw: string): void {
+  if (musicStore.globalSearchQuery !== kw) {
+    musicStore.globalSearchQuery = kw
+  }
+  syncOnlineRouteQuery(kw)
+}
+
+function handleOnlineSourceUpdate(sourceId: string | null): void {
+  syncOnlineRouteQuery(undefined, sourceId)
 }
 
 function selectTab(tab: CatalogTab): void {
@@ -320,13 +374,37 @@ function handleFilterChange(): void {
 }
 
 watch(
-  () => [route.query.tab, route.query.library, route.query.genre, route.query.tag] as const,
-  ([qTab, qLib, qGenre, qTag]) => {
+  () =>
+    [
+      route.query.scope,
+      route.query.q,
+      route.query.tab,
+      route.query.library,
+      route.query.genre,
+      route.query.tag,
+    ] as const,
+  ([qScope, qVal, qTab, qLib, qGenre, qTag], prev) => {
+    if (syncingRouteQuery) return
+    const nextScope: CatalogScope = qScope === 'online' ? 'online' : 'local'
+    const scopeChanged = nextScope !== searchScope.value
+    searchScope.value = nextScope
+
+    if (nextScope === 'online') {
+      if (qVal !== prev?.[1] || scopeChanged) {
+        const nextQ = typeof qVal === 'string' ? qVal : ''
+        if (musicStore.globalSearchQuery !== nextQ) {
+          musicStore.globalSearchQuery = nextQ
+        }
+      }
+      return
+    }
+
     const nextTab: CatalogTab = qTab === 'albums' || qTab === 'artists' ? qTab : 'songs'
     const nextLib = typeof qLib === 'string' ? qLib : ''
     const nextGenre = typeof qGenre === 'string' ? qGenre : ''
     const nextTag = typeof qTag === 'string' ? qTag : ''
     const changed =
+      scopeChanged ||
       nextTab !== activeTab.value ||
       nextLib !== selectedLibrary.value ||
       nextGenre !== selectedGenre.value ||
@@ -347,8 +425,27 @@ async function refreshPage(): Promise<void> {
   await Promise.all([musicStore.refreshSidebar(), fetchActiveTab()])
 }
 
-onMounted(fetchActiveTab)
-watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActiveTab)
+onMounted(() => {
+  if (route.query.scope === 'online') {
+    searchScope.value = 'online'
+    const q = typeof route.query.q === 'string' ? route.query.q : ''
+    if (musicStore.globalSearchQuery !== q) {
+      musicStore.globalSearchQuery = q
+    }
+  } else {
+    searchScope.value = 'local'
+    void fetchActiveTab()
+  }
+})
+
+watch(
+  () => [musicStore.catalogVersion, uploadStore.versionCounter],
+  () => {
+    if (searchScope.value === 'local') {
+      void fetchActiveTab()
+    }
+  },
+)
 </script>
 
 <template>
@@ -359,10 +456,10 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
         <div>
           <div class="flex items-center gap-2">
             <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
-              {{ pageTitle }}
+              {{ searchScope === 'online' ? t('online.scopeOnline') : pageTitle }}
             </h1>
             <button
-              v-if="selectedLibrary || selectedGenre || selectedTag"
+              v-if="searchScope === 'local' && (selectedLibrary || selectedGenre || selectedTag)"
               type="button"
               class="md-chip md-chip-selected md-state"
               @click="clearScopeFilters"
@@ -371,47 +468,68 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
               <LuX class="h-3 w-3" />
             </button>
           </div>
-          <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          <p
+            v-if="searchScope === 'local'"
+            class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          >
             {{ pageSubtitle }}
           </p>
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
-        <template v-if="activeTab === 'songs' && tracks.length > 0">
-          <button
-            type="button"
-            class="md-btn md-btn-filled md-btn-sm md-state"
-            @click="playerStore.playQueue(tracks, 0)"
-          >
-            <LuPlay class="h-3.5 w-3.5 fill-current" />
-            <span>{{ t('common.playAll') }}</span>
-          </button>
-          <button
-            type="button"
-            class="md-btn md-btn-tonal md-btn-sm md-state"
-            @click="playerStore.shuffleAndPlay(tracks)"
-          >
-            <LuShuffle class="h-3.5 w-3.5" />
-            <span>{{ t('common.shufflePlay') }}</span>
-          </button>
+      <div class="flex flex-wrap items-center gap-2">
+        <MdSegmentedButton
+          :model-value="searchScope"
+          :options="searchScopeOptions"
+          size="sm"
+          :show-check="false"
+          @update:model-value="switchSearchScope($event)"
+        />
+        <template v-if="searchScope === 'local'">
+          <template v-if="activeTab === 'songs' && tracks.length > 0">
+            <button
+              type="button"
+              class="md-btn md-btn-filled md-btn-sm md-state"
+              @click="playerStore.playQueue(tracks, 0)"
+            >
+              <LuPlay class="h-3.5 w-3.5 fill-current" />
+              <span>{{ t('common.playAll') }}</span>
+            </button>
+            <button
+              type="button"
+              class="md-btn md-btn-tonal md-btn-sm md-state"
+              @click="playerStore.shuffleAndPlay(tracks)"
+            >
+              <LuShuffle class="h-3.5 w-3.5" />
+              <span>{{ t('common.shufflePlay') }}</span>
+            </button>
+          </template>
+          <RefreshButton size="md" :action="refreshPage" />
         </template>
-        <RefreshButton size="md" :action="refreshPage" />
       </div>
     </div>
 
-    <!-- Songs / Albums / Artists Tabs -->
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <MdSegmentedButton
-        :model-value="activeTab"
-        :options="catalogTabOptions"
-        size="md"
-        @update:model-value="selectTab($event)"
-      />
-    </div>
+    <OnlineMusicSearchSection
+      v-if="searchScope === 'online'"
+      :keyword="musicStore.globalSearchQuery"
+      :initial-source-id="onlineSourceId"
+      @update:keyword="handleOnlineKeywordUpdate"
+      @update:source-id="handleOnlineSourceUpdate"
+    />
 
-    <!-- 1. SONGS TAB -->
-    <template v-if="activeTab === 'songs'">
+    <template v-else>
+      <!-- Songs / Albums / Artists Tabs -->
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <MdSegmentedButton
+          :model-value="activeTab"
+          :options="catalogTabOptions"
+          size="md"
+          @update:model-value="selectTab($event)"
+        />
+      </div>
+
+      <!-- 1. SONGS TAB -->
+      <template v-if="activeTab === 'songs'">
       <div
         class="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
         :class="musicStore.tags.length > 0 || selectedTag ? 'lg:grid-cols-5' : 'lg:grid-cols-4'"
@@ -685,6 +803,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           </button>
         </div>
       </div>
+    </template>
     </template>
   </div>
 </template>
