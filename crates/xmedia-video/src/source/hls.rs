@@ -12,6 +12,9 @@ use xmedia_core::infra::stream::MpscByteStream;
 use xmedia_source::http::{
     DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, SsrfSafeResolver, ssrf_redirect_policy,
 };
+use xmedia_source::proxy::{
+    has_enough_media_sniff_bytes, looks_like_html_or_svg_bytes, strip_bom_and_ascii_ws,
+};
 
 pub const MAX_M3U8_BYTES: usize = 8 * 1024 * 1024;
 pub const SNIFF_PREFIX_MAX_BYTES: usize = 4096;
@@ -107,7 +110,7 @@ pub async fn read_sniff_prefix(
         }
         buf.extend_from_slice(&chunk);
         if buf.len() >= max_sniff_bytes
-            || strip_bom_and_ascii_ws(&buf).len() >= SNIFF_MIN_NON_WS_BYTES
+            || has_enough_media_sniff_bytes(&buf, SNIFF_MIN_NON_WS_BYTES)
         {
             break;
         }
@@ -159,34 +162,7 @@ pub fn is_forbidden_media_ct(ct_lower: &str) -> bool {
 }
 
 pub fn looks_like_html_bytes(bytes: &[u8]) -> bool {
-    let trimmed = strip_bom_and_ascii_ws(bytes);
-    if trimmed.len() < 5 {
-        return false;
-    }
-    let head: Vec<u8> = trimmed
-        .iter()
-        .take(16)
-        .map(|b| b.to_ascii_lowercase())
-        .collect();
-    head.starts_with(b"<html")
-        || head.starts_with(b"<!doctype")
-        || head.starts_with(b"<head")
-        || head.starts_with(b"<body")
-        || head.starts_with(b"<svg")
-}
-
-fn strip_bom_and_ascii_ws(mut bytes: &[u8]) -> &[u8] {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        bytes = &bytes[3..];
-    }
-    while let Some((&b, rest)) = bytes.split_first() {
-        if b.is_ascii_whitespace() {
-            bytes = rest;
-        } else {
-            break;
-        }
-    }
-    bytes
+    looks_like_html_or_svg_bytes(bytes)
 }
 
 pub fn is_hls_playlist_response(ct_lower: &str, final_url: &Url, first_chunk: &[u8]) -> bool {
@@ -201,6 +177,25 @@ pub fn is_hls_playlist_response(ct_lower: &str, final_url: &Url, first_chunk: &[
     let path_is_m3u8 = final_url.path().to_ascii_lowercase().ends_with(".m3u8")
         || final_url.path().to_ascii_lowercase().ends_with(".m3u");
     ct_is_m3u8 || path_is_m3u8
+}
+
+pub fn is_partial_hls_playlist_range_candidate(
+    ct_lower: &str,
+    final_url: &Url,
+    prefix: &[u8],
+) -> bool {
+    if is_hls_playlist_response(ct_lower, final_url, prefix) {
+        return true;
+    }
+    let allowed_ct =
+        ct_lower.is_empty() || ct_lower == "text/plain" || is_generic_binary_ct(ct_lower);
+    if !allowed_ct || looks_like_html_bytes(prefix) || prefix.contains(&0) {
+        return false;
+    }
+    let stripped = strip_bom_and_ascii_ws(prefix);
+    stripped.starts_with(b"#EXT")
+        || prefix.windows(7).any(|w| w == b"#EXT-X-")
+        || prefix.windows(8).any(|w| w == b"#EXTINF:")
 }
 
 fn is_generic_binary_ct(base: &str) -> bool {

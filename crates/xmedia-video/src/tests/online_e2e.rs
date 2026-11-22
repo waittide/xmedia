@@ -2652,3 +2652,122 @@ async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream_range_hls_e2e() {
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+
+    let mut manifest = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n");
+    for i in 0..80 {
+        manifest.push_str(&format!("#EXTINF:6.0,\nseg_{i:03}.ts\n"));
+    }
+    manifest.push_str("#EXT-X-ENDLIST\n");
+    let manifest_bytes = Arc::new(manifest.into_bytes());
+    let manifest_srv = manifest_bytes.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/xml-svg.bin",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/xml-svg-split.bin",
+            get(|| async {
+                delayed_chunked_response(
+                    "application/octet-stream",
+                    vec![
+                        (b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_vec(), 0),
+                        (b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_vec(), 10),
+                    ],
+                )
+            }),
+        )
+        .route(
+            "/manifest",
+            get(move |headers: HeaderMap| {
+                let full = manifest_srv.clone();
+                async move {
+                    if let Some(r) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+                        let spec = r.trim().strip_prefix("bytes=").unwrap_or("10-500");
+                        let (s, e) = spec.split_once('-').unwrap_or(("10", "500"));
+                        let start: usize = s.parse().unwrap_or(10);
+                        let end: usize = e.parse().unwrap_or(500).min(full.len().saturating_sub(1));
+                        let slice = full[start..=end].to_vec();
+                        return Response::builder()
+                            .status(StatusCode::PARTIAL_CONTENT)
+                            .header("content-type", "application/octet-stream")
+                            .header(
+                                "content-range",
+                                format!("bytes {start}-{end}/{}", full.len()),
+                            )
+                            .body(Body::from(slice))
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/octet-stream")
+                        .body(Body::from(full.as_ref().clone()))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    // GAP-04: single-chunk and split-chunk <?xml ...?><svg> rejected on both stream-proxy and hls-proxy
+    for endpoint in ["stream-proxy", "hls-proxy"] {
+        for path in ["/xml-svg.bin", "/xml-svg-split.bin"] {
+            let encoded = urlencoding_param(&format!("{origin}{path}"));
+            let (st, _, _) = get_bytes_with_auth(
+                &app,
+                &format!("/api/v1/video/online/{endpoint}?url={encoded}"),
+                Some(&member_tok),
+                None,
+            )
+            .await;
+            assert_eq!(
+                st,
+                StatusCode::BAD_REQUEST,
+                "expected 400 on {endpoint} for {path}"
+            );
+        }
+    }
+
+    // GAP-05: mid-file Range on extensionless /manifest with application/octet-stream refetches and rewrites
+    let encoded_manifest = urlencoding_param(&format!("{origin}/manifest"));
+    let (st_hls, hdrs_hls, body_hls) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_manifest}"),
+        Some(&member_tok),
+        Some("bytes=10-500"),
+    )
+    .await;
+    assert_eq!(st_hls, StatusCode::OK);
+    let ct = hdrs_hls
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.contains("mpegurl"),
+        "expected mpegurl content-type, got {ct}"
+    );
+    let rewritten = String::from_utf8(body_hls).unwrap();
+    assert!(rewritten.starts_with("#EXTM3U\n"));
+    assert!(rewritten.contains("seg_079.ts"));
+    assert!(rewritten.contains("/api/v1/video/online/hls-proxy?url="));
+
+    srv.abort();
+}

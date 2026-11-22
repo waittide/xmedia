@@ -18,8 +18,8 @@ use xmedia_source::proxy::{
 use crate::source::hls::{
     MAX_M3U8_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url, build_poster_proxy_url,
     build_stream_proxy_url, get_or_build_streaming_async_client, infer_segment_content_type,
-    is_forbidden_media_ct, is_hls_playlist_response, looks_like_html_bytes, read_sniff_prefix,
-    rewrite_m3u8_playlist, spawn_chunk_stream,
+    is_forbidden_media_ct, is_hls_playlist_response, is_partial_hls_playlist_range_candidate,
+    looks_like_html_bytes, read_sniff_prefix, rewrite_m3u8_playlist, spawn_chunk_stream,
 };
 use crate::source::model::VideoSourceSpec;
 
@@ -660,7 +660,7 @@ impl VideoOnlineService {
 
             if include_range
                 && status == reqwest::StatusCode::PARTIAL_CONTENT
-                && is_hls_playlist_response(&ct_lower, &final_url, &prefix)
+                && is_partial_hls_playlist_range_candidate(&ct_lower, &final_url, &prefix)
             {
                 include_range = false;
                 continue;
