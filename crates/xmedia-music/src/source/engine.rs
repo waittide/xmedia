@@ -253,11 +253,8 @@ fn resolve_literal_http_url(raw: &str, base_url: &str, label: &str) -> Result<St
     if split_js_pipeline(trimmed).is_some() {
         return Err(format!("{label} 不允许包含 JS 脚本"));
     }
-    let resolved = resolve_relative_url(trimmed, base_url);
-    if !resolved.starts_with("http://") && !resolved.starts_with("https://") {
-        return Err(format!("{label} 必须是有效的 HTTP(S) URL: {resolved}"));
-    }
-    Ok(resolved)
+    xmedia_source::http::resolve_literal_http_url(trimmed, Some(base_url))
+        .map_err(|e| format!("{label}: {e}"))
 }
 
 fn template_needs_js(raw_tpl: &str) -> bool {
@@ -1789,7 +1786,7 @@ impl MusicSourceEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::split_top_level_or;
+    use super::{resolve_literal_http_url, split_top_level_or};
 
     #[test]
     fn split_top_level_or_ignores_depth_zero_unmatched_apostrophes_and_preserves_scoped_quotes() {
@@ -1804,6 +1801,30 @@ mod tests {
         assert_eq!(
             split_top_level_or("$.items[?(@.a=='x||y')] || $.fallback"),
             vec!["$.items[?(@.a=='x||y')]", "$.fallback"]
+        );
+    }
+
+    #[test]
+    fn resolve_literal_http_url_rejects_legado_options_and_data_urls() {
+        assert_eq!(
+            resolve_literal_http_url("/track/1", "https://music.example.com", "detailUrl").unwrap(),
+            "https://music.example.com/track/1"
+        );
+        assert!(
+            resolve_literal_http_url(
+                "https://music.example.com/track/1,{\"method\":\"POST\",\"headers\":{\"X-Evil\":\"1\"}}",
+                "https://music.example.com",
+                "detailUrl",
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_literal_http_url(
+                "data:text/plain,evil",
+                "https://music.example.com",
+                "detailUrl"
+            )
+            .is_err()
         );
     }
 }
