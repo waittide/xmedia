@@ -451,6 +451,176 @@ pub fn merge_runtime_state(
     merged
 }
 
+fn parse_cookie_pairs(raw: &str) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for part in raw.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = trimmed.split_once('=') {
+            let key = k.trim().to_string();
+            let val = v.trim().to_string();
+            if key.is_empty() {
+                continue;
+            }
+            if let Some(slot) = pairs.iter_mut().find(|(ek, _)| ek == &key) {
+                slot.1 = val;
+            } else {
+                pairs.push((key, val));
+            }
+        }
+    }
+    pairs
+}
+
+fn serialize_cookie_pairs(pairs: Vec<(String, String)>) -> String {
+    pairs
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn merge_cookie_string_with_base(
+    base_str: Option<&str>,
+    cur_str: Option<&str>,
+    upd_str: Option<&str>,
+) -> Option<String> {
+    let has_pairs = [base_str, cur_str, upd_str]
+        .into_iter()
+        .flatten()
+        .any(|s| !parse_cookie_pairs(s).is_empty());
+    if !has_pairs {
+        return match upd_str {
+            None => {
+                if cur_str == base_str {
+                    None
+                } else {
+                    cur_str.map(ToString::to_string)
+                }
+            }
+            Some(u) => {
+                if base_str == Some(u) {
+                    cur_str.map(ToString::to_string)
+                } else {
+                    Some(u.to_string())
+                }
+            }
+        };
+    }
+
+    let base_pairs = base_str.map(parse_cookie_pairs).unwrap_or_default();
+    let mut cur_pairs = cur_str.map(parse_cookie_pairs).unwrap_or_default();
+    let upd_pairs = upd_str.map(parse_cookie_pairs).unwrap_or_default();
+
+    let base_map: HashMap<&str, &str> = base_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let upd_map: HashMap<&str, &str> = upd_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    cur_pairs.retain(|(name, cur_val)| {
+        if upd_map.contains_key(name.as_str()) {
+            true
+        } else {
+            base_map.get(name.as_str()) != Some(&cur_val.as_str())
+        }
+    });
+
+    for (name, upd_val) in upd_pairs {
+        if base_map.get(name.as_str()) != Some(&upd_val.as_str()) {
+            if let Some(slot) = cur_pairs.iter_mut().find(|(cn, _)| cn == &name) {
+                slot.1 = upd_val;
+            } else {
+                cur_pairs.push((name, upd_val));
+            }
+        }
+    }
+
+    if cur_pairs.is_empty() {
+        if let Some("") = upd_str
+            && base_str != Some("")
+        {
+            Some(String::new())
+        } else {
+            None
+        }
+    } else {
+        Some(serialize_cookie_pairs(cur_pairs))
+    }
+}
+
+fn merge_cookies_with_base(
+    base: &HashMap<String, String>,
+    merged: &mut HashMap<String, String>,
+    updated: HashMap<String, String>,
+) {
+    let mut hosts: HashSet<String> = base.keys().cloned().collect();
+    hosts.extend(merged.keys().cloned());
+    hosts.extend(updated.keys().cloned());
+
+    for host in hosts {
+        let b = base.get(&host).map(String::as_str);
+        let c = merged.get(&host).map(String::as_str);
+        let u = updated.get(&host).map(String::as_str);
+        match merge_cookie_string_with_base(b, c, u) {
+            Some(val) => {
+                merged.insert(host, val);
+            }
+            None => {
+                merged.remove(&host);
+            }
+        }
+    }
+}
+
+fn merge_map_with_base(
+    base: &HashMap<String, String>,
+    merged: &mut HashMap<String, String>,
+    updated: HashMap<String, String>,
+) {
+    for key in base.keys() {
+        if !updated.contains_key(key) && merged.get(key) == base.get(key) {
+            merged.remove(key);
+        }
+    }
+    for (key, value) in updated {
+        if base.get(&key) != Some(&value) {
+            merged.insert(key, value);
+        }
+    }
+}
+
+pub fn merge_runtime_state_with_base(
+    base: &SourceRuntimeState,
+    current: Option<SourceRuntimeState>,
+    updated: SourceRuntimeState,
+    allow_login_info_override: bool,
+) -> SourceRuntimeState {
+    let Some(mut merged) = current else {
+        return updated;
+    };
+
+    merge_cookies_with_base(&base.cookies, &mut merged.cookies, updated.cookies);
+    merge_map_with_base(&base.cache, &mut merged.cache, updated.cache);
+
+    if updated.variable != base.variable {
+        merged.variable = updated.variable;
+    }
+    if updated.android_id != base.android_id && !updated.android_id.is_empty() {
+        merged.android_id = updated.android_id;
+    }
+    if allow_login_info_override {
+        merge_map_with_base(&base.login_info, &mut merged.login_info, updated.login_info);
+    }
+
+    merged
+}
+
 pub fn format_export_batch_json(
     ids: &[Uuid],
     raw_by_id: &mut HashMap<Uuid, &str>,
@@ -755,5 +925,35 @@ mod tests {
             serde_json::from_str(r#"{"form_data":{"user":"bob"},"action":"doAuth()"}"#).unwrap();
         assert_eq!(req2.login_info.get("user").map(String::as_str), Some("bob"));
         assert_eq!(req2.action.as_deref(), Some("doAuth()"));
+    }
+
+    #[test]
+    fn merge_runtime_state_with_base_supports_clear_delete_and_cookie_pair_merge() {
+        let base = SourceRuntimeState {
+            variable: "v1".into(),
+            login_info: HashMap::from([("u".into(), "a".into())]),
+            cookies: HashMap::from([("h.test".into(), "a=1; b=2".into())]),
+            cache: HashMap::from([("k1".into(), "val1".into())]),
+            android_id: "aid".into(),
+        };
+        let mut updated_clear = base.clone();
+        updated_clear.variable.clear();
+        updated_clear.cache.remove("k1");
+        updated_clear.cookies.remove("h.test");
+
+        let cleared = merge_runtime_state_with_base(&base, Some(base.clone()), updated_clear, true);
+        assert_eq!(cleared.variable, "");
+        assert!(!cleared.cache.contains_key("k1"));
+        assert!(!cleared.cookies.contains_key("h.test"));
+
+        let base_empty = SourceRuntimeState::default();
+        let mut upd_a = SourceRuntimeState::default();
+        upd_a.cookies.insert("same.test".into(), "kA=valA".into());
+        let mut upd_b = SourceRuntimeState::default();
+        upd_b.cookies.insert("same.test".into(), "kB=valB".into());
+        let merged = merge_runtime_state_with_base(&base_empty, Some(upd_a), upd_b, false);
+        let ck = merged.cookies.get("same.test").unwrap();
+        assert!(ck.contains("kA=valA"));
+        assert!(ck.contains("kB=valB"));
     }
 }
