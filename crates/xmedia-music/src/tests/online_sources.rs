@@ -1676,11 +1676,11 @@ async fn engine_blocks_template_js_injection_and_fixes_short_circuit_headers_ia_
         assert!(play_out.diagnostics.toasts.is_empty());
         assert_eq!(
             play_out.data.stream_url,
-            "https://cdn.example.test/{{java.toast('INJECTED_PLAY')}}.mp3"
+            "https://cdn.example.test/%7B%7Bjava.toast('INJECTED_PLAY')%7D%7D.mp3"
         );
 
         // 1c. Fallback branch with urlId="{{java.toast(...)}}" & trackId="{{1+1}}" does NOT execute JS,
-        // while the template's own {{1+1}} token DOES evaluate to 2.
+        // and percent-encodes urlId/trackId while the template's own {{1+1}} token DOES evaluate to 2.
         ctx_play.play_url = None;
         let stream_out = engine
             .resolve_stream_sync(&inj_spec, SourceRuntimeState::default(), &ctx_play, None)
@@ -1688,7 +1688,11 @@ async fn engine_blocks_template_js_injection_and_fixes_short_circuit_headers_ia_
         assert!(stream_out.diagnostics.toasts.is_empty());
         assert_eq!(
             stream_out.data.stream_url,
-            "https://cdn.example.test/tracks/{{java.toast('INJECTED_URLID')}}/{{1+1}}.mp3?q=2"
+            format!(
+                "https://cdn.example.test/tracks/{}/{}.mp3?q=2",
+                url_encode_component("{{java.toast('INJECTED_URLID')}}"),
+                url_encode_component("{{1+1}}"),
+            )
         );
 
         // 1d. @js: rule reads track/key/quality via JS globals without placeholder interpolation
@@ -3385,6 +3389,225 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
         .await;
         assert_eq!(st_px, StatusCode::BAD_REQUEST, "expected 400 for {path}");
     }
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn online_music_endpoints_block_param_and_options_injection_and_support_relative_options() {
+    use axum::routing::any;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let h = setup_online_test_harness(true).await;
+
+    let admin_hits = Arc::new(AtomicUsize::new(0));
+    let admin_hits_c = admin_hits.clone();
+    let seen_reqs: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_c = seen_reqs.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/admin",
+            any(move || {
+                let hits = admin_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::from(r#"{"url":"https://evil.test/pwn.mp3"}"#))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/api/{*rest}",
+            any(move |req: AxumRequest| {
+                let seen = seen_c.clone();
+                async move {
+                    let method = req.method().to_string();
+                    let uri = req.uri().to_string();
+                    let body = to_bytes(req.into_body(), 64 * 1024)
+                        .await
+                        .unwrap_or_default();
+                    let body_str = String::from_utf8_lossy(&body).to_string();
+                    seen.lock()
+                        .unwrap()
+                        .push((format!("{method} {uri}"), body_str));
+                    let payload = if uri.contains("/search") {
+                        serde_json::json!({
+                            "items": [{ "id": "t1", "name": "Track One", "artist": "Artist" }]
+                        })
+                    } else if uri.contains("/url") {
+                        serde_json::json!({ "url": "/audio/ok.mp3", "br": "320" })
+                    } else if uri.contains("/lyric") {
+                        serde_json::json!({ "lyric": "[00:01.00]Clean Line" })
+                    } else {
+                        serde_json::json!({ "id": "t1", "name": "Track One", "artist": "Artist" })
+                    };
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(payload.to_string()))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let src_json = serde_json::json!([
+        {
+            "sourceName": "Injection Guard Music",
+            "sourceUrl": base,
+            "searchUrl": "/api/search?q={{key}},{\"method\":\"POST\",\"body\":\"k={{key}}\"}",
+            "supportedQualities": ["128", "320"],
+            "ruleSearch": {
+                "trackList": "$.items[*]",
+                "trackId": "$.id",
+                "title": "$.name",
+                "artist": "$.artist"
+            },
+            "ruleTrackDetail": {
+                "requestUrl": "/api/detail/{{trackId}}",
+                "trackId": "$.id",
+                "title": "$.name"
+            },
+            "ruleStream": {
+                "requestUrl": "/api/url?id={{urlId}}&br={{quality}}",
+                "streamUrl": "$.url"
+            },
+            "ruleLyric": {
+                "requestUrl": "/api/lyric?id={{lyricId}}",
+                "lyric": "$.lyric"
+            }
+        },
+        {
+            "sourceName": "Passthrough Guard Music",
+            "sourceUrl": format!("{base}#pt"),
+            "ruleStream": {
+                "streamUrl": "{{playUrl}}"
+            }
+        }
+    ]);
+
+    let (st_imp, _, b_imp) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid_tmpl = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+    let sid_pt = imp_val["sources"][1]["id"].as_str().unwrap().to_string();
+
+    // 1. Relative url,{options} search works cleanly
+    let (st_search, _, b_search) = send_json(
+        &h.app,
+        "POST",
+        "/online/search",
+        &h.member_token,
+        Some(serde_json::json!({
+            "keyword": "a&extra=1",
+            "source_ids": [&sid_tmpl],
+            "page": 1
+        })),
+    )
+    .await;
+    assert_eq!(st_search, StatusCode::OK);
+    let s_val: serde_json::Value = serde_json::from_slice(&b_search).unwrap();
+    assert_eq!(s_val["results"][0]["title"], "Track One");
+
+    // 2. Member POST /online/stream, /online/track-info, /online/lyrics neutralize ,{"method":"POST"}, &extra=1, ../../admin
+    let evil_opts = r#"1,{"method":"POST","headers":{"X-Evil":"1"},"body":"evil=1"}"#;
+    let (st_stream, _, b_stream) = send_json(
+        &h.app,
+        "POST",
+        "/online/stream",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": &sid_tmpl,
+            "track_id": "../../admin",
+            "url_id": evil_opts,
+            "quality": evil_opts
+        })),
+    )
+    .await;
+    assert_eq!(st_stream, StatusCode::OK);
+    let stream_val: serde_json::Value = serde_json::from_slice(&b_stream).unwrap();
+    assert_eq!(stream_val["stream_url"], format!("{base}/audio/ok.mp3"));
+
+    let (st_ti, _, _) = send_json(
+        &h.app,
+        "POST",
+        "/online/track-info",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": &sid_tmpl,
+            "track_id": "../../admin",
+            "url_id": "1&extra=1",
+            "lyric_id": "../../admin",
+            "quality": "320&extra=1"
+        })),
+    )
+    .await;
+    assert_eq!(st_ti, StatusCode::OK);
+
+    let (st_lrc, _, b_lrc) = send_json(
+        &h.app,
+        "POST",
+        "/online/lyrics",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": &sid_tmpl,
+            "track_id": "1",
+            "lyric_id": "1&extra=1"
+        })),
+    )
+    .await;
+    assert_eq!(st_lrc, StatusCode::OK);
+    let lrc: StructuredLyrics = serde_json::from_slice(&b_lrc).unwrap();
+    assert_eq!(lrc.lines[0].text, "Clean Line");
+
+    // 3. Passthrough play_url rejects options injection and data: URLs with 400
+    for bad_play in [
+        format!("{base}/audio/ok.mp3,{{\"method\":\"POST\"}}"),
+        "data:text/html,<script>alert(1)</script>".to_string(),
+    ] {
+        let (st_bad, _, _) = send_json(
+            &h.app,
+            "POST",
+            "/online/stream",
+            &h.member_token,
+            Some(serde_json::json!({
+                "source_id": &sid_pt,
+                "track_id": "1",
+                "play_url": bad_play
+            })),
+        )
+        .await;
+        assert_eq!(st_bad, StatusCode::BAD_REQUEST);
+    }
+
+    assert_eq!(admin_hits.load(Ordering::SeqCst), 0);
+    let logged = seen_reqs.lock().unwrap();
+    assert_eq!(logged[0].0, "POST /api/search?q=a%26extra%3D1");
+    assert_eq!(logged[0].1, "k=a%26extra%3D1");
+    assert!(
+        logged[1]
+            .0
+            .starts_with("GET /api/url?id=1%2C%7B%22method%22")
+    );
+    assert!(logged[1].0.contains("&br=1%2C%7B%22method%22"));
+    assert_eq!(logged[2].0, "GET /api/detail/..%2F..%2Fadmin");
+    assert_eq!(logged.last().unwrap().0, "GET /api/lyric?id=1%26extra%3D1");
 
     srv.abort();
 }

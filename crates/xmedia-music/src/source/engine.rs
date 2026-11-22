@@ -1,9 +1,15 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use xmedia_source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
+use xmedia_source::http::{
+    HttpClientConfig, LegadoHttpClient, LegadoUrlOptions, eval_json_options_template,
+    json_raw_structure_signature, resolve_relative_url, resolve_relative_url_preserving_options,
+    split_legado_url_and_raw_options, split_legado_url_template_and_options,
+    substitute_legado_options_vars, substitute_url_part_vars,
+};
 use xmedia_source::model::{
     ExecutionDiagnostics, SourceCallError, SourceCallOutput, SourceRuntimeState,
 };
@@ -197,25 +203,284 @@ fn is_known_template_placeholder(expr: &str) -> bool {
         )
 }
 
-fn resolve_static_placeholder(expr: &str, vars: &MusicTemplateVars<'_>) -> Option<String> {
-    if expr.eq_ignore_ascii_case("quality") {
-        return Some(vars.quality.to_string());
+impl<'a> MusicTemplateVars<'a> {
+    fn to_pairs(&self, page_str: &'a str, limit_str: &'a str) -> [(&'a str, &'a str); 13] {
+        [
+            ("key", self.key),
+            ("page", page_str),
+            ("limit", limit_str),
+            ("quality", self.quality),
+            ("trackId", self.track_id),
+            ("urlId", self.url_id),
+            ("coverId", self.cover_id),
+            ("lyricId", self.lyric_id),
+            ("playUrl", self.play_url),
+            ("detailUrl", self.detail_url),
+            ("title", self.title),
+            ("artist", self.artist),
+            ("album", self.album),
+        ]
     }
-    match expr {
-        "key" => Some(url_encode_component(vars.key)),
-        "title" => Some(url_encode_component(vars.title)),
-        "artist" => Some(url_encode_component(vars.artist)),
-        "album" => Some(url_encode_component(vars.album)),
-        "page" => Some(vars.page.to_string()),
-        "limit" => Some(vars.limit.to_string()),
-        "urlId" => Some(vars.url_id.to_string()),
-        "trackId" => Some(vars.track_id.to_string()),
-        "coverId" => Some(vars.cover_id.to_string()),
-        "lyricId" => Some(vars.lyric_id.to_string()),
-        "playUrl" => Some(vars.play_url.to_string()),
-        "detailUrl" => Some(vars.detail_url.to_string()),
-        _ => None,
+
+    fn has_suspicious_option_chars(&self) -> bool {
+        [
+            self.key,
+            self.quality,
+            self.track_id,
+            self.url_id,
+            self.cover_id,
+            self.lyric_id,
+            self.play_url,
+            self.detail_url,
+            self.title,
+            self.artist,
+            self.album,
+        ]
+        .into_iter()
+        .any(|s| {
+            !s.is_empty()
+                && s.chars().any(|c| {
+                    matches!(c, '{' | '}' | '[' | ']' | '"' | '\\' | ',') || c.is_control()
+                })
+        })
     }
+}
+
+fn detect_passthrough_url_var<'a>(
+    url_tpl: &str,
+    vars: &'a [(&'a str, &'a str)],
+) -> Option<(&'a str, &'a str)> {
+    let trimmed = url_tpl.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix("{{")
+        .and_then(|s| s.strip_suffix("}}"))
+    {
+        let name = inner.trim();
+        if matches!(name, "playUrl" | "detailUrl") {
+            return vars.iter().find(|(k, _)| *k == name).map(|(k, v)| (*k, *v));
+        }
+    }
+    None
+}
+
+fn count_comma_open_brace(s: &str) -> usize {
+    s.bytes()
+        .enumerate()
+        .filter(|&(i, b)| b == b',' && s[i + 1..].trim_start().starts_with('{'))
+        .count()
+}
+
+fn normalize_quality_placeholder(tpl: &str) -> Cow<'_, str> {
+    if !tpl.contains("{{") {
+        return Cow::Borrowed(tpl);
+    }
+    let mut out = String::new();
+    let mut rest = tpl;
+    let mut changed = false;
+    while let Some(open) = rest.find("{{") {
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            if changed {
+                out.push_str(rest);
+            }
+            break;
+        };
+        let expr = after_open[..close].trim();
+        if expr.eq_ignore_ascii_case("quality") && expr != "quality" {
+            if !changed {
+                out.reserve(tpl.len());
+                let consumed = tpl.len() - rest.len();
+                out.push_str(&tpl[..consumed]);
+                changed = true;
+            }
+            out.push_str(&rest[..open]);
+            out.push_str("{{quality}}");
+        } else if changed {
+            out.push_str(&rest[..open + 2 + close + 2]);
+        }
+        rest = &after_open[close + 2..];
+    }
+    if changed {
+        if !rest.is_empty() && !rest.contains("{{") {
+            out.push_str(rest);
+        }
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(tpl)
+    }
+}
+
+fn eval_js_pipeline_guarded(
+    session: &mut MusicSourceSession,
+    raw_tpl: &str,
+    vars: &MusicTemplateVars<'_>,
+    input: &RuleValue,
+    base_url: &str,
+) -> Result<String, String> {
+    let out = session.eval_string(input, raw_tpl, base_url)?;
+    if vars.has_suspicious_option_chars()
+        && let (eval_url_part, Some(eval_opt_json)) = split_legado_url_and_raw_options(out.trim())
+    {
+        let probe_ctx = MusicTrackContext {
+            track_id: "__xmedia_probe__".into(),
+            title: "__xmedia_probe__".into(),
+            artist: "__xmedia_probe__".into(),
+            album: Some("__xmedia_probe__".into()),
+            cover_id: Some("__xmedia_probe__".into()),
+            url_id: Some("__xmedia_probe__".into()),
+            lyric_id: Some("__xmedia_probe__".into()),
+            play_url: Some("__xmedia_probe__".into()),
+            detail_url: Some("__xmedia_probe__".into()),
+            quality: Some("__xmedia_probe__".into()),
+            ..Default::default()
+        };
+        session.set_search_vars("__xmedia_probe__", vars.page, vars.limit)?;
+        session.set_track_context(&probe_ctx)?;
+        let probe_res = session.eval_string(input, raw_tpl, base_url);
+
+        // Restore caller vars/context before checking probe result.
+        let restore_ctx = MusicTrackContext {
+            track_id: vars.track_id.to_string(),
+            title: vars.title.to_string(),
+            artist: vars.artist.to_string(),
+            album: (!vars.album.is_empty()).then(|| vars.album.to_string()),
+            cover_id: (!vars.cover_id.is_empty()).then(|| vars.cover_id.to_string()),
+            url_id: (!vars.url_id.is_empty()).then(|| vars.url_id.to_string()),
+            lyric_id: (!vars.lyric_id.is_empty()).then(|| vars.lyric_id.to_string()),
+            play_url: (!vars.play_url.is_empty()).then(|| vars.play_url.to_string()),
+            detail_url: (!vars.detail_url.is_empty()).then(|| vars.detail_url.to_string()),
+            quality: (!vars.quality.is_empty()).then(|| vars.quality.to_string()),
+            ..Default::default()
+        };
+        let _ = session.set_search_vars(vars.key, vars.page, vars.limit);
+        let _ = session.set_track_context(&restore_ctx);
+
+        let probe_out = probe_res?;
+        let (probe_url_part, Some(probe_opt_json)) =
+            split_legado_url_and_raw_options(probe_out.trim())
+        else {
+            return Err("请求 URL 模板参数不允许附加请求选项".into());
+        };
+        if (split_legado_url_and_raw_options(probe_url_part.trim())
+            .1
+            .is_none()
+            && split_legado_url_and_raw_options(eval_url_part.trim())
+                .1
+                .is_some())
+            || count_comma_open_brace(eval_url_part) != count_comma_open_brace(probe_url_part)
+        {
+            return Err("请求 URL 模板参数不允许附加请求选项".into());
+        }
+        let expected_sig = json_raw_structure_signature(probe_opt_json);
+        let actual_sig = json_raw_structure_signature(eval_opt_json);
+        if expected_sig.is_none()
+            || actual_sig != expected_sig
+            || serde_json::from_str::<LegadoUrlOptions>(eval_opt_json).is_err()
+        {
+            return Err("请求 URL 模板参数不允许修改请求选项结构".into());
+        }
+    }
+    Ok(out)
+}
+
+fn eval_template_branch_single_pass(
+    session: &mut MusicSourceSession,
+    branch: &str,
+    vars: &MusicTemplateVars<'_>,
+    input: &RuleValue,
+    base_url: &str,
+) -> Result<String, String> {
+    if split_js_pipeline(branch).is_some() {
+        return eval_js_pipeline_guarded(session, branch, vars, input, base_url);
+    }
+
+    if !branch.contains("{{") || !branch.contains("}}") {
+        if branch.starts_with("$.")
+            || branch.starts_with("$[")
+            || branch == "$"
+            || branch.starts_with('@')
+        {
+            return Ok(session.eval_opt(input, Some(branch), base_url));
+        }
+        return Ok(branch.to_string());
+    }
+
+    let normalized_branch = normalize_quality_placeholder(branch);
+    let page_str = vars.page.to_string();
+    let limit_str = vars.limit.to_string();
+    let var_pairs = vars.to_pairs(&page_str, &limit_str);
+
+    let (raw_url_part, opt_part) = split_legado_url_template_and_options(&normalized_branch);
+
+    let rendered_url = if let Some((var_name, literal_val)) =
+        detect_passthrough_url_var(raw_url_part, &var_pairs)
+    {
+        if literal_val.trim().is_empty() {
+            String::new()
+        } else {
+            resolve_literal_http_url(literal_val, base_url, var_name)?
+        }
+    } else {
+        let pre_url = substitute_url_part_vars(raw_url_part, &var_pairs, None);
+        let has_js_pipeline = split_js_pipeline(raw_url_part).is_some();
+        let evaluated_url = if pre_url.contains("{{") && pre_url.contains("}}") {
+            session.eval_string(input, &pre_url, base_url)?
+        } else {
+            pre_url
+        };
+        if !has_js_pipeline
+            && split_legado_url_and_raw_options(evaluated_url.trim())
+                .1
+                .is_some()
+        {
+            return Err("请求 URL 模板参数不允许附加请求选项".into());
+        }
+        evaluated_url
+    };
+
+    if rendered_url.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(raw_opts) = opt_part {
+        let rendered_opts = if template_needs_js(raw_opts) {
+            eval_json_options_template(
+                raw_opts,
+                &var_pairs,
+                |expr_tpl| session.eval_string(input, expr_tpl, base_url),
+                "音源请求 URL",
+            )?
+        } else {
+            substitute_legado_options_vars(raw_opts, &var_pairs).map_err(|e| e.to_string())?
+        };
+        Ok(format!("{},{rendered_opts}", rendered_url.trim()))
+    } else {
+        Ok(rendered_url)
+    }
+}
+
+fn eval_template_expression(
+    session: &mut MusicSourceSession,
+    raw_tpl: &str,
+    vars: &MusicTemplateVars<'_>,
+    input: &RuleValue,
+    base_url: &str,
+) -> Result<String, String> {
+    if split_js_pipeline(raw_tpl).is_some() {
+        return eval_js_pipeline_guarded(session, raw_tpl, vars, input, base_url);
+    }
+
+    for branch in split_top_level_or(raw_tpl) {
+        if branch.is_empty() {
+            continue;
+        }
+        let evaluated = eval_template_branch_single_pass(session, branch, vars, input, base_url)?;
+        let trimmed = evaluated.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    Ok(String::new())
 }
 
 fn substitute_static_explore_placeholders(raw: &str, page: u32, limit: u32) -> String {
@@ -404,72 +669,6 @@ fn eval_rule_or_literal(
     None
 }
 
-fn eval_template_branch_single_pass(
-    session: &mut MusicSourceSession,
-    branch: &str,
-    vars: &MusicTemplateVars<'_>,
-    input: &RuleValue,
-    base_url: &str,
-) -> Result<String, String> {
-    if !branch.contains("{{") || !branch.contains("}}") {
-        if branch.starts_with("$.")
-            || branch.starts_with("$[")
-            || branch == "$"
-            || branch.starts_with('@')
-        {
-            return Ok(session.eval_opt(input, Some(branch), base_url));
-        }
-        return Ok(branch.to_string());
-    }
-
-    let mut out = String::with_capacity(branch.len() + 32);
-    let mut rest = branch;
-    while let Some(open) = rest.find("{{") {
-        out.push_str(&rest[..open]);
-        let after_open = &rest[open + 2..];
-        let Some(close) = after_open.find("}}") else {
-            out.push_str(&rest[open..]);
-            rest = "";
-            break;
-        };
-        let expr = after_open[..close].trim();
-        if let Some(static_val) = resolve_static_placeholder(expr, vars) {
-            out.push_str(&static_val);
-        } else {
-            let token_tpl = format!("{{{{{expr}}}}}");
-            let evaluated = session.eval_string(input, &token_tpl, base_url)?;
-            out.push_str(&evaluated);
-        }
-        rest = &after_open[close + 2..];
-    }
-    out.push_str(rest);
-    Ok(out)
-}
-
-fn eval_template_expression(
-    session: &mut MusicSourceSession,
-    raw_tpl: &str,
-    vars: &MusicTemplateVars<'_>,
-    input: &RuleValue,
-    base_url: &str,
-) -> Result<String, String> {
-    if split_js_pipeline(raw_tpl).is_some() {
-        return session.eval_string(input, raw_tpl, base_url);
-    }
-
-    for branch in split_top_level_or(raw_tpl) {
-        if branch.is_empty() {
-            continue;
-        }
-        let evaluated = eval_template_branch_single_pass(session, branch, vars, input, base_url)?;
-        let trimmed = evaluated.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-    Ok(String::new())
-}
-
 fn apply_stream_headers(
     session: &mut MusicSourceSession,
     input: &RuleValue,
@@ -502,7 +701,7 @@ fn normalize_explore_category_url(raw_url: &str, base_url: &str) -> String {
     if split_js_pipeline(trimmed).is_some() || trimmed.contains("{{") || trimmed.contains("}}") {
         return trimmed.to_string();
     }
-    resolve_relative_url(trimmed, base_url)
+    resolve_relative_url_preserving_options(trimmed, base_url)
 }
 
 fn split_explore_entries_outside_js(raw: &str) -> Vec<&str> {
@@ -833,7 +1032,8 @@ impl MusicSourceEngine {
             if evaluated.trim().is_empty() {
                 return Err("searchUrl 求值结果为空".into());
             }
-            let target_url = resolve_relative_url(evaluated.trim(), &source.source_url);
+            let target_url =
+                resolve_relative_url_preserving_options(evaluated.trim(), &source.source_url);
             let fetched = fetch_api(&session, &target_url, &source.source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
             extract_tracks_with_rule(&mut session, &raw_input, rule, &fetched.final_url)
@@ -925,7 +1125,7 @@ impl MusicSourceEngine {
                     if evaluated.trim().is_empty() {
                         return Err("exploreUrl 求值结果为空".into());
                     }
-                    resolve_relative_url(evaluated.trim(), &source.source_url)
+                    resolve_relative_url_preserving_options(evaluated.trim(), &source.source_url)
                 } else {
                     if split_js_pipeline(raw_override).is_some() {
                         return Err("自定义 exploreUrl 不允许包含 JS 脚本".into());
@@ -958,7 +1158,7 @@ impl MusicSourceEngine {
                 if evaluated.trim().is_empty() {
                     return Err("exploreUrl 求值结果为空".into());
                 }
-                resolve_relative_url(evaluated.trim(), &source.source_url)
+                resolve_relative_url_preserving_options(evaluated.trim(), &source.source_url)
             };
 
             let fetched = fetch_api(&session, &target_url, &source.source_url)?;
@@ -1046,7 +1246,7 @@ impl MusicSourceEngine {
                 if evaluated_url.trim().is_empty() {
                     return Err("ruleTrackDetail.requestUrl 求值结果为空".into());
                 }
-                resolve_relative_url(evaluated_url.trim(), &source.source_url)
+                resolve_relative_url_preserving_options(evaluated_url.trim(), &source.source_url)
             } else if let Some(detail_url) = ctx
                 .detail_url
                 .as_deref()
@@ -1224,7 +1424,7 @@ impl MusicSourceEngine {
                             source.source_name
                         )
                     })?;
-                let resolved_url = resolve_relative_url(direct, &source.source_url);
+                let resolved_url = resolve_literal_http_url(direct, &source.source_url, "playUrl")?;
                 let format = infer_audio_format(&resolved_url).unwrap_or_else(|| "mp3".into());
                 return Ok(OnlineMusicStreamResult {
                     stream_url: resolved_url,
@@ -1242,7 +1442,8 @@ impl MusicSourceEngine {
                 .play_url
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| s.starts_with("http://") || s.starts_with("https://"));
+                .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+                .and_then(|s| resolve_literal_http_url(s, &source.source_url, "playUrl").ok());
             let has_rule_headers = rule
                 .headers
                 .as_deref()
@@ -1274,7 +1475,7 @@ impl MusicSourceEngine {
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .map(str::to_string)
-                        .or_else(|| infer_audio_format(direct))
+                        .or_else(|| infer_audio_format(&direct))
                         .unwrap_or_else(|| "mp3".into());
                     let bitrate = rule
                         .bitrate
@@ -1283,7 +1484,7 @@ impl MusicSourceEngine {
                         .filter(|s| !s.is_empty())
                         .and_then(|s| s.parse::<u32>().ok());
                     return Ok(OnlineMusicStreamResult {
-                        stream_url: direct.to_string(),
+                        stream_url: direct,
                         format,
                         bitrate,
                         headers,
@@ -1306,7 +1507,10 @@ impl MusicSourceEngine {
                 if evaluated_req.trim().is_empty() {
                     return Err("ruleStream.requestUrl 求值结果为空".into());
                 }
-                let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
+                let target_url = resolve_relative_url_preserving_options(
+                    evaluated_req.trim(),
+                    &source.source_url,
+                );
                 let fetched = fetch_api(&session, &target_url, &source.source_url)?;
                 let input = RuleValue::from_raw(fetched.body);
 
@@ -1381,14 +1585,19 @@ impl MusicSourceEngine {
                         &source.source_url,
                     )?
                 } else {
-                    ctx.play_url.clone().unwrap_or_default()
+                    resolve_literal_http_url(
+                        ctx.play_url.as_deref().unwrap_or(""),
+                        &source.source_url,
+                        "playUrl",
+                    )?
                 };
 
                 let trimmed = resolved_stream.trim();
                 if trimmed.is_empty() {
                     return Err("未能解析出有效音频流地址".into());
                 }
-                let final_url = resolve_relative_url(trimmed, &source.source_url);
+                let final_url =
+                    resolve_relative_url_preserving_options(trimmed, &source.source_url);
                 let format = eval_rule_or_literal(
                     &mut session,
                     &empty_input,
@@ -1522,7 +1731,10 @@ impl MusicSourceEngine {
                 if evaluated_req.trim().is_empty() {
                     return Ok(ctx.cover_url.clone());
                 }
-                let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
+                let target_url = resolve_relative_url_preserving_options(
+                    evaluated_req.trim(),
+                    &source.source_url,
+                );
                 let fetched = fetch_api(&session, &target_url, &source.source_url)?;
                 let input = RuleValue::from_raw(fetched.body);
                 let cover_raw =
@@ -1619,7 +1831,10 @@ impl MusicSourceEngine {
                     if evaluated_req.trim().is_empty() {
                         return Ok(None);
                     }
-                    let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
+                    let target_url = resolve_relative_url_preserving_options(
+                        evaluated_req.trim(),
+                        &source.source_url,
+                    );
                     let fetched = fetch_api(&session, &target_url, &source.source_url)?;
                     let input = RuleValue::from_raw(fetched.body);
 
@@ -1659,7 +1874,7 @@ impl MusicSourceEngine {
                     if evaluated_req.trim().is_empty() {
                         None
                     } else {
-                        Some(resolve_relative_url(
+                        Some(resolve_relative_url_preserving_options(
                             evaluated_req.trim(),
                             &source.source_url,
                         ))
@@ -1786,7 +2001,7 @@ impl MusicSourceEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_literal_http_url, split_top_level_or};
+    use super::*;
 
     #[test]
     fn split_top_level_or_ignores_depth_zero_unmatched_apostrophes_and_preserves_scoped_quotes() {
@@ -1826,5 +2041,197 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn music_engine_neutralizes_param_injection_and_preserves_relative_options() {
+        use axum::Router;
+        use axum::body::{Body, to_bytes};
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::response::Response;
+        use axum::routing::{any, get};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let admin_hits = Arc::new(AtomicUsize::new(0));
+        let admin_hits_c = admin_hits.clone();
+        let captured_requests: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let cap_c = captured_requests.clone();
+
+        let app = Router::new()
+            .route(
+                "/admin",
+                any(move || {
+                    let hits = admin_hits_c.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Body::from(r#"{"url":"https://evil/pwn.mp3"}"#))
+                            .unwrap()
+                    }
+                }),
+            )
+            .route(
+                "/api/{*rest}",
+                any(move |req: axum::extract::Request| {
+                    let cap = cap_c.clone();
+                    async move {
+                        let method = req.method().to_string();
+                        let uri = req.uri().to_string();
+                        let body_bytes = to_bytes(req.into_body(), 64 * 1024)
+                            .await
+                            .unwrap_or_default();
+                        let body = String::from_utf8_lossy(&body_bytes).to_string();
+                        cap.lock().unwrap().push((format!("{method} {uri}"), body));
+                        let json = if uri.contains("/search") {
+                            serde_json::json!({
+                                "items": [{ "id": "1", "title": "Song1", "artist": "Art1" }]
+                            })
+                        } else if uri.contains("/stream") {
+                            serde_json::json!({ "url": "/media/1.mp3", "br": "320" })
+                        } else if uri.contains("/cover") {
+                            serde_json::json!({ "url": "/cov/1.jpg" })
+                        } else if uri.contains("/lyric") {
+                            serde_json::json!({ "lyric": "[00:01.00]Safe Lyric" })
+                        } else {
+                            serde_json::json!({ "id": "1", "title": "Song1", "artist": "Art1" })
+                        };
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Body::from(json.to_string()))
+                            .unwrap()
+                    }
+                }),
+            )
+            .route(
+                "/direct.mp3",
+                get(|| async { Response::new(Body::from("ok")) }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+
+        let spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "RelOptsMusic",
+            "sourceUrl": base,
+            "searchUrl": "/api/search?q={{key}},{\"method\":\"POST\",\"body\":\"k={{key}}&p={{page}}\"}",
+            "ruleSearch": { "trackList": "$.items[*]", "trackId": "$.id", "title": "$.title", "artist": "$.artist" },
+            "ruleTrackDetail": { "requestUrl": "/api/tracks/{{trackId}}", "trackId": "$.id", "title": "$.title" },
+            "ruleStream": { "requestUrl": "/api/stream?id={{urlId}}&br={{quality}}", "streamUrl": "$.url" },
+            "ruleCover": { "requestUrl": "/api/cover/{{coverId}}", "coverUrl": "$.url" },
+            "ruleLyric": { "requestUrl": "/api/lyric?id={{lyricId}}", "lyric": "$.lyric" }
+        }))
+        .unwrap();
+
+        let passthrough_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "PassthroughMusic",
+            "sourceUrl": base,
+            "ruleStream": { "streamUrl": "{{playUrl}}" }
+        }))
+        .unwrap();
+
+        let engine = super::MusicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(10),
+        );
+
+        let evil_opts = r#"1,{"method":"POST","headers":{"X-Pwned":"1"},"body":"evil=1"}"#;
+        let evil_trav = "../../admin";
+        let evil_query = "1&extra=1";
+
+        let res = tokio::task::spawn_blocking(move || {
+            let search_res = engine
+                .search_sync(&spec, SourceRuntimeState::default(), "a&admin=1", 2, 10)
+                .unwrap();
+            assert_eq!(search_res.data[0].title, "Song1");
+
+            let ctx_stream = MusicTrackContext {
+                track_id: evil_trav.into(),
+                url_id: Some(evil_opts.into()),
+                cover_id: Some(evil_trav.into()),
+                lyric_id: Some(evil_query.into()),
+                ..Default::default()
+            };
+            let s_res = engine
+                .resolve_stream_sync(
+                    &spec,
+                    SourceRuntimeState::default(),
+                    &ctx_stream,
+                    Some(evil_opts),
+                )
+                .unwrap();
+            assert!(s_res.data.stream_url.ends_with("/media/1.mp3"));
+
+            let d_res = engine
+                .fetch_track_detail_sync(&spec, SourceRuntimeState::default(), &ctx_stream)
+                .unwrap();
+            assert_eq!(d_res.data.title, "Song1");
+
+            let c_res = engine
+                .resolve_cover_sync(&spec, SourceRuntimeState::default(), &ctx_stream)
+                .unwrap();
+            assert!(c_res.data.unwrap().ends_with("/cov/1.jpg"));
+
+            let l_res = engine
+                .resolve_lyrics_sync(&spec, SourceRuntimeState::default(), &ctx_stream)
+                .unwrap();
+            assert!(l_res.data.is_some());
+
+            // Passthrough playUrl rejects Legado options & data: URLs
+            assert!(
+                engine
+                    .resolve_stream_sync(
+                        &passthrough_spec,
+                        SourceRuntimeState::default(),
+                        &MusicTrackContext {
+                            play_url: Some(format!("{base}/direct.mp3,{{\"method\":\"POST\"}}")),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .is_err()
+            );
+            assert!(
+                engine
+                    .resolve_stream_sync(
+                        &passthrough_spec,
+                        SourceRuntimeState::default(),
+                        &MusicTrackContext {
+                            play_url: Some("data:text/html,<h1>x</h1>".into()),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .is_err()
+            );
+        })
+        .await;
+        res.unwrap();
+
+        assert_eq!(admin_hits.load(Ordering::SeqCst), 0);
+        let reqs = captured_requests.lock().unwrap();
+        assert_eq!(reqs.len(), 5);
+        assert_eq!(reqs[0].0, "POST /api/search?q=a%26admin%3D1");
+        assert_eq!(reqs[0].1, "k=a%26admin%3D1&p=2");
+        assert!(
+            reqs[1]
+                .0
+                .starts_with("GET /api/stream?id=1%2C%7B%22method%22")
+        );
+        assert!(reqs[1].0.contains("&br=1%2C%7B%22method%22"));
+        assert_eq!(reqs[2].0, "GET /api/tracks/..%2F..%2Fadmin");
+        assert_eq!(reqs[3].0, "GET /api/cover/..%2F..%2Fadmin");
+        assert_eq!(reqs[4].0, "GET /api/lyric?id=1%26extra%3D1");
+
+        let _ = HeaderMap::new();
+        srv.abort();
     }
 }
