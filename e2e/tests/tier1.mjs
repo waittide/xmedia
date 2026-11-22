@@ -273,7 +273,7 @@ async function openAuthenticatedPage(CdpCtor, baseUrl, client, targetPath = '/')
       sameSite: 'Lax',
     });
     await cdp.goto(`${baseUrl}${targetPath}`);
-    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:online\/)?(?:read|watch))(?=[/?#]|$)/.test(
+    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:(?:online\/)?(?:read|watch)|play\/))(?=[/?#]|$)/.test(
       targetPath,
     );
     await cdp.waitForSelector(isFullscreen ? '#app > *' : '[data-workspace-shell]', {
@@ -1763,7 +1763,7 @@ function buildTier1Cases() {
           '/settings?tab=domain-datasources&domain=comic',
         );
         try {
-          await cdp.waitForSelector('[data-settings-tab="domain-datasources"]', { visible: true });
+          await cdp.waitForSelector('[data-settings-tab="sources"]', { visible: true });
           await clickButtonMatching(cdp, [/导入|import/i]);
           await cdp.waitForSelector('textarea', { visible: true });
           await cdp.type('textarea', JSON.stringify(comics.xkcd));
@@ -2048,7 +2048,7 @@ function buildTier1Cases() {
             rootSelector: '[role="dialog"]',
           });
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/series') && location.search.includes('scope=online') && document.body.innerText.includes('Mock Naruto')`,
+            `location.pathname.includes('/comic/library') && location.search.includes('scope=online') && document.body.innerText.includes('Mock Naruto')`,
             { timeoutMs: 12000, label: 'navigated and auto-searched online comic' },
           );
           cdp.assertNoErrors('T1-F13-05');
@@ -2111,7 +2111,7 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForFn(
             `(() => {
-              if (!location.pathname.includes('/comic/online/read')) return false;
+              if (!location.pathname.includes('/comic/play/online')) return false;
               const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
               return imgs.length >= 1 && imgs.every((i) => i.complete && i.naturalWidth > 0);
             })()`,
@@ -2141,11 +2141,12 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
             { timeoutMs: 12000, label: 'comic reader mounted' },
           );
+          await clickButtonMatching(cdp, [/阅读设置|settings/i]);
           for (const pat of [/条漫|webtoon/i, /双页|double/i, /单页|single/i]) {
-            await clickButtonMatching(cdp, [pat]);
+            await clickButtonMatching(cdp, [pat], { rootSelector: '[role="dialog"]' });
           }
           const ok = await cdp.evalJs(
             `[...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')].every((i) => i.complete && i.naturalWidth > 0)`,
@@ -2175,7 +2176,7 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
             { timeoutMs: 12000, label: 'comic reader chapter 1 mounted' },
           );
           await clickButtonMatching(cdp, [/下一话|下一章|next/i]);
@@ -2208,7 +2209,7 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Ep\.1 Prologue/]);
           await cdp.waitForFn(
             `(() => {
-              if (!location.pathname.includes('/comic/online/read')) return false;
+              if (!location.pathname.includes('/comic/play/online')) return false;
               const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
               return imgs.length >= 2 && imgs.every((i) => i.complete && i.naturalWidth > 0);
             })()`,
@@ -2470,7 +2471,8 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Mock Wandering Earth/]);
           await clickButtonMatching(cdp, [/第1集/]);
           await cdp.waitForSelector('video', { visible: true });
-          await clickButtonMatching(cdp, [/第2集/]);
+          await clickButtonMatching(cdp, [/选集|episodes/i]);
+          await clickButtonMatching(cdp, [/第2集/], { rootSelector: '[role="dialog"]' });
           await cdp.waitForFn(
             `Boolean(document.querySelector('video') && !document.querySelector('video').error)`,
             { timeoutMs: 10000 },
@@ -2542,7 +2544,7 @@ function buildTier1Cases() {
             { timeoutMs: 5000, label: 'video mute state toggled' },
           );
           await clickButtonMatching(cdp, [/返回|back/i]);
-          await cdp.waitForFn(`!location.pathname.includes('/watch')`, { timeoutMs: 8000 });
+          await cdp.waitForFn(`!location.pathname.includes('/play/')`, { timeoutMs: 8000 });
           cdp.assertNoErrors('T1-F16-05');
         } finally {
           await cdp.close();

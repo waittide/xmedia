@@ -241,7 +241,7 @@ async function openAuthenticatedPage(CdpCtor, baseUrl, client, targetPath = '/')
       sameSite: 'Lax',
     });
     await cdp.goto(`${baseUrl}${targetPath}`);
-    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:online\/)?(?:read|watch))(?=[/?#]|$)/.test(
+    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:(?:online\/)?(?:read|watch)|play\/))(?=[/?#]|$)/.test(
       targetPath,
     );
     await cdp.waitForSelector(isFullscreen ? '#app > *' : '[data-workspace-shell]', {
@@ -1986,7 +1986,7 @@ function buildTier2Cases() {
               expectedStatus: 200,
             });
             await cdp.goto(`${ctx.baseUrl}/settings?tab=domain-datasources&domain=comic`);
-            await cdp.waitForSelector('[data-settings-tab="domain-datasources"]', { visible: true });
+            await cdp.waitForSelector('[data-settings-tab="sources"]', { visible: true });
             const rawKeyLeak = await cdp.evalJs(`(() => {
               const txt = document.body.innerText;
               const m = txt.match(/\\b(settings|comic|music|video|onlineSources)\\.[a-zA-Z0-9_]+\\b/);
@@ -2232,7 +2232,7 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock XKCD Strip/]);
           await clickButtonMatching(cdp, [/Broken Chapter/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]')) && /图片加载失败|Failed to load page/i.test(document.body.innerText) && [...document.querySelectorAll('button')].some((b) => /重试本页|Retry Page/i.test(b.innerText || ''))`,
+            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]')) && /图片加载失败|Failed to load page/i.test(document.body.innerText) && [...document.querySelectorAll('button')].some((b) => /重试本页|Retry Page/i.test(b.innerText || ''))`,
             { timeoutMs: 12000, label: 'broken image error message and Retry Page button rendered' },
           );
           assert.equal(cdp.exceptions.length, 0);
@@ -2282,7 +2282,7 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
             { timeoutMs: 12000, label: 'comic reader mounted' },
           );
           await cdp.pressKey('ArrowRight');
@@ -2312,11 +2312,12 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
             { timeoutMs: 12000, label: 'comic reader mounted' },
           );
-          await clickButtonMatching(cdp, [/护眼|调暗|dim/i]);
-          await clickButtonMatching(cdp, [/适应宽度|fit/i]);
+          await clickButtonMatching(cdp, [/阅读设置|settings/i]);
+          await clickButtonMatching(cdp, [/护眼|调暗|dim/i], { rootSelector: '[role="dialog"]' });
+          await clickButtonMatching(cdp, [/适应宽度|fit/i], { rootSelector: '[role="dialog"]' });
           cdp.assertNoErrors('T2-F14-04');
         } finally {
           await cdp.close();
@@ -2374,7 +2375,7 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
             { timeoutMs: 12000, label: 'comic reader mounted for popover shortcut test' },
           );
           await cdp.waitForFn(`/1\\s*\\/\\s*3/.test(document.body.innerText)`, {
@@ -2554,9 +2555,15 @@ function buildTier2Cases() {
             `Boolean(document.querySelector('audio')?.src.includes('audio-proxy')) && [...document.querySelectorAll('img')].some((i) => i.src.includes('cover-proxy') && i.complete && i.naturalWidth > 0)`,
             { timeoutMs: 10000, label: 'audio and cover-proxy loaded before logout' },
           );
-          await cdp.click('header [aria-haspopup="menu"], header div.relative.ml-1 > button');
-          await clickButtonMatching(cdp, [/退出|登出|logout|sign out/i]);
-          await cdp.waitForFn(`location.pathname.includes('/login')`, { timeoutMs: 10000 });
+          await cdp.click('[data-account-menu]');
+          await cdp.waitForSelector('[role="menu"]', { visible: true, timeoutMs: 5000 });
+          await clickButtonMatching(cdp, [/退出|登出|logout|sign out/i], {
+            rootSelector: '[role="menu"]',
+          });
+          await cdp.waitForFn(`location.pathname.includes('/login')`, {
+            timeoutMs: 10000,
+            label: 'redirected to /login after sign out',
+          });
           const audioPaused = await cdp.evalJs(
             `!document.querySelector('audio') || document.querySelector('audio').paused`,
           );
@@ -2704,7 +2711,7 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/第1集/]);
           await cdp.waitForSelector('video', { visible: true });
           await clickButtonMatching(cdp, [/返回|back/i]);
-          await cdp.waitForFn(`!location.pathname.includes('/watch')`, { timeoutMs: 8000 });
+          await cdp.waitForFn(`!location.pathname.includes('/play/')`, { timeoutMs: 8000 });
           cdp.assertNoErrors('T2-F16-01');
         } finally {
           await cdp.close();
@@ -2864,10 +2871,10 @@ function buildTier2Cases() {
             timeoutMs: 8000,
             label: 'switched to video domain',
           });
-          await clickButtonMatching(cdp, [/全部|all/i], { rootSelector: 'aside, nav' });
-          await cdp.waitForFn(`location.pathname.startsWith('/video/catalog')`, {
+          await cdp.click('[data-nav="library"]');
+          await cdp.waitForFn(`location.pathname.startsWith('/video/library')`, {
             timeoutMs: 8000,
-            label: 'navigated to /video/catalog',
+            label: 'navigated to /video/library',
           });
           await clickButtonMatching(cdp, [/在线|online/i]);
           await cdp.waitForFn(`location.search.includes('scope=online')`, {
@@ -2891,11 +2898,11 @@ function buildTier2Cases() {
             })()`,
             { timeoutMs: 12000, label: 'Online video playing (readyState >= 1)' },
           );
-          // Navigate back to /video/online/detail so <PlayerBar> re-attaches <audio>
+          // Navigate back to /video/item/online so <PlayerBar> re-attaches <audio>
           await clickButtonMatching(cdp, [/返回|back/i], { rootSelector: 'header' });
-          await cdp.waitForFn(`location.pathname.startsWith('/video/online/detail')`, {
+          await cdp.waitForFn(`location.pathname.startsWith('/video/item/online')`, {
             timeoutMs: 8000,
-            label: 'navigated back to /video/online/detail',
+            label: 'navigated back to /video/item/online',
           });
           await cdp.waitForFn(
             `(() => {
@@ -3111,7 +3118,7 @@ function buildTier2Cases() {
           // Music /online/explore 400 (initial, hasSearched=false) & 500 (after results, hasSearched=true)
           await cdp.goto(`${ctx.baseUrl}/music/songs?scope=online&source=${musicMocks.audius.id}`);
           await cdp.waitForFn(
-            `[...document.querySelectorAll('main form button')].some((b) => /浏览榜单|Explore/i.test(b.innerText || ''))`,
+            `[...document.querySelectorAll('main button')].some((b) => /浏览榜单|Explore/i.test(b.innerText || ''))`,
             { timeoutMs: 10000, label: 'music single-source Explore button visible' },
           );
 
@@ -3120,7 +3127,7 @@ function buildTier2Cases() {
             patterns: [{ urlPattern: '*/api/v1/music/online/explore', requestStage: 'Request' }],
           });
           await cdp.evalJs(`(() => {
-            const btn = [...document.querySelectorAll('main form button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
+            const btn = [...document.querySelectorAll('main button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
             if (!btn) throw new Error('missing music explore button');
             btn.click();
           })()`);
@@ -3154,7 +3161,7 @@ function buildTier2Cases() {
             patterns: [{ urlPattern: '*/api/v1/music/online/explore', requestStage: 'Request' }],
           });
           await cdp.evalJs(`(() => {
-            const btn = [...document.querySelectorAll('main form button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
+            const btn = [...document.querySelectorAll('main button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
             if (!btn) throw new Error('missing music explore button');
             btn.click();
           })()`);
@@ -3328,11 +3335,11 @@ function buildTier2Cases() {
             timeoutMs: 10000,
           });
           await clickButtonMatching(cdp, [/Mock Wandering Earth/], { rootSelector: 'main' });
-          await cdp.waitForFn(`location.pathname.includes('/video/online/detail')`, { timeoutMs: 8000 });
+          await cdp.waitForFn(`location.pathname.includes('/video/item/online')`, { timeoutMs: 8000 });
           await clickButtonMatching(cdp, [/ikm3u8/i]);
           await clickButtonMatching(cdp, [/第2集/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/video/online/watch') && (document.querySelector('video')?.readyState || 0) >= 1`,
+            `location.pathname.includes('/video/play/online') && (document.querySelector('video')?.readyState || 0) >= 1`,
             { timeoutMs: 12000, label: 'player mounted initially on 第2集' },
           );
 
@@ -3353,11 +3360,13 @@ function buildTier2Cases() {
           });
 
           cdp.clearErrors();
-          // Rapidly click 第1集 then immediately click 第2集
+          // Open Episodes sheet and rapidly click 第1集 then immediately click 第2集
+          await clickButtonMatching(cdp, [/选集|episodes/i]);
+          await cdp.waitForSelector('[role="dialog"]', { visible: true, timeoutMs: 5000 });
           await cdp.evalJs(`(() => {
-            const footerBtns = [...document.querySelectorAll('footer button')];
-            const ep1 = footerBtns.find((b) => (b.innerText || '').trim() === '第1集');
-            const ep2 = footerBtns.find((b) => (b.innerText || '').trim() === '第2集');
+            const epBtns = [...document.querySelectorAll('[role="dialog"] button')];
+            const ep1 = epBtns.find((b) => (b.innerText || '').trim().startsWith('第1集'));
+            const ep2 = epBtns.find((b) => (b.innerText || '').trim().startsWith('第2集'));
             if (!ep1 || !ep2) throw new Error('missing episode strip buttons');
             ep1.click();
             ep2.click();
@@ -3425,12 +3434,12 @@ function buildTier2Cases() {
             { timeoutMs: 10000 },
           );
           await clickButtonMatching(cdp, [/Multi Ep Subtitled Show/], { rootSelector: 'main' });
-          await cdp.waitForFn(`location.pathname.includes('/video/online/detail')`, {
+          await cdp.waitForFn(`location.pathname.includes('/video/item/online')`, {
             timeoutMs: 8000,
           });
           await clickButtonMatching(cdp, [/Ep 1 Subtitled/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/video/online/watch') && (document.querySelector('video')?.readyState || 0) >= 1`,
+            `location.pathname.includes('/video/play/online') && (document.querySelector('video')?.readyState || 0) >= 1`,
             { timeoutMs: 12000, label: 'Ep 1 Subtitled loaded' },
           );
 
@@ -3482,10 +3491,12 @@ function buildTier2Cases() {
           ).length;
           cdp.clearErrors();
 
-          // Switch to Ep 2 Delayed Fail
+          // Open Episodes sheet and switch to Ep 2 Delayed Fail
+          await clickButtonMatching(cdp, [/选集|episodes/i]);
+          await cdp.waitForSelector('[role="dialog"]', { visible: true, timeoutMs: 5000 });
           await cdp.evalJs(`(() => {
-            const footerBtns = [...document.querySelectorAll('footer button')];
-            const ep2 = footerBtns.find((b) => (b.innerText || '').includes('Ep 2 Delayed Fail'));
+            const epBtns = [...document.querySelectorAll('[role="dialog"] button')];
+            const ep2 = epBtns.find((b) => (b.innerText || '').includes('Ep 2 Delayed Fail'));
             if (!ep2) throw new Error('missing Ep 2 Delayed Fail button');
             ep2.click();
           })()`);

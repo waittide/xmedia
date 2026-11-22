@@ -1300,10 +1300,10 @@ export async function runTier3(context = {}) {
               timeoutMs: 8000,
               label: 'Navigated to /video domain',
             });
-            await clickButtonByText(cdp, ['全部', 'All'], { timeoutMs: 8000 });
-            await cdp.waitForFn(`window.location.pathname.startsWith('/video/catalog')`, {
+            await cdp.click('[data-nav="library"]');
+            await cdp.waitForFn(`window.location.pathname.startsWith('/video/library')`, {
               timeoutMs: 8000,
-              label: 'Navigated to /video/catalog',
+              label: 'Navigated to /video/library',
             });
             await clickButtonByText(cdp, ['在线', 'Online'], { timeoutMs: 8000 });
             await cdp.waitForSelector('main input[type="search"], main input[type="text"]', {
@@ -1331,11 +1331,11 @@ export async function runTier3(context = {}) {
               { timeoutMs: 12000, label: 'Online video playing (readyState >= 1)' },
             );
 
-            // Navigate back to /video/online/detail so <PlayerBar> re-attaches <audio>
+            // Navigate back to /video/item/online so <PlayerBar> re-attaches <audio>
             await clickButtonByText(cdp, ['返回', 'Back'], { timeoutMs: 8000 });
-            await cdp.waitForFn(`window.location.pathname.startsWith('/video/online/detail')`, {
+            await cdp.waitForFn(`window.location.pathname.startsWith('/video/item/online')`, {
               timeoutMs: 8000,
-              label: 'Returned to /video/online/detail',
+              label: 'Returned to /video/item/online',
             });
             await cdp.waitForFn(
               `(() => {
@@ -1377,7 +1377,7 @@ export async function runTier3(context = {}) {
 
             await cdp.waitForFn(
               `(() => {
-                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                if (!window.location.pathname.includes('/comic/play/online')) return false;
                 const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 2 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,

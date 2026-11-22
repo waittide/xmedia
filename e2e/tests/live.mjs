@@ -1000,7 +1000,7 @@ export async function runLiveTests(context = {}) {
             await clickButtonByText(cdp, [liveComicSample.title], { timeoutMs: 10000 });
             let detailState = await cdp.waitForFn(
               () => {
-                if (!window.location.pathname.includes('/comic/online/detail')) return false;
+                if (!window.location.pathname.includes('/comic/item/online')) return false;
                 const txt = document.body.textContent || '';
                 if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
                 if (txt.includes('重试') || txt.includes('Retry')) return 'error';
@@ -1014,7 +1014,7 @@ export async function runLiveTests(context = {}) {
               await clickButtonByText(cdp, ['重试', 'Retry'], { timeoutMs: 10000 });
               detailState = await cdp.waitForFn(
                 () => {
-                  if (!window.location.pathname.includes('/comic/online/detail')) return false;
+                  if (!window.location.pathname.includes('/comic/item/online')) return false;
                   const txt = document.body.textContent || '';
                   if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
                   if (txt.includes('重试') || txt.includes('Retry')) return 'error';
@@ -1050,7 +1050,7 @@ export async function runLiveTests(context = {}) {
             });
             await cdp.waitForFn(
               `(() => {
-                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                if (!window.location.pathname.includes('/comic/play/online')) return false;
                 const imgs = [...document.querySelectorAll('img')].filter(i => (i.src || '').includes('image-proxy'));
                 return imgs.length >= 1 && imgs.some(i => i.complete && i.naturalWidth > 0);
               })()`,
@@ -1115,7 +1115,7 @@ export async function runLiveTests(context = {}) {
             );
             await clickButtonByText(cdp, [liveVideoSample.title], { timeoutMs: 10000 });
             await cdp.waitForFn(
-              `window.location.pathname.includes('/video/online/detail') && (document.body.textContent.includes('立即播放') || document.body.textContent.includes('Play Now'))`,
+              `window.location.pathname.includes('/video/item/online') && (document.body.textContent.includes('立即播放') || document.body.textContent.includes('Play Now'))`,
               { timeoutMs: 30000, label: 'LIVE-09 video detail loaded' },
             );
             await clickButtonByText(
@@ -1125,7 +1125,7 @@ export async function runLiveTests(context = {}) {
             );
             await cdp.waitForFn(
               `(() => {
-                if (!window.location.pathname.includes('/video/online/watch')) return false;
+                if (!window.location.pathname.includes('/video/play/online')) return false;
                 const v = document.querySelector('video');
                 return Boolean(v && v.error === null && v.readyState >= 1 && (v.currentSrc || v.src));
               })()`,

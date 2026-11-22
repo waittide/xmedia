@@ -468,7 +468,7 @@ export async function runTier4(context = {}) {
 
             await cdp.waitForFn(
               `(() => {
-                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                if (!window.location.pathname.includes('/comic/play/online')) return false;
                 const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 2 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,
@@ -479,7 +479,7 @@ export async function runTier4(context = {}) {
             await clickButtonByText(cdp, ['下一章', 'Next'], { timeoutMs: 8000 });
             await cdp.waitForFn(
               `(() => {
-                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                if (!window.location.pathname.includes('/comic/play/online')) return false;
                 const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 2 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,
@@ -500,7 +500,7 @@ export async function runTier4(context = {}) {
             await clickButtonByText(cdp, ['Arrival', '开始阅读', 'Read'], { timeoutMs: 8000 });
             await cdp.waitForFn(
               `(() => {
-                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                if (!window.location.pathname.includes('/comic/play/online')) return false;
                 const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 1 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,

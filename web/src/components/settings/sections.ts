@@ -33,7 +33,7 @@ export interface SettingsSectionDef {
   summaryEn: string
   icon: Component
   adminOnly?: boolean
-  /** `data-settings-tab` attribute value; `sources` temporarily keeps `domain-datasources` per §2.2 */
+  /** `data-settings-tab` attribute value */
   testId: string
 }
 
@@ -82,7 +82,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
     summaryEn: 'Online data sources and remote servers',
     icon: LuGlobe,
     adminOnly: true,
-    testId: 'domain-datasources',
+    testId: 'sources',
   },
   {
     id: 'account',
