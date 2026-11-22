@@ -396,7 +396,7 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
       searchErrors.value = [
         {
           source_id: 'search',
-          source_name: t('online.title'),
+          source_name: t('online.scopeOnline'),
           error: msg,
         },
       ]
