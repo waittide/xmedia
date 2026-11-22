@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-22T16:01:38.933Z",
+  "generated_at": "2026-11-22T16:34:21.730Z",
   "mode": "hardened (allow_private_ips=false)",
   "report_dir": "/data/code/github/waittide/xmedia/e2e",
   "domains": {
@@ -11,7 +11,7 @@
           "domain": "comic",
           "title": "Comic — MangaDex live search -> pages -> image-proxy",
           "status": "pass",
-          "durationMs": 9030,
+          "durationMs": 25983,
           "detail": {
             "source": "MangaDex (EN)",
             "keyword": "Yotsuba",
@@ -25,7 +25,7 @@
           "domain": "comic",
           "title": "Comic — WEBTOON live search -> pages -> Referer image-proxy",
           "status": "pass",
-          "durationMs": 34787,
+          "durationMs": 17058,
           "detail": {
             "source": "WEBTOON (EN)",
             "keyword": "Tower of God",
@@ -39,7 +39,7 @@
           "domain": "comic",
           "title": "Comic — XKCD live explore -> image-proxy PNG",
           "status": "pass",
-          "durationMs": 19321,
+          "durationMs": 4304,
           "detail": {
             "source": "XKCD",
             "mime": "image/png",
@@ -57,7 +57,7 @@
           "domain": "music",
           "title": "Music — GDStudio live track-info + 206 audio-proxy + cover-proxy + lyrics",
           "status": "pass",
-          "durationMs": 15943,
+          "durationMs": 12002,
           "detail": {
             "source": "GDStudio Music API (网易云)",
             "status": 206,
@@ -71,7 +71,7 @@
           "domain": "music",
           "title": "Music — Audius trending -> audio-proxy stream chunk",
           "status": "pass",
-          "durationMs": 10145,
+          "durationMs": 4119,
           "detail": {
             "source": "Audius Public API",
             "status": 200,
@@ -84,13 +84,13 @@
           "domain": "music",
           "title": "Music — Internet Archive Audio & iTunes+LRCLIB live stream & lyrics",
           "status": "pass",
-          "durationMs": 47313,
+          "durationMs": 16916,
           "detail": {
             "archive": {
               "source": "Internet Archive Audio",
               "status": 200,
               "bytesRead": 4096,
-              "title": "Klasika U Pokretu"
+              "title": "PFITZNER Violinkonzert h-moll op. 34"
             },
             "itunes": {
               "source": "iTunes Search + LRCLIB",
@@ -112,7 +112,7 @@
           "domain": "video",
           "title": "Video — AppleCMS v10 multi-node HLS -> hls-proxy segments",
           "status": "pass",
-          "durationMs": 4736,
+          "durationMs": 12493,
           "detail": {
             "source": "爱坤资源 (ikunzy)",
             "title": "拜托了冰箱2",
@@ -126,7 +126,7 @@
           "domain": "video",
           "title": "Video — PeerTube framatube.org live HLS/MP4 proxy Range",
           "status": "pass",
-          "durationMs": 19694,
+          "durationMs": 4243,
           "detail": {
             "source": "PeerTube (Framatube)",
             "title": "Fondation Blender - Le jeu Yo Frankie",
@@ -140,7 +140,7 @@
           "domain": "video",
           "title": "Video — Internet Archive live MP4 stream-proxy Range",
           "status": "pass",
-          "durationMs": 23491,
+          "durationMs": 1934,
           "detail": {
             "source": "Internet Archive Video",
             "title": "Big Buck Bunny",
@@ -155,7 +155,13 @@
   "browser_smoke": {
     "comic": "Yotsuba&!",
     "music": "Mojito (Live)",
-    "video": "拜托了冰箱2"
+    "video": "拜托了冰箱2",
+    "externalThumbnailWarnings": [
+      "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius.rickyrombo.com%2Fcontent%2FQmWJcqx3VZQzeKHZ2Ltz3wrzSuycEUdQMyfovK5WuocAs4%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d",
+      "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius.rickyrombo.com%2Fcontent%2FQmUW3xZY7HZ6MUEbrtv9EoA8CW3MJP2EH4PPTy6ve2soAK%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d",
+      "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius-nodes.com%2Fcontent%2F01K5152VB2ZJBYNV7GHQMR9A18%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d",
+      "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius-nodes.com%2Fcontent%2Fbaeaaaiqseddkzxkju6ztsl65lhjcajvw7xrhqbr6mtwfx6k3lzxspsrejf64e%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d"
+    ]
   },
   "gate": {
     "required_domains": [
@@ -174,7 +180,7 @@
       "domain": "comic",
       "title": "Comic — MangaDex live search -> pages -> image-proxy",
       "status": "pass",
-      "durationMs": 9030,
+      "durationMs": 25983,
       "detail": {
         "source": "MangaDex (EN)",
         "keyword": "Yotsuba",
@@ -188,7 +194,7 @@
       "domain": "comic",
       "title": "Comic — WEBTOON live search -> pages -> Referer image-proxy",
       "status": "pass",
-      "durationMs": 34787,
+      "durationMs": 17058,
       "detail": {
         "source": "WEBTOON (EN)",
         "keyword": "Tower of God",
@@ -202,7 +208,7 @@
       "domain": "comic",
       "title": "Comic — XKCD live explore -> image-proxy PNG",
       "status": "pass",
-      "durationMs": 19321,
+      "durationMs": 4304,
       "detail": {
         "source": "XKCD",
         "mime": "image/png",
@@ -215,7 +221,7 @@
       "domain": "music",
       "title": "Music — GDStudio live track-info + 206 audio-proxy + cover-proxy + lyrics",
       "status": "pass",
-      "durationMs": 15943,
+      "durationMs": 12002,
       "detail": {
         "source": "GDStudio Music API (网易云)",
         "status": 206,
@@ -229,7 +235,7 @@
       "domain": "music",
       "title": "Music — Audius trending -> audio-proxy stream chunk",
       "status": "pass",
-      "durationMs": 10145,
+      "durationMs": 4119,
       "detail": {
         "source": "Audius Public API",
         "status": 200,
@@ -242,13 +248,13 @@
       "domain": "music",
       "title": "Music — Internet Archive Audio & iTunes+LRCLIB live stream & lyrics",
       "status": "pass",
-      "durationMs": 47313,
+      "durationMs": 16916,
       "detail": {
         "archive": {
           "source": "Internet Archive Audio",
           "status": 200,
           "bytesRead": 4096,
-          "title": "Klasika U Pokretu"
+          "title": "PFITZNER Violinkonzert h-moll op. 34"
         },
         "itunes": {
           "source": "iTunes Search + LRCLIB",
@@ -265,7 +271,7 @@
       "domain": "video",
       "title": "Video — AppleCMS v10 multi-node HLS -> hls-proxy segments",
       "status": "pass",
-      "durationMs": 4736,
+      "durationMs": 12493,
       "detail": {
         "source": "爱坤资源 (ikunzy)",
         "title": "拜托了冰箱2",
@@ -279,7 +285,7 @@
       "domain": "video",
       "title": "Video — PeerTube framatube.org live HLS/MP4 proxy Range",
       "status": "pass",
-      "durationMs": 19694,
+      "durationMs": 4243,
       "detail": {
         "source": "PeerTube (Framatube)",
         "title": "Fondation Blender - Le jeu Yo Frankie",
@@ -293,7 +299,7 @@
       "domain": "video",
       "title": "Video — Internet Archive live MP4 stream-proxy Range",
       "status": "pass",
-      "durationMs": 23491,
+      "durationMs": 1934,
       "detail": {
         "source": "Internet Archive Video",
         "title": "Big Buck Bunny",
@@ -307,11 +313,17 @@
       "domain": "ui",
       "title": "Live Browser Smoke (Chromium comic/music/video online UI)",
       "status": "pass",
-      "durationMs": 38602,
+      "durationMs": 50930,
       "detail": {
         "comic": "Yotsuba&!",
         "music": "Mojito (Live)",
-        "video": "拜托了冰箱2"
+        "video": "拜托了冰箱2",
+        "externalThumbnailWarnings": [
+          "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius.rickyrombo.com%2Fcontent%2FQmWJcqx3VZQzeKHZ2Ltz3wrzSuycEUdQMyfovK5WuocAs4%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d",
+          "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius.rickyrombo.com%2Fcontent%2FQmUW3xZY7HZ6MUEbrtv9EoA8CW3MJP2EH4PPTy6ve2soAK%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d",
+          "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius-nodes.com%2Fcontent%2F01K5152VB2ZJBYNV7GHQMR9A18%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d",
+          "http://127.0.0.1:38711/api/v1/music/online/cover-proxy?url=https%3A%2F%2Faudius-nodes.com%2Fcontent%2Fbaeaaaiqseddkzxkju6ztsl65lhjcajvw7xrhqbr6mtwfx6k3lzxspsrejf64e%2F480x480.jpg&source_id=01a2041b-d591-74d6-b2b0-ec14d1ddeb7d"
+        ]
       }
     },
     {
