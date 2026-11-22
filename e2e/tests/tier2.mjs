@@ -2978,11 +2978,11 @@ function buildTier2Cases() {
       id: 'T2-F16-07',
       feature: 'F16',
       domain: 'ui',
-      title: 'Browser: Online video, comic, and music search clear stale results and show [role="alert"] on /online/search 500',
+      title: 'Browser: Online video, comic, and music search/explore clear stale results, show [role="alert"], and hide empty/prompt states on error',
       async run(ctx) {
         await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
-        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
-        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const comicMocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const musicMocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
 
         const scenarios = [
           {
@@ -3012,16 +3012,21 @@ function buildTier2Cases() {
           '/settings',
         );
         try {
-          let interceptDomain = null;
+          let interceptCfg = null;
           cdp.on('Fetch.requestPaused', async (params) => {
             try {
-              if (interceptDomain) {
+              if (interceptCfg) {
                 await cdp.send('Fetch.fulfillRequest', {
                   requestId: params.requestId,
-                  responseCode: 500,
+                  responseCode: interceptCfg.status,
                   responseHeaders: [{ name: 'content-type', value: 'application/json' }],
                   body: Buffer.from(
-                    `{"error":{"code":"INTERNAL","message":"${interceptDomain} search 500"}}`,
+                    JSON.stringify({
+                      error: {
+                        code: interceptCfg.status === 400 ? 'VALIDATION' : 'INTERNAL',
+                        message: interceptCfg.message,
+                      },
+                    }),
                   ).toString('base64'),
                 });
               } else {
@@ -3039,7 +3044,7 @@ function buildTier2Cases() {
               { timeoutMs: 10000, label: `${sc.domain} initial search result rendered` },
             );
 
-            interceptDomain = sc.domain;
+            interceptCfg = { status: 500, message: `${sc.domain} search 500` };
             await cdp.send('Fetch.enable', {
               patterns: [{ urlPattern: sc.pattern, requestStage: 'Request' }],
             });
@@ -3070,9 +3075,102 @@ function buildTier2Cases() {
               },
             );
 
-            interceptDomain = null;
+            interceptCfg = null;
             await cdp.send('Fetch.disable');
           }
+
+          // Music /online/explore 400 (initial, hasSearched=false) & 500 (after results, hasSearched=true)
+          await cdp.goto(`${ctx.baseUrl}/music/songs?scope=online&source=${musicMocks.audius.id}`);
+          await cdp.waitForFn(
+            `[...document.querySelectorAll('main form button')].some((b) => /浏览榜单|Explore/i.test(b.innerText || ''))`,
+            { timeoutMs: 10000, label: 'music single-source Explore button visible' },
+          );
+
+          interceptCfg = { status: 400, message: '浏览音源超时（超过 20 秒）' };
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/music/online/explore', requestStage: 'Request' }],
+          });
+          await cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('main form button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
+            if (!btn) throw new Error('missing music explore button');
+            btn.click();
+          })()`);
+          await cdp.waitForFn(
+            `(() => {
+              const main = document.querySelector('main');
+              const text = main?.innerText || '';
+              const alert = main?.querySelector('[role="alert"]');
+              const retry = alert?.querySelector('button');
+              return Boolean(alert && retry && /重试|Retry/i.test(retry.innerText || ''))
+                && (alert?.innerText || '').includes('浏览音源超时')
+                && !/输入歌名或歌手开始搜索|Enter a track or artist to search/i.test(text)
+                && !/该分类暂无推荐曲目|No tracks in this category/i.test(text);
+            })()`,
+            {
+              timeoutMs: 10000,
+              label: 'music /online/explore 400 shows [role="alert"] + Retry without promptToSearch or exploreEmpty',
+            },
+          );
+
+          interceptCfg = null;
+          await cdp.send('Fetch.disable');
+          await cdp.evalJs(`document.querySelector('main [role="alert"] button')?.click()`);
+          await cdp.waitForFn(
+            `!document.querySelector('main [role="alert"]') && (document.querySelector('main')?.innerText || '').includes('Fragments Mock')`,
+            { timeoutMs: 10000, label: 'music explore Retry recovers Fragments Mock results' },
+          );
+
+          interceptCfg = { status: 500, message: 'music explore 500' };
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/music/online/explore', requestStage: 'Request' }],
+          });
+          await cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('main form button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
+            if (!btn) throw new Error('missing music explore button');
+            btn.click();
+          })()`);
+          await cdp.waitForFn(
+            `(() => {
+              const main = document.querySelector('main');
+              const text = main?.innerText || '';
+              const alert = main?.querySelector('[role="alert"]');
+              return Boolean(alert)
+                && (alert?.innerText || '').includes('music explore 500')
+                && !text.includes('Fragments Mock')
+                && !/输入歌名或歌手开始搜索|Enter a track or artist to search/i.test(text)
+                && !/该分类暂无推荐曲目|No tracks in this category/i.test(text);
+            })()`,
+            {
+              timeoutMs: 10000,
+              label: 'music /online/explore 500 (post-search) clears stale tracks and hides exploreEmpty',
+            },
+          );
+          interceptCfg = null;
+          await cdp.send('Fetch.disable');
+
+          // Comic /online/explore 400 hides exploreEmpty underneath [role="alert"]
+          interceptCfg = { status: 400, message: 'comic explore timeout' };
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/comic/online/explore', requestStage: 'Request' }],
+          });
+          await cdp.goto(`${ctx.baseUrl}/comic/series?scope=online&source=${comicMocks.xkcd.id}`);
+          await cdp.waitForFn(
+            `(() => {
+              const main = document.querySelector('main');
+              const text = main?.innerText || '';
+              const alert = main?.querySelector('[role="alert"]');
+              return Boolean(alert)
+                && (alert?.innerText || '').includes('comic explore timeout')
+                && !/输入关键词搜索，或选择支持发现的漫画源浏览推荐|Enter a keyword to search, or select a source with Explore enabled/i.test(text);
+            })()`,
+            {
+              timeoutMs: 10000,
+              label: 'comic /online/explore 400 shows [role="alert"] without exploreEmpty',
+            },
+          );
+          interceptCfg = null;
+          await cdp.send('Fetch.disable');
+
           assert.equal(cdp.exceptions.length, 0);
         } finally {
           await cdp.close();

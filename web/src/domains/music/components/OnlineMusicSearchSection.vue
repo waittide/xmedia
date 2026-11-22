@@ -349,6 +349,11 @@ async function runExplore(
   }
 }
 
+function retryExplore(): void {
+  if (selectedSourceIds.value.length !== 1) return
+  void runExplore(selectedSourceIds.value[0]!, activeExploreUrl.value, 1)
+}
+
 function handleSwitchPage(nextPage: number): void {
   if (nextPage < 1 || searching.value || loadingMore.value || exploring.value) return
   if (exploreMode.value && selectedSourceIds.value.length === 1) {
@@ -525,9 +530,17 @@ onBeforeUnmount(() => {
     <div
       v-if="exploreError"
       role="alert"
-      class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
+      class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
     >
-      {{ exploreError }}
+      <span>{{ exploreError }}</span>
+      <button
+        v-if="selectedSourceIds.length === 1"
+        type="button"
+        class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
+        @click="retryExplore"
+      >
+        <span>{{ t('online.retry') }}</span>
+      </button>
     </div>
 
     <!-- Toasts / Per-Source Errors -->
@@ -554,7 +567,14 @@ onBeforeUnmount(() => {
 
     <!-- Prompt before initial search -->
     <div
-      v-if="!hasSearched && !searching && !exploring && enabledSources.length > 0"
+      v-if="
+        !hasSearched &&
+        !searching &&
+        !exploring &&
+        !exploreMode &&
+        !exploreError &&
+        enabledSources.length > 0
+      "
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('online.promptToSearch') }}
@@ -563,7 +583,12 @@ onBeforeUnmount(() => {
     <!-- Empty Results -->
     <div
       v-else-if="
-        hasSearched && !searching && !exploring && searchResults.length === 0 && searchErrors.length === 0
+        hasSearched &&
+        !searching &&
+        !exploring &&
+        !exploreError &&
+        searchResults.length === 0 &&
+        searchErrors.length === 0
       "
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >

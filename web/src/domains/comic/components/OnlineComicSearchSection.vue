@@ -651,7 +651,13 @@ function goManageDataSources(): void {
 
     <!-- Idle Hint when no Search & no Explore items -->
     <div
-      v-else-if="!hasSearched && displayItems.length === 0 && enabledSources.length > 0 && !loadingInit"
+      v-else-if="
+        !hasSearched &&
+        !exploreError &&
+        displayItems.length === 0 &&
+        enabledSources.length > 0 &&
+        !loadingInit
+      "
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('online.exploreEmpty') }}
