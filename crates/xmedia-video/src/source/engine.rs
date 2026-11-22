@@ -1,10 +1,11 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use xmedia_source::http::{
-    HttpClientConfig, LegadoHttpClient, json_structure_signature, resolve_relative_url,
+    HttpClientConfig, LegadoHttpClient, eval_json_options_template, resolve_relative_url,
     resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
     split_legado_url_template_and_options, substitute_legado_options_vars,
     substitute_legado_url_template_vars, substitute_url_part_vars,
@@ -175,35 +176,49 @@ impl VideoSourceEngine {
             let (url_tpl, opt_tpl) = split_legado_url_template_and_options(raw_tpl);
             if let Some(raw_opts) = opt_tpl {
                 let rendered_url = if template_needs_js(url_tpl) {
+                    let has_js_pipeline = split_js_pipeline(url_tpl).is_some();
+                    let passthrough = detect_passthrough_url_var(url_tpl, vars);
+                    let pre_url = if has_js_pipeline {
+                        Cow::Borrowed(url_tpl)
+                    } else {
+                        Cow::Owned(substitute_url_part_vars(url_tpl, vars, passthrough))
+                    };
                     let input = RuleValue::Text(String::new());
-                    session.eval_string(&input, url_tpl, base_url)?
+                    let out_url = session.eval_string(&input, &pre_url, base_url)?;
+                    if !has_js_pipeline && split_legado_url_and_raw_options(&out_url).1.is_some() {
+                        return Err("请求 URL 模板不允许通过变量注入请求配置".into());
+                    }
+                    out_url
                 } else {
                     let passthrough = detect_passthrough_url_var(url_tpl, vars);
                     substitute_url_part_vars(url_tpl, vars, passthrough)
                 };
                 let rendered_opts = if template_needs_js(raw_opts) {
-                    let expected_sig = serde_json::from_str::<serde_json::Value>(raw_opts)
-                        .ok()
-                        .map(|v| json_structure_signature(&v));
-                    let input = RuleValue::Text(String::new());
-                    let out_opts = session.eval_string(&input, raw_opts, base_url)?;
-                    let parsed_out: serde_json::Value = serde_json::from_str(out_opts.trim())
-                        .map_err(|e| format!("请求 URL 配置 JS 求值后 JSON 无效: {e}"))?;
-                    if let Some(sig) = expected_sig
-                        && json_structure_signature(&parsed_out) != sig
-                    {
-                        return Err("请求 URL 配置 JSON 结构在模板求值后发生异常变化".into());
-                    }
-                    out_opts
+                    eval_json_options_template(
+                        raw_opts,
+                        vars,
+                        |expr_tpl| {
+                            let input = RuleValue::Text(String::new());
+                            session.eval_string(&input, expr_tpl, base_url)
+                        },
+                        "请求 URL",
+                    )?
                 } else {
                     substitute_legado_options_vars(raw_opts, vars).map_err(|e| e.to_string())?
                 };
                 format!("{rendered_url},{rendered_opts}")
             } else {
+                let has_js_pipeline = split_js_pipeline(raw_tpl).is_some();
+                let passthrough = detect_passthrough_url_var(raw_tpl, vars);
+                let pre_tpl = if has_js_pipeline {
+                    Cow::Borrowed(raw_tpl)
+                } else {
+                    Cow::Owned(substitute_url_part_vars(raw_tpl, vars, passthrough))
+                };
                 let input = RuleValue::Text(String::new());
-                let out = session.eval_string(&input, raw_tpl, base_url)?;
+                let out = session.eval_string(&input, &pre_tpl, base_url)?;
                 let (_, post_opts) = split_legado_url_and_raw_options(&out);
-                if post_opts.is_some() && !raw_tpl.contains("@js:") && !raw_tpl.contains("<js>") {
+                if post_opts.is_some() && !has_js_pipeline {
                     return Err("请求 URL 模板不允许通过变量注入请求配置".into());
                 }
                 out

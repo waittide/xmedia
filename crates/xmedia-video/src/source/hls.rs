@@ -93,8 +93,12 @@ pub fn get_or_build_streaming_async_client(
     Ok(guard.entry(key).or_insert(client).clone())
 }
 
+fn is_utf16_bom_prefix(buf: &[u8]) -> bool {
+    buf.starts_with(&[0xFF, 0xFE]) || buf.starts_with(&[0xFE, 0xFF])
+}
+
 fn has_binary_media_magic_or_null(buf: &[u8]) -> bool {
-    if buf.contains(&0) {
+    if !is_utf16_bom_prefix(buf) && buf.contains(&0) {
         return true;
     }
     if buf.get(4..8) == Some(b"ftyp")
@@ -171,6 +175,8 @@ pub async fn read_sniff_prefix_with_context(
             if has_binary_media_magic_or_null(&buf)
                 || looks_like_html_bytes(&buf)
                 || is_partial_hls_playlist_range_candidate(ct_lower, final_url, &buf)
+                || (is_utf16_bom_prefix(&buf)
+                    && has_enough_media_sniff_bytes(&buf, SNIFF_MIN_NON_WS_BYTES))
             {
                 break;
             }

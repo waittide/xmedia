@@ -2869,7 +2869,29 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
                 {
                     payload.extend_from_slice(&u.to_le_bytes());
                 }
-                delayed_chunked_response("application/octet-stream", vec![(payload, 0)])
+                delayed_chunked_response(
+                    "application/octet-stream",
+                    vec![(payload[..4].to_vec(), 0), (payload[4..].to_vec(), 5)],
+                )
+            }),
+        )
+        .route(
+            "/utf16le-1byte-svg.bin",
+            get(|| async {
+                let mut payload = vec![0xFFu8, 0xFE];
+                for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+                    .encode_utf16()
+                {
+                    payload.extend_from_slice(&u.to_le_bytes());
+                }
+                delayed_chunked_response(
+                    "application/octet-stream",
+                    vec![
+                        (payload[..1].to_vec(), 0),
+                        (payload[1..4].to_vec(), 5),
+                        (payload[4..].to_vec(), 5),
+                    ],
+                )
             }),
         )
         .route(
@@ -2879,7 +2901,10 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
                 for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".encode_utf16() {
                     payload.extend_from_slice(&u.to_be_bytes());
                 }
-                delayed_chunked_response("application/octet-stream", vec![(payload, 0)])
+                delayed_chunked_response(
+                    "application/octet-stream",
+                    vec![(payload[..4].to_vec(), 0), (payload[4..].to_vec(), 5)],
+                )
             }),
         )
         .route(
@@ -2936,6 +2961,7 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
     for endpoint in ["stream-proxy", "hls-proxy"] {
         for path in [
             "/utf16le-svg.bin",
+            "/utf16le-1byte-svg.bin",
             "/utf16be-svg.bin",
             "/large-comment-svg.bin",
         ] {
