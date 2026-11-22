@@ -80,6 +80,12 @@ export const router = createRouter({
       component: () => import('@/domains/video/views/VideoPlayerView.vue'),
       meta: { domain: 'video' as MediaKind, fullscreen: true },
     },
+    {
+      path: '/video/online/watch',
+      name: 'video-online-player',
+      component: () => import('@/domains/video/views/OnlineVideoPlayerView.vue'),
+      meta: { domain: 'video' as MediaKind, fullscreen: true },
+    },
     // Unified Workspace Shell
     {
       path: '/',
@@ -367,6 +373,16 @@ export const router = createRouter({
           name: 'video-show-detail',
           component: () => import('@/domains/video/views/ShowDetailView.vue'),
           meta: { domain: 'video' as MediaKind },
+        },
+        {
+          path: 'video/online/detail',
+          name: 'video-online-detail',
+          component: () => import('@/domains/video/views/OnlineVideoDetailView.vue'),
+          meta: { domain: 'video' as MediaKind },
+        },
+        {
+          path: 'video/online',
+          redirect: { path: '/video/catalog', query: { scope: 'online' } },
         },
 
         // Unified Settings (with legacy /remote alias redirected into Domain Protocols)
