@@ -153,6 +153,21 @@ function closeDebugSheet(): void {
             : t('onlineSources.panel.emptyHint', { domain: domainLabel })
         }}
       </p>
+      <button
+        v-if="canImportSeeds"
+        type="button"
+        :disabled="seeding"
+        class="md-btn md-btn-sm md-btn-tonal md-state mt-4"
+        @click="handleImportSeeds"
+      >
+        <span>
+          {{
+            seeding
+              ? t('onlineSources.toolbar.importSeedsLoading')
+              : t('onlineSources.toolbar.importSeedsBtn')
+          }}
+        </span>
+      </button>
     </div>
 
     <!-- Empty Filter Result -->

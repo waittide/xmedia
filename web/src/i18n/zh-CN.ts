@@ -495,6 +495,7 @@ export default {
       importSeedsBtn: '载入默认源',
       importSeedsLoading: '载入中…',
       importSeedsTitle: '载入内置精选公开{domain}',
+      otherActions: '其他操作',
       allCount: '全部 ({count})',
       enabledCount: '已启用 ({count})',
       disabledCount: '已禁用 ({count})',

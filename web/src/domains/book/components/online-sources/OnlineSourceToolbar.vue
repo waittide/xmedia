@@ -70,7 +70,7 @@ function triggerFileImport(): void {
           :value="searchQuery"
           type="text"
           placeholder="搜索书源名称、分组或网址…"
-          class="md-input w-full py-1.5 pr-8 pl-9 text-xs"
+          class="md-input h-9 w-full !rounded-full pr-8 pl-9 text-xs"
           @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
         />
         <button
@@ -123,66 +123,51 @@ function triggerFileImport(): void {
       </div>
     </div>
 
-    <!-- Filter Chips (Status + Groups + Reorder Hint) -->
-    <div v-if="totalCount > 0" class="flex flex-wrap items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
-          @click="
-            emit('update:statusFilter', 'all');
-            emit('update:groupFilter', '__all__')
-          "
-        >
-          全部 ({{ totalCount }})
-        </button>
-        <button
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
-          @click="emit('update:statusFilter', statusFilter === 'enabled' ? 'all' : 'enabled')"
-        >
-          已启用 ({{ enabledCount }})
-        </button>
-        <button
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
-          @click="emit('update:statusFilter', statusFilter === 'disabled' ? 'all' : 'disabled')"
-        >
-          已禁用 ({{ disabledCount }})
-        </button>
-
-        <span
-          v-if="availableGroups.length > 0"
-          class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
-        />
-
-        <button
-          v-for="grp in availableGroups"
-          :key="grp"
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="groupFilter === grp ? 'md-chip-selected' : ''"
-          @click="emit('update:groupFilter', groupFilter === grp ? '__all__' : grp)"
-        >
-          {{ grp }}
-        </button>
-      </div>
+    <!-- Filter Chips (Status + Groups) -->
+    <div v-if="totalCount > 0 && !selectionMode" class="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
+        @click="
+          emit('update:statusFilter', 'all');
+          emit('update:groupFilter', '__all__')
+        "
+      >
+        全部 ({{ totalCount }})
+      </button>
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
+        @click="emit('update:statusFilter', statusFilter === 'enabled' ? 'all' : 'enabled')"
+      >
+        已启用 ({{ enabledCount }})
+      </button>
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
+        @click="emit('update:statusFilter', statusFilter === 'disabled' ? 'all' : 'disabled')"
+      >
+        已禁用 ({{ disabledCount }})
+      </button>
 
       <span
-        v-if="!selectionMode && totalCount > 1"
-        class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
+        v-if="availableGroups.length > 0"
+        class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
+      />
+
+      <button
+        v-for="grp in availableGroups"
+        :key="grp"
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="groupFilter === grp ? 'md-chip-selected' : ''"
+        @click="emit('update:groupFilter', groupFilter === grp ? '__all__' : grp)"
       >
-        {{ canReorder ? '拖动左侧手柄可调整顺序' : '清除筛选后可拖动排序' }}
-      </span>
-      <span
-        v-else-if="selectionMode"
-        class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
-      >
-        点击条目勾选，按住 Shift 可连续区间选择
-      </span>
+        {{ grp }}
+      </button>
     </div>
 
     <!-- Multi-Select Bulk Action Bar -->

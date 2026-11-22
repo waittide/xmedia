@@ -495,6 +495,7 @@ export default {
       importSeedsBtn: 'Load Default Seeds',
       importSeedsLoading: 'Loading…',
       importSeedsTitle: 'Load curated built-in {domain} seeds',
+      otherActions: 'Other actions',
       allCount: 'All ({count})',
       enabledCount: 'Enabled ({count})',
       disabledCount: 'Disabled ({count})',

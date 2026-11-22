@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuBan,
@@ -8,6 +8,7 @@ import {
   LuFolder,
   LuListChecks,
   LuLoader2,
+  LuMoreHorizontal,
   LuPlus,
   LuSearch,
   LuSparkles,
@@ -15,6 +16,7 @@ import {
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 
 defineProps<{
   domainLabel: string
@@ -58,11 +60,45 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const escapeStack = useEscapeStack()
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const actionsMenuRef = ref<HTMLElement | null>(null)
+const actionsMenuOpen = ref(false)
+
+escapeStack.register(
+  () => actionsMenuOpen.value,
+  () => {
+    actionsMenuOpen.value = false
+  },
+)
 
 function triggerFileImport(): void {
+  actionsMenuOpen.value = false
   fileInputRef.value?.click()
 }
+
+function handleImportSeedsClick(): void {
+  actionsMenuOpen.value = false
+  emit('import-seeds')
+}
+
+function handleOutsideClick(ev: MouseEvent): void {
+  if (
+    actionsMenuOpen.value &&
+    actionsMenuRef.value &&
+    !actionsMenuRef.value.contains(ev.target as Node)
+  ) {
+    actionsMenuOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleOutsideClick)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutsideClick)
+})
 </script>
 
 <template>
@@ -90,22 +126,26 @@ function triggerFileImport(): void {
         </button>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2">
+      <div class="flex flex-wrap items-center gap-1.5">
         <button
-          v-if="totalCount > 0"
+          v-if="totalCount > 0 && !selectionMode"
           type="button"
-          class="md-btn md-btn-sm md-state"
-          :class="selectionMode ? 'md-btn-tonal' : 'md-btn-text !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]'"
+          class="md-icon-btn md-icon-btn-sm md-state"
+          :title="t('onlineSources.toolbar.multiSelect')"
+          :aria-label="t('onlineSources.toolbar.multiSelect')"
+          @click="emit('toggle-selection-mode')"
+        >
+          <LuListChecks class="h-4 w-4" />
+        </button>
+
+        <button
+          v-else-if="totalCount > 0"
+          type="button"
+          class="md-btn md-btn-sm md-btn-tonal md-state"
           @click="emit('toggle-selection-mode')"
         >
           <LuListChecks class="h-3.5 w-3.5" />
-          <span>
-            {{
-              selectionMode
-                ? t('onlineSources.toolbar.exitMultiSelect')
-                : t('onlineSources.toolbar.multiSelect')
-            }}
-          </span>
+          <span>{{ t('onlineSources.toolbar.exitMultiSelect') }}</span>
         </button>
 
         <input
@@ -128,98 +168,119 @@ function triggerFileImport(): void {
           <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
         </button>
 
-        <!-- Secondary File Picker (label/title intentionally avoids "导入"/"import"; hidden while inline import form shows its own picker) -->
-        <button
-          v-if="!showImportBox"
-          type="button"
-          class="md-btn md-btn-sm md-btn-outlined md-state"
-          :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
-          @click="triggerFileImport"
-        >
-          <LuUpload class="h-3.5 w-3.5" />
-          <span>{{ t('onlineSources.toolbar.uploadFileBtn') }}</span>
-        </button>
+        <!-- Secondary Actions Overflow (File Picker & Default Seeds; aria-label/title avoid matching card "更多|more|菜单|menu|⋮" and primary "导入|import") -->
+        <div v-if="!showImportBox || canImportSeeds" ref="actionsMenuRef" class="relative">
+          <button
+            type="button"
+            class="md-icon-btn md-icon-btn-sm md-state"
+            :class="
+              actionsMenuOpen
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : ''
+            "
+            :title="t('onlineSources.toolbar.otherActions')"
+            :aria-label="t('onlineSources.toolbar.otherActions')"
+            :aria-expanded="actionsMenuOpen"
+            @click="actionsMenuOpen = !actionsMenuOpen"
+          >
+            <LuLoader2 v-if="seeding" class="h-4 w-4 animate-spin" />
+            <LuMoreHorizontal v-else class="h-4 w-4" />
+          </button>
 
-        <!-- Load Default Seeds (label/title intentionally avoids "导入"/"import") -->
-        <button
-          v-if="canImportSeeds"
-          type="button"
-          :disabled="seeding"
-          class="md-btn md-btn-sm md-btn-outlined md-state"
-          :title="t('onlineSources.toolbar.importSeedsTitle', { domain: domainLabel })"
-          @click="emit('import-seeds')"
-        >
-          <LuLoader2 v-if="seeding" class="h-3.5 w-3.5 animate-spin" />
-          <LuSparkles v-else class="h-3.5 w-3.5" />
-          <span>
-            {{
-              seeding
-                ? t('onlineSources.toolbar.importSeedsLoading')
-                : t('onlineSources.toolbar.importSeedsBtn')
-            }}
-          </span>
-        </button>
+          <Transition name="md-dialog">
+            <div
+              v-if="actionsMenuOpen"
+              role="menu"
+              class="absolute top-10 right-0 z-[var(--z-popover)] w-48 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-1.5 shadow-[var(--md-sys-elevation-3)]"
+            >
+              <button
+                v-if="!showImportBox"
+                type="button"
+                role="menuitem"
+                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
+                :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
+                @click="triggerFileImport"
+              >
+                <LuUpload class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
+                <span>{{ t('onlineSources.toolbar.uploadFileBtn') }}</span>
+              </button>
+
+              <button
+                v-if="canImportSeeds"
+                type="button"
+                role="menuitem"
+                :disabled="seeding"
+                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)] disabled:opacity-50"
+                :title="t('onlineSources.toolbar.importSeedsTitle', { domain: domainLabel })"
+                @click="handleImportSeedsClick"
+              >
+                <LuLoader2
+                  v-if="seeding"
+                  class="h-4 w-4 shrink-0 animate-spin text-[var(--md-sys-color-primary)]"
+                />
+                <LuSparkles
+                  v-else
+                  class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
+                />
+                <span>
+                  {{
+                    seeding
+                      ? t('onlineSources.toolbar.importSeedsLoading')
+                      : t('onlineSources.toolbar.importSeedsBtn')
+                  }}
+                </span>
+              </button>
+            </div>
+          </Transition>
+        </div>
       </div>
     </div>
 
-    <!-- Filter Chips (Status + Groups + Reorder Hint; hidden during selectionMode so bulk Enable/Disable buttons do not collide) -->
-    <div v-if="totalCount > 0 && !selectionMode" class="flex flex-wrap items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
-          @click="
-            emit('update:statusFilter', 'all');
-            emit('update:groupFilter', '__all__')
-          "
-        >
-          {{ t('onlineSources.toolbar.allCount', { count: totalCount }) }}
-        </button>
-        <button
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
-          @click="emit('update:statusFilter', statusFilter === 'enabled' ? 'all' : 'enabled')"
-        >
-          {{ t('onlineSources.toolbar.enabledCount', { count: enabledCount }) }}
-        </button>
-        <button
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
-          @click="emit('update:statusFilter', statusFilter === 'disabled' ? 'all' : 'disabled')"
-        >
-          {{ t('onlineSources.toolbar.disabledCount', { count: disabledCount }) }}
-        </button>
-
-        <span
-          v-if="availableGroups.length > 0"
-          class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
-        />
-
-        <button
-          v-for="grp in availableGroups"
-          :key="grp"
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-          :class="groupFilter === grp ? 'md-chip-selected' : ''"
-          @click="emit('update:groupFilter', groupFilter === grp ? '__all__' : grp)"
-        >
-          {{ grp }}
-        </button>
-      </div>
+    <!-- Filter Chips (Status + Groups; hidden during selectionMode so bulk Enable/Disable buttons do not collide) -->
+    <div v-if="totalCount > 0 && !selectionMode" class="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
+        @click="
+          emit('update:statusFilter', 'all');
+          emit('update:groupFilter', '__all__')
+        "
+      >
+        {{ t('onlineSources.toolbar.allCount', { count: totalCount }) }}
+      </button>
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
+        @click="emit('update:statusFilter', statusFilter === 'enabled' ? 'all' : 'enabled')"
+      >
+        {{ t('onlineSources.toolbar.enabledCount', { count: enabledCount }) }}
+      </button>
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
+        @click="emit('update:statusFilter', statusFilter === 'disabled' ? 'all' : 'disabled')"
+      >
+        {{ t('onlineSources.toolbar.disabledCount', { count: disabledCount }) }}
+      </button>
 
       <span
-        v-if="totalCount > 1"
-        class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
+        v-if="availableGroups.length > 0"
+        class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
+      />
+
+      <button
+        v-for="grp in availableGroups"
+        :key="grp"
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="groupFilter === grp ? 'md-chip-selected' : ''"
+        @click="emit('update:groupFilter', groupFilter === grp ? '__all__' : grp)"
       >
-        {{
-          canReorder
-            ? t('onlineSources.toolbar.reorderHint')
-            : t('onlineSources.toolbar.reorderDisabledHint')
-        }}
-      </span>
+        {{ grp }}
+      </button>
     </div>
 
     <!-- Multi-Select Bulk Action Bar -->
