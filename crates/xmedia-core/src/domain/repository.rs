@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use jiff::Timestamp;
 use uuid::Uuid;
@@ -76,4 +78,50 @@ pub trait OnlineLibraryItemRepository: Send + Sync {
     async fn save(&self, item: &OnlineLibraryItem) -> DomainResult<()>;
     async fn delete(&self, id: Uuid) -> DomainResult<()>;
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
+}
+
+/// Persists per-user visibility bindings onto the global deduplicated media pool.
+#[async_trait]
+pub trait UserMediaBindingRepository: Send + Sync {
+    async fn list_bound_item_ids(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+    ) -> DomainResult<HashSet<Uuid>>;
+
+    async fn is_bound(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+    ) -> DomainResult<bool>;
+
+    async fn count_bindings_for_item(
+        &self,
+        media_kind: MediaKind,
+        item_id: Uuid,
+    ) -> DomainResult<u64>;
+
+    async fn insert_if_absent(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+        created_at: Timestamp,
+    ) -> DomainResult<bool>;
+
+    async fn delete_binding(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+    ) -> DomainResult<bool>;
+
+    async fn delete_by_item(&self, media_kind: MediaKind, item_id: Uuid) -> DomainResult<()>;
+
+    async fn delete_by_user_and_media(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+    ) -> DomainResult<Vec<Uuid>>;
 }

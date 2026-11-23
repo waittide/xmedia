@@ -119,3 +119,21 @@ pub(crate) struct UserActivityDailyModel {
     pub last_item_title: Option<String>,
     pub updated_at: Timestamp,
 }
+
+#[derive(Debug, toasty::Model)]
+#[table = "user_media_bindings"]
+pub(crate) struct UserMediaBindingModel {
+    #[key]
+    pub id: Uuid,
+
+    #[index]
+    pub user_id: Uuid,
+
+    #[index]
+    pub media_kind: String,
+
+    #[index]
+    pub item_id: Uuid,
+
+    pub created_at: Timestamp,
+}

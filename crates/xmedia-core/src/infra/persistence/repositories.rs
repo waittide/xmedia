@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use jiff::Timestamp;
 use toasty::Db;
@@ -7,10 +9,14 @@ use crate::domain::activity::{UserActivityDaily, UserActivityRepository};
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
 use crate::domain::online_item::{OnlineItemSourceKind, OnlineLibraryItem};
-use crate::domain::repository::{LibraryRepository, OnlineLibraryItemRepository, UserRepository};
+use crate::domain::repository::{
+    LibraryRepository, OnlineLibraryItemRepository, UserMediaBindingRepository, UserRepository,
+};
 use crate::domain::user::{User, UserId, UserPreferences, UserRole};
 
-use super::models::{LibraryModel, OnlineLibraryItemModel, UserActivityDailyModel, UserModel};
+use super::models::{
+    LibraryModel, OnlineLibraryItemModel, UserActivityDailyModel, UserMediaBindingModel, UserModel,
+};
 
 #[derive(Clone)]
 pub struct ToastyUserRepository {
@@ -670,5 +676,179 @@ impl UserActivityRepository for ToastyUserActivityRepository {
             .await
             .map_err(|e| activity_err("purge", e))?;
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ToastyUserMediaBindingRepository {
+    db: Db,
+}
+
+impl ToastyUserMediaBindingRepository {
+    pub fn new(db: Db) -> Self {
+        Self { db }
+    }
+}
+
+fn binding_err(action: &str, err: impl std::fmt::Display) -> DomainError {
+    DomainError::Persistence(format!("{action} user media binding failed: {err}"))
+}
+
+#[async_trait]
+impl UserMediaBindingRepository for ToastyUserMediaBindingRepository {
+    async fn list_bound_item_ids(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+    ) -> DomainResult<HashSet<Uuid>> {
+        let mut db = self.db.clone();
+        let rows = UserMediaBindingModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("list", e))?;
+        let wanted = media_kind.as_str();
+        Ok(rows
+            .into_iter()
+            .filter(|m| m.media_kind == wanted)
+            .map(|m| m.item_id)
+            .collect())
+    }
+
+    async fn is_bound(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("check", e))?;
+        let wanted = media_kind.as_str();
+        Ok(rows
+            .into_iter()
+            .any(|m| m.user_id == user_id.0 && m.media_kind == wanted))
+    }
+
+    async fn count_bindings_for_item(
+        &self,
+        media_kind: MediaKind,
+        item_id: Uuid,
+    ) -> DomainResult<u64> {
+        let mut db = self.db.clone();
+        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("count", e))?;
+        let wanted = media_kind.as_str();
+        let unique_users: HashSet<Uuid> = rows
+            .into_iter()
+            .filter(|m| m.media_kind == wanted)
+            .map(|m| m.user_id)
+            .collect();
+        Ok(unique_users.len() as u64)
+    }
+
+    async fn insert_if_absent(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+        created_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let existing = UserMediaBindingModel::filter_by_item_id(item_id)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("probe", e))?;
+        let wanted = media_kind.as_str();
+        if existing
+            .into_iter()
+            .any(|m| m.user_id == user_id.0 && m.media_kind == wanted)
+        {
+            return Ok(false);
+        }
+        toasty::create!(UserMediaBindingModel {
+            id: Uuid::now_v7(),
+            user_id: user_id.0,
+            media_kind: wanted.to_string(),
+            item_id,
+            created_at,
+        })
+        .exec(&mut db)
+        .await
+        .map_err(|e| binding_err("insert", e))?;
+        Ok(true)
+    }
+
+    async fn delete_binding(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("find", e))?;
+        let wanted = media_kind.as_str();
+        let mut removed = false;
+        for row in rows {
+            if row.user_id == user_id.0 && row.media_kind == wanted {
+                UserMediaBindingModel::filter_by_id(row.id)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| binding_err("delete", e))?;
+                removed = true;
+            }
+        }
+        Ok(removed)
+    }
+
+    async fn delete_by_item(&self, media_kind: MediaKind, item_id: Uuid) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("list item", e))?;
+        let wanted = media_kind.as_str();
+        for row in rows {
+            if row.media_kind == wanted {
+                UserMediaBindingModel::filter_by_id(row.id)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| binding_err("delete item", e))?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_by_user_and_media(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+    ) -> DomainResult<Vec<Uuid>> {
+        let mut db = self.db.clone();
+        let rows = UserMediaBindingModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("list user", e))?;
+        let wanted = media_kind.as_str();
+        let mut unbound_ids = Vec::new();
+        for row in rows {
+            if row.media_kind == wanted {
+                unbound_ids.push(row.item_id);
+                UserMediaBindingModel::filter_by_id(row.id)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| binding_err("purge user", e))?;
+            }
+        }
+        Ok(unbound_ids)
     }
 }

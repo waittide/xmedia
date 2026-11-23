@@ -65,7 +65,8 @@ pub mod infra;
 
 #[cfg(feature = "server")]
 pub use infra::persistence::{
-    ensure_core_schema, ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
+    CoreSchemaMigrationReport, ensure_core_schema, ensure_core_schema_with_report,
+    ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
 };
 
 #[cfg(all(test, feature = "server"))]
@@ -476,6 +477,87 @@ mod tests {
         }
         // start(0) + step(2) + total(3) + completed + media_changed = 5 events
         assert_eq!(seen.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn media_binding_service_roundtrip_dedup_and_isolation() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bindings.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut models = ModelSet::new();
+        super::register_core_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        super::ensure_core_schema(&mut db, &db_url).await.unwrap();
+
+        let repo = Arc::new(
+            crate::infra::persistence::repositories::ToastyUserMediaBindingRepository::new(db),
+        );
+        let events = Arc::new(BroadcastEventHub::default());
+        let svc = crate::application::bindings::MediaBindingService::new(repo, Some(events));
+
+        let user_a = UserId::new();
+        let user_b = UserId::new();
+        let item_1 = uuid::Uuid::now_v7();
+        let item_2 = uuid::Uuid::now_v7();
+
+        assert!(svc.bind(user_a, MediaKind::Comic, item_1).await.unwrap());
+        assert!(!svc.bind(user_a, MediaKind::Comic, item_1).await.unwrap());
+        assert_eq!(
+            svc.bind_batch(user_a, MediaKind::Comic, &[item_1, item_2, item_2])
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(svc.bind(user_b, MediaKind::Comic, item_1).await.unwrap());
+
+        assert!(
+            svc.is_bound(user_a, MediaKind::Comic, item_1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !svc.is_bound(user_b, MediaKind::Comic, item_2)
+                .await
+                .unwrap()
+        );
+        assert!(!svc.is_bound(user_a, MediaKind::Book, item_1).await.unwrap());
+        assert_eq!(
+            svc.count_bindings_for_item(MediaKind::Comic, item_1)
+                .await
+                .unwrap(),
+            2
+        );
+
+        let (removed, remaining) = svc.unbind(user_a, MediaKind::Comic, item_1).await.unwrap();
+        assert!(removed);
+        assert_eq!(remaining, 1);
+        assert!(
+            !svc.is_bound(user_a, MediaKind::Comic, item_1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            svc.is_bound(user_b, MediaKind::Comic, item_1)
+                .await
+                .unwrap()
+        );
+
+        let (removed_b, remaining_b) = svc.unbind(user_b, MediaKind::Comic, item_1).await.unwrap();
+        assert!(removed_b);
+        assert_eq!(remaining_b, 0);
+
+        let purged = svc
+            .delete_user_bindings_for_media(user_a, MediaKind::Comic)
+            .await
+            .unwrap();
+        assert_eq!(purged, vec![item_2]);
+        assert!(
+            svc.list_bound_ids(user_a, MediaKind::Comic)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 

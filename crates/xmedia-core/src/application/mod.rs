@@ -2,6 +2,8 @@
 pub mod activity;
 #[cfg(feature = "server")]
 pub mod auth;
+#[cfg(feature = "server")]
+pub mod bindings;
 pub mod dto;
 #[cfg(feature = "server")]
 pub mod library;
