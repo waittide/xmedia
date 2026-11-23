@@ -47,13 +47,12 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
-const { locale } = useGlobalI18n()
+const { t: globalT } = useGlobalI18n()
 const authStore = useAuthStore()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 const snackbarStore = useSnackbarStore()
 
-const isZh = computed(() => locale.value.startsWith('zh'))
 const favoriteBusy = ref<Record<string, boolean>>({})
 const trackingBusy = ref<Record<string, boolean>>({})
 const trackedKeys = ref<Record<string, boolean>>({})
@@ -141,8 +140,8 @@ async function applyOnlineFavorite(
     seedOnlineItemStateCache([saved])
     if (!nextFav && showUndo) {
       snackbarStore.show({
-        message: isZh.value ? '已移除收藏' : 'Removed from favorites',
-        actionLabel: isZh.value ? '撤销' : 'Undo',
+        message: globalT('common.removedFromFavorites'),
+        actionLabel: globalT('common.undo'),
         onAction: () => {
           void applyOnlineFavorite(tr, true, false)
         },

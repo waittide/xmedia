@@ -44,8 +44,7 @@ const emit = defineEmits<{
   change: [scope: SourceScope]
 }>()
 
-const { locale } = useI18n()
-const isZh = computed(() => locale.value.startsWith('zh'))
+const { t } = useI18n()
 
 const shouldSyncUrl = computed(() => {
   if (props.syncUrl !== undefined) return props.syncUrl
@@ -74,19 +73,19 @@ const options = computed<readonly SegmentedOption<SourceScope>[]>(() => {
   const list: SegmentedOption<SourceScope>[] = [
     {
       value: 'local',
-      label: props.localLabel || (isZh.value ? '本地' : 'Local'),
+      label: props.localLabel || t('domainUi.scopeLocal'),
       icon: LuHardDrive,
     },
     {
       value: 'online',
-      label: props.onlineLabel || (isZh.value ? '在线' : 'Online'),
+      label: props.onlineLabel || t('domainUi.scopeOnline'),
       icon: LuGlobe,
     },
   ]
   if (includeRemote.value) {
     list.push({
       value: 'remote',
-      label: props.remoteLabel || (isZh.value ? '远程' : 'Remote'),
+      label: props.remoteLabel || t('domainUi.scopeRemote'),
       icon: LuCloud,
     })
   }
@@ -94,7 +93,7 @@ const options = computed<readonly SegmentedOption<SourceScope>[]>(() => {
 })
 
 const resolvedAriaLabel = computed(
-  () => props.ariaLabel || (isZh.value ? '内容来源切换' : 'Content source'),
+  () => props.ariaLabel || t('domainUi.scopeAriaLabel'),
 )
 
 async function handleSelect(nextScope: SourceScope): Promise<void> {

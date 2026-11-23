@@ -44,10 +44,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { locale } = useGlobalI18n()
+const { t: globalT } = useGlobalI18n()
 const snackbar = useSnackbarStore()
 
-const isZh = computed(() => locale.value.startsWith('zh'))
 const sourceNameById = new Map<string, string>()
 
 const browse = useOnlineSearchBrowse<OnlineVideoSearchItemDto, VideoSourceSummaryDto>(
@@ -226,8 +225,8 @@ async function applyCardFavorite(vm: MediaItemVM, nextFavorite: boolean, allowUn
     seedOnlineItemStateCache([saved])
     if (!nextFavorite && allowUndo) {
       snackbar.show({
-        message: isZh.value ? '已移除收藏' : 'Removed from favorites',
-        actionLabel: isZh.value ? '撤销' : 'Undo',
+        message: globalT('common.removedFromFavorites'),
+        actionLabel: globalT('common.undo'),
         onAction: async () => {
           await applyCardFavorite(vm, true, false)
         },

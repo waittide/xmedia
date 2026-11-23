@@ -244,7 +244,7 @@ export function useOnlineItemState(
   const autoLoad = options.autoLoad ?? true
   const progressDebounceMs = options.progressDebounceMs ?? DEFAULT_PROGRESS_DEBOUNCE_MS
   const snackbar = useSnackbarStore()
-  const { locale } = useI18n()
+  const { t } = useI18n()
 
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -382,10 +382,9 @@ export function useOnlineItemState(
       }
 
       if (!nextFavorite && showUndoOnRemove) {
-        const isZh = locale.value === 'zh-CN'
         snackbar.show({
-          message: isZh ? '已移除收藏' : 'Removed from favorites',
-          actionLabel: isZh ? '撤销' : 'Undo',
+          message: t('common.removedFromFavorites'),
+          actionLabel: t('common.undo'),
           onAction: async () => {
             await applyFavoriteState(target, true, false)
           },

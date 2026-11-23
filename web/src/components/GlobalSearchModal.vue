@@ -35,7 +35,7 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const { t, te, locale } = useI18n()
+const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
@@ -57,12 +57,6 @@ const {
   limitPerGroup: 5,
   debounceMs: 250,
 })
-
-const isZh = computed(() => String(locale.value).startsWith('zh'))
-
-function tr(key: string, zh: string, en: string): string {
-  return te(key) ? t(key) : isZh.value ? zh : en
-}
 
 const DOMAIN_ICONS: Record<MediaKind, Component> = {
   book: LuBookOpen,
@@ -227,7 +221,7 @@ function applyRecentTerm(term: string): void {
           <div class="flex items-center justify-between px-2">
             <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
               <LuClock class="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{{ tr('globalSearch.recentSearches', '最近搜索', 'Recent') }}</span>
+              <span>{{ t('globalSearch.recentSearches') }}</span>
             </span>
             <MdButton variant="text" size="sm" @click="clearRecent">
               {{ t('common.clear') }}

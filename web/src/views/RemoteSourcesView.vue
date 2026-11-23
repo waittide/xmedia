@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   LuAlertCircle,
@@ -24,7 +25,7 @@ import {
 import RemoteSourceFormDialog from '@/components/remote/RemoteSourceFormDialog.vue'
 import { MdButton, MdCard, MdEmptyState, MdIconButton } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
-import { resolveLibraryRoute, useSettingsI18n } from '@/components/settings/i18nHelper'
+import { resolveLibraryRoute } from '@/components/settings/sections'
 import { useAppClientStore } from '@/stores/appServers'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -41,7 +42,7 @@ const props = withDefaults(
   },
 )
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const router = useRouter()
 const appClientStore = useAppClientStore()
 const dialogStore = useDialogStore()
@@ -66,7 +67,7 @@ const managedSources = computed<RemoteSourceSummaryDto[]>(() => {
 const sectionTitle = computed(() => {
   if (props.embeddedProtocol === 'opds') return t('settings.remoteOpdsTitle')
   if (props.embeddedProtocol === 'subsonic') return t('settings.remoteSubsonicTitle')
-  return tr('settings.remoteServersTitle', '远程服务器', 'Remote Servers')
+  return t('settings.remoteServersTitle')
 })
 
 function resolveTargetDomain(source: RemoteSourceSummaryDto): MediaKind {
@@ -155,22 +156,15 @@ async function handleSourceSaved(source: RemoteSourceSummaryDto): Promise<void> 
   const result = await handleTestSavedSource(source)
   if (result.ok) {
     snackbarStore.show({
-      message: tr(
-        'settings.remoteSavedAvailableInLibrary',
-        '连接正常，已出现在资源来源中',
-        'Connected — now available in Resource sources',
-      ),
-      actionLabel: tr('settings.openInLibraryAction', '前往查看', 'Open Resources'),
+      message: t('settings.remoteSavedAvailableInLibrary'),
+      actionLabel: t('settings.openInLibraryAction'),
       onAction: () => openInLibrary(source),
     })
   } else {
     snackbarStore.show({
-      message: tr(
-        'settings.remoteSavedTestWarning',
-        '已保存服务器，但连接测试未通过：{error}',
-        'Server saved, but connection test failed: {error}',
-        { error: result.error || t('remote.testFailed') },
-      ),
+      message: t('settings.remoteSavedTestWarning', {
+        error: result.error || t('remote.testFailed'),
+      }),
       tone: 'error',
     })
   }
@@ -234,13 +228,7 @@ onMounted(async () => {
           </span>
         </div>
         <p class="text-body-small mt-0.5 text-on-surface-variant">
-          {{
-            tr(
-              'settings.remoteServersHint',
-              '添加后的 OPDS / OpenSubsonic 服务器会自动出现在对应域的资源来源筛选中。',
-              'Configured OPDS / OpenSubsonic servers appear automatically in the domain resource source switcher.',
-            )
-          }}
+          {{ t('settings.remoteServersHint') }}
         </p>
       </div>
 
@@ -378,7 +366,7 @@ onMounted(async () => {
             :icon="LuExternalLink"
             @click="openInLibrary(source)"
           >
-            {{ tr('settings.openInLibraryBtn', '在资源中打开', 'Open in Resources') }}
+            {{ t('settings.openInLibraryBtn') }}
           </MdButton>
 
           <MdIconButton

@@ -47,10 +47,9 @@ const emit = defineEmits<{
   tested: []
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const { t: videoT } = useVideoI18n()
 const snackbar = useSnackbarStore()
-const isZh = computed(() => locale.value.startsWith('zh'))
 
 type ResultTab = 'timeline' | 'categories' | 'search' | 'detail' | 'play'
 
@@ -503,12 +502,8 @@ async function copyDebugReport(): Promise<void> {
                 >
                   {{
                     expandedGroups[group.name]
-                      ? isZh
-                        ? '收起'
-                        : 'Show less'
-                      : isZh
-                        ? `展开全部 (${group.episodes.length})`
-                        : `Show all (${group.episodes.length})`
+                      ? t('nav.showLess')
+                      : t('common.showAllCount', { count: group.episodes.length })
                   }}
                 </MdButton>
               </div>

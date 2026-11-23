@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import {
   LuAlertCircle,
@@ -12,7 +13,6 @@ import SettingsDomainDataSourcesTab from '@/components/settings/SettingsDomainDa
 import SettingsDomainGeneralTab from '@/components/settings/SettingsDomainGeneralTab.vue'
 import SettingsDomainProtocolsTab from '@/components/settings/SettingsDomainProtocolsTab.vue'
 import SettingsLibrariesTab from '@/components/settings/SettingsLibrariesTab.vue'
-import { useSettingsI18n } from '@/components/settings/i18nHelper'
 import {
   DOMAIN_ICONS,
   readSingleQuery,
@@ -34,7 +34,7 @@ interface TabItem {
   adminOnly?: boolean
 }
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -93,50 +93,36 @@ const tabs = computed<TabItem[]>(() => {
   const all: TabItem[] = [
     {
       id: 'preferences',
-      label: tr('settings.navDomainGeneral', '偏好设置', 'Preferences'),
+      label: t('settings.navDomainGeneral'),
       icon: LuSlidersHorizontal,
     },
     {
       id: 'libraries',
-      label: tr('settings.navLibraries', '媒体库', 'Libraries'),
+      label: t('settings.navLibraries'),
       icon: LuLibrary,
       adminOnly: true,
     },
     {
       id: 'sources',
-      label: tr('settings.navSources', '来源', 'Sources'),
+      label: t('settings.navSources'),
       icon: LuGlobe,
       adminOnly: true,
     },
     {
       id: 'protocols',
-      label: tr('settings.navDomainProtocols', '开放协议', 'Protocols'),
+      label: t('settings.navDomainProtocols'),
       icon: LuRadio,
     },
   ]
   return all.filter((item) => !item.adminOnly || authStore.isAdmin)
 })
 
-const pageTitle = computed(() =>
-  tr(
-    `settings.domainSettingsTitle.${domain.value}`,
-    `${t(`app.domains.${domain.value}`)}设置`,
-    `${t(`app.domains.${domain.value}`)} Settings`,
-  ),
-)
+const pageTitle = computed(() => t(`settings.domainSettingsTitle.${domain.value}`))
 
 const pageSubtitle = computed(() =>
   authStore.isAdmin
-    ? tr(
-        'settings.domainSettingsAdminSubtitle',
-        '管理当前领域的偏好、媒体库、在线来源与开放协议',
-        'Manage preferences, local libraries, online sources, and open protocols for this domain',
-      )
-    : tr(
-        'settings.domainSettingsSubtitle',
-        '管理当前领域的阅读播放偏好与开放协议接入',
-        'Manage playback preferences and open protocol endpoints for this domain',
-      ),
+    ? t('settings.domainSettingsAdminSubtitle')
+    : t('settings.domainSettingsSubtitle'),
 )
 
 function syncRoute(tab: DomainSettingsTab, opts?: { advanced?: boolean }): void {

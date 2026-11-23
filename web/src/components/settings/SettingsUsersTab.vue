@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuTrash2, LuUserPlus } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
 import {
@@ -15,13 +16,12 @@ import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { UserDto, UserRole } from '@/types/api'
-import { useSettingsI18n } from './i18nHelper'
 
 const emit = defineEmits<{
   error: [message: string]
 }>()
 
-const { t } = useSettingsI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()

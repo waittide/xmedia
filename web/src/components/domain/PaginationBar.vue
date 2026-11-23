@@ -43,8 +43,7 @@ const emit = defineEmits<{
   'load-more': []
 }>()
 
-const { locale } = useI18n()
-const isZh = computed(() => locale.value.startsWith('zh'))
+const { t } = useI18n()
 
 const currentPage = computed(() => Math.max(1, Math.floor(props.page || 1)))
 
@@ -103,27 +102,30 @@ const pageTokens = computed<PageToken[]>(() => {
   return tokens
 })
 
-const navLabel = computed(() => (isZh.value ? '分页导航' : 'Pagination'))
-const prevLabel = computed(() => (isZh.value ? '上一页' : 'Previous page'))
-const nextLabel = computed(() => (isZh.value ? '下一页' : 'Next page'))
+const navLabel = computed(() => t('pagination.navLabel'))
+const prevLabel = computed(() => t('pagination.prev'))
+const nextLabel = computed(() => t('pagination.next'))
 const resolvedLoadMoreLabel = computed(() => {
   if (props.loadMoreLabel) return props.loadMoreLabel
-  return isZh.value ? '加载更多' : 'Load more'
+  return t('common.loadMore')
 })
 
 const summaryText = computed(() => {
   const totalPagesVal = computedTotalPages.value
   if (totalPagesVal !== null) {
     if (props.total !== null && props.total !== undefined) {
-      return isZh.value
-        ? `第 ${currentPage.value} / ${totalPagesVal} 页 · 共 ${props.total} 项`
-        : `Page ${currentPage.value} of ${totalPagesVal} · ${props.total} items`
+      return t('pagination.pageOfTotalWithItems', {
+        page: currentPage.value,
+        totalPages: totalPagesVal,
+        total: props.total,
+      })
     }
-    return isZh.value
-      ? `第 ${currentPage.value} / ${totalPagesVal} 页`
-      : `Page ${currentPage.value} of ${totalPagesVal}`
+    return t('pagination.pageOfTotal', {
+      page: currentPage.value,
+      totalPages: totalPagesVal,
+    })
   }
-  return isZh.value ? `第 ${currentPage.value} 页` : `Page ${currentPage.value}`
+  return t('pagination.pageSingle', { page: currentPage.value })
 })
 
 function goToPage(nextPage: number): void {

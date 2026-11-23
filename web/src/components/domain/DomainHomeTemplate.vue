@@ -85,9 +85,8 @@ const emit = defineEmits<{
   'select-item': [item: MediaItemVM]
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
-const isZh = computed(() => locale.value.startsWith('zh'))
 
 const resolvedIsAdmin = computed(() =>
   props.isAdmin !== undefined ? props.isAdmin : authStore.isAdmin,
@@ -126,14 +125,14 @@ const resolvedTitle = computed(() => props.title || domainLabel.value)
 
 const resolvedContinueTitle = computed(() => {
   if (props.continueTitle) return props.continueTitle
-  if (props.domain === 'music') return isZh.value ? '继续聆听' : 'Continue listening'
-  if (props.domain === 'video') return isZh.value ? '继续观看' : 'Continue watching'
-  return isZh.value ? '继续阅读' : 'Continue reading'
+  if (props.domain === 'music') return t('domainUi.continueListening')
+  if (props.domain === 'video') return t('domainUi.continueWatching')
+  return t('domainUi.continueReading')
 })
 
 const resolvedRecentTitle = computed(() => {
   if (props.recentTitle) return props.recentTitle
-  return isZh.value ? '最近添加' : 'Recently added'
+  return t('domainUi.recentlyAdded')
 })
 
 const resolvedContinueSeeAll = computed<RouteLocationRaw>(
@@ -167,23 +166,19 @@ const hasAnyContent = computed(
 
 const resolvedEmptyTitle = computed(() => {
   if (props.emptyTitle) return props.emptyTitle
-  return isZh.value ? `还没有${domainLabel.value}` : `No ${domainLabel.value.toLowerCase()} yet`
+  return t('domainUi.emptyDomainTitle', { domain: domainLabel.value })
 })
 
 const resolvedEmptyDescription = computed(() => {
   if (props.emptyDescription) return props.emptyDescription
   if (resolvedIsAdmin.value) {
-    return isZh.value
-      ? '挂载本地媒体库或上传文件即可开始浏览，也可以探索在线来源。'
-      : 'Mount a local media library or upload files to get started, or explore online sources.'
+    return t('domainUi.emptyAdminDesc')
   }
-  return isZh.value
-    ? '当前媒体库暂无内容，你可以浏览在线来源获取更多内容。'
-    : 'Your library is currently empty. Explore online sources to discover content.'
+  return t('domainUi.emptyMemberDesc')
 })
 
-const addLibraryLabel = computed(() => (isZh.value ? '添加本地库' : 'Add library'))
-const exploreOnlineLabel = computed(() => (isZh.value ? '探索在线源' : 'Explore online'))
+const addLibraryLabel = computed(() => t('domainUi.addLibraryBtn'))
+const exploreOnlineLabel = computed(() => t('domainUi.exploreOnlineBtn'))
 const uploadLabel = computed(() => t('common.uploadMedia'))
 
 function itemKey(item: MediaItemVM, idx: number): string {

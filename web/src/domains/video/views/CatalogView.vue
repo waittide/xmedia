@@ -64,7 +64,7 @@ const VALID_TABS = new Set<LibraryTab>(['all', 'continue', 'favorites', 'collect
 const VALID_VIEWS = new Set<VideoLibraryView>(['items', 'shows', 'movies', 'genres', 'tags'])
 
 const { t } = useI18n()
-const { locale } = useGlobalI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const videoStore = useVideoStore()
@@ -72,7 +72,6 @@ const uploadStore = useUploadStore()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 
-const isZh = computed(() => locale.value.startsWith('zh'))
 const sourceFilter = useSourceFilter('video')
 
 const onlineSearchRef = ref<InstanceType<typeof OnlineVideoSearchSection> | null>(null)
@@ -696,7 +695,7 @@ async function handleMergedRemoveFavorite(item: MediaItemVM): Promise<void> {
     }
     await mergedShelf.refresh()
     snackbar.show({
-      message: isZh.value ? '已移除收藏' : 'Removed from favorites',
+      message: globalT('common.removedFromFavorites'),
     })
   } catch (err) {
     snackbar.show({
@@ -1238,7 +1237,7 @@ onBeforeUnmount(() => {
             handleResetFilters()
           "
         >
-          {{ isZh ? '清除筛选条件' : 'Clear filters' }}
+          {{ globalT('common.clearFilters') }}
         </MdButton>
       </template>
 

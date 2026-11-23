@@ -173,8 +173,7 @@ export function useOnlineSearchBrowse<
   options: UseOnlineSearchBrowseOptions = {},
 ): UseOnlineSearchBrowseReturn<T, S> {
   const snackbar = useSnackbarStore()
-  const { locale } = useI18n()
-  const isZh = computed(() => locale.value.startsWith('zh'))
+  const { t } = useI18n()
 
   const autoExploreOnEmpty = adapter.autoExploreOnEmpty ?? Boolean(adapter.browse)
   const defaultExploreFirstSource = adapter.defaultExploreFirstSource ?? true
@@ -436,7 +435,7 @@ export function useOnlineSearchBrowse<
         browseItems.value = [...browseItems.value, ...appended]
         hasMoreBrowse.value = appended.length > 0 && hasMoreByPage
         if (appended.length === 0) {
-          snackbar.show({ message: isZh.value ? '没有更多结果了' : 'No more results' })
+          snackbar.show({ message: t('common.noMoreResults') })
         }
       } else {
         browseItems.value = incoming
@@ -522,7 +521,7 @@ export function useOnlineSearchBrowse<
         searchResults.value = [...searchResults.value, ...appended]
         hasMoreResults.value = (res.hasMore ?? true) && appended.length > 0
         if (appended.length === 0) {
-          snackbar.show({ message: isZh.value ? '没有更多结果了' : 'No more results' })
+          snackbar.show({ message: t('common.noMoreResults') })
         }
       } else {
         searchResults.value = incoming
@@ -540,7 +539,7 @@ export function useOnlineSearchBrowse<
         searchErrors.value = [
           {
             source_id: 'search',
-            source_name: isZh.value ? '在线来源' : 'Online sources',
+            source_name: t('onlineSearch.genericSources'),
             error: msg,
           },
         ]

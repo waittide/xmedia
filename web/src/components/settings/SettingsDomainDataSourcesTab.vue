@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuLoader2, LuLock } from 'vue-icons-plus/lu'
 import type { RemoteProtocol } from '@/api/appHost'
 import OnlineSourceManagerPanel from '@/components/online-sources/OnlineSourceManagerPanel.vue'
@@ -26,7 +27,6 @@ import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import type { MediaKind } from '@/types/api'
 import SettingsOnlineSourcesBasicList from './SettingsOnlineSourcesBasicList.vue'
-import { useSettingsI18n } from './i18nHelper'
 import { DOMAIN_ICONS } from './sections'
 
 const RemoteSourcesView = defineAsyncComponent(() => import('@/views/RemoteSourcesView.vue'))
@@ -51,7 +51,7 @@ const emit = defineEmits<{
   'update:advanced': [value: boolean]
 }>()
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const appClientStore = useAppClientStore()
 
@@ -160,13 +160,7 @@ watch(
       {{ t('settings.dataSourcesAdminOnly') }}
     </p>
     <p class="text-body-small mx-auto mt-1.5 max-w-md text-on-surface-variant">
-      {{
-        tr(
-          'settings.sourcesAdminOnlyHint',
-          '请联系管理员配置在线源与远程服务器。',
-          'Contact an administrator to configure online data sources and remote servers.',
-        )
-      }}
+      {{ t('settings.sourcesAdminOnlyHint') }}
     </p>
   </MdCard>
 
@@ -177,7 +171,7 @@ watch(
       <div
         v-if="!hideDomainSelector"
         role="group"
-        :aria-label="tr('settings.sourceDomainFilter', '按域筛选来源', 'Filter sources by domain')"
+        :aria-label="t('settings.sourceDomainFilter')"
         class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
       >
         <MdChip
@@ -196,19 +190,13 @@ watch(
           {{ t('settings.navDomainDataSources') }}
         </h2>
         <p class="text-body-small text-on-surface-variant">
-          {{
-            tr(
-              'settings.summarySources',
-              '在线数据源与远程服务器配置',
-              'Online data sources and remote servers',
-            )
-          }}
+          {{ t('settings.summarySources') }}
         </p>
       </div>
 
       <MdSwitch
         :model-value="advanced"
-        :label="tr('settings.advancedModeLabel', '高级模式', 'Advanced')"
+        :label="t('settings.advancedModeLabel')"
         @update:model-value="emit('update:advanced', $event)"
       />
     </div>

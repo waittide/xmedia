@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useBookI18n } from '@/domains/book/i18n'
 import { useComicI18n } from '@/domains/comic/i18n'
 import { AppSlider, MdCard, MdChip, MdSelect, MdSwitch } from '@/components/ui'
@@ -13,7 +14,6 @@ import type {
   TranscodeProfile,
   VideoQualityProfile,
 } from '@/types/api'
-import { useSettingsI18n } from './i18nHelper'
 import { DOMAIN_ICONS } from './sections'
 
 const props = withDefaults(
@@ -27,7 +27,7 @@ const props = withDefaults(
   },
 )
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const { t: bookT } = useBookI18n()
 const { t: comicT } = useComicI18n()
 const authStore = useAuthStore()
@@ -152,13 +152,7 @@ watch(
             {{ t('settings.bookPrefsTitle') }}
           </h2>
           <p class="text-body-small text-on-surface-variant">
-            {{
-              tr(
-                'settings.bookPrefsDesc',
-                '默认字体、排版方式与阅读器字号行距',
-                'Default font family, flow mode, font size, and line height',
-              )
-            }}
+            {{ t('settings.bookPrefsDesc') }}
           </p>
         </div>
       </div>
@@ -248,13 +242,7 @@ watch(
             {{ t('settings.comicPrefsTitle') }}
           </h2>
           <p class="text-body-small text-on-surface-variant">
-            {{
-              tr(
-                'settings.comicPrefsDesc',
-                '翻页方向、图片缩放适配与夜间护眼设置',
-                'Reading direction, page scaling, cover offset, and dark-mode dimming',
-              )
-            }}
+            {{ t('settings.comicPrefsDesc') }}
           </p>
         </div>
       </div>
@@ -321,13 +309,7 @@ watch(
             {{ t('settings.playbackDefaultQuality') }}
           </h2>
           <p class="text-body-small text-on-surface-variant">
-            {{
-              tr(
-                'settings.musicPrefsDesc',
-                '选择默认音频流直推或服务端转码规格',
-                'Select default audio direct stream or server transcode profile',
-              )
-            }}
+            {{ t('settings.musicPrefsDesc') }}
           </p>
         </div>
       </div>
@@ -363,13 +345,7 @@ watch(
             {{ t('settings.videoPrefsTitle') }}
           </h2>
           <p class="text-body-small text-on-surface-variant">
-            {{
-              tr(
-                'settings.videoPrefsDesc',
-                '配置默认播放画质与剧集自动连播行为',
-                'Configure default video quality and automatic episode playback',
-              )
-            }}
+            {{ t('settings.videoPrefsDesc') }}
           </p>
         </div>
       </div>

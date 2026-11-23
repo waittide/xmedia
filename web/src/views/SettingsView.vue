@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { LuAlertCircle, LuArrowLeft, LuChevronRight } from 'vue-icons-plus/lu'
 import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
 import SettingsAccountTab from '@/components/settings/SettingsAccountTab.vue'
 import SettingsGeneralTab from '@/components/settings/SettingsGeneralTab.vue'
 import SettingsUsersTab from '@/components/settings/SettingsUsersTab.vue'
-import { useSettingsI18n } from '@/components/settings/i18nHelper'
 import {
   hasExplicitSectionInRoute,
   resolveSectionFromRoute,
@@ -17,7 +17,7 @@ import {
 import { MdCard, MdIconButton } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -41,11 +41,11 @@ const activeSectionDef = computed<SettingsSectionDef>(
 )
 
 function sectionLabel(item: SettingsSectionDef): string {
-  return tr(item.labelKey, item.labelZh, item.labelEn)
+  return t(item.labelKey)
 }
 
 function sectionSummary(item: SettingsSectionDef): string {
-  return tr(item.summaryKey, item.summaryZh, item.summaryEn)
+  return t(item.summaryKey)
 }
 
 function syncRoute(section: SettingsSection): void {
@@ -104,7 +104,7 @@ function handleMobileBack(): void {
       <MdIconButton
         size="sm"
         :icon="LuArrowLeft"
-        :aria-label="tr('settings.backToList', '返回设置列表', 'Back to settings list')"
+        :aria-label="t('settings.backToList')"
         @click="handleMobileBack"
       />
       <div class="min-w-0">

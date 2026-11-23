@@ -1,5 +1,10 @@
 import type { Component } from 'vue'
-import type { LocationQuery, RouteLocationNormalizedLoaded } from 'vue-router'
+import type {
+  LocationQuery,
+  RouteLocationNormalizedLoaded,
+  RouteLocationRaw,
+  Router,
+} from 'vue-router'
 import {
   LuBookOpen,
   LuClapperboard,
@@ -9,7 +14,7 @@ import {
   LuLayers,
   LuPalette,
 } from 'vue-icons-plus/lu'
-import { isMediaKind } from '@/sources'
+import { isMediaKind, libraryRoute, type LibraryRouteParams } from '@/sources'
 import type { MediaKind } from '@/types/api'
 
 export type SettingsSection = 'appearance' | 'account' | 'about'
@@ -17,11 +22,7 @@ export type SettingsSection = 'appearance' | 'account' | 'about'
 export interface SettingsSectionDef {
   id: SettingsSection
   labelKey: string
-  labelZh: string
-  labelEn: string
   summaryKey: string
-  summaryZh: string
-  summaryEn: string
   icon: Component
   adminOnly?: boolean
   /** `data-settings-tab` attribute value */
@@ -32,37 +33,70 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   {
     id: 'appearance',
     labelKey: 'settings.navAppearance',
-    labelZh: '外观',
-    labelEn: 'Appearance',
     summaryKey: 'settings.summaryAppearance',
-    summaryZh: '主题模式、动态配色与语言',
-    summaryEn: 'Theme mode, color palette, and language',
     icon: LuPalette,
     testId: 'appearance',
   },
   {
     id: 'account',
     labelKey: 'settings.navAccountSecurity',
-    labelZh: '用户与安全',
-    labelEn: 'Account & Security',
     summaryKey: 'settings.summaryAccount',
-    summaryZh: '个人资料、密码、API Key 与成员管理',
-    summaryEn: 'Profile, password, API Key, and users',
     icon: LuKeyRound,
     testId: 'account',
   },
   {
     id: 'about',
     labelKey: 'settings.navAbout',
-    labelZh: '关于',
-    labelEn: 'About',
     summaryKey: 'settings.summaryAbout',
-    summaryZh: '版本、已启用媒体域与 FFmpeg 状态',
-    summaryEn: 'Version, enabled domains, and FFmpeg status',
     icon: LuInfo,
     testId: 'about',
   },
 ]
+
+const LEGACY_DOMAIN_CATALOG_PATHS: Record<MediaKind, string> = {
+  book: '/book/library',
+  comic: '/comic/series',
+  music: '/music/songs',
+  video: '/video/catalog',
+}
+
+export function resolveLibraryRoute(
+  router: Router,
+  domain: MediaKind,
+  params?: LibraryRouteParams,
+): RouteLocationRaw {
+  const hasCanonicalLibrary = router
+    .getRoutes()
+    .some(
+      (r) =>
+        r.name === `${domain}-library` ||
+        r.path === `/${domain}/library` ||
+        (r.path.includes(':domain') && r.path.endsWith('/library')),
+    )
+
+  if (hasCanonicalLibrary) {
+    return libraryRoute(domain, params)
+  }
+
+  const query: Record<string, string> = {}
+  if (params?.scope && params.scope !== 'local') {
+    query.scope = params.scope
+    if (params.sourceId) query.source = params.sourceId
+  }
+  if (params?.library) {
+    if (domain === 'comic') {
+      query.library_id = params.library
+    } else {
+      query.library = params.library
+    }
+  }
+  if (params?.q?.trim()) {
+    query.q = params.q.trim()
+  }
+
+  const path = LEGACY_DOMAIN_CATALOG_PATHS[domain]
+  return Object.keys(query).length > 0 ? { path, query } : { path }
+}
 
 export const DOMAIN_ICONS: Record<MediaKind, Component> = {
   book: LuBookOpen,

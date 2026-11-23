@@ -122,9 +122,8 @@ const emit = defineEmits<{
 }>()
 
 const slots = useSlots()
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
-const isZh = computed(() => locale.value.startsWith('zh'))
 
 const sourcesExpanded = ref(false)
 const categoriesExpanded = ref(false)
@@ -169,9 +168,7 @@ const domainIcon = computed<Component>(() => {
 
 const resolvedSearchPlaceholder = computed(() => {
   if (props.searchPlaceholder) return props.searchPlaceholder
-  return isZh.value
-    ? `搜索在线${domainLabel.value}…`
-    : `Search online ${domainLabel.value.toLowerCase()}…`
+  return t('onlineSearch.placeholder', { domain: domainLabel.value })
 })
 
 // Built-in batch online item state lookup when caller passes `items` without external `itemStates`
@@ -306,54 +303,38 @@ const skeletonCount = computed(() => (resolvedAspect.value === 'video' ? 8 : 12)
 
 // Localized labels meeting E2E §2.2 regexes (T2-F13-01, T2-F13-05, T2-F13-06)
 const allSourcesLabel = computed(() =>
-  isZh.value
-    ? `全部来源 (${props.enabledSources.length})`
-    : `All sources (${props.enabledSources.length})`,
+  t('onlineSearch.allSources', { count: props.enabledSources.length }),
 )
-const allCategoriesLabel = computed(() => (isZh.value ? '全部' : 'All'))
-const categoriesAriaLabel = computed(() => (isZh.value ? '发现分类' : 'Explore categories'))
+const allCategoriesLabel = computed(() => t('onlineSearch.allCategories'))
+const categoriesAriaLabel = computed(() => t('onlineSearch.categoriesAriaLabel'))
 const noSourcesTitle = computed(() =>
-  isZh.value ? `暂无已启用的在线${domainLabel.value}` : `No online ${domainLabel.value.toLowerCase()} sources enabled`,
+  t('onlineSearch.noSourcesTitle', { domain: domainLabel.value }),
 )
-const noSourcesDescription = computed(() => {
-  if (resolvedIsAdmin.value) {
-    return isZh.value
-      ? '请前往系统设置的来源管理中导入或启用在线来源。'
-      : 'Import or enable online sources in Settings to browse and search.'
-  }
-  return isZh.value
-    ? '请联系管理员在来源设置中添加或启用在线来源。'
-    : 'Ask an administrator to configure and enable online sources in Settings.'
-})
-const manageSourcesLabel = computed(() => (isZh.value ? '前往来源设置' : 'Manage sources'))
-const searchBtnLabel = computed(() => (isZh.value ? '搜索' : 'Search'))
-const expandLabel = computed(() => (isZh.value ? '展开' : 'More'))
-const collapseLabel = computed(() => (isZh.value ? '收起' : 'Less'))
+const noSourcesDescription = computed(() =>
+  resolvedIsAdmin.value
+    ? t('onlineSearch.noSourcesAdminDesc')
+    : t('onlineSearch.noSourcesMemberDesc'),
+)
+const manageSourcesLabel = computed(() => t('onlineSearch.manageSourcesBtn'))
+const searchBtnLabel = computed(() => t('common.search'))
+const expandLabel = computed(() => t('onlineSearch.expand'))
+const collapseLabel = computed(() => t('onlineSearch.collapse'))
 const noSearchResultsTitle = computed(() => {
   const kw = props.lastSearchKeyword || props.keyword
-  return isZh.value ? `未找到「${kw}」的相关结果` : `No results for "${kw}"`
+  return t('onlineSearch.noResultsForKeyword', { keyword: kw })
 })
 const resolvedIdleHint = computed(() => {
   if (props.idleHint) return props.idleHint
-  return isZh.value
-    ? '输入关键词并按回车即可聚合搜索已启用的在线来源。'
-    : 'Enter a keyword and press Enter to search enabled online sources.'
+  return t('onlineSearch.idleHint')
 })
-const resultsSummaryText = computed(() => {
-  if (props.hasSearched) {
-    return isZh.value
-      ? `找到 ${resolvedItemCount.value} 项结果`
-      : `${resolvedItemCount.value} results`
-  }
-  return isZh.value
-    ? `共 ${resolvedItemCount.value} 项内容`
-    : `${resolvedItemCount.value} items`
-})
+const resultsSummaryText = computed(() =>
+  props.hasSearched
+    ? t('onlineSearch.resultsCount', { count: resolvedItemCount.value })
+    : t('onlineSearch.itemsCount', { count: resolvedItemCount.value }),
+)
 
 function formatSourceSearchError(err: OnlineSearchErrorItem): string {
-  return isZh.value
-    ? `「${err.source_name}」搜索异常：${err.error}`
-    : `"${err.source_name}" search error: ${err.error}`
+  return t('onlineSearch.sourceError', { source: err.source_name, error: err.error })
 }
 
 function isItemFavorite(item: MediaItemVM): boolean {

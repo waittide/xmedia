@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   LuAlertCircle,
@@ -18,8 +19,7 @@ import {
 } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
 import ThemePopover from '@/components/ThemePopover.vue'
-import { resolveLibraryRoute, useSettingsI18n } from '@/components/settings/i18nHelper'
-import { DOMAIN_ICONS } from '@/components/settings/sections'
+import { DOMAIN_ICONS, resolveLibraryRoute } from '@/components/settings/sections'
 import {
   MdButton,
   MdCard,
@@ -35,7 +35,7 @@ import type { CoreLibraryDto, MediaKind } from '@/types/api'
 
 type OnboardingStep = 1 | 2 | 3
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
@@ -71,17 +71,17 @@ const stepsMeta = computed(() => [
   {
     num: 1 as const,
     icon: LuUserPlus,
-    label: tr('setup.stepAdmin', '创建管理员', 'Admin Account'),
+    label: t('setup.stepAdmin'),
   },
   {
     num: 2 as const,
     icon: LuFolderOpen,
-    label: tr('setup.stepFolder', '添加媒体库', 'Media Folder'),
+    label: t('setup.stepFolder'),
   },
   {
     num: 3 as const,
     icon: LuLibrary,
-    label: tr('setup.stepScan', '扫描并进入', 'Scan & Open'),
+    label: t('setup.stepScan'),
   },
 ])
 
@@ -280,7 +280,7 @@ const scanStatusSummary = computed(() => {
   if (scanError.value) return scanError.value
   const status = createdLibrary.value?.scan_status
   if (!status || triggeringScan.value) {
-    return tr('setup.scanStarting', '正在启动媒体扫描…', 'Starting library scan…')
+    return t('setup.scanStarting')
   }
   if (status.state === 'scanning') {
     if (status.total && status.total > 0) {
@@ -300,7 +300,7 @@ const scanStatusSummary = computed(() => {
   if (status.state === 'failed') {
     return t('admin.scanFailed', { message: status.message })
   }
-  return tr('setup.scanQueued', '扫描任务已加入队列，可在后台继续完成', 'Scan queued — continues in background')
+  return t('setup.scanQueued')
 })
 </script>
 
@@ -330,7 +330,7 @@ const scanStatusSummary = computed(() => {
         <!-- 3-Step Onboarding Stepper -->
         <ol
           class="mb-6 grid grid-cols-3 gap-2"
-          :aria-label="tr('setup.stepperLabel', '初始化步骤', 'Setup steps')"
+          :aria-label="t('setup.stepperLabel')"
         >
           <li
             v-for="item in stepsMeta"
@@ -419,11 +419,7 @@ const scanStatusSummary = computed(() => {
                 <MdIconButton
                   size="sm"
                   :icon="showPassword ? LuEyeOff : LuEye"
-                  :aria-label="
-                    showPassword
-                      ? tr('auth.hidePassword', '隐藏密码', 'Hide password')
-                      : tr('auth.showPassword', '显示密码', 'Show password')
-                  "
+                  :aria-label="showPassword ? t('auth.hidePassword') : t('auth.showPassword')"
                   @click="showPassword = !showPassword"
                 />
               </template>
@@ -449,7 +445,7 @@ const scanStatusSummary = computed(() => {
               <span>{{
                 creatingAdmin
                   ? t('common.loading')
-                  : tr('setup.createAdminNextBtn', '创建管理员并继续', 'Create Admin & Continue')
+                  : t('setup.createAdminNextBtn')
               }}</span>
               <template #trailing>
                 <LuArrowRight v-if="!creatingAdmin" class="h-4 w-4" />
@@ -468,16 +464,10 @@ const scanStatusSummary = computed(() => {
             </div>
             <div>
               <h1 class="text-title-large text-on-surface">
-                {{ tr('setup.addFolderTitle', '添加第一个媒体文件夹', 'Add Your First Media Folder') }}
+                {{ t('setup.addFolderTitle') }}
               </h1>
               <p class="text-body-small mt-0.5 text-on-surface-variant">
-                {{
-                  tr(
-                    'setup.addFolderSubtitle',
-                    '以只读方式挂载本地目录，或稍后再从页面上传文件。',
-                    'Mount a local folder read-only, or skip and upload media later.',
-                  )
-                }}
+                {{ t('setup.addFolderSubtitle') }}
               </p>
             </div>
           </div>
@@ -492,12 +482,7 @@ const scanStatusSummary = computed(() => {
               :placeholder="t('admin.libraryPathPlaceholder')"
               :supporting-text="
                 inferredDomain
-                  ? tr(
-                      'setup.inferredDomainHint',
-                      '已根据路径自动识别为「{domain}」，也可手动切换',
-                      'Auto-detected as {domain} from path — tap a chip to change',
-                      { domain: t(`app.domains.${inferredDomain}`) },
-                    )
+                  ? t('setup.inferredDomainHint', { domain: t(`app.domains.${inferredDomain}`) })
                   : t('admin.mountLibraryDesc')
               "
               :disabled="mountingLibrary"
@@ -527,13 +512,7 @@ const scanStatusSummary = computed(() => {
               type="text"
               :label="t('admin.libraryName')"
               :placeholder="inferFolderBasename(folderPath) || t('admin.libraryNamePlaceholder')"
-              :supporting-text="
-                tr(
-                  'setup.libraryNameOptional',
-                  '可选，留空将自动使用文件夹名称',
-                  'Optional — defaults to the folder name',
-                )
-              "
+              :supporting-text="t('setup.libraryNameOptional')"
               :disabled="mountingLibrary"
             />
 
@@ -546,9 +525,7 @@ const scanStatusSummary = computed(() => {
                 :loading="mountingLibrary"
                 :disabled="!folderPath.trim()"
               >
-                {{
-                  tr('setup.mountAndScanNextBtn', '添加并开始扫描', 'Add & Start Scanning')
-                }}
+                {{ t('setup.mountAndScanNextBtn') }}
               </MdButton>
 
               <MdButton
@@ -559,13 +536,7 @@ const scanStatusSummary = computed(() => {
                 :disabled="mountingLibrary"
                 @click="skipForNow"
               >
-                {{
-                  tr(
-                    'setup.skipForNowBtn',
-                    '暂时跳过，稍后上传媒体',
-                    'Skip for now, upload later',
-                  )
-                }}
+                {{ t('setup.skipForNowBtn') }}
               </MdButton>
             </div>
           </form>
@@ -592,20 +563,14 @@ const scanStatusSummary = computed(() => {
               <h1 class="text-title-large text-on-surface">
                 {{
                   isScanCompleted
-                    ? tr('setup.scanReadyTitle', '媒体库已就绪', 'Your Library Is Ready')
+                    ? t('setup.scanReadyTitle')
                     : isScanFailed
-                      ? tr('setup.scanErrorTitle', '扫描遇到问题', 'Scan Encountered an Issue')
-                      : tr('setup.scanningTitle', '正在扫描您的媒体库', 'Scanning Your Media Library')
+                      ? t('setup.scanErrorTitle')
+                      : t('setup.scanningTitle')
                 }}
               </h1>
               <p class="text-body-small mt-0.5 text-on-surface-variant">
-                {{
-                  tr(
-                    'setup.scanStepHint',
-                    '扫描会在后台持续进行，您现在即可进入资源浏览。',
-                    'Scanning continues in the background — you can open Resources right away.',
-                  )
-                }}
+                {{ t('setup.scanStepHint') }}
               </p>
             </div>
           </div>
@@ -654,12 +619,9 @@ const scanStatusSummary = computed(() => {
               @click="enterDomainLibrary"
             >
               <span>{{
-                tr(
-                  'setup.openDomainLibraryBtn',
-                  '进入{domain}资源',
-                  'Open {domain} Resources',
-                  { domain: t(`app.domains.${createdLibrary?.media_kind ?? selectedDomain}`) },
-                )
+                t('setup.openDomainLibraryBtn', {
+                  domain: t(`app.domains.${createdLibrary?.media_kind ?? selectedDomain}`),
+                })
               }}</span>
               <template #trailing>
                 <LuArrowRight class="h-4 w-4" />
@@ -674,7 +636,7 @@ const scanStatusSummary = computed(() => {
               :loading="triggeringScan"
               @click="triggerInitialScan(createdLibrary.id)"
             >
-              {{ tr('setup.retryScanBtn', '重试扫描', 'Retry Scan') }}
+              {{ t('setup.retryScanBtn') }}
             </MdButton>
           </div>
         </template>

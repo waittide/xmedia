@@ -164,10 +164,6 @@ function sendUploadXhr<T>(
   })
 }
 
-function isZhLocale(): boolean {
-  return String(i18n.global.locale.value).toLowerCase().startsWith('zh')
-}
-
 function splitFileStemAndExt(name: string): { stem: string; ext: string } {
   const dotIdx = name.lastIndexOf('.')
   if (dotIdx <= 0 || dotIdx === name.length - 1) {
@@ -326,11 +322,11 @@ function formatBatchLabel(
   chunkIndex: number,
   totalChunks: number,
 ): string {
-  const isZh = isZhLocale()
   if (dirLabel) {
-    const countText = isZh
-      ? `${files.length} 个文件`
-      : `${files.length} ${files.length === 1 ? 'file' : 'files'}`
+    const countText =
+      files.length === 1
+        ? i18n.global.t('uploads.fileCountOne')
+        : i18n.global.t('uploads.fileCount', { count: files.length })
     if (totalChunks > 1) {
       return `${dirLabel} (${chunkIndex + 1}/${totalChunks} · ${countText})`
     }
@@ -392,34 +388,21 @@ function planMediaBatches(
 }
 
 function formatUnsupportedMessage(names: string[]): string {
-  const isZh = isZhLocale()
   if (names.length === 1) {
-    return isZh
-      ? `不支持的文件格式：${names[0]}`
-      : `Unsupported file format: ${names[0]}`
+    return i18n.global.t('uploads.unsupportedSingle', { name: names[0] })
   }
   const preview = names.slice(0, 2).join(', ') + (names.length > 2 ? '…' : '')
-  return isZh
-    ? `已跳过 ${names.length} 个不支持的文件：${preview}`
-    : `Skipped ${names.length} unsupported file(s): ${preview}`
+  return i18n.global.t('uploads.unsupportedMultiple', { count: names.length, preview })
 }
 
 function formatDirectorySkippedMessage(acceptedCount: number, skippedCount: number): string {
-  if (isZhLocale()) {
-    return `已加入 ${acceptedCount} 个文件，已跳过 ${skippedCount} 个不支持的文件`
-  }
-  return `Queued ${acceptedCount} file(s), skipped ${skippedCount} unsupported file(s)`
+  return i18n.global.t('uploads.dirSkipped', { accepted: acceptedCount, skipped: skippedCount })
 }
 
 function formatNoSupportedDirectoryFilesMessage(skippedCount: number): string {
-  if (isZhLocale()) {
-    return skippedCount > 0
-      ? `文件夹中没有支持的媒体文件（已跳过 ${skippedCount} 个文件）`
-      : '文件夹中没有支持的媒体文件'
-  }
   return skippedCount > 0
-    ? `No supported media files found in folder (skipped ${skippedCount})`
-    : 'No supported media files found in folder'
+    ? i18n.global.t('uploads.dirNoSupportedWithSkipped', { skipped: skippedCount })
+    : i18n.global.t('uploads.dirNoSupported')
 }
 
 export const useUploadStore = defineStore('uploads', () => {

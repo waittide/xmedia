@@ -115,8 +115,7 @@ const emit = defineEmits<{
 }>()
 
 const slots = useSlots()
-const { t, locale } = useI18n()
-const isZh = computed(() => locale.value.startsWith('zh'))
+const { t } = useI18n()
 
 const resolvedAspect = computed<MediaItemCardAspect>(() => {
   if (props.skeletonAspect) return props.skeletonAspect
@@ -142,9 +141,7 @@ const domainIcon = computed<Component>(() => {
 
 const resolvedTitle = computed(() => {
   if (props.title) return props.title
-  return isZh.value
-    ? `${t(`app.domains.${props.domain}`)}资源`
-    : `${t(`app.domains.${props.domain}`)} Resources`
+  return t('domainUi.domainResourcesTitle', { domain: t(`app.domains.${props.domain}`) })
 })
 
 const resolvedSearchPlaceholder = computed(() => {
@@ -165,16 +162,16 @@ const resolvedSearchPlaceholder = computed(() => {
 const resolvedEmptyTitle = computed(() => props.emptyTitle || t('common.noResults'))
 
 const resolvedFilterLabel = computed(() => {
-  const base = isZh.value ? '筛选' : 'Filter'
+  const base = t('common.filter')
   return props.activeFilterCount > 0 ? `${base} (${props.activeFilterCount})` : base
 })
 
 const resolvedFilterSheetTitle = computed(
-  () => props.filterSheetTitle || (isZh.value ? '筛选条件' : 'Filters'),
+  () => props.filterSheetTitle || t('common.filters'),
 )
 
-const resetLabel = computed(() => (isZh.value ? '重置' : 'Reset'))
-const doneLabel = computed(() => (isZh.value ? '完成' : 'Done'))
+const resetLabel = computed(() => t('common.reset'))
+const doneLabel = computed(() => t('common.done'))
 
 const hasFilterSheet = computed(() => Boolean(slots['filter-sheet']))
 const hasToolbarRow = computed(

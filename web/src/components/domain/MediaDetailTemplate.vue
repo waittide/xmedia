@@ -130,17 +130,16 @@ const emit = defineEmits<{
 }>()
 
 const slots = useSlots()
-const { locale } = useI18n()
-const isZh = computed(() => locale.value.startsWith('zh'))
+const { t } = useI18n()
 
 const descriptionExpanded = ref(false)
 const tagsExpanded = ref(false)
 const specsExpanded = ref(false)
 
-const resolvedBackLabel = computed(() => props.backLabel || (isZh.value ? '返回' : 'Back'))
+const resolvedBackLabel = computed(() => props.backLabel || t('common.back'))
 const resolvedPrimaryIcon = computed(() => props.primaryActionIcon ?? LuPlay)
 const resolvedFallbackIcon = computed(() => props.fallbackIcon ?? LuBookOpen)
-const resolvedSpecsTitle = computed(() => props.specsTitle || (isZh.value ? '详细信息' : 'Details'))
+const resolvedSpecsTitle = computed(() => props.specsTitle || t('common.details'))
 
 const hasOverflowMenu = computed(
   () => Boolean(slots['overflow-menu']) || Boolean(slots['overflow-danger']),
@@ -200,18 +199,12 @@ const visibleTags = computed(() => {
 const hiddenTagsCount = computed(() => Math.max(0, props.tags.length - MAX_COLLAPSED_TAGS))
 
 const favoriteAriaLabel = computed(() =>
-  props.favorite
-    ? isZh.value
-      ? '取消收藏'
-      : 'Remove from favorites'
-    : isZh.value
-      ? '收藏'
-      : 'Add to favorites',
+  props.favorite ? t('common.removeFavorite') : t('common.addFavorite'),
 )
 
-const moreAriaLabel = computed(() => (isZh.value ? '更多操作' : 'More actions'))
-const expandTextLabel = computed(() => (isZh.value ? '展开全部' : 'Show more'))
-const collapseTextLabel = computed(() => (isZh.value ? '收起' : 'Show less'))
+const moreAriaLabel = computed(() => t('common.moreActions'))
+const expandTextLabel = computed(() => t('common.showAll'))
+const collapseTextLabel = computed(() => t('nav.showLess'))
 const showSkeleton = useDelayedLoading(() => props.loading)
 </script>
 

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuCheck, LuCopy, LuRadio } from 'vue-icons-plus/lu'
 import { MdButton, MdCard, MdEmptyState } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 import type { MediaKind } from '@/types/api'
 import { useCopyFeedback } from './clipboard'
-import { useSettingsI18n } from './i18nHelper'
 import { DOMAIN_ICONS } from './sections'
 
 interface ProtocolEndpointRow {
@@ -24,7 +24,7 @@ const props = withDefaults(
   },
 )
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const { copiedKey, copyText } = useCopyFeedback()
 
@@ -146,16 +146,10 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
     >
       <span class="text-label-medium text-on-surface">
-        {{ tr('settings.opdsAuthModes', 'OPDS 认证', 'OPDS Auth') }}:
+        {{ t('settings.opdsAuthModes') }}:
       </span>
       <span class="text-on-surface-variant">
-        {{
-          tr(
-            'settings.opdsAuthModesVal',
-            'HTTP Basic（账户密码）或 API Key（支持本地与已入库追更资源）',
-            'HTTP Basic (password) or API Key (serves local and tracked online items)',
-          )
-        }}
+        {{ t('settings.opdsAuthModesVal') }}
       </span>
     </div>
 

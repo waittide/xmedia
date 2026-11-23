@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { LuAlertCircle, LuEye, LuEyeOff, LuLayers } from 'vue-icons-plus/lu'
 import ThemePopover from '@/components/ThemePopover.vue'
-import { useSettingsI18n } from '@/components/settings/i18nHelper'
 import { MdButton, MdCard, MdIconButton, MdTextField } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 
@@ -58,13 +58,7 @@ async function onSubmit(): Promise<void> {
             {{ t('auth.loginTitle') }}
           </h1>
           <p class="text-body-small mt-1 text-on-surface-variant">
-            {{
-              tr(
-                'auth.loginSubtitle',
-                '输入账户凭据以访问您的媒体库',
-                'Sign in with your account to access your media workspace',
-              )
-            }}
+            {{ t('auth.loginSubtitle') }}
           </p>
         </div>
 
@@ -101,11 +95,7 @@ async function onSubmit(): Promise<void> {
               <MdIconButton
                 size="sm"
                 :icon="showPassword ? LuEyeOff : LuEye"
-                :aria-label="
-                  showPassword
-                    ? tr('auth.hidePassword', '隐藏密码', 'Hide password')
-                    : tr('auth.showPassword', '显示密码', 'Show password')
-                "
+                :aria-label="showPassword ? t('auth.hidePassword') : t('auth.showPassword')"
                 @click="showPassword = !showPassword"
               />
             </template>

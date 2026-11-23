@@ -62,14 +62,12 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { t: globalT, locale } = useGlobalI18n()
+const { t: globalT } = useGlobalI18n()
 const router = useRouter()
 const appClientStore = useAppClientStore()
 const snackbarStore = useSnackbarStore()
 const uploadStore = useUploadStore()
 const playerStore = usePlayerStore()
-
-const isZh = computed(() => locale.value.startsWith('zh'))
 
 const subsonicSources = computed(() => appClientStore.subsonicSources)
 
@@ -283,8 +281,8 @@ async function applyRemoteFavorite(
     seedOnlineItemStateCache([saved])
     if (!nextFav && showUndo) {
       snackbarStore.show({
-        message: isZh.value ? '已移除收藏' : 'Removed from favorites',
-        actionLabel: isZh.value ? '撤销' : 'Undo',
+        message: globalT('common.removedFromFavorites'),
+        actionLabel: globalT('common.undo'),
         onAction: () => {
           void applyRemoteFavorite(song, true, false)
         },

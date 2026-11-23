@@ -193,9 +193,9 @@ function formatHeroDuration(secs: number): string {
 
 function formatShortBarDuration(secs: number): string {
   if (secs <= 0) return ''
-  if (secs < 60) return isZh.value ? `${secs}s` : `${secs}s`
+  if (secs < 60) return `${secs}s`
   const mins = Math.round(secs / 60)
-  if (mins < 60) return isZh.value ? `${mins}m` : `${mins}m`
+  if (mins < 60) return `${mins}m`
   const h = (secs / 3600).toFixed(secs >= 36_000 ? 0 : 1).replace(/\.0$/, '')
   return `${h}h`
 }

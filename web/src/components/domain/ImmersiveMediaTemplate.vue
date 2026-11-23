@@ -84,9 +84,8 @@ const emit = defineEmits<{
   'stage-tap': [ev: MouseEvent]
 }>()
 
-const { locale } = useI18n()
+const { t } = useI18n()
 const escapeStack = useEscapeStack()
-const isZh = computed(() => locale.value.startsWith('zh'))
 
 const stageRef = ref<HTMLElement | null>(null)
 const headerRef = ref<HTMLElement | null>(null)
@@ -106,7 +105,7 @@ const isHudVisible = computed(() =>
 )
 const isSheetOpen = computed(() => Boolean(props.activeSheet))
 
-const resolvedBackLabel = computed(() => props.backLabel || (isZh.value ? '返回' : 'Back'))
+const resolvedBackLabel = computed(() => props.backLabel || t('common.back'))
 
 const resolvedStageBgClass = computed(() => {
   if (props.stageBgClass) return props.stageBgClass

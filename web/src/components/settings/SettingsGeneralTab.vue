@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuAlertCircle, LuCheckCircle2, LuHardDrive, LuLayers } from 'vue-icons-plus/lu'
 import { MdCard } from '@/components/ui'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
-import { useSettingsI18n } from './i18nHelper'
 import { DOMAIN_ICONS } from './sections'
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const appClientStore = useAppClientStore()
 
@@ -52,13 +52,13 @@ const displayVersion = computed(
           v-else
           class="text-label-medium rounded-corner-full bg-secondary-container px-3 py-1 text-on-secondary-container"
         >
-          {{ tr('settings.serverModeBadge', '服务端模式', 'Server Mode') }}
+          {{ t('settings.serverModeBadge') }}
         </span>
       </div>
 
       <div class="flex flex-wrap items-center gap-2 border-t border-outline-variant/50 pt-3.5">
         <span class="text-label-medium mr-1 text-on-surface-variant">
-          {{ tr('settings.enabledDomainsLabel', '已启用媒体域', 'Enabled Domains') }}:
+          {{ t('settings.enabledDomainsLabel') }}:
         </span>
         <span
           v-for="kind in authStore.enabledModules"

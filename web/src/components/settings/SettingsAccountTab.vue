@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuCheck, LuCopy, LuEye, LuEyeOff, LuRotateCw, LuShieldCheck, LuUser } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
 import { MdButton, MdCard, MdIconButton, MdTextField } from '@/components/ui'
@@ -7,13 +8,12 @@ import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useCopyFeedback } from './clipboard'
-import { useSettingsI18n } from './i18nHelper'
 
 const emit = defineEmits<{
   error: [message: string]
 }>()
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
@@ -157,11 +157,7 @@ async function handleRotateApiKey(): Promise<void> {
               size="sm"
               :icon="showApiKey ? LuEyeOff : LuEye"
               :selected="showApiKey"
-              :aria-label="
-                showApiKey
-                  ? tr('settings.hideApiKey', '隐藏 API Key', 'Hide API Key')
-                  : tr('settings.showApiKey', '显示 API Key', 'Show API Key')
-              "
+              :aria-label="showApiKey ? t('settings.hideApiKey') : t('settings.showApiKey')"
               @click="showApiKey = !showApiKey"
             />
           </template>
@@ -194,16 +190,10 @@ async function handleRotateApiKey(): Promise<void> {
   <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
     <div>
       <h2 class="text-title-medium text-on-surface">
-        {{ tr('settings.changePasswordTitle', '修改密码', 'Change Password') }}
+        {{ t('settings.changePasswordTitle') }}
       </h2>
       <p class="text-body-small mt-1 text-on-surface-variant">
-        {{
-          tr(
-            'settings.changePasswordDesc',
-            '修改密码会同时刷新您的登录凭证。',
-            'Updating your password also refreshes your account credentials.',
-          )
-        }}
+        {{ t('settings.changePasswordDesc') }}
       </p>
     </div>
 

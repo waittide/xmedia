@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuCheckCircle2,
@@ -26,7 +27,6 @@ import {
 } from '@/components/ui'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useSettingsI18n } from './i18nHelper'
 
 const props = defineProps<{
   sources: OnlineSourceSummaryDto[]
@@ -38,7 +38,7 @@ const emit = defineEmits<{
   enableAdvanced: []
 }>()
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 
@@ -81,20 +81,20 @@ function healthInfo(src: OnlineSourceSummaryDto): {
 } {
   if (src.last_test_ok === true) {
     return {
-      label: tr('settings.sourceHealthOk', '正常', 'Healthy'),
+      label: t('settings.sourceHealthOk'),
       dotClass: 'bg-success',
       pillClass: 'bg-success-container text-on-success-container',
     }
   }
   if (src.last_test_ok === false) {
     return {
-      label: tr('settings.sourceHealthFailing', '异常', 'Failing'),
+      label: t('settings.sourceHealthFailing'),
       dotClass: 'bg-error',
       pillClass: 'bg-error-container text-on-error-container',
     }
   }
   return {
-    label: tr('settings.sourceHealthUntested', '未检测', 'Untested'),
+    label: t('settings.sourceHealthUntested'),
     dotClass: 'bg-outline',
     pillClass: 'bg-surface-container-high text-on-surface-variant',
   }
@@ -191,11 +191,7 @@ async function handleImportFromUrl(): Promise<void> {
       throw new Error('protocol')
     }
   } catch {
-    dialogError.value = tr(
-      'settings.sourceUrlInvalid',
-      '请输入有效的 http:// 或 https:// 订阅地址',
-      'Enter a valid http:// or https:// subscription URL',
-    )
+    dialogError.value = t('settings.sourceUrlInvalid')
     return
   }
 
@@ -219,12 +215,7 @@ async function handleImportFromUrl(): Promise<void> {
     emit('refresh')
   } catch (err) {
     const detail = extractApiError(err)
-    dialogError.value = tr(
-      'settings.sourceUrlImportFailed',
-      '无法从该地址获取 JSON（可能受跨域限制）：{detail}。请下载文件后使用本地文件导入，或开启高级模式粘贴 JSON。',
-      'Could not fetch JSON from URL (may be blocked by CORS): {detail}. Download the file to import locally or turn on Advanced mode to paste JSON.',
-      { detail },
-    )
+    dialogError.value = t('settings.sourceUrlImportFailed', { detail })
   } finally {
     urlImporting.value = false
   }
@@ -242,7 +233,7 @@ function switchToAdvanced(): void {
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant/60 px-5 py-4">
       <div class="flex items-center gap-2.5">
         <h3 class="text-title-medium text-on-surface">
-          {{ tr('settings.onlineSourcesHeading', '在线源', 'Online Sources') }}
+          {{ t('settings.onlineSourcesHeading') }}
         </h3>
         <span
           class="text-label-small rounded-corner-full bg-surface-container-high px-2.5 py-0.5 tabular-nums text-on-surface-variant"
@@ -254,7 +245,7 @@ function switchToAdvanced(): void {
       <div class="flex items-center gap-2">
         <RefreshButton size="sm" :action="() => emit('refresh')" />
         <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
-          {{ tr('settings.addSourceBtn', '添加源', 'Add Source') }}
+          {{ t('settings.addSourceBtn') }}
         </MdButton>
       </div>
     </div>
@@ -265,17 +256,11 @@ function switchToAdvanced(): void {
       compact
       :icon="LuGlobe"
       :title="t('onlineSources.panel.emptyTitle', { domain: domainLabel })"
-      :description="
-        tr(
-          'settings.onlineSourcesEmptyBasic',
-          '通过订阅链接或本地 JSON 文件添加在线源。',
-          'Add online sources from a subscription URL or local JSON file.',
-        )
-      "
+      :description="t('settings.onlineSourcesEmptyBasic')"
     >
       <template #action>
         <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
-          {{ tr('settings.addSourceBtn', '添加源', 'Add Source') }}
+          {{ t('settings.addSourceBtn') }}
         </MdButton>
       </template>
     </MdEmptyState>
@@ -345,14 +330,11 @@ function switchToAdvanced(): void {
   <!-- Add Source Dialog (Local File / Subscription URL) -->
   <MdDialog
     :open="addDialogOpen"
-    :title="tr('settings.addSourceDialogTitle', '添加在线源', 'Add Online Source')"
+    :title="t('settings.addSourceDialogTitle')"
     :subtitle="
-      tr(
-        'settings.addSourceDialogSubtitle',
-        '选择一种方式添加到「{domain}」',
-        'Choose how to add sources to {domain}',
-        { domain: t(`app.domains.${adapter.domain}`) },
-      )
+      t('settings.addSourceDialogSubtitle', {
+        domain: t(`app.domains.${adapter.domain}`),
+      })
     "
     size="sm"
     @close="!isAddBusy && (addDialogOpen = false)"
@@ -372,16 +354,10 @@ function switchToAdvanced(): void {
         <div class="min-w-0">
           <p class="text-title-small flex items-center gap-1.5 text-on-surface">
             <LuUpload class="h-4 w-4 text-primary" />
-            <span>{{ tr('settings.fileImportTitle', '本地 JSON 文件', 'Local JSON File') }}</span>
+            <span>{{ t('settings.fileImportTitle') }}</span>
           </p>
           <p class="text-body-small mt-0.5 text-on-surface-variant">
-            {{
-              tr(
-                'settings.fileImportDesc',
-                '从电脑选择 .json 源配置文件直接导入。',
-                'Select a .json source file from your device.',
-              )
-            }}
+            {{ t('settings.fileImportDesc') }}
           </p>
         </div>
         <MdButton
@@ -403,16 +379,10 @@ function switchToAdvanced(): void {
         <div>
           <p class="text-title-small flex items-center gap-1.5 text-on-surface">
             <LuLink2 class="h-4 w-4 text-primary" />
-            <span>{{ tr('settings.urlImportTitle', '从 URL 订阅导入', 'Import from URL') }}</span>
+            <span>{{ t('settings.urlImportTitle') }}</span>
           </p>
           <p class="text-body-small mt-0.5 text-on-surface-variant">
-            {{
-              tr(
-                'settings.urlImportDesc',
-                '输入返回源 JSON 的公开链接（http / https）。',
-                'Enter a public http/https link returning source JSON.',
-              )
-            }}
+            {{ t('settings.urlImportDesc') }}
           </p>
         </div>
 
@@ -434,7 +404,7 @@ function switchToAdvanced(): void {
             :disabled="isAddBusy || !subscriptionUrl.trim()"
             class="mt-0.5"
           >
-            {{ tr('settings.fetchAndAddBtn', '拉取', 'Fetch') }}
+            {{ t('settings.fetchAndAddBtn') }}
           </MdButton>
         </div>
       </form>
@@ -444,17 +414,11 @@ function switchToAdvanced(): void {
         <span class="text-body-small flex items-center gap-1.5">
           <LuCheckCircle2 class="h-3.5 w-3.5 shrink-0" />
           <span>
-            {{
-              tr(
-                'settings.needAdvancedHint',
-                '需要粘贴 JSON、编辑规则或调试？',
-                'Need to paste JSON, edit rules, or debug?',
-              )
-            }}
+            {{ t('settings.needAdvancedHint') }}
           </span>
         </span>
         <MdButton variant="text" size="sm" @click="switchToAdvanced">
-          {{ tr('settings.openAdvancedLink', '开启高级模式', 'Turn on Advanced') }}
+          {{ t('settings.openAdvancedLink') }}
         </MdButton>
       </div>
     </div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   LuFolderOpen,
@@ -28,8 +29,7 @@ import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { CoreLibraryDto, MediaKind } from '@/types/api'
-import { resolveLibraryRoute, useSettingsI18n } from './i18nHelper'
-import { DOMAIN_ICONS } from './sections'
+import { DOMAIN_ICONS, resolveLibraryRoute } from './sections'
 
 const props = withDefaults(
   defineProps<{
@@ -47,7 +47,7 @@ const emit = defineEmits<{
   'update:filterDomain': [value: 'all' | MediaKind]
 }>()
 
-const { t, tr } = useSettingsI18n()
+const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
@@ -191,11 +191,7 @@ async function handleMountLibrary(): Promise<void> {
     libPath.value = ''
     eventsStore.bumpDomain(created.media_kind)
     await refreshAdminLibraries()
-    snackbarStore.show(
-      tr('settings.libraryMountedMsg', '已挂载媒体库「{name}」', 'Mounted library "{name}"', {
-        name: created.name,
-      }),
-    )
+    snackbarStore.show(t('settings.libraryMountedMsg', { name: created.name }))
   } catch (err) {
     dialogError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -305,13 +301,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
       <LuLock class="h-5 w-5" />
     </div>
     <p class="text-title-medium text-on-surface">
-      {{
-        tr(
-          'settings.librariesAdminOnly',
-          '仅管理员可管理本地媒体库',
-          'Administrator access required to manage media libraries',
-        )
-      }}
+      {{ t('settings.librariesAdminOnly') }}
     </p>
   </MdCard>
 
@@ -361,7 +351,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
           {{ t('admin.scanAllBtn') }}
         </MdButton>
         <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
-          {{ tr('settings.addLibraryBtn', '添加文件夹', 'Add Folder') }}
+          {{ t('settings.addLibraryBtn') }}
         </MdButton>
       </div>
     </div>
@@ -372,18 +362,12 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         v-if="filteredLibraries.length === 0 && !loading"
         compact
         :icon="LuLibrary"
-        :title="
-          tr(
-            'settings.librariesEmptyTitle',
-            '尚未添加媒体库',
-            'No media libraries yet',
-          )
-        "
+        :title="t('settings.librariesEmptyTitle')"
         :description="t('admin.mountLibraryDesc')"
       >
         <template #action>
           <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
-            {{ tr('settings.addLibraryBtn', '添加文件夹', 'Add Folder') }}
+            {{ t('settings.addLibraryBtn') }}
           </MdButton>
         </template>
       </MdEmptyState>
@@ -518,13 +502,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
           :disabled="mounting"
           :label="t('admin.libraryName')"
           :placeholder="inferNameFromPath(libPath) || t('admin.libraryNamePlaceholder')"
-          :supporting-text="
-            tr(
-              'settings.libraryNameAutoHint',
-              '留空将自动使用目录名称',
-              'Leave blank to use the folder name automatically',
-            )
-          "
+          :supporting-text="t('settings.libraryNameAutoHint')"
         />
 
         <div class="rounded-corner-md bg-surface-container px-4 py-2.5">

@@ -59,8 +59,7 @@ const emit = defineEmits<{
   'toggle-favorite': [item: MediaItemVM]
 }>()
 
-const { locale } = useI18n()
-const isZh = computed(() => locale.value.startsWith('zh'))
+const { t } = useI18n()
 
 const isBlocked = computed(
   () => Boolean(props.item.badge?.blocked) || isAvailabilityBlocked(props.item.badge?.availability),
@@ -69,9 +68,9 @@ const isBlocked = computed(
 const blockedLabel = computed(() => {
   if (!isBlocked.value) return ''
   if (props.item.badge?.availability === 'source_missing') {
-    return isZh.value ? '来源已删除' : 'Source missing'
+    return t('common.sourceMissing')
   }
-  return isZh.value ? '来源已停用' : 'Source disabled'
+  return t('common.sourceDisabled')
 })
 
 const resolvedTo = computed<RouteLocationRaw | undefined>(() => {
@@ -146,16 +145,10 @@ const sourceBadgeText = computed(() => {
 const shouldShowFavorite = computed(() => props.showFavorite || props.favorite !== undefined)
 
 const favoriteAriaLabel = computed(() =>
-  props.favorite
-    ? isZh.value
-      ? '取消收藏'
-      : 'Remove from favorites'
-    : isZh.value
-      ? '收藏'
-      : 'Add to favorites',
+  props.favorite ? t('common.removeFavorite') : t('common.addFavorite'),
 )
 
-const moreAriaLabel = computed(() => (isZh.value ? '更多操作' : 'More actions'))
+const moreAriaLabel = computed(() => t('common.moreActions'))
 
 function onPrimaryClick(): void {
   if (props.disabled) return

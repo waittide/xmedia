@@ -50,7 +50,7 @@ interface SecondaryTab {
   to: RouteLocationRaw
 }
 
-const { t, te, locale } = useI18n()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const appClientStore = useAppClientStore()
@@ -92,12 +92,6 @@ watch(
 function onMainScroll(ev: Event): void {
   const el = ev.target as HTMLElement | null
   isContentScrolled.value = Boolean(el && el.scrollTop > 4)
-}
-
-const isZh = computed(() => String(locale.value).startsWith('zh'))
-
-function tr(key: string, zh: string, en: string): string {
-  return te(key) ? t(key) : isZh.value ? zh : en
 }
 
 const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
@@ -155,14 +149,14 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
   return [
     {
       key: 'home',
-      label: tr('nav.home', '首页', 'Home'),
+      label: t('nav.home'),
       icon: LuHome,
       active: isHome,
       to: `/${d}`,
     },
     {
       key: 'library',
-      label: tr('nav.library', '资源', 'Resources'),
+      label: t('nav.library'),
       icon: LuLibrary,
       active: isLibrary,
       to: useCanonical ? `/${d}/library` : legacyCatalogPath(d),
@@ -178,14 +172,14 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
     },
     {
       key: 'history',
-      label: tr('nav.history', '历史', 'History'),
+      label: t('nav.history'),
       icon: LuHistory,
       active: isHistory,
       to: `/${d}/history`,
     },
     {
       key: 'settings',
-      label: tr('nav.domainSettings', '设置', 'Settings'),
+      label: t('nav.domainSettings'),
       icon: LuSettings,
       active: isDomainSettings,
       to: `/${d}/settings`,

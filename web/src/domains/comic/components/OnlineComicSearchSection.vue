@@ -44,7 +44,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { locale } = useGlobalI18n()
+const { t: globalT } = useGlobalI18n()
 const snackbar = useSnackbarStore()
 
 const togglingKeys = ref(new Set<string>())
@@ -176,10 +176,9 @@ async function applyFavorite(vm: MediaItemVM, nextFavorite: boolean, showUndo: b
     seedOnlineItemStateCache([saved])
 
     if (!nextFavorite && showUndo) {
-      const isZh = locale.value.startsWith('zh')
       snackbar.show({
-        message: isZh ? '已移除收藏' : 'Removed from favorites',
-        actionLabel: isZh ? '撤销' : 'Undo',
+        message: globalT('common.removedFromFavorites'),
+        actionLabel: globalT('common.undo'),
         onAction: async () => {
           await applyFavorite(vm, true, false)
         },

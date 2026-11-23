@@ -501,7 +501,7 @@ export function useMergedShelf(
   const autoLoad = options.autoLoad ?? true
   const limit = options.limit ?? 50
   const appClientStore = useAppClientStore()
-  const { locale } = useI18n()
+  const { t } = useI18n()
 
   const rawItems = ref<MediaItemVM[]>([])
   const loading = ref(false)
@@ -537,10 +537,9 @@ export function useMergedShelf(
 
     const includeLocal = scope === 'all' || scope === 'local'
     const includeOnlineOrRemote = scope === 'all' || scope === 'online' || scope === 'remote'
-    const isZh = locale.value === 'zh-CN'
     const blockedLabels = {
-      disabled: isZh ? '来源已停用' : 'Source disabled',
-      missing: isZh ? '来源已删除' : 'Source removed',
+      disabled: t('common.sourceDisabled'),
+      missing: t('common.sourceMissing'),
     }
 
     try {
