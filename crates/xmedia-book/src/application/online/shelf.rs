@@ -56,9 +56,9 @@ impl BookOnlineService {
         mut input: AddOnlineShelfInput,
     ) -> DomainResult<OnlineShelfBookDto> {
         let src = self.load_source_for_actor(actor, input.source_id).await?;
-        input.book_url = Self::validate_caller_http_url(&input.book_url, &src.raw_json)?;
+        input.book_url = Self::validate_caller_source_url(&input.book_url, &src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
-            input.toc_url = Self::validate_caller_http_url(&input.toc_url, &src.raw_json)?;
+            input.toc_url = Self::validate_caller_source_url(&input.toc_url, &src.raw_json)?;
         }
         if let Some(ref cover_url) = input.cover_url
             && !cover_url.trim().is_empty()
@@ -151,13 +151,13 @@ impl BookOnlineService {
             .map(|s| s.raw_json.as_str())
             .unwrap_or("");
         if let Some(book_url) = input.book_url {
-            rec.book_url = Self::validate_caller_http_url(&book_url, raw_json_ref)?;
+            rec.book_url = Self::validate_caller_source_url(&book_url, raw_json_ref)?;
         }
         if let Some(toc_url) = input.toc_url {
             rec.toc_url = if toc_url.trim().is_empty() {
                 String::new()
             } else {
-                Self::validate_caller_http_url(&toc_url, raw_json_ref)?
+                Self::validate_caller_source_url(&toc_url, raw_json_ref)?
             };
         }
         if let Some(idx) = input.current_chapter_index {

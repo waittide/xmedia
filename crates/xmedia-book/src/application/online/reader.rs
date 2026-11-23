@@ -259,6 +259,59 @@ impl BookOnlineService {
         xmedia_source::http::resolve_literal_http_url(raw, base.as_deref())
     }
 
+    /// Validates caller-supplied `book_url` / `toc_url` / `chapter_url`.
+    ///
+    /// Literal `http://` / `https://` URLs are validated strictly (no caller-injected Legado HTTP
+    /// request options). Legado `data:` pseudo-URLs (optionally carrying `{"type": "..."}` metadata)
+    /// are allowed ONLY when the target book source itself declares `data:` pseudo-URL rules, and
+    /// never execute outbound HTTP requests or HTTP request options (`method`/`headers`/`body`).
+    pub(super) fn validate_caller_source_url(raw: &str, raw_json: &str) -> DomainResult<String> {
+        const MAX_DATA_URL_BYTES: usize = 256 * 1024;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::Validation("URL 不能为空".to_string()));
+        }
+
+        if trimmed
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+        {
+            let parsed_src = serde_json::from_str::<LegadoBookSource>(raw_json).ok();
+            if !parsed_src
+                .as_ref()
+                .is_some_and(LegadoBookSource::supports_data_pseudo_urls)
+            {
+                return Err(DomainError::Validation(
+                    "该接口不接受 data: URL".to_string(),
+                ));
+            }
+            if trimmed.len() > MAX_DATA_URL_BYTES {
+                return Err(DomainError::Validation(
+                    "data: URL 长度超出限制".to_string(),
+                ));
+            }
+            let parsed_url = xmedia_source::http::parse_legado_url(trimmed);
+            if parsed_url.options.method.is_some()
+                || parsed_url.options.headers.is_some()
+                || parsed_url.options.body.is_some()
+                || parsed_url.options.web_view.is_some()
+            {
+                return Err(DomainError::Validation(
+                    "data: URL 不允许携带 HTTP 请求配置选项".to_string(),
+                ));
+            }
+            match xmedia_source::http::try_resolve_data_url(&parsed_url) {
+                Some(Ok(_)) => return Ok(trimmed.to_string()),
+                Some(Err(err)) => return Err(DomainError::Validation(err)),
+                None => {
+                    return Err(DomainError::Validation("无效的 data: URL".to_string()));
+                }
+            }
+        }
+
+        Self::validate_caller_http_url(trimmed, raw_json)
+    }
+
     pub async fn fetch_book_info(
         &self,
         actor: &User,
@@ -267,13 +320,13 @@ impl BookOnlineService {
         fallback_hint: Option<BookJsContext>,
     ) -> DomainResult<OnlineBookDetailResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let clean_book_url = Self::validate_caller_http_url(book_url, &rec.raw_json)?;
+        let clean_book_url = Self::validate_caller_source_url(book_url, &rec.raw_json)?;
         if let Some(ref hint) = fallback_hint {
             if !hint.book_url.trim().is_empty() {
-                Self::validate_caller_http_url(&hint.book_url, &rec.raw_json)?;
+                Self::validate_caller_source_url(&hint.book_url, &rec.raw_json)?;
             }
             if !hint.toc_url.trim().is_empty() {
-                Self::validate_caller_http_url(&hint.toc_url, &rec.raw_json)?;
+                Self::validate_caller_source_url(&hint.toc_url, &rec.raw_json)?;
             }
         }
         self.fetch_book_info_internal(rec, &clean_book_url, fallback_hint, actor.role.is_admin())
@@ -365,12 +418,12 @@ impl BookOnlineService {
         book_ctx: BookJsContext,
     ) -> DomainResult<OnlineTocResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let clean_toc_url = Self::validate_caller_http_url(toc_url, &rec.raw_json)?;
+        let clean_toc_url = Self::validate_caller_source_url(toc_url, &rec.raw_json)?;
         if !book_ctx.book_url.trim().is_empty() {
-            Self::validate_caller_http_url(&book_ctx.book_url, &rec.raw_json)?;
+            Self::validate_caller_source_url(&book_ctx.book_url, &rec.raw_json)?;
         }
         if !book_ctx.toc_url.trim().is_empty() {
-            Self::validate_caller_http_url(&book_ctx.toc_url, &rec.raw_json)?;
+            Self::validate_caller_source_url(&book_ctx.toc_url, &rec.raw_json)?;
         }
         self.fetch_toc_internal(rec, &clean_toc_url, book_ctx, actor.role.is_admin())
             .await
@@ -497,15 +550,15 @@ impl BookOnlineService {
         force_refresh: bool,
     ) -> DomainResult<OnlineContentResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let clean_chapter_url = Self::validate_caller_http_url(chapter_url, &rec.raw_json)?;
+        let clean_chapter_url = Self::validate_caller_source_url(chapter_url, &rec.raw_json)?;
         if !book_ctx.book_url.trim().is_empty() {
-            Self::validate_caller_http_url(&book_ctx.book_url, &rec.raw_json)?;
+            Self::validate_caller_source_url(&book_ctx.book_url, &rec.raw_json)?;
         }
         if !book_ctx.toc_url.trim().is_empty() {
-            Self::validate_caller_http_url(&book_ctx.toc_url, &rec.raw_json)?;
+            Self::validate_caller_source_url(&book_ctx.toc_url, &rec.raw_json)?;
         }
         if !chapter_ctx.url.trim().is_empty() {
-            Self::validate_caller_http_url(&chapter_ctx.url, &rec.raw_json)?;
+            Self::validate_caller_source_url(&chapter_ctx.url, &rec.raw_json)?;
         }
         self.fetch_chapter_content_internal(
             rec,

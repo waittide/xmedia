@@ -78,9 +78,9 @@ impl BookOnlineService {
     ) -> DomainResult<BookSummaryDto> {
         require_admin(actor)?;
         let src = self.load_source(input.source_id).await?;
-        input.book_url = Self::validate_caller_http_url(&input.book_url, &src.raw_json)?;
+        input.book_url = Self::validate_caller_source_url(&input.book_url, &src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
-            input.toc_url = Self::validate_caller_http_url(&input.toc_url, &src.raw_json)?;
+            input.toc_url = Self::validate_caller_source_url(&input.toc_url, &src.raw_json)?;
         }
         if let Some(ref cover_url) = input.cover_url
             && !cover_url.trim().is_empty()
@@ -626,9 +626,9 @@ impl BookOnlineService {
     ) -> DomainResult<TrackedTocResponseDto> {
         require_admin(actor)?;
         let new_src = self.load_source(input.source_id).await?;
-        input.book_url = Self::validate_caller_http_url(&input.book_url, &new_src.raw_json)?;
+        input.book_url = Self::validate_caller_source_url(&input.book_url, &new_src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
-            input.toc_url = Self::validate_caller_http_url(&input.toc_url, &new_src.raw_json)?;
+            input.toc_url = Self::validate_caller_source_url(&input.toc_url, &new_src.raw_json)?;
         }
         if let Some(ref cover_url) = input.cover_url
             && !cover_url.trim().is_empty()

@@ -189,6 +189,52 @@ impl LegadoBookSource {
     pub fn parse_concurrent_rate(&self) -> Option<ConcurrentRateSpec> {
         parse_concurrent_rate(self.concurrent_rate.as_deref())
     }
+
+    /// Returns `true` when this Legado book source uses `data:` pseudo-URLs (e.g.
+    /// `data:;base64,...,{"type":"gydetail"}`) to pass structured state between stages.
+    pub fn supports_data_pseudo_urls(&self) -> bool {
+        fn has_data_marker(opt: Option<&str>) -> bool {
+            let Some(raw) = opt else {
+                return false;
+            };
+            let lower = raw.to_ascii_lowercase();
+            lower.contains("data:") || lower.contains("hexdecodetostring")
+        }
+
+        if has_data_marker(self.search_url.as_deref())
+            || has_data_marker(self.explore_url.as_deref())
+            || has_data_marker(self.js_lib.as_deref())
+        {
+            return true;
+        }
+        if let Some(ref r) = self.rule_search
+            && (has_data_marker(r.book_list.as_deref()) || has_data_marker(r.book_url.as_deref()))
+        {
+            return true;
+        }
+        if let Some(ref r) = self.rule_explore
+            && (has_data_marker(r.book_list.as_deref()) || has_data_marker(r.book_url.as_deref()))
+        {
+            return true;
+        }
+        if let Some(ref r) = self.rule_book_info
+            && (has_data_marker(r.init.as_deref()) || has_data_marker(r.toc_url.as_deref()))
+        {
+            return true;
+        }
+        if let Some(ref r) = self.rule_toc
+            && (has_data_marker(r.chapter_list.as_deref())
+                || has_data_marker(r.chapter_url.as_deref()))
+        {
+            return true;
+        }
+        if let Some(ref r) = self.rule_content
+            && (has_data_marker(r.content.as_deref()) || has_data_marker(r.title.as_deref()))
+        {
+            return true;
+        }
+        false
+    }
 }
 
 /// Context about the current book passed to JS rules (`book` global object).

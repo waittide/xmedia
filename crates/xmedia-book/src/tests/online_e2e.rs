@@ -1101,6 +1101,168 @@ async fn caller_supplied_book_urls_reject_legado_options_and_data_urls_with_400(
             );
         }
     }
+
+    // Legado JS aggregator sources using data: pseudo-URLs must work end-to-end, while still
+    // rejecting HTTP request options injected onto data: URLs.
+    let js_src_json = serde_json::json!([{
+        "bookSourceName": "DataPseudoSource",
+        "bookSourceUrl": "聚合源",
+        "searchUrl": "<js>`data:;base64,${java.base64Encode(JSON.stringify({k:key}))},{\"type\":\"gysearch\"}`</js>",
+        "ruleSearch": {
+            "bookList": "<js>JSON.stringify([{id:'b1',name:'测试书'}])</js>$[*]",
+            "name": "$.name",
+            "bookUrl": "<js>`data:;base64,${java.base64Encode(JSON.stringify({id:result.id}))},{\"type\":\"gydetail\"}`</js>"
+        },
+        "ruleBookInfo": {
+            "init": "<js>const r = JSON.parse(java.hexDecodeToString(result)); JSON.stringify({id:r.id,name:'测试书',author:'作者'})</js>",
+            "name": "$.name",
+            "author": "$.author",
+            "tocUrl": "<js>`data:;base64,${java.base64Encode(JSON.stringify({id:result.id}))},{\"type\":\"gycatalog\"}`</js>"
+        },
+        "ruleToc": {
+            "chapterList": "<js>const r = JSON.parse(java.hexDecodeToString(result)); JSON.stringify([{title:'第一章',cid:r.id+'_1'}])</js>$[*]",
+            "chapterName": "$.title",
+            "chapterUrl": "<js>`data:;base64,${java.base64Encode(JSON.stringify({cid:result.cid,title:result.title}))},{\"type\":\"gycontent\",\"js\":\"book ? result : ''\"}`</js>"
+        },
+        "ruleContent": {
+            "title": "<js>JSON.parse(java.hexDecodeToString(result)).title</js>",
+            "content": "<js>const r = JSON.parse(java.hexDecodeToString(result)); '正文:' + r.cid</js>"
+        }
+    }]);
+    let js_imp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/sources/import")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({ "raw_json": js_src_json.to_string() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(js_imp.status(), StatusCode::OK);
+    let js_imp_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(js_imp.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let js_sid = js_imp_body["sources"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let b64_book =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, r#"{"id":"b1"}"#);
+    let book_data_url = format!(r#"data:;base64,{b64_book},{{"type":"gydetail"}}"#);
+
+    let info_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/online/book-info")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({
+                        "source_id": js_sid,
+                        "book_url": book_data_url
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(info_res.status(), StatusCode::OK);
+    let info_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(info_res.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    let toc_data_url = info_body["detail"]["toc_url"].as_str().unwrap().to_string();
+    assert!(toc_data_url.starts_with("data:;base64,"));
+
+    let toc_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/online/toc")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({
+                        "source_id": js_sid,
+                        "toc_url": toc_data_url,
+                        "book_url": book_data_url
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(toc_res.status(), StatusCode::OK);
+    let toc_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(toc_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let ch_data_url = toc_body["chapters"][0]["url"].as_str().unwrap().to_string();
+    assert!(ch_data_url.starts_with("data:;base64,"));
+
+    let content_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/online/content")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({
+                        "source_id": js_sid,
+                        "chapter_url": ch_data_url,
+                        "book_url": book_data_url,
+                        "toc_url": toc_data_url
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(content_res.status(), StatusCode::OK);
+    let content_body: serde_json::Value = serde_json::from_slice(
+        &to_bytes(content_res.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        content_body["content"]["content"].as_str().unwrap(),
+        "正文:b1_1"
+    );
+
+    // Even on data:-capable sources, HTTP request options on data: URLs are rejected.
+    let bad_data_opts = format!(r#"data:;base64,{b64_book},{{"method":"POST"}}"#);
+    let bad_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/online/book-info")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({
+                        "source_id": js_sid,
+                        "book_url": bad_data_opts
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_res.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
