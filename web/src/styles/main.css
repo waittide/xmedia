@@ -566,6 +566,7 @@ a,
   }
 
   .md-state:hover:not(:disabled):not([aria-disabled="true"])::after,
+  .group:hover > .md-state-target::after,
   .md-btn:hover:not(:disabled)::after,
   .md-icon-btn:hover:not(:disabled)::after,
   .md-chip:hover:not(:disabled)::after {
@@ -573,6 +574,7 @@ a,
   }
 
   .md-state:focus-visible::after,
+  .group:focus-visible > .md-state-target::after,
   .md-btn:focus-visible::after,
   .md-icon-btn:focus-visible::after,
   .md-chip:focus-visible::after {
@@ -580,10 +582,11 @@ a,
   }
 
   .md-state:active:not(:disabled):not([aria-disabled="true"])::after,
+  .group:active > .md-state-target::after,
   .md-btn:active:not(:disabled)::after,
   .md-icon-btn:active:not(:disabled)::after,
   .md-chip:active:not(:disabled)::after {
-    opacity: 0.12;
+    opacity: 0.1;
   }
 
   .md-state[data-dragging="true"]::after,
@@ -856,18 +859,18 @@ a,
 }
 
 /* Coordinate teleported Snackbar vertical clearance with Grid PlayerBar and MD3 Navigation Bar.
-   Uses the MD3 Medium/Expanded boundary (840px) matching `md:`. */
+   Uses the MD3 Compact/Medium boundary (600px) matching `sm:`. */
 :root {
   --md-snackbar-bottom: 1.5rem;
 }
 
-@media (min-width: 840px) {
+@media (min-width: 600px) {
   :root:has([data-workspace-shell][data-has-player="1"]) {
     --md-snackbar-bottom: calc(var(--player-bar-h) + 1rem);
   }
 }
 
-@media (max-width: 839.98px) {
+@media (max-width: 599.98px) {
   :root:has([data-mobile-bottom-nav]) {
     --md-snackbar-bottom: 5.75rem;
   }
@@ -972,17 +975,7 @@ a,
 
 @layer components {
   .album-shadow {
-    box-shadow:
-      0 10px 25px -5px rgb(0 0 0 / 0.22),
-      0 4px 10px -4px rgb(0 0 0 / 0.14),
-      inset 0 1px 1px rgb(255 255 255 / 0.15);
-  }
-
-  :root[data-theme="dark"] .album-shadow {
-    box-shadow:
-      0 14px 30px -6px rgb(0 0 0 / 0.55),
-      0 4px 12px -3px rgb(0 0 0 / 0.4),
-      inset 0 1px 1px rgb(255 255 255 / 0.08);
+    box-shadow: var(--md-sys-elevation-1);
   }
 
   /* BeePub-inspired 3D book & comic cover shadow */

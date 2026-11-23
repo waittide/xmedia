@@ -78,7 +78,7 @@ watch(tasksDrawerOpen, (isOpen) => {
 })
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
 const desktopMediaQuery =
-  typeof window !== 'undefined' ? window.matchMedia('(min-width: 840px)') : null
+  typeof window !== 'undefined' ? window.matchMedia('(min-width: 600px)') : null
 const isDesktop = ref(desktopMediaQuery ? desktopMediaQuery.matches : true)
 function handleDesktopBreakpointChange(ev: MediaQueryListEvent): void {
   isDesktop.value = ev.matches

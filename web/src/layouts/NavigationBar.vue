@@ -18,10 +18,10 @@ const { t } = useI18n()
 
 <template>
   <nav
-    v-if="domainTabs.length > 0"
+    v-if="domainTabs.length > 1"
     data-mobile-bottom-nav
     :aria-label="t('nav.navigation')"
-    class="safe-pb safe-px relative z-20 shrink-0 border-t border-outline-variant bg-surface-container select-none md:hidden"
+    class="safe-pb safe-px relative z-20 shrink-0 bg-surface-container select-none sm:hidden"
   >
     <div
       class="grid h-20 items-center"
@@ -37,7 +37,7 @@ const { t } = useI18n()
         @click="emit('switchDomain', tab.kind)"
       >
         <span
-          class="md-state flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          class="md-state md-state-target flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             !isSettingsRoute && activeDomain === tab.kind
               ? 'bg-secondary-container text-on-secondary-container'

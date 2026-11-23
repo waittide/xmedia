@@ -84,18 +84,18 @@ const showSearchBox = computed(() => props.searchable || props.options.length > 
 
 const triggerVariantClass = computed(() => {
   if (props.variant === 'inline') {
-    return 'bg-transparent text-label-large text-on-surface-variant hover:text-on-surface'
+    return 'md-touch-target bg-transparent text-label-large text-on-surface-variant hover:text-on-surface'
   }
   const shape =
     props.variant === 'compact'
-      ? 'h-8 px-3 text-label-medium'
+      ? 'md-touch-target h-8 px-3 text-label-medium'
       : props.size === 'sm'
-        ? 'h-9 w-full px-3 text-body-medium'
+        ? 'md-touch-target h-9 w-full px-3 text-body-medium'
         : 'h-11 w-full px-3.5 text-body-medium'
   const border = open.value
     ? 'border-primary ring-1 ring-primary'
     : 'border-outline-variant hover:border-outline'
-  return `${shape} rounded-corner-md border bg-surface-container-lowest text-on-surface ${border}`
+  return `${shape} rounded-corner-xs border bg-surface-container-lowest text-on-surface ${border}`
 })
 
 function updatePosition(): void {
@@ -282,7 +282,7 @@ onBeforeUnmount(unbindGlobalListeners)
         ref="menuRef"
         role="listbox"
         :style="menuStyle"
-        class="z-[var(--z-popover)] overflow-hidden rounded-corner-md bg-surface-container p-1.5 text-on-surface shadow-elevation-2"
+        class="z-[var(--z-popover)] overflow-hidden rounded-corner-xs bg-surface-container py-2 px-1 text-on-surface shadow-elevation-2"
         @keydown="onMenuKeydown"
       >
         <div v-if="showSearchBox" class="relative mb-1.5 px-1 pt-0.5">
@@ -295,7 +295,7 @@ onBeforeUnmount(unbindGlobalListeners)
             v-model="query"
             type="text"
             :placeholder="searchPlaceholder || t('common.filterPlaceholder')"
-            class="text-body-small h-8 w-full rounded-corner-sm border border-outline-variant bg-surface-container-lowest pr-2.5 pl-8 text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            class="text-body-small h-8 w-full rounded-corner-xs border border-outline-variant bg-surface-container-lowest pr-2.5 pl-8 text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:border-primary focus:ring-1 focus:ring-primary"
           />
         </div>
 
@@ -307,7 +307,7 @@ onBeforeUnmount(unbindGlobalListeners)
             type="button"
             role="option"
             :aria-selected="opt.value === modelValue"
-            class="md-state text-body-medium flex min-h-10 w-full cursor-pointer items-center justify-between gap-3 rounded-corner-sm px-3 py-2 text-left"
+            class="md-state text-body-medium flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 rounded-corner-xs px-3 py-2 text-left"
             :class="[
               opt.value === modelValue
                 ? 'bg-secondary-container text-on-secondary-container'

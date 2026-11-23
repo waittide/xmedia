@@ -44,7 +44,7 @@ const dashOffset = computed(() => circumference.value * (1 - clampedRatio.value)
     :height="size"
     :viewBox="`0 0 ${size} ${size}`"
     class="shrink-0"
-    :class="isIndeterminate ? 'animate-spin' : ''"
+    :class="isIndeterminate ? 'animate-spin motion-reduce:animate-pulse' : ''"
   >
     <circle
       :cx="size / 2"
@@ -66,7 +66,7 @@ const dashOffset = computed(() => circumference.value * (1 - clampedRatio.value)
       :transform="`rotate(-90 ${size / 2} ${size / 2})`"
       :stroke-dasharray="circumference"
       :stroke-dashoffset="dashOffset"
-      class="transition-[stroke-dashoffset] duration-[var(--md-sys-motion-duration-medium)] ease-[var(--md-sys-motion-easing-standard)]"
+      class="transition-[stroke-dashoffset] duration-300 ease-standard"
     />
     <circle
       v-else

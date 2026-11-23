@@ -257,7 +257,7 @@ defineExpose({ open: () => setOpen(true), close, toggle, updatePosition })
         tabindex="-1"
         :aria-label="ariaLabel"
         :style="menuStyle"
-        class="z-[var(--z-popover)] overflow-y-auto rounded-corner-lg border border-outline-variant/40 bg-surface-container p-1.5 text-on-surface shadow-elevation-2 outline-none"
+        class="z-[var(--z-popover)] overflow-y-auto rounded-corner-xs bg-surface-container py-2 px-1 text-on-surface shadow-elevation-2 outline-none"
         @keydown="onMenuKeydown"
       >
         <slot :close="() => close(true)" />

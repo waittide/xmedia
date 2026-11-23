@@ -49,7 +49,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
   <Transition name="md-fade">
     <div
       v-if="mobileMenuOpen"
-      class="fixed inset-0 z-30 bg-[var(--md-sys-color-scrim)]/32 md:hidden"
+      class="fixed inset-0 z-30 bg-scrim/32 sm:hidden"
       @click="emit('closeMobile')"
     />
   </Transition>
@@ -59,29 +59,29 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
     :role="mobileMenuOpen ? 'dialog' : undefined"
     :aria-modal="mobileMenuOpen ? 'true' : undefined"
     :aria-label="txt.brand"
-    class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none md:static"
+    class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-surface-container transition-[width,transform] duration-200 ease-standard select-none sm:static"
     :class="[
       mobileMenuOpen
-        ? 'w-72 translate-x-0 rounded-r-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-1)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
-        : '-translate-x-full md:translate-x-0',
-      collapsed ? 'md:w-20' : 'md:w-64',
+        ? 'w-72 translate-x-0 rounded-r-corner-lg bg-surface-container-low shadow-elevation-1 sm:rounded-none sm:bg-surface-container sm:shadow-none'
+        : '-translate-x-full sm:translate-x-0',
+      collapsed ? 'sm:w-20' : 'sm:w-64',
     ]"
   >
     <!-- Mobile 4-Domain Switcher Pills -->
-    <div class="grid grid-cols-2 gap-1.5 px-3 pt-3 pb-2 md:hidden">
+    <div class="grid grid-cols-2 gap-1.5 px-3 pt-3 pb-2 sm:hidden">
       <button
         v-for="tab in domainTabs"
         :key="`mob-${tab.value}`"
         type="button"
-        class="md-state flex items-center justify-center gap-1.5 rounded-full px-3 py-2 text-xs font-semibold"
+        class="md-state text-label-large flex min-h-10 cursor-pointer items-center justify-center gap-1.5 rounded-corner-full px-3 py-2"
         :class="
           activeDomain === tab.value
-            ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-            : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
+            ? 'bg-secondary-container text-on-secondary-container'
+            : 'bg-surface-container-high text-on-surface-variant'
         "
         @click="emit('switchDomain', tab.value)"
       >
-        <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
+        <component :is="tab.icon" class="h-4 w-4 shrink-0" aria-hidden="true" />
         <span class="truncate">{{ tab.label }}</span>
       </button>
     </div>
@@ -89,30 +89,26 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
     <!-- COMPACT MODE: MD3 Navigation Rail -->
     <nav
       v-if="isCompact"
-      class="hidden flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-2 pb-4 md:flex"
+      class="hidden flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-2 pb-4 sm:flex"
     >
       <button
         type="button"
-        class="md-state group flex w-full flex-col items-center gap-1 rounded-2xl py-1 text-xs font-medium"
+        class="group flex w-full cursor-pointer flex-col items-center gap-1 py-1 outline-none"
         @click="emit('navigatePrimary', 'home')"
       >
         <span
-          class="md-state flex h-8 w-14 items-center justify-center rounded-full transition"
+          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             activeNav === 'home'
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : 'text-on-surface-variant group-hover:text-on-surface'
           "
         >
-          <LuHome class="h-[18px] w-[18px]" />
+          <LuHome class="h-5 w-5" aria-hidden="true" />
         </span>
         <span
-          class="truncate"
-          :class="
-            activeNav === 'home'
-              ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)]'
-          "
+          class="text-label-medium truncate"
+          :class="activeNav === 'home' ? 'text-on-surface' : 'text-on-surface-variant'"
         >
           {{ txt.nav.home }}
         </span>
@@ -120,32 +116,30 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
 
       <button
         type="button"
-        class="md-state group flex w-full flex-col items-center gap-1 rounded-2xl py-1 text-xs font-medium"
+        class="group flex w-full cursor-pointer flex-col items-center gap-1 py-1 outline-none"
         @click="emit('navigatePrimary', 'items')"
       >
         <span
-          class="md-state flex h-8 w-14 items-center justify-center rounded-full transition"
+          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             activeNav === 'items' && !activeRootId
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : 'text-on-surface-variant group-hover:text-on-surface'
           "
         >
-          <LuLibrary class="h-[18px] w-[18px]" />
+          <LuLibrary class="h-5 w-5" aria-hidden="true" />
         </span>
         <span
-          class="truncate"
+          class="text-label-medium truncate"
           :class="
-            activeNav === 'items' && !activeRootId
-              ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)]'
+            activeNav === 'items' && !activeRootId ? 'text-on-surface' : 'text-on-surface-variant'
           "
         >
           {{ txt.nav.items }}
         </span>
       </button>
 
-      <div class="my-1 h-px w-8 bg-[var(--md-sys-color-outline-variant)]/60" />
+      <div class="my-1 h-px w-8 bg-outline-variant/60" />
 
       <button
         type="button"
@@ -154,7 +148,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
         :aria-label="txt.roots.title"
         @click="emit('openSettingsRoots')"
       >
-        <LuHardDrive class="h-[18px] w-[18px]" />
+        <LuHardDrive class="h-5 w-5" aria-hidden="true" />
       </button>
     </nav>
 
@@ -165,31 +159,31 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
     >
       <button
         type="button"
-        class="md-state flex h-11 w-full items-center gap-3 rounded-full px-4 text-[13px] font-medium"
+        class="md-state text-label-large flex h-14 w-full cursor-pointer items-center gap-3 rounded-corner-full px-4"
         :class="
           activeNav === 'home'
-            ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-            : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+            ? 'bg-secondary-container text-on-secondary-container'
+            : 'text-on-surface-variant hover:text-on-surface'
         "
         @click="emit('navigatePrimary', 'home')"
       >
-        <LuHome class="h-[18px] w-[18px] shrink-0" />
+        <LuHome class="h-5 w-5 shrink-0" aria-hidden="true" />
         <span class="truncate">{{ txt.nav.home }}</span>
       </button>
 
       <button
         type="button"
-        class="md-state flex h-11 w-full items-center gap-3 rounded-full px-4 text-[13px] font-medium"
+        class="md-state text-label-large flex h-14 w-full cursor-pointer items-center gap-3 rounded-corner-full px-4"
         :class="
           activeNav === 'items' && !activeRootId
-            ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-            : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+            ? 'bg-secondary-container text-on-secondary-container'
+            : 'text-on-surface-variant hover:text-on-surface'
         "
         @click="emit('navigatePrimary', 'items')"
       >
-        <LuLibrary class="h-[18px] w-[18px] shrink-0" />
+        <LuLibrary class="h-5 w-5 shrink-0" aria-hidden="true" />
         <span class="flex-1 truncate text-left">{{ txt.nav.items }}</span>
-        <span class="font-mono text-[11px] opacity-75">{{ totalItems }}</span>
+        <span class="text-label-medium font-mono tabular-nums opacity-80">{{ totalItems }}</span>
       </button>
 
       <!-- Mounted Directories -->
@@ -197,11 +191,11 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
         <div class="mb-1 flex items-center justify-between px-3">
           <button
             type="button"
-            class="flex min-w-0 flex-1 items-center gap-1 py-1 text-left text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase transition hover:text-[var(--md-sys-color-on-surface)]"
+            class="text-label-medium flex min-w-0 flex-1 cursor-pointer items-center gap-1 py-1.5 text-left tracking-wider text-on-surface-variant uppercase transition-colors hover:text-on-surface"
             @click="rootsFolded = !rootsFolded"
           >
-            <LuChevronRight v-if="rootsFolded" class="h-3.5 w-3.5 shrink-0" />
-            <LuChevronDown v-else class="h-3.5 w-3.5 shrink-0" />
+            <LuChevronRight v-if="rootsFolded" class="h-4 w-4 shrink-0" aria-hidden="true" />
+            <LuChevronDown v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
             <span class="truncate">{{ txt.roots.title }}</span>
           </button>
           <button
@@ -211,7 +205,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
             :aria-label="txt.roots.add"
             @click="emit('openSettingsRoots')"
           >
-            <LuFolderPlus class="h-3.5 w-3.5" />
+            <LuFolderPlus class="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
 
@@ -219,10 +213,10 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
           <button
             v-if="domainRoots.length === 0"
             type="button"
-            class="md-state flex w-full items-center gap-2 rounded-2xl border border-dashed border-[var(--md-sys-color-outline-variant)] px-3.5 py-2.5 text-left text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            class="md-state text-body-medium flex w-full cursor-pointer items-center gap-2 rounded-corner-md border border-dashed border-outline-variant px-3.5 py-2.5 text-left text-on-surface-variant"
             @click="emit('openSettingsRoots')"
           >
-            <LuFolderPlus class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-primary)]" />
+            <LuFolderPlus class="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
             <span>{{ txt.roots.add }}</span>
           </button>
 
@@ -230,16 +224,16 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
             v-for="r in domainRoots"
             :key="r.id"
             type="button"
-            class="md-state flex h-10 w-full items-center gap-2.5 rounded-full px-3.5 text-xs font-medium"
+            class="md-state text-label-large flex h-12 w-full cursor-pointer items-center gap-2.5 rounded-corner-full px-4"
             :class="
               activeNav === 'items' && activeRootId === r.id
-                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+                ? 'bg-secondary-container text-on-secondary-container'
+                : 'text-on-surface-variant hover:text-on-surface'
             "
             :title="r.path"
             @click="emit('selectRoot', r.id)"
           >
-            <LuHardDrive class="h-3.5 w-3.5 shrink-0" />
+            <LuHardDrive class="h-4 w-4 shrink-0" aria-hidden="true" />
             <span class="flex-1 truncate text-left">{{ r.name }}</span>
           </button>
         </div>

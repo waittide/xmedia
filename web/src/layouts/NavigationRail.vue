@@ -27,14 +27,14 @@ const { t } = useI18n()
 <template>
   <nav
     :aria-label="t('nav.navigation')"
-    class="safe-py safe-pl hidden w-20 shrink-0 flex-col items-center border-r border-outline-variant bg-surface-container py-3 select-none md:flex"
+    class="safe-py safe-pl hidden w-20 shrink-0 flex-col items-center bg-surface-container py-3 select-none sm:flex"
   >
     <div class="flex w-full flex-col items-center gap-3">
       <!-- Subtle brand mark -->
       <RouterLink
         :to="'/' + activeDomain"
         :aria-label="t('app.name')"
-        class="md-state mb-1 flex h-10 w-10 items-center justify-center rounded-corner-md bg-primary-container text-on-primary-container"
+        class="md-state md-touch-target mb-1 flex h-10 w-10 items-center justify-center rounded-corner-md bg-primary-container text-on-primary-container"
       >
         <LuLayers class="h-5 w-5" aria-hidden="true" />
       </RouterLink>
@@ -50,7 +50,7 @@ const { t } = useI18n()
         @click="emit('switchDomain', tab.kind)"
       >
         <span
-          class="md-state flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             !isSettingsRoute && activeDomain === tab.kind
               ? 'bg-secondary-container text-on-secondary-container'

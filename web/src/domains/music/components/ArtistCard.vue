@@ -43,7 +43,7 @@ async function onStar(ev: MouseEvent): Promise<void> {
   <article
     class="group relative flex flex-col items-center rounded-corner-lg p-3 text-center transition-colors duration-150 ease-standard hover:bg-surface-container-low"
   >
-    <div class="relative mb-3 w-3/4 max-w-40">
+    <div class="mb-3 w-3/4 max-w-40">
       <MediaCoverImage
         :src="coverSrc"
         :alt="artist.name"
@@ -54,17 +54,27 @@ async function onStar(ev: MouseEvent): Promise<void> {
         fallback-icon-class="h-10 w-10 text-on-surface-variant/50"
         class="album-shadow"
       />
+    </div>
+
+    <div class="flex w-full items-center justify-center gap-1">
+      <RouterLink
+        :to="artistTo"
+        class="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-corner-lg focus-visible:after:outline-3 focus-visible:after:outline-offset-2 focus-visible:after:outline-secondary"
+      >
+        <h3 class="text-title-small truncate text-on-surface" :title="artist.name">
+          {{ artist.name }}
+        </h3>
+        <p class="text-body-small mt-0.5 truncate tabular-nums text-on-surface-variant">
+          {{ t('common.albumsCount', { count: artist.album_count }) }} ·
+          {{ t('common.tracksCount', { count: artist.track_count }) }}
+        </p>
+      </RouterLink>
       <MdIconButton
         size="sm"
-        variant="tonal"
+        variant="standard"
         :selected="Boolean(artist.starred_at)"
         :aria-label="artist.starred_at ? t('common.unfavorite') : t('common.favorite')"
-        class="absolute right-0 bottom-0 z-20 shadow-elevation-1 transition-opacity duration-150 ease-standard"
-        :class="
-          artist.starred_at
-            ? 'opacity-100'
-            : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100'
-        "
+        class="relative z-20 shrink-0"
         @click="onStar"
       >
         <LuHeart
@@ -73,18 +83,5 @@ async function onStar(ev: MouseEvent): Promise<void> {
         />
       </MdIconButton>
     </div>
-
-    <RouterLink
-      :to="artistTo"
-      class="block w-full outline-none after:absolute after:inset-0 after:rounded-corner-lg focus-visible:after:outline-3 focus-visible:after:outline-offset-2 focus-visible:after:outline-secondary"
-    >
-      <h3 class="text-title-small truncate text-on-surface" :title="artist.name">
-        {{ artist.name }}
-      </h3>
-      <p class="text-body-small mt-0.5 truncate tabular-nums text-on-surface-variant">
-        {{ t('common.albumsCount', { count: artist.album_count }) }} ·
-        {{ t('common.tracksCount', { count: artist.track_count }) }}
-      </p>
-    </RouterLink>
   </article>
 </template>

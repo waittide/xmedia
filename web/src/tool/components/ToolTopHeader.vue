@@ -237,39 +237,39 @@ defineExpose({ focusSearch })
       <button
         v-else
         type="button"
-        class="md-icon-btn md-state relative"
+        class="md-icon-btn md-state relative hidden sm:inline-flex"
         :class="
           tasksOpen
-            ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+            ? 'bg-secondary-container text-on-secondary-container'
             : ''
         "
         :title="taskButtonTooltip"
         :aria-label="taskButtonTooltip"
         @click="emit('toggleTasks')"
       >
-        <LuClock class="h-[18px] w-[18px]" />
+        <LuClock class="h-[18px] w-[18px]" aria-hidden="true" />
         <MdBadge
           v-if="taskStore.unresolvedCount > 0"
           :value="taskStore.unresolvedCount"
           :max="99"
           tone="error"
-          class="pointer-events-none absolute -top-0.5 -right-0.5 ring-2 ring-[var(--md-sys-color-surface-container)]"
+          class="pointer-events-none absolute -top-0.5 -right-0.5 ring-2 ring-surface-container"
         />
       </button>
 
       <button
         type="button"
-        class="md-icon-btn md-state"
+        class="md-icon-btn md-state hidden sm:inline-flex"
         :class="
           activeNav === 'settings'
-            ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+            ? 'bg-secondary-container text-on-secondary-container'
             : ''
         "
         :title="t('nav.settings')"
         :aria-label="t('nav.settings')"
         @click="emit('toggleSettings')"
       >
-        <LuSettings class="h-[18px] w-[18px]" />
+        <LuSettings class="h-[18px] w-[18px]" aria-hidden="true" />
       </button>
     </div>
   </header>

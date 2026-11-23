@@ -172,7 +172,7 @@ function onFavoriteClick(): void {
   <!-- Horizontal Continue / Compact Row Card -->
   <article
     v-if="layout === 'horizontal'"
-    class="group relative flex items-center gap-3 rounded-corner-md bg-surface-container-highest p-2.5 text-on-surface transition-shadow duration-150 ease-standard hover:shadow-elevation-1"
+    class="md-state group relative flex items-center gap-3 rounded-corner-md bg-surface-container-highest p-2.5 text-on-surface"
     :class="[isBlocked ? 'opacity-60' : '', disabled ? 'pointer-events-none opacity-38' : '']"
   >
     <div class="relative shrink-0 overflow-hidden rounded-corner-sm" :class="horizontalCoverClass">

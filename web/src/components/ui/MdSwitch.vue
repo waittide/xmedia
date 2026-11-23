@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { LuCheck } from 'vue-icons-plus/lu'
 
 const props = withDefaults(
@@ -20,6 +21,8 @@ const emit = defineEmits<{
   change: [value: boolean]
 }>()
 
+const { t, te } = useI18n()
+
 function toggle(): void {
   if (props.disabled) return
   const next = !props.modelValue
@@ -33,7 +36,7 @@ function toggle(): void {
     type="button"
     role="switch"
     :aria-checked="modelValue"
-    :aria-label="ariaLabel || (!label ? 'Toggle' : undefined)"
+    :aria-label="ariaLabel || (!label ? (te('common.toggle') ? t('common.toggle') : 'Toggle') : undefined)"
     :disabled="disabled"
     class="group/switch md-touch-target text-label-large inline-flex min-h-10 cursor-pointer items-center gap-3 text-on-surface select-none focus-visible:outline-none disabled:cursor-not-allowed disabled:text-on-surface/38"
     @click="toggle"
@@ -73,7 +76,7 @@ function toggle(): void {
         <span
           v-if="!disabled"
           aria-hidden="true"
-          class="pointer-events-none absolute -inset-2 rounded-corner-full opacity-0 transition-opacity duration-150 group-hover/switch:opacity-8 group-focus-visible/switch:opacity-10 group-active/switch:opacity-12"
+          class="pointer-events-none absolute -inset-2 rounded-corner-full opacity-0 transition-opacity duration-150 group-hover/switch:opacity-8 group-focus-visible/switch:opacity-10 group-active/switch:opacity-10"
           :class="modelValue ? 'bg-primary' : 'bg-on-surface'"
         />
         <LuCheck v-if="modelValue" class="h-4 w-4 stroke-[2.5]" aria-hidden="true" />

@@ -33,6 +33,8 @@ export default {
     showingTop: 'Showing top {shown} of {total} — type to refine',
     configured: 'Configured',
     slider: 'Slider',
+    toggle: 'Toggle',
+    select: 'Select',
   },
   globalSearch: {
     quickNavigation: 'Quick navigation',

@@ -17,13 +17,13 @@ const props = withDefaults(
     src: null,
     alt: '',
     aspectClass: 'aspect-square',
-    rounded: 'rounded-2xl',
+    rounded: 'rounded-corner-lg',
     bgClass:
-      'bg-gradient-to-br from-[var(--md-sys-color-surface-container-high)] via-[var(--md-sys-color-surface-container)] to-[var(--md-sys-color-primary-container)]/45',
+      'bg-gradient-to-br from-surface-container-high via-surface-container to-primary-container/45',
     imgClass: 'h-full w-full object-cover',
     loading: 'lazy',
     fallbackIcon: undefined,
-    fallbackIconClass: 'h-2/5 w-2/5 text-[var(--md-sys-color-on-surface-variant)]/55',
+    fallbackIconClass: 'h-2/5 w-2/5 text-on-surface-variant/55',
   },
 )
 

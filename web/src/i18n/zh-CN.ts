@@ -33,6 +33,8 @@ export default {
     showingTop: '显示前 {shown} / {total} 项，输入关键字可精确检索',
     configured: '已配置',
     slider: '滑块',
+    toggle: '切换',
+    select: '选择',
   },
   globalSearch: {
     quickNavigation: '快捷导航',

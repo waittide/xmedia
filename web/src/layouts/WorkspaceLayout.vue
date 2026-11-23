@@ -304,7 +304,7 @@ onBeforeUnmount(() => {
   <div
     data-workspace-shell
     :data-has-player="showMusicBar ? '1' : '0'"
-    class="relative grid h-screen w-screen grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] overflow-hidden bg-surface text-on-surface supports-[height:100dvh]:h-dvh md:grid-cols-[80px_minmax(0,1fr)] md:grid-rows-[auto_minmax(0,1fr)_auto]"
+    class="relative grid h-screen w-screen grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] overflow-hidden bg-surface text-on-surface supports-[height:100dvh]:h-dvh sm:grid-cols-[80px_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)_auto]"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent
     @dragleave.prevent="onDragLeave"
@@ -328,9 +328,9 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <!-- Expanded (>=840px): MD3 Navigation Rail (Col 1, spans all rows) -->
+    <!-- Medium / Expanded (>=600px): MD3 Navigation Rail (Col 1, spans all rows) -->
     <NavigationRail
-      class="md:col-start-1 md:row-span-3"
+      class="sm:col-start-1 sm:row-span-3"
       :domain-tabs="domainTabs"
       :active-domain="domainStore.activeDomain"
       :is-settings-route="isSettingsRoute"
@@ -339,9 +339,9 @@ onBeforeUnmount(() => {
 
     <!-- Top Region: Minimal MD3 Top App Bar + Domain Primary Tabs -->
     <div
-      class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-shadow duration-150 ease-standard select-none md:col-start-2"
+      class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-[background-color,box-shadow] duration-150 ease-standard select-none sm:col-start-2"
       :class="
-        isContentScrolled ? 'bg-surface-container shadow-elevation-1' : 'bg-surface'
+        isContentScrolled ? 'bg-surface-container shadow-elevation-2' : 'bg-surface'
       "
     >
       <header class="flex h-16 items-center justify-between gap-3 px-4 md:px-6">
@@ -495,7 +495,7 @@ onBeforeUnmount(() => {
           <span
             v-if="tab.active"
             aria-hidden="true"
-            class="pointer-events-none absolute right-3 bottom-0 left-3 h-[3px] rounded-t-corner-xs bg-primary"
+            class="pointer-events-none absolute right-0.5 bottom-0 left-0.5 mx-auto h-[3px] min-w-12 rounded-t-[3px] bg-primary"
           />
         </button>
       </nav>
@@ -504,7 +504,7 @@ onBeforeUnmount(() => {
     <!-- Main Scrollable Route Viewport -->
     <main
       ref="mainScrollRef"
-      class="col-start-1 row-start-2 min-h-0 min-w-0 overflow-y-auto bg-surface md:col-start-2"
+      class="col-start-1 row-start-2 min-h-0 min-w-0 overflow-y-auto bg-surface sm:col-start-2"
       @scroll.passive="onMainScroll"
     >
       <RouterView v-slot="{ Component }">
@@ -517,12 +517,12 @@ onBeforeUnmount(() => {
     <!-- Grid-Flow Global Player Bar (never fixed, never overlaps Nav Bar or main) -->
     <div
       v-if="showMusicBar"
-      class="col-start-1 row-start-3 min-w-0 md:col-start-2 md:pb-[var(--safe-area-bottom)]"
+      class="col-start-1 row-start-3 min-w-0 sm:col-start-2 sm:pb-[var(--safe-area-bottom)]"
     >
       <PlayerBar />
     </div>
 
-    <!-- Compact / Medium (<840px): MD3 Bottom Navigation Bar -->
+    <!-- Compact (<600px): MD3 Bottom Navigation Bar -->
     <NavigationBar
       class="col-start-1 row-start-4"
       :domain-tabs="domainTabs"

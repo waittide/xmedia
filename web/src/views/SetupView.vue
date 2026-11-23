@@ -325,7 +325,7 @@ const scanStatusSummary = computed(() => {
       <MdCard
         variant="elevated"
         padding="lg"
-        class="w-full max-w-lg rounded-corner-xl border border-outline-variant/60 shadow-elevation-2"
+        class="w-full max-w-lg rounded-corner-xl"
       >
         <!-- 3-Step Onboarding Stepper -->
         <ol

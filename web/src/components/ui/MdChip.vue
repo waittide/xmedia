@@ -57,7 +57,7 @@ const surfaceClass = computed(() => {
   if (props.elevated) {
     return 'border border-transparent bg-surface-container-low text-on-surface shadow-elevation-1 hover:shadow-elevation-2'
   }
-  return 'border border-outline-variant bg-transparent text-on-surface-variant hover:text-on-surface'
+  return 'border border-outline bg-transparent text-on-surface-variant hover:text-on-surface'
 })
 
 function onChipClick(ev: MouseEvent): void {
@@ -137,7 +137,7 @@ function onRemoveClick(): void {
       type="button"
       :disabled="disabled"
       :aria-label="t('common.delete')"
-      class="md-state md-touch-target mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-corner-full"
+      class="md-state mr-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-corner-full"
       :class="disabled ? 'cursor-not-allowed' : 'cursor-pointer'"
       @click.stop="onRemoveClick"
     >

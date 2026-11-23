@@ -51,7 +51,7 @@ async function onSubmit(): Promise<void> {
       <MdCard
         variant="elevated"
         padding="lg"
-        class="w-full max-w-md rounded-corner-xl border border-outline-variant/60 shadow-elevation-2"
+        class="w-full max-w-md rounded-corner-xl"
       >
         <div class="mb-6">
           <h1 class="text-headline-small text-on-surface">

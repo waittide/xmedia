@@ -169,7 +169,7 @@ async function handleRotateApiKey(): Promise<void> {
       </div>
 
       <MdButton
-        variant="filled"
+        variant="tonal"
         size="sm"
         :icon="copiedKey === 'apiKey' ? LuCheck : LuCopy"
         @click="copyText('apiKey', authStore.user?.api_key || '')"
