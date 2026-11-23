@@ -21,6 +21,7 @@ use xmedia_core::application::activity::{
     ActivityDayDto, ActivityHeatmapDto, ActivityHeatmapQuery, ActivityService, RecordActivityInput,
 };
 use xmedia_core::application::auth::AuthService;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::dto::{
     ChangePasswordInput, CreateLibraryInput, CreateUserInput, FfmpegStatusDto, LibraryDto,
     LoginInput, RenameLibraryInput, SetupAdminInput, SetupStatusDto, SystemCapabilitiesDto,
@@ -138,6 +139,7 @@ pub struct GatewayState {
     pub auth: Arc<AuthService>,
     pub libraries: Arc<LibraryService>,
     pub libraries_repo: Arc<dyn LibraryRepository>,
+    pub bindings: Arc<MediaBindingService>,
     pub activity: Arc<ActivityService>,
     pub events: Arc<BroadcastEventHub>,
     pub sse_limiter: SseConnectionLimiter,
@@ -417,7 +419,7 @@ async fn system_capabilities(
 
 async fn system_overview(
     State(state): State<GatewayState>,
-    CoreWebAuth(_user): CoreWebAuth,
+    CoreWebAuth(user): CoreWebAuth,
 ) -> ApiResult<Json<SystemOverviewDto>> {
     let ffmpeg = state
         .ffmpeg_status_cache
@@ -429,7 +431,7 @@ async fn system_overview(
     for &kind in state.enabled_modules.iter() {
         let matching: Vec<&LibraryDto> =
             libraries.iter().filter(|l| l.media_kind == kind).collect();
-        let item_count: u64 = matching.iter().map(|l| l.item_count).sum();
+        let item_count = state.bindings.list_bound_ids(user.id, kind).await?.len() as u64;
         let scanning = matching.iter().any(|l| l.scan_status.is_scanning());
         domains.push(DomainStatSummary {
             media_kind: kind,

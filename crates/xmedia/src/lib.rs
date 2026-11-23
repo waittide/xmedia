@@ -17,16 +17,20 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use xmedia_core::application::activity::ActivityService;
 use xmedia_core::application::auth::AuthService;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::domain::library::MediaKind;
+use xmedia_core::domain::repository::UserRepository;
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::persistence::repositories::{
-    ToastyLibraryRepository, ToastyUserActivityRepository, ToastyUserRepository,
+    ToastyLibraryRepository, ToastyUserActivityRepository, ToastyUserMediaBindingRepository,
+    ToastyUserRepository,
 };
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{
-    ensure_core_schema, ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
+    ensure_core_schema_with_report, ensure_sqlite_parent_dir, is_core_schema_initialized,
+    register_core_models,
 };
 
 use gateway::{FfmpegStatusCache, GatewayState, SseConnectionLimiter, core_api_router};
@@ -131,15 +135,16 @@ impl XMediaApp {
             .await
             .map_err(|e| anyhow::anyhow!("database connection failed: {e}"))?;
 
-        if !is_core_schema_initialized(&mut db).await {
+        let bindings_table_created = if !is_core_schema_initialized(&mut db).await {
             tracing::info!(
                 "cold start detected: pushing unified database schema for core and all enabled modules"
             );
             db.push_schema()
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to push unified database schema: {e}"))?;
+            false
         } else {
-            ensure_core_schema(&mut db, &cfg.database_url)
+            let core_report = ensure_core_schema_with_report(&mut db, &cfg.database_url)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             #[cfg(feature = "book")]
@@ -158,14 +163,17 @@ impl XMediaApp {
             xmedia_video::ensure_video_schema(&mut db, &cfg.database_url)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        }
+            core_report.bindings_table_created
+        };
 
         let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
         let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let binding_repo = Arc::new(ToastyUserMediaBindingRepository::new(db.clone()));
         let activity_repo = Arc::new(ToastyUserActivityRepository::new(db.clone()));
         let activity = Arc::new(ActivityService::new(activity_repo));
         let lifecycles = Arc::new(RwLock::new(HashMap::new()));
         let events = Arc::new(BroadcastEventHub::default());
+        let bindings = Arc::new(MediaBindingService::new(binding_repo, Some(events.clone())));
         let security = Arc::new(SecurityManager::new(&cfg.secret));
         let tokens = Arc::new(
             JwtTokenService::try_new(&cfg.secret, cfg.jwt_ttl_secs)
@@ -174,7 +182,7 @@ impl XMediaApp {
         let ffmpeg = FfmpegToolkit::from_ffmpeg_bin(&cfg.ffmpeg_bin);
 
         let auth = Arc::new(AuthService::new(
-            users_repo,
+            users_repo.clone(),
             security,
             tokens,
             lifecycles.clone(),
@@ -196,15 +204,18 @@ impl XMediaApp {
         let mut api_v1 = Router::new();
         #[allow(unused_mut)]
         let mut root_protocols = Router::new();
+        #[allow(unused_mut)]
+        let mut backfill_batches: Vec<(MediaKind, Vec<uuid::Uuid>)> = Vec::new();
 
         #[cfg(feature = "book")]
         {
             enabled_modules.push(MediaKind::Book);
-            let book_services = xmedia_book::init_book_module_with_allow_private_ips(
+            let book_services = xmedia_book::init_book_module_with_bindings(
                 db.clone(),
                 &cfg.data_dir,
                 libraries_repo.clone(),
                 &libraries,
+                bindings.clone(),
                 events.clone(),
                 opts.allow_private_ips,
             )
@@ -213,6 +224,14 @@ impl XMediaApp {
                 .ensure_managed_library(MediaKind::Book)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if bindings_table_created {
+                let ids = book_services
+                    .catalog
+                    .list_all_book_ids_for_backfill()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                backfill_batches.push((MediaKind::Book, ids));
+            }
 
             let book_state = xmedia_book::http::state::BookHttpState::new(
                 auth.clone(),
@@ -227,12 +246,13 @@ impl XMediaApp {
         #[cfg(feature = "comic")]
         {
             enabled_modules.push(MediaKind::Comic);
-            let comic_services = xmedia_comic::init_comic_module_with_allow_private_ips(
+            let comic_services = xmedia_comic::init_comic_module_with_bindings(
                 db.clone(),
                 &cfg.data_dir,
                 libraries_repo.clone(),
                 &libraries,
                 events.clone(),
+                bindings.clone(),
                 opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -240,6 +260,14 @@ impl XMediaApp {
                 .ensure_managed_library(MediaKind::Comic)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if bindings_table_created {
+                let ids = comic_services
+                    .catalog
+                    .list_all_series_ids_for_backfill()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                backfill_batches.push((MediaKind::Comic, ids));
+            }
 
             let comic_state = xmedia_comic::http::state::ComicHttpState::new(
                 auth.clone(),
@@ -255,13 +283,14 @@ impl XMediaApp {
         #[cfg(feature = "music")]
         {
             enabled_modules.push(MediaKind::Music);
-            let music_services = xmedia_music::init_music_module_with_allow_private_ips(
+            let music_services = xmedia_music::init_music_module_with_bindings(
                 db.clone(),
                 &cfg.data_dir,
                 ffmpeg.clone(),
                 libraries_repo.clone(),
                 &libraries,
                 events.clone(),
+                bindings.clone(),
                 opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -269,6 +298,14 @@ impl XMediaApp {
                 .ensure_managed_library(MediaKind::Music)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if bindings_table_created {
+                let ids = music_services
+                    .catalog
+                    .list_all_track_ids_for_backfill()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                backfill_batches.push((MediaKind::Music, ids));
+            }
 
             let music_state = xmedia_music::http::state::MusicHttpState::new(
                 auth.clone(),
@@ -284,12 +321,13 @@ impl XMediaApp {
         #[cfg(feature = "video")]
         {
             enabled_modules.push(MediaKind::Video);
-            let video_services = xmedia_video::init_video_module_with_allow_private_ips(
+            let video_services = xmedia_video::init_video_module_with_bindings(
                 db.clone(),
                 &cfg.data_dir,
                 ffmpeg.clone(),
                 libraries_repo.clone(),
                 &libraries,
+                bindings.clone(),
                 events.clone(),
                 opts.allow_private_ips,
             )
@@ -298,6 +336,14 @@ impl XMediaApp {
                 .ensure_managed_library(MediaKind::Video)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if bindings_table_created {
+                let ids = video_services
+                    .catalog
+                    .list_all_binding_ids_for_backfill()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                backfill_batches.push((MediaKind::Video, ids));
+            }
 
             let video_state = xmedia_video::http::state::VideoHttpState::new(
                 auth.clone(),
@@ -312,12 +358,43 @@ impl XMediaApp {
             );
         }
 
+        if bindings_table_created {
+            let admin_ids: Vec<_> = users_repo
+                .list_all()
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                .into_iter()
+                .filter(|u| u.role.is_admin())
+                .map(|u| u.id)
+                .collect();
+            if !admin_ids.is_empty() {
+                let mut total_bound = 0usize;
+                for (kind, ids) in &backfill_batches {
+                    if ids.is_empty() {
+                        continue;
+                    }
+                    for &admin_id in &admin_ids {
+                        total_bound += bindings
+                            .bind_batch(admin_id, *kind, ids)
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    }
+                }
+                tracing::info!(
+                    admins = admin_ids.len(),
+                    total_bound,
+                    "completed one-time upgrade backfill for user_media_bindings"
+                );
+            }
+        }
+
         let _ = (db, opts.allow_private_ips);
 
         let gateway_state = GatewayState {
             auth: auth.clone(),
             libraries: libraries.clone(),
             libraries_repo,
+            bindings,
             activity,
             events: events.clone(),
             sse_limiter: SseConnectionLimiter::new(),
@@ -664,6 +741,241 @@ mod tests {
                 "SPA fallback must not serve HTML for {path}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn unified_gateway_pool_and_per_user_overview_isolation() {
+        use xmedia_core::application::dto::{CreateLibraryInput, CreateUserInput, SetupAdminInput};
+        use xmedia_core::domain::library::{MediaKind, ScanStatus};
+        use xmedia_core::domain::user::UserRole;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("xmedia_pool.db");
+        let app_instance = XMediaApp::connect_and_init(XMediaConfig {
+            data_dir: tmp.path().to_path_buf(),
+            database_url: format!("sqlite:{}", db_path.display()),
+            secret: "pool-overview-secret-0123456789".into(),
+            jwt_ttl_secs: 3600,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+
+        let admin_sess = app_instance
+            .auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: Some("Admin".into()),
+                password: "adminpassword123".into(),
+            })
+            .await
+            .unwrap();
+        let admin = app_instance
+            .auth
+            .authenticate_jwt(&admin_sess.token)
+            .await
+            .unwrap();
+        app_instance
+            .auth
+            .create_user(
+                &admin,
+                CreateUserInput {
+                    username: "member".into(),
+                    display_name: Some("Member".into()),
+                    password: "memberpassword123".into(),
+                    role: UserRole::Member,
+                },
+            )
+            .await
+            .unwrap();
+        let member_sess = app_instance
+            .auth
+            .login("member", "memberpassword123")
+            .await
+            .unwrap();
+
+        // Mount and scan a local book directory outside data_dir
+        let books_tmp = TempDir::new().unwrap();
+        let book_dir = books_tmp.path().join("mount_books");
+        std::fs::create_dir_all(&book_dir).unwrap();
+        std::fs::write(
+            book_dir.join("Dune.txt"),
+            "Chapter 1\nArrakis is a desert planet.\n",
+        )
+        .unwrap();
+        let lib = app_instance
+            .libraries
+            .create_local_mount(
+                &admin,
+                CreateLibraryInput {
+                    name: "Local Books".into(),
+                    media_kind: MediaKind::Book,
+                    root_path: book_dir.to_string_lossy().into_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        app_instance
+            .libraries
+            .trigger_scan(&admin, lib.id)
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            let st = app_instance.libraries.get_library(lib.id).await.unwrap();
+            if matches!(st.scan_status, ScanStatus::Completed { .. }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        let app = app_instance.router;
+
+        // All 4 pool endpoints are mounted and accessible to member
+        for pool_path in [
+            "/api/v1/book/pool",
+            "/api/v1/comic/pool",
+            "/api/v1/music/pool",
+            "/api/v1/video/pool",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(pool_path)
+                        .header(
+                            header::AUTHORIZATION,
+                            format!("Bearer {}", member_sess.token),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::OK,
+                "failed pool path: {pool_path}"
+            );
+        }
+
+        // Before claiming, both admin and member have 0 bound books in /system/overview
+        let ov_before_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/system/overview")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", admin_sess.token),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ov_before_res.status(), StatusCode::OK);
+        let ov_before: serde_json::Value = serde_json::from_slice(
+            &to_bytes(ov_before_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let admin_book_cnt_before = ov_before["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["media_kind"] == "book")
+            .unwrap()["item_count"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(admin_book_cnt_before, 0);
+
+        // Admin claims the local book library
+        let bind_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/book/bindings")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", admin_sess.token),
+                    )
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "library_id": lib.id.0 }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bind_res.status(), StatusCode::OK);
+
+        // Now admin sees 1 book in /system/overview, while member still sees 0
+        let ov_admin_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/system/overview")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", admin_sess.token),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ov_admin: serde_json::Value = serde_json::from_slice(
+            &to_bytes(ov_admin_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            ov_admin["domains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["media_kind"] == "book")
+                .unwrap()["item_count"]
+                .as_u64()
+                .unwrap(),
+            1
+        );
+
+        let ov_member_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/system/overview")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", member_sess.token),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ov_member: serde_json::Value = serde_json::from_slice(
+            &to_bytes(ov_member_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            ov_member["domains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["media_kind"] == "book")
+                .unwrap()["item_count"]
+                .as_u64()
+                .unwrap(),
+            0
+        );
     }
 }
 
