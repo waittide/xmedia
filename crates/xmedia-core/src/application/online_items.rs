@@ -2,7 +2,7 @@
 //! (rule-source or remote-server) items, shared by the comic, music and video domains.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use jiff::Timestamp;
@@ -162,7 +162,7 @@ pub struct OnlineLibraryService {
     media_kind: MediaKind,
     repo: Arc<dyn OnlineLibraryItemRepository>,
     sources: Arc<dyn OnlineSourceDirectory>,
-    upsert_lock: Mutex<()>,
+    upsert_locks: std::sync::Mutex<HashMap<Uuid, Weak<Mutex<()>>>>,
 }
 
 impl OnlineLibraryService {
@@ -175,8 +175,21 @@ impl OnlineLibraryService {
             media_kind,
             repo,
             sources,
-            upsert_lock: Mutex::new(()),
+            upsert_locks: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    fn user_upsert_lock(&self, user_id: UserId) -> Arc<Mutex<()>> {
+        let mut guard = self.upsert_locks.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = guard.get(&user_id.0).and_then(Weak::upgrade) {
+            return existing;
+        }
+        if guard.len() > 256 {
+            guard.retain(|_, w| w.strong_count() > 0);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        guard.insert(user_id.0, Arc::downgrade(&lock));
+        lock
     }
 
     pub fn media_kind(&self) -> MediaKind {
@@ -393,7 +406,8 @@ impl OnlineLibraryService {
             .map(OnlineItemProgress::normalized)
             .transpose()?;
 
-        let guard = self.upsert_lock.lock().await;
+        let user_lock = self.user_upsert_lock(user_id);
+        let guard = user_lock.lock().await;
         let existing = self.repo.list_by_user(user_id, self.media_kind).await?;
         let count = existing.len();
         let found = existing

@@ -683,53 +683,41 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
 
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for row in MusicPlaylistModel::filter_by_owner_id(user_id.0)
+        MusicPlaylistModel::filter_by_owner_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in MusicStarredModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        MusicStarredModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in MusicRatingModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        MusicRatingModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in MusicPlayStatModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        MusicPlayStatModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in MusicScrobbleModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        MusicScrobbleModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         MusicPlayQueueModel::filter_by_user_id(user_id.0)
             .delete()
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        for row in MusicBookmarkModel::filter_by_user_id(user_id.0)
+        MusicBookmarkModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         Ok(())
     }
 }

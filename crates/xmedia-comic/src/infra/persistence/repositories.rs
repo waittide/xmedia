@@ -371,13 +371,11 @@ impl ChapterRepository for ToastyChapterRepository {
 
     async fn delete_by_series(&self, series_id: SeriesId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let rows = ComicChapterModel::filter_by_series_id(series_id.0)
+        ComicChapterModel::filter_by_series_id(series_id.0)
+            .delete()
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        for row in rows {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
         Ok(())
     }
 }
@@ -535,53 +533,41 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
 
     async fn delete_by_chapter(&self, chapter_id: ChapterId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for row in ComicChapterProgressModel::filter_by_chapter_id(chapter_id.0)
+        ComicChapterProgressModel::filter_by_chapter_id(chapter_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicBookmarkModel::filter_by_chapter_id(chapter_id.0)
+            .map_err(db_err)?;
+        ComicBookmarkModel::filter_by_chapter_id(chapter_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         Ok(())
     }
 
     async fn delete_by_series(&self, series_id: SeriesId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for row in ComicChapterProgressModel::filter_by_series_id(series_id.0)
+        ComicChapterProgressModel::filter_by_series_id(series_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicSeriesReaderPrefModel::filter_by_series_id(series_id.0)
+            .map_err(db_err)?;
+        ComicSeriesReaderPrefModel::filter_by_series_id(series_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicFavoriteSeriesModel::filter_by_series_id(series_id.0)
+            .map_err(db_err)?;
+        ComicFavoriteSeriesModel::filter_by_series_id(series_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicBookmarkModel::filter_by_series_id(series_id.0)
+            .map_err(db_err)?;
+        ComicBookmarkModel::filter_by_series_id(series_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         for mut shelf in ComicShelfModel::all().exec(&mut db).await.map_err(db_err)? {
             if shelf.series_ids.0.contains(&series_id.0) {
                 let filtered: Vec<Uuid> = shelf
@@ -605,41 +591,31 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
 
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for row in ComicChapterProgressModel::filter_by_user_id(user_id.0)
+        ComicChapterProgressModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicSeriesReaderPrefModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        ComicSeriesReaderPrefModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicFavoriteSeriesModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        ComicFavoriteSeriesModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicShelfModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        ComicShelfModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in ComicBookmarkModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        ComicBookmarkModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         Ok(())
     }
 

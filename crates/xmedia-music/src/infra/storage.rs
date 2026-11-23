@@ -143,9 +143,7 @@ impl MusicStoragePort for LocalMusicStorage {
 
     async fn delete_managed_file(&self, storage_key: &str) -> DomainResult<()> {
         for base in [&self.uploads_dir, &self.lyrics_dir] {
-            if let Ok(p) = sanitize_join(base, storage_key)
-                && p.exists()
-            {
+            if let Ok(p) = sanitize_join(base, storage_key) {
                 let _ = tokio::fs::remove_file(&p).await;
             }
         }
@@ -174,7 +172,11 @@ impl MusicStoragePort for LocalMusicStorage {
         track: &Track,
     ) -> DomainResult<String> {
         let p = self.resolve_track_path(library, track)?;
-        if !p.is_file() {
+        if !tokio::fs::metadata(&p)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
             return Err(DomainError::NotFound(format!(
                 "audio file missing on disk: {}",
                 p.display()

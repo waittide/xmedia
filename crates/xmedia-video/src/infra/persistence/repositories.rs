@@ -338,13 +338,11 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
 
     async fn delete_videos_by_library(&self, library_id: LibraryId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for row in VideoItemModel::filter_by_library_id(library_id.0)
+        VideoItemModel::filter_by_library_id(library_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -509,20 +507,12 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
             }
         }
 
+        let mut orphan_shows: Vec<VideoShowModel> = Vec::new();
         for mut show in all_shows {
             let total_ref_count = total_refs.get(&show.id).copied().unwrap_or(0);
             if total_ref_count == 0 {
                 // Only remove a show when zero episodes (active OR missing) reference it.
-                let favs = VideoFavoriteModel::all()
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
-                for fav in favs {
-                    if fav.kind == "show" && fav.target_id == show.id {
-                        fav.delete().exec(&mut db).await.map_err(db_err)?;
-                    }
-                }
-                show.delete().exec(&mut db).await.map_err(db_err)?;
+                orphan_shows.push(show);
                 continue;
             }
             let ep_count = ep_counts.get(&show.id).copied().unwrap_or(0);
@@ -545,6 +535,21 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
                     .exec(&mut db)
                     .await
                     .map_err(db_err)?;
+            }
+        }
+        if !orphan_shows.is_empty() {
+            let orphan_ids: HashSet<Uuid> = orphan_shows.iter().map(|s| s.id).collect();
+            let favs = VideoFavoriteModel::all()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            for fav in favs {
+                if fav.kind == "show" && orphan_ids.contains(&fav.target_id) {
+                    fav.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+            }
+            for show in orphan_shows {
+                show.delete().exec(&mut db).await.map_err(db_err)?;
             }
         }
         Ok(())
@@ -646,13 +651,11 @@ impl VideoWatchRepository for ToastyVideoWatchRepository {
 
     async fn delete_progress_by_video(&self, video_id: VideoId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for row in VideoProgressModel::filter_by_video_id(video_id.0)
+        VideoProgressModel::filter_by_video_id(video_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -916,27 +919,21 @@ impl VideoWatchRepository for ToastyVideoWatchRepository {
 
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for r in VideoProgressModel::filter_by_user_id(user_id.0)
+        VideoProgressModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            r.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for r in VideoFavoriteModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        VideoFavoriteModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            r.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for r in VideoShelfModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        VideoShelfModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            r.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         Ok(())
     }
 }

@@ -134,21 +134,38 @@ impl IntoResponse for ApiError {
 pub type ApiResult<T> = Result<T, ApiError>;
 
 #[cfg(feature = "server")]
-fn is_https_request(headers: &HeaderMap) -> bool {
-    if let Ok(explicit) = std::env::var("XMEDIA_COOKIE_SECURE") {
+fn cached_cookie_secure_override() -> Option<bool> {
+    static OVERRIDE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    *OVERRIDE.get_or_init(|| {
+        let explicit = std::env::var("XMEDIA_COOKIE_SECURE").ok()?;
         let trimmed = explicit.trim();
         if trimmed.eq_ignore_ascii_case("true") || trimmed == "1" {
-            return true;
+            Some(true)
+        } else if trimmed.eq_ignore_ascii_case("false") || trimmed == "0" {
+            Some(false)
+        } else {
+            None
         }
-        if trimmed.eq_ignore_ascii_case("false") || trimmed == "0" {
-            return false;
-        }
+    })
+}
+
+#[cfg(feature = "server")]
+fn cached_trust_proxy() -> bool {
+    static TRUST_PROXY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRUST_PROXY.get_or_init(|| {
+        std::env::var("XMEDIA_TRUST_PROXY").ok().is_some_and(|v| {
+            let t = v.trim();
+            t.eq_ignore_ascii_case("true") || t == "1"
+        })
+    })
+}
+
+#[cfg(feature = "server")]
+fn is_https_request(headers: &HeaderMap) -> bool {
+    if let Some(explicit) = cached_cookie_secure_override() {
+        return explicit;
     }
-    let trust_proxy = std::env::var("XMEDIA_TRUST_PROXY").ok().is_some_and(|v| {
-        let t = v.trim();
-        t.eq_ignore_ascii_case("true") || t == "1"
-    });
-    if !trust_proxy {
+    if !cached_trust_proxy() {
         return false;
     }
     headers
@@ -603,7 +620,17 @@ impl TempUploadFile {
 
 impl Drop for TempUploadFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let path = std::mem::take(&mut self.path);
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(move || {
+                let _ = std::fs::remove_file(&path);
+            });
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 

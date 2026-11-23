@@ -61,13 +61,13 @@ impl ComicFileStoragePort for LocalComicFileStorage {
         })
         .await
         .map_err(|e| DomainError::Storage(format!("reserve upload path join failed: {e}")))??;
-        tokio::fs::write(&dest, bytes).await.map_err(|e| {
-            let _ = std::fs::remove_file(&dest);
-            DomainError::Storage(format!(
+        if let Err(e) = tokio::fs::write(&dest, bytes).await {
+            let _ = tokio::fs::remove_file(&dest).await;
+            return Err(DomainError::Storage(format!(
                 "failed to write uploaded comic '{}': {e}",
                 dest.display()
-            ))
-        })?;
+            )));
+        }
 
         let dest_clone = dest.clone();
         let (file_size, file_hash) =
