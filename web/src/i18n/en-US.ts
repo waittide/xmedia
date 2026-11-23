@@ -50,6 +50,8 @@ export default {
   },
   nav: {
     navigation: 'Navigation',
+    home: 'Home',
+    library: 'Resources',
     discover: 'Discover',
     browseOnlineSources: 'Browse Online Sources',
     showMore: 'Show {count} more',

@@ -30,7 +30,7 @@ export default {
   nav: {
     home: 'Home',
     all: 'All',
-    library: 'Video Library',
+    library: 'Video Resources',
     continueWatching: 'Continue',
     favorites: 'Favorites',
     collections: 'Watchlists',

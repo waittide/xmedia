@@ -50,6 +50,8 @@ export default {
   },
   nav: {
     navigation: '导航栏',
+    home: '首页',
+    library: '资源',
     discover: '发现',
     browseOnlineSources: '浏览在线数据源',
     showMore: '展开其余 {count} 项',

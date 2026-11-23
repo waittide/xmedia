@@ -602,8 +602,8 @@ const scanStatusSummary = computed(() => {
                 {{
                   tr(
                     'setup.scanStepHint',
-                    '扫描会在后台持续进行，您现在即可进入资料库浏览。',
-                    'Scanning continues in the background — you can enter the library right away.',
+                    '扫描会在后台持续进行，您现在即可进入资源浏览。',
+                    'Scanning continues in the background — you can open Resources right away.',
                   )
                 }}
               </p>
@@ -656,8 +656,8 @@ const scanStatusSummary = computed(() => {
               <span>{{
                 tr(
                   'setup.openDomainLibraryBtn',
-                  '进入{domain}资料库',
-                  'Open {domain} Library',
+                  '进入{domain}资源',
+                  'Open {domain} Resources',
                   { domain: t(`app.domains.${createdLibrary?.media_kind ?? selectedDomain}`) },
                 )
               }}</span>

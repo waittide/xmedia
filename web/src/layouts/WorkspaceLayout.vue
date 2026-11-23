@@ -7,7 +7,6 @@ import {
   LuClapperboard,
   LuCompass,
   LuDisc3,
-  LuFolderHeart,
   LuHome,
   LuLayers,
   LuLibrary,
@@ -44,7 +43,7 @@ import NavigationBar from './NavigationBar.vue'
 import NavigationRail, { type DomainNavTab } from './NavigationRail.vue'
 
 interface SecondaryTab {
-  key: 'home' | 'library' | 'discover' | 'collections'
+  key: 'home' | 'library' | 'discover'
   label: string
   icon: Component
   active: boolean
@@ -133,30 +132,19 @@ function legacyCatalogPath(domain: MediaKind): string {
   return `/${domain}/catalog`
 }
 
-function legacyCollectionsPath(domain: MediaKind): string {
-  return domain === 'music' ? '/music/playlists' : `/${domain}/shelves`
-}
-
 const secondaryTabs = computed<SecondaryTab[]>(() => {
   if (isSettingsRoute.value) return []
   const d = domainStore.activeDomain
   const useCanonical = hasCanonicalRoute(`/${d}/library`)
   const scope = typeof route.query.scope === 'string' ? route.query.scope : ''
-  const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
   const name = String(route.name ?? '')
 
   const isHome = route.path === `/${d}`
   const isDiscover =
     route.path === `/${d}/discover` || (scope === 'online' && !name.includes('detail'))
-  const isCollections =
-    tab === 'collections' ||
-    name.includes('shelves') ||
-    name.includes('playlists') ||
-    name === 'comic-shelves'
   const isLibrary =
     !isHome &&
     !isDiscover &&
-    !isCollections &&
     (route.path.startsWith(`/${d}/library`) ||
       name === 'book-catalog' ||
       name === 'book-detail' ||
@@ -178,7 +166,7 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
     },
     {
       key: 'library',
-      label: tr('nav.library', '资料库', 'Library'),
+      label: tr('nav.library', '资源', 'Resources'),
       icon: LuLibrary,
       active: isLibrary,
       to: useCanonical ? `/${d}/library` : legacyCatalogPath(d),
@@ -191,15 +179,6 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
       to: useCanonical
         ? `/${d}/discover`
         : { path: legacyCatalogPath(d), query: { scope: 'online' } },
-    },
-    {
-      key: 'collections',
-      label: tr('nav.collections', '收藏集', 'Collections'),
-      icon: LuFolderHeart,
-      active: isCollections,
-      to: useCanonical
-        ? { path: `/${d}/library`, query: { tab: 'collections' } }
-        : legacyCollectionsPath(d),
     },
   ]
 })

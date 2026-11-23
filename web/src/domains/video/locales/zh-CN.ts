@@ -30,7 +30,7 @@ export default {
   nav: {
     home: '首页',
     all: '全部',
-    library: '影视资料库',
+    library: '影视资源',
     continueWatching: '继续',
     favorites: '收藏',
     collections: '片单',

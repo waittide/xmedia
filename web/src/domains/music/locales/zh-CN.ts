@@ -36,7 +36,7 @@ export default {
   nav: {
     home: '首页',
     all: '全部',
-    library: '音乐资料库',
+    library: '音乐资源',
     continueListening: '继续',
     favorites: '收藏',
     collections: '歌单',

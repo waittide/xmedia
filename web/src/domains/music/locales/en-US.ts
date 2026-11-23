@@ -36,7 +36,7 @@ export default {
   nav: {
     home: 'Home',
     all: 'All',
-    library: 'Music Library',
+    library: 'Music Resources',
     continueListening: 'Continue',
     favorites: 'Favorites',
     collections: 'Playlists',

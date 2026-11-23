@@ -25,7 +25,7 @@ export default {
     chaptersCount: '{count} 话',
   },
   library: {
-    title: '漫画资料库',
+    title: '漫画资源',
     tabAll: '全部',
     tabContinue: '继续',
     tabFavorites: '收藏',
@@ -116,7 +116,7 @@ export default {
     pencillers: '画师',
     genres: '类型',
     summaryEmpty: '暂无简介',
-    backToLibrary: '返回漫画资料库',
+    backToLibrary: '返回漫画资源',
     detailLoadFailed: '加载系列详情失败',
     moreActions: '更多操作',
     specsTitle: '作品信息',

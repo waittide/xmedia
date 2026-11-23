@@ -144,7 +144,7 @@ export function useSourceFilter(
     scope: 'local',
     id: 'local',
     domain: activeDomain.value,
-    name: locale.value === 'zh-CN' ? '本机资料库' : 'Local Library',
+    name: locale.value === 'zh-CN' ? '本机资源' : 'Local Resources',
     enabled: true,
     health: 'ok',
     capabilities: {

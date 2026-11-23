@@ -71,7 +71,7 @@ export default {
     reset: '清除筛选',
   },
   catalog: {
-    title: '书籍资料库',
+    title: '书籍资源',
     scopeLocal: '本地书库',
     scopeOnline: '在线书源',
     tabAll: '全部',
@@ -204,7 +204,7 @@ export default {
     replaceCover: '更换封面',
     coverUpdated: '封面已更新',
     shelvesMenu: '书架',
-    noShelvesYet: '暂无书架，可在资料库创建',
+    noShelvesYet: '暂无书架，可在资源中创建',
     favoriteAdd: '加入收藏',
     favoriteRemove: '取消收藏',
     moreActions: '更多操作',

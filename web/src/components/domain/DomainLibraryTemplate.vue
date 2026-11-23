@@ -142,7 +142,9 @@ const domainIcon = computed<Component>(() => {
 
 const resolvedTitle = computed(() => {
   if (props.title) return props.title
-  return isZh.value ? `${t(`app.domains.${props.domain}`)}资料库` : `${t(`app.domains.${props.domain}`)} Library`
+  return isZh.value
+    ? `${t(`app.domains.${props.domain}`)}资源`
+    : `${t(`app.domains.${props.domain}`)} Resources`
 })
 
 const resolvedSearchPlaceholder = computed(() => {

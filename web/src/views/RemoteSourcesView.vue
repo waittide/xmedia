@@ -157,10 +157,10 @@ async function handleSourceSaved(source: RemoteSourceSummaryDto): Promise<void> 
     snackbarStore.show({
       message: tr(
         'settings.remoteSavedAvailableInLibrary',
-        '连接正常，已出现在资料库来源中',
-        'Connected — now available in Library sources',
+        '连接正常，已出现在资源来源中',
+        'Connected — now available in Resource sources',
       ),
-      actionLabel: tr('settings.openInLibraryAction', '前往查看', 'Open Library'),
+      actionLabel: tr('settings.openInLibraryAction', '前往查看', 'Open Resources'),
       onAction: () => openInLibrary(source),
     })
   } else {
@@ -237,8 +237,8 @@ onMounted(async () => {
           {{
             tr(
               'settings.remoteServersHint',
-              '添加后的 OPDS / OpenSubsonic 服务器会自动出现在对应域的资料库来源筛选中。',
-              'Configured OPDS / OpenSubsonic servers appear automatically in the domain library source switcher.',
+              '添加后的 OPDS / OpenSubsonic 服务器会自动出现在对应域的资源来源筛选中。',
+              'Configured OPDS / OpenSubsonic servers appear automatically in the domain resource source switcher.',
             )
           }}
         </p>
@@ -378,7 +378,7 @@ onMounted(async () => {
             :icon="LuExternalLink"
             @click="openInLibrary(source)"
           >
-            {{ tr('settings.openInLibraryBtn', '在资料库中打开', 'Open in Library') }}
+            {{ tr('settings.openInLibraryBtn', '在资源中打开', 'Open in Resources') }}
           </MdButton>
 
           <MdIconButton

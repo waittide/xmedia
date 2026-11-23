@@ -71,7 +71,7 @@ export default {
     reset: 'Clear filters',
   },
   catalog: {
-    title: 'Book Library',
+    title: 'Book Resources',
     scopeLocal: 'Local Library',
     scopeOnline: 'Online Sources',
     tabAll: 'All',

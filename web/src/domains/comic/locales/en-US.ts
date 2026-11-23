@@ -25,7 +25,7 @@ export default {
     chaptersCount: '{count} chs',
   },
   library: {
-    title: 'Comic Library',
+    title: 'Comic Resources',
     tabAll: 'All',
     tabContinue: 'Continue',
     tabFavorites: 'Favorites',
@@ -116,7 +116,7 @@ export default {
     pencillers: 'Artist',
     genres: 'Genres',
     summaryEmpty: 'No summary yet',
-    backToLibrary: 'Back to Comic Library',
+    backToLibrary: 'Back to Comic Resources',
     detailLoadFailed: 'Failed to load series details',
     moreActions: 'More actions',
     specsTitle: 'Series Details',
