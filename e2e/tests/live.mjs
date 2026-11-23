@@ -315,22 +315,29 @@ export async function runLiveTests(context = {}) {
 
     const { admin, member } = await ensureBootstrapped(baseUrl);
 
-    // Import production seed packs from seeds/sources/{comic,music,video}.json
+    // Import public test source packs from crates/xmedia-{domain}/testdata/online_sources.json
     const seeded = {};
     for (const domain of ['comic', 'music', 'video']) {
-      const seedPath = path.join(REPO_ROOT, 'seeds', 'sources', `${domain}.json`);
-      assert.ok(existsSync(seedPath), `Required seed file missing: ${seedPath}`);
-      JSON.parse(readFileSync(seedPath, 'utf8'));
+      const fixturePath = path.join(
+        REPO_ROOT,
+        'crates',
+        `xmedia-${domain}`,
+        'testdata',
+        'online_sources.json',
+      );
+      assert.ok(existsSync(fixturePath), `Required source fixture missing: ${fixturePath}`);
+      const rawJson = readFileSync(fixturePath, 'utf8');
+      JSON.parse(rawJson);
 
-      await admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import-seeds`, {
-        body: {},
+      await admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import`, {
+        body: { raw_json: rawJson },
         expectedStatus: 200,
       });
       const listRes = await admin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
         expectedStatus: 200,
       });
       seeded[domain] = listRes.json || [];
-      assert.ok(seeded[domain].length >= 1, `No ${domain} sources after import-seeds`);
+      assert.ok(seeded[domain].length >= 1, `No ${domain} sources after manual import`);
     }
 
     let liveComicSample = null;

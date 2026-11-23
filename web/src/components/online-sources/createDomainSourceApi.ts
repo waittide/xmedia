@@ -12,7 +12,6 @@ import type {
 export interface DomainSourceCrudApi<S extends OnlineSourceSummaryDto = OnlineSourceSummaryDto> {
   listSources: () => Promise<S[]>
   importSources: (rawJson: string) => Promise<ImportSourcesReportDto<S>>
-  importSeeds?: () => Promise<ImportSourcesReportDto<S>>
   reorderSources: (orderedIds: string[]) => Promise<S[]>
   batchSources: (payload: BatchSourcesPayload) => Promise<BatchSourcesReportDto>
   exportSourcesBatch: (ids: string[]) => Promise<Record<string, unknown>[]>
@@ -30,10 +29,9 @@ export interface DomainSourceCrudApi<S extends OnlineSourceSummaryDto = OnlineSo
 
 export function createDomainSourceApi<S extends OnlineSourceSummaryDto = OnlineSourceSummaryDto>(
   domain: OnlineDomain,
-  options?: { hasSeeds?: boolean },
 ): DomainSourceCrudApi<S> {
   const base = `/${domain}/sources`
-  const api: DomainSourceCrudApi<S> = {
+  return {
     listSources: (): Promise<S[]> => requestJson(base),
 
     importSources: (rawJson: string): Promise<ImportSourcesReportDto<S>> =>
@@ -90,14 +88,4 @@ export function createDomainSourceApi<S extends OnlineSourceSummaryDto = OnlineS
         body: JSON.stringify({ login_info: loginInfo, action: action ?? null }),
       }),
   }
-
-  if (options?.hasSeeds) {
-    api.importSeeds = (): Promise<ImportSourcesReportDto<S>> =>
-      requestJson(`${base}/import-seeds`, {
-        method: 'POST',
-        body: '{}',
-      })
-  }
-
-  return api
 }

@@ -1010,32 +1010,41 @@ export async function runTier4(context = {}) {
       },
     );
 
-    // T4-08: Production Seed Pack (seeds/sources/*.json) Import, Idempotency & Restart Verification
+    // T4-08: Source Pack Manual Import, Upsert Idempotency & Restart Verification
     await runCase(
       'T4-08',
       ['core', 'comic', 'music', 'video'],
-      'Production Seed Pack (seeds/sources/{comic,music,video}.json) Import, Idempotency & Restart',
+      'Source Pack (testdata/online_sources.json) Import, Upsert Idempotency & Restart',
       async () => {
         const domains = ['comic', 'music', 'video'];
-        const seedMeta = {};
+        const packMeta = {};
+        const packRaw = {};
 
         for (const domain of domains) {
-          const seedPath = path.join(REPO_ROOT, 'seeds', 'sources', `${domain}.json`);
-          assert.ok(
-            existsSync(seedPath),
-            `SUT_SEED_FILE_MISSING: Required seed file not found at ${seedPath}`,
+          const packPath = path.join(
+            REPO_ROOT,
+            'crates',
+            `xmedia-${domain}`,
+            'testdata',
+            'online_sources.json',
           );
-          const parsed = JSON.parse(readFileSync(seedPath, 'utf8'));
-          assert.ok(Array.isArray(parsed) && parsed.length >= 2, `${seedPath} must contain >= 2 sources`);
+          assert.ok(
+            existsSync(packPath),
+            `SUT_FIXTURE_FILE_MISSING: Required fixture file not found at ${packPath}`,
+          );
+          const raw = readFileSync(packPath, 'utf8');
+          const parsed = JSON.parse(raw);
+          assert.ok(Array.isArray(parsed) && parsed.length >= 2, `${packPath} must contain >= 2 sources`);
           const enabledCount = parsed.filter((s) => s.enabled !== false).length;
-          assert.ok(enabledCount >= 2, `${seedPath} must have >= 2 enabled sources`);
+          assert.ok(enabledCount >= 2, `${packPath} must have >= 2 enabled sources`);
 
           const rawText = JSON.stringify(parsed);
           assert.ok(
             !/127\.0\.0\.1|localhost|169\.254\.169\.254|192\.168\.|10\.0\.0\./i.test(rawText),
-            `${seedPath} contains private/loopback URL`,
+            `${packPath} contains private/loopback URL`,
           );
-          seedMeta[domain] = parsed;
+          packMeta[domain] = parsed;
+          packRaw[domain] = raw;
         }
 
         let localMgr = null;
@@ -1056,22 +1065,22 @@ export async function runTier4(context = {}) {
           for (const domain of domains) {
             const imp1 = await sAdmin.failLoudlyRequest(
               'POST',
-              `/api/v1/${domain}/sources/import-seeds`,
-              { body: {}, expectedStatus: 200 },
+              `/api/v1/${domain}/sources/import`,
+              { body: { raw_json: packRaw[domain] }, expectedStatus: 200 },
             );
             assert.ok(
-              (imp1.json?.sources || []).length >= seedMeta[domain].length,
-              `Expected all ${domain} seeds imported`,
+              (imp1.json?.sources || []).length >= packMeta[domain].length,
+              `Expected all ${domain} sources imported`,
             );
             importedIds[domain] = imp1.json.sources.map((s) => s.id);
 
-            // Second import-seeds MUST be idempotent
+            // Second import of identical pack MUST upsert without duplicates
             const imp2 = await sAdmin.failLoudlyRequest(
               'POST',
-              `/api/v1/${domain}/sources/import-seeds`,
-              { body: {}, expectedStatus: 200 },
+              `/api/v1/${domain}/sources/import`,
+              { body: { raw_json: packRaw[domain] }, expectedStatus: 200 },
             );
-            assert.equal(imp2.json?.imported_count, 0, `${domain} second import-seeds must have imported_count: 0`);
+            assert.equal(imp2.json?.imported_count, 0, `${domain} second import must have imported_count: 0`);
           }
 
           let postAdmin = sAdmin;
@@ -1085,21 +1094,21 @@ export async function runTier4(context = {}) {
             const listRes = await postAdmin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
               expectedStatus: 200,
             });
-            assert.ok(listRes.json.length >= seedMeta[domain].length);
+            assert.ok(listRes.json.length >= packMeta[domain].length);
           }
 
-          // Verify Settings UI renders seeded sources cleanly
+          // Verify Settings UI renders imported sources cleanly
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, targetUrl, ADMIN_CREDS);
             for (const domain of domains) {
-              await cdp.goto(`${targetUrl}/settings?tab=domain-datasources&domain=${domain}`);
-              const firstName = seedMeta[domain][0].sourceName || seedMeta[domain][0].name;
+              await cdp.goto(`${targetUrl}/${domain}/settings?tab=sources`);
+              const firstName = packMeta[domain][0].sourceName || packMeta[domain][0].name;
               await cdp.waitForFn(
                 `document.body.textContent.includes(${JSON.stringify(firstName)})`,
-                { timeoutMs: 10000, label: `Seeded ${domain} source visible in Settings UI` },
+                { timeoutMs: 10000, label: `Imported ${domain} source visible in Settings UI` },
               );
             }
-            cdp.assertNoErrors('T4-08 Production Seed Pack Settings UI');
+            cdp.assertNoErrors('T4-08 Source Pack Settings UI');
           });
 
           if (!localMgr) {

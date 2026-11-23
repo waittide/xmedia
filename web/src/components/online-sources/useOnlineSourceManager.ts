@@ -22,7 +22,6 @@ export function useOnlineSourceManager<S extends OnlineSourceSummaryDto>(
   const showImportBox = ref(false)
   const importJsonText = ref('')
   const importing = ref(false)
-  const seeding = ref(false)
   const importError = ref<string | null>(null)
 
   const searchQuery = ref('')
@@ -505,28 +504,6 @@ export function useOnlineSourceManager<S extends OnlineSourceSummaryDto>(
     }
   }
 
-  async function handleImportSeeds(): Promise<void> {
-    const fn = adapterProp.value.importSeeds
-    if (!fn || seeding.value) return
-    seeding.value = true
-    importError.value = null
-    try {
-      const report = await fn()
-      snackbar.show({
-        message: t('onlineSources.messages.seedsImported', {
-          domain: domainLabel.value,
-          imported: report.imported_count,
-          total: report.sources.length,
-        }),
-      })
-      onRefresh()
-    } catch (err) {
-      snackbar.show({ message: extractApiError(err), tone: 'error' })
-    } finally {
-      seeding.value = false
-    }
-  }
-
   async function handleFileSelected(ev: Event): Promise<void> {
     const input = ev.target as HTMLInputElement
     const file = input.files?.[0]
@@ -644,7 +621,6 @@ export function useOnlineSourceManager<S extends OnlineSourceSummaryDto>(
     showImportBox,
     importJsonText,
     importing,
-    seeding,
     importError,
     searchQuery,
     statusFilter,
@@ -687,7 +663,6 @@ export function useOnlineSourceManager<S extends OnlineSourceSummaryDto>(
     handleBatchDelete,
     handleFileSelected,
     handleImportSubmit,
-    handleImportSeeds,
     handleToggleEnabled,
     handlePinSource,
     handleOpenLogin,

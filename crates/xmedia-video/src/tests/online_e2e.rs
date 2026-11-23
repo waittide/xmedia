@@ -711,9 +711,9 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     let (origin, captured_headers, mock_handle) = start_mock_video_origin().await;
 
     // 1. Import 4 sources (AppleCMS searchable, AppleCMS non-searchable, PeerTube rule, Internet Archive rule)
-    //    Wait: use seeds/sources/video.json templates rewritten to mock origin for PeerTube & Archive.
+    //    Wait: use testdata/online_sources.json templates rewritten to mock origin for PeerTube & Archive.
     let seed_sources: Vec<serde_json::Value> =
-        serde_json::from_str(include_str!("../../../../seeds/sources/video.json")).unwrap();
+        serde_json::from_str(include_str!("../../testdata/online_sources.json")).unwrap();
     assert_eq!(seed_sources.len(), 6);
 
     // Rewrite PeerTube (index 4) & Archive (index 5) URLs to mock origin
@@ -1324,12 +1324,12 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(batch_del["affected_count"], 1);
 
-    // Importing seeds/sources/video.json directly through HTTP import endpoint succeeds
+    // Importing testdata/online_sources.json directly through HTTP import endpoint succeeds
     let (st, seed_imp) = post_json(
         &app,
         "/api/v1/video/sources/import",
         &admin_tok,
-        serde_json::json!({ "raw_json": include_str!("../../../../seeds/sources/video.json") }),
+        serde_json::json!({ "raw_json": include_str!("../../testdata/online_sources.json") }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);

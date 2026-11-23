@@ -24,7 +24,6 @@ const {
   showImportBox,
   importJsonText,
   importing,
-  seeding,
   importError,
   searchQuery,
   statusFilter,
@@ -67,7 +66,6 @@ const {
   handleBatchDelete,
   handleFileSelected,
   handleImportSubmit,
-  handleImportSeeds,
   handleToggleEnabled,
   handlePinSource,
   handleOpenLogin,
@@ -83,7 +81,6 @@ const {
   () => emit('refresh'),
 )
 
-const canImportSeeds = computed(() => typeof props.adapter.importSeeds === 'function')
 const menuExportUrl = computed(() =>
   openMenuSource.value ? props.adapter.exportSourceUrl(openMenuSource.value.id) : '',
 )
@@ -118,8 +115,6 @@ function closeDebugSheet(): void {
       :show-import-box="showImportBox"
       :import-json-text="importJsonText"
       :importing="importing"
-      :seeding="seeding"
-      :can-import-seeds="canImportSeeds"
       :import-error="importError"
       @update:search-query="searchQuery = $event"
       @update:status-filter="statusFilter = $event"
@@ -129,7 +124,6 @@ function closeDebugSheet(): void {
       @toggle-selection-mode="toggleSelectionMode"
       @file-selected="handleFileSelected"
       @submit-import="handleImportSubmit"
-      @import-seeds="handleImportSeeds"
       @toggle-select-all="toggleSelectAllFiltered"
       @invert-select="invertSelectFiltered"
       @batch-enable="handleBatchEnable"
@@ -147,27 +141,8 @@ function closeDebugSheet(): void {
         {{ t('onlineSources.panel.emptyTitle', { domain: domainLabel }) }}
       </p>
       <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-        {{
-          canImportSeeds
-            ? t('onlineSources.panel.emptyHintWithSeeds', { domain: domainLabel })
-            : t('onlineSources.panel.emptyHint', { domain: domainLabel })
-        }}
+        {{ t('onlineSources.panel.emptyHint', { domain: domainLabel }) }}
       </p>
-      <button
-        v-if="canImportSeeds"
-        type="button"
-        :disabled="seeding"
-        class="md-btn md-btn-sm md-btn-tonal md-state mt-4"
-        @click="handleImportSeeds"
-      >
-        <span>
-          {{
-            seeding
-              ? t('onlineSources.toolbar.importSeedsLoading')
-              : t('onlineSources.toolbar.importSeedsBtn')
-          }}
-        </span>
-      </button>
     </div>
 
     <!-- Empty Filter Result -->

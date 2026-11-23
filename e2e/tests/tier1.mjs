@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
 import { promisify } from 'node:util';
 import {
   buildEdgeMockSources,
@@ -1582,83 +1580,8 @@ function buildTier1Cases() {
     },
 
     // =======================================================================
-    // F11: Seed Files & Restart Persistence (core)
+    // F11: Restart Persistence (core)
     // =======================================================================
-    {
-      id: 'T1-F11-01',
-      feature: 'F11',
-      domain: 'core',
-      title: 'seeds/sources/{comic,music,video}.json exist and parse as valid arrays with >=2 enabled sources',
-      async run() {
-        for (const domain of ['comic', 'music', 'video']) {
-          const seedPath = path.join(REPO_ROOT, 'seeds', 'sources', `${domain}.json`);
-          assert.ok(existsSync(seedPath), `Missing required seed file: ${seedPath}`);
-          const raw = readFileSync(seedPath, 'utf8');
-          const arr = JSON.parse(raw);
-          assert.ok(Array.isArray(arr) && arr.length >= 2, `${domain}.json must contain >=2 sources`);
-          const enabled = arr.filter((s) => s.enabled !== false);
-          assert.ok(enabled.length >= 2, `${domain}.json must have >=2 enabled sources`);
-          for (const item of arr) {
-            assert.ok(item.sourceName || item.name, `${domain}.json entry missing sourceName`);
-            assert.ok(item.sourceUrl || item.apiUrl, `${domain}.json entry missing sourceUrl/apiUrl`);
-          }
-        }
-      },
-    },
-    {
-      id: 'T1-F11-02',
-      feature: 'F11',
-      domain: 'core',
-      title: 'Admin POST /api/v1/{comic,music,video}/sources/import-seeds imports curated seeds into DB',
-      async run(ctx) {
-        for (const domain of ['comic', 'music', 'video']) {
-          await clearDomainSources(ctx.admin, domain);
-          const rep = await ctx.admin.failLoudlyRequest(
-            'POST',
-            `/api/v1/${domain}/sources/import-seeds`,
-            { body: {}, expectedStatus: 200 },
-          );
-          assert.ok((rep.json.imported_count ?? rep.json.sources?.length ?? 0) >= 2);
-          const list = await ctx.admin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
-            expectedStatus: 200,
-          });
-          assert.ok(list.json.length >= 2);
-        }
-      },
-    },
-    {
-      id: 'T1-F11-03',
-      feature: 'F11',
-      domain: 'core',
-      title: 'Re-calling import-seeds is idempotent (imported_count=0, UUIDs preserved)',
-      async run(ctx) {
-        for (const domain of ['comic', 'music', 'video']) {
-          await clearDomainSources(ctx.admin, domain);
-          await ctx.admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import-seeds`, {
-            body: {},
-            expectedStatus: 200,
-          });
-          const before = (
-            await ctx.admin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
-              expectedStatus: 200,
-            })
-          ).json.map((s) => s.id);
-
-          const second = await ctx.admin.failLoudlyRequest(
-            'POST',
-            `/api/v1/${domain}/sources/import-seeds`,
-            { body: {}, expectedStatus: 200 },
-          );
-          assert.equal(second.json.imported_count, 0, `${domain}: second import-seeds must import 0`);
-          const after = (
-            await ctx.admin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
-              expectedStatus: 200,
-            })
-          ).json.map((s) => s.id);
-          assert.deepEqual(after, before);
-        }
-      },
-    },
     {
       id: 'T1-F11-04',
       feature: 'F11',

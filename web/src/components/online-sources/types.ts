@@ -104,7 +104,6 @@ export interface OnlineSourceManagerAdapter<
   searchRoutePath: string
   listSources: () => Promise<S[]>
   importSources: (rawJson: string) => Promise<ImportSourcesReportDto<S>>
-  importSeeds?: () => Promise<ImportSourcesReportDto<S>>
   reorderSources: (orderedIds: string[]) => Promise<S[]>
   batchSources: (payload: BatchSourcesPayload) => Promise<BatchSourcesReportDto>
   exportSourcesBatch: (ids: string[]) => Promise<Record<string, unknown>[]>

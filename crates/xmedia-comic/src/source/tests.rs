@@ -90,9 +90,9 @@ fn parse_comic_source_spec_supports_comic_and_legado_aliases_and_object_headers(
 
 #[test]
 fn seeds_comic_json_parses_cleanly_with_all_five_verified_sources() {
-    let raw = include_str!("../../../../seeds/sources/comic.json");
+    let raw = include_str!("../../testdata/online_sources.json");
     let batch =
-        ComicSourceSpec::parse_json_batch(raw).expect("seeds/sources/comic.json must parse");
+        ComicSourceSpec::parse_json_batch(raw).expect("testdata/online_sources.json must parse");
     assert_eq!(batch.len(), 5);
 
     let names: Vec<&str> = batch.iter().map(|(s, _)| s.source_name.as_str()).collect();

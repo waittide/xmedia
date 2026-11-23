@@ -6,7 +6,6 @@ import {
   LuGlobe,
   LuLink2,
   LuPlus,
-  LuSparkles,
   LuTrash2,
   LuUpload,
 } from 'vue-icons-plus/lu'
@@ -47,15 +46,13 @@ const addDialogOpen = ref(false)
 const subscriptionUrl = ref('')
 const urlImporting = ref(false)
 const fileImporting = ref(false)
-const seeding = ref(false)
 const dialogError = ref('')
 const busyIds = ref<Set<string>>(new Set())
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
 const domainLabel = computed(() => t(`onlineSources.domainLabel.${props.adapter.domain}`))
-const canImportSeeds = computed(() => typeof props.adapter.importSeeds === 'function')
 const enabledCount = computed(() => props.sources.filter((s) => s.enabled).length)
-const isAddBusy = computed(() => urlImporting.value || fileImporting.value || seeding.value)
+const isAddBusy = computed(() => urlImporting.value || fileImporting.value)
 
 function isBusy(id: string): boolean {
   return busyIds.value.has(id)
@@ -148,31 +145,6 @@ async function handleDelete(src: OnlineSourceSummaryDto): Promise<void> {
     snackbar.show({ message: extractApiError(err), tone: 'error' })
   } finally {
     setBusy(src.id, false)
-  }
-}
-
-async function handleImportSeeds(): Promise<void> {
-  const fn = props.adapter.importSeeds
-  if (!fn || seeding.value) return
-  dialogError.value = ''
-  seeding.value = true
-  try {
-    const report = await fn()
-    snackbar.show({
-      message: t('onlineSources.messages.seedsImported', {
-        domain: domainLabel.value,
-        imported: report.imported_count,
-        total: report.sources.length,
-      }),
-    })
-    addDialogOpen.value = false
-    emit('refresh')
-  } catch (err) {
-    const msg = extractApiError(err)
-    dialogError.value = msg
-    snackbar.show({ message: msg, tone: 'error' })
-  } finally {
-    seeding.value = false
   }
 }
 
@@ -294,31 +266,15 @@ function switchToAdvanced(): void {
       :icon="LuGlobe"
       :title="t('onlineSources.panel.emptyTitle', { domain: domainLabel })"
       :description="
-        canImportSeeds
-          ? tr(
-              'settings.onlineSourcesEmptyWithSeeds',
-              '一键载入内置推荐源，或通过订阅链接 / JSON 文件添加。',
-              'Load curated public sources in one click, or add via subscription URL or JSON file.',
-            )
-          : tr(
-              'settings.onlineSourcesEmptyBasic',
-              '通过订阅链接或本地 JSON 文件添加在线源。',
-              'Add online sources from a subscription URL or local JSON file.',
-            )
+        tr(
+          'settings.onlineSourcesEmptyBasic',
+          '通过订阅链接或本地 JSON 文件添加在线源。',
+          'Add online sources from a subscription URL or local JSON file.',
+        )
       "
     >
       <template #action>
-        <MdButton
-          v-if="canImportSeeds"
-          variant="filled"
-          size="sm"
-          :icon="LuSparkles"
-          :loading="seeding"
-          @click="handleImportSeeds"
-        >
-          {{ tr('settings.importRecommendedBtn', '一键导入推荐源', 'Import Recommended') }}
-        </MdButton>
-        <MdButton variant="tonal" size="sm" :icon="LuPlus" @click="openAddDialog">
+        <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
           {{ tr('settings.addSourceBtn', '添加源', 'Add Source') }}
         </MdButton>
       </template>
@@ -386,7 +342,7 @@ function switchToAdvanced(): void {
     @change="handleFileSelected"
   />
 
-  <!-- Add Source Dialog (Recommended Seeds / Local File / Subscription URL) -->
+  <!-- Add Source Dialog (Local File / Subscription URL) -->
   <MdDialog
     :open="addDialogOpen"
     :title="tr('settings.addSourceDialogTitle', '添加在线源', 'Add Online Source')"
@@ -411,38 +367,7 @@ function switchToAdvanced(): void {
         <span class="break-words">{{ dialogError }}</span>
       </div>
 
-      <!-- 1. Recommended Seeds -->
-      <div
-        v-if="canImportSeeds"
-        class="flex items-center justify-between gap-3 rounded-corner-md bg-surface-container p-4"
-      >
-        <div class="min-w-0">
-          <p class="text-title-small flex items-center gap-1.5 text-on-surface">
-            <LuSparkles class="h-4 w-4 text-primary" />
-            <span>{{ tr('settings.recommendedSeedsTitle', '内置推荐源', 'Recommended Sources') }}</span>
-          </p>
-          <p class="text-body-small mt-0.5 text-on-surface-variant">
-            {{
-              tr(
-                'settings.recommendedSeedsDesc',
-                '一键导入精选公开源，重复导入不会覆盖已有配置。',
-                'Import curated public sources in one click without duplicates.',
-              )
-            }}
-          </p>
-        </div>
-        <MdButton
-          variant="tonal"
-          size="sm"
-          :loading="seeding"
-          :disabled="isAddBusy"
-          @click="handleImportSeeds"
-        >
-          {{ tr('settings.importSeedsShort', '一键导入', 'Import') }}
-        </MdButton>
-      </div>
-
-      <!-- 2. Local JSON File -->
+      <!-- 1. Local JSON File -->
       <div class="flex items-center justify-between gap-3 rounded-corner-md bg-surface-container p-4">
         <div class="min-w-0">
           <p class="text-title-small flex items-center gap-1.5 text-on-surface">
@@ -470,7 +395,7 @@ function switchToAdvanced(): void {
         </MdButton>
       </div>
 
-      <!-- 3. URL Subscription -->
+      <!-- 2. URL Subscription -->
       <form
         class="flex flex-col gap-3 rounded-corner-md bg-surface-container p-4"
         @submit.prevent="handleImportFromUrl"

@@ -16,7 +16,7 @@ use crate::source::model::{VideoSourceFormat, VideoSourceSpec};
 
 #[test]
 fn parse_seeds_video_json_succeeds_with_all_six_verified_sources() {
-    let raw = include_str!("../../../../seeds/sources/video.json");
+    let raw = include_str!("../../testdata/online_sources.json");
     let batch = VideoSourceSpec::parse_json_batch(raw).expect("video.json must parse");
     assert_eq!(batch.len(), 6);
 

@@ -10,7 +10,6 @@ import {
 import { CdpClient } from '../lib/cdp.mjs';
 import {
   ApiClient,
-  REPO_ROOT,
   SutEndpointMissingError,
   XMediaServerManager,
   resolveWebDir,
@@ -32,8 +31,6 @@ import {
   decryptAes128Cbc,
 } from '../lib/fixtures.mjs';
 import { MockOriginServer } from '../lib/mock_origin.mjs';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Shared helpers for Tier 2 boundary, edge, error & security tests
@@ -1520,89 +1517,8 @@ function buildTier2Cases() {
     },
 
     // =======================================================================
-    // F11: Seed & Persistence Boundary (core)
+    // F11: Persistence Boundary (core)
     // =======================================================================
-    {
-      id: 'T2-F11-01',
-      feature: 'F11',
-      domain: 'core',
-      title: 'seeds/sources/{comic,music,video}.json contain only public https:// URLs (zero private/localhost)',
-      async run() {
-        for (const domain of ['comic', 'music', 'video']) {
-          const raw = readFileSync(
-            path.join(REPO_ROOT, 'seeds', 'sources', `${domain}.json`),
-            'utf8',
-          );
-          const arr = JSON.parse(raw);
-          for (const entry of arr) {
-            const url = entry.sourceUrl || entry.apiUrl || '';
-            assert.ok(
-              url.startsWith('https://'),
-              `${domain}.json entry "${entry.sourceName}" must use https://, got ${url}`,
-            );
-            assert.ok(
-              !/localhost|127\.0\.0\.1|10\.|192\.168\.|169\.254\./i.test(url),
-              `${domain}.json contains private/localhost URL: ${url}`,
-            );
-          }
-        }
-      },
-    },
-    {
-      id: 'T2-F11-02',
-      feature: 'F11',
-      domain: 'core',
-      title: 'Re-running import-seeds restores deleted seed without overwriting existing disabled state',
-      async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
-        await ctx.admin.failLoudlyRequest('POST', '/api/v1/comic/sources/import-seeds', {
-          body: {},
-          expectedStatus: 200,
-        });
-        const list1 = (
-          await ctx.admin.failLoudlyRequest('GET', '/api/v1/comic/sources', { expectedStatus: 200 })
-        ).json;
-        assert.ok(list1.length >= 2);
-        const deletedId = list1[0].id;
-        const disabledId = list1[1].id;
-
-        await ctx.admin.failLoudlyRequest('DELETE', `/api/v1/comic/sources/${deletedId}`, {
-          expectedStatus: [200, 204],
-        });
-        await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/comic/sources/${disabledId}`, {
-          body: { enabled: false },
-          expectedStatus: 200,
-        });
-
-        const reimp = await ctx.admin.failLoudlyRequest(
-          'POST',
-          '/api/v1/comic/sources/import-seeds',
-          { body: {}, expectedStatus: 200 },
-        );
-        assert.equal(reimp.json.imported_count, 1);
-        const list2 = (
-          await ctx.admin.failLoudlyRequest('GET', '/api/v1/comic/sources', { expectedStatus: 200 })
-        ).json;
-        const keptDisabled = list2.find((s) => s.id === disabledId);
-        assert.equal(keptDisabled?.enabled, false);
-      },
-    },
-    {
-      id: 'T2-F11-03',
-      feature: 'F11',
-      domain: 'core',
-      title: 'Non-admin calling POST /api/v1/{comic,music,video}/sources/import-seeds receives 403',
-      async run(ctx) {
-        for (const domain of ['comic', 'music', 'video']) {
-          const res = await ctx.member.failLoudlyRequest(
-            'POST',
-            `/api/v1/${domain}/sources/import-seeds`,
-            { body: {}, expectedStatus: 403 },
-          );
-          assert.equal(res.json?.error?.code, 'forbidden');
-        }
-      },
-    },
     {
       id: 'T2-F11-04',
       feature: 'F11',

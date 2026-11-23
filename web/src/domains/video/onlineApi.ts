@@ -331,11 +331,10 @@ export function resolveOnlineVideoSubtitleUrl(
   return buildOnlineVideoSubtitleUrl(rawUrl, sourceId)
 }
 
-const baseCrud = createDomainSourceApi<VideoSourceSummaryDto>('video', { hasSeeds: true })
+const baseCrud = createDomainSourceApi<VideoSourceSummaryDto>('video')
 
 export const onlineVideoApi = {
   ...baseCrud,
-  importSeeds: baseCrud.importSeeds!,
 
   testSource: (
     id: string,
@@ -477,7 +476,6 @@ export const videoSourceAdapter: OnlineSourceManagerAdapter<VideoSourceSummaryDt
   searchRoutePath: '/video/library',
   listSources: onlineVideoApi.listSources,
   importSources: onlineVideoApi.importSources,
-  importSeeds: onlineVideoApi.importSeeds,
   reorderSources: onlineVideoApi.reorderSources,
   batchSources: onlineVideoApi.batchSources,
   exportSourcesBatch: onlineVideoApi.exportSourcesBatch,

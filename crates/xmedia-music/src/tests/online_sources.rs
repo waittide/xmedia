@@ -45,7 +45,7 @@ use crate::{
     register_music_models,
 };
 
-const SEEDS_MUSIC_JSON: &str = include_str!("../../../../seeds/sources/music.json");
+const SEEDS_MUSIC_JSON: &str = include_str!("../../testdata/online_sources.json");
 
 const PNG_1X1: &[u8] = &[
     0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D', b'R',

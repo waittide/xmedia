@@ -222,11 +222,10 @@ export function resolveOnlineMusicAudioUrl(
   return buildOnlineMusicAudioUrl(rawStreamUrl, sourceId)
 }
 
-const baseCrud = createDomainSourceApi<MusicSourceSummaryDto>('music', { hasSeeds: true })
+const baseCrud = createDomainSourceApi<MusicSourceSummaryDto>('music')
 
 export const onlineMusicApi = {
   ...baseCrud,
-  importSeeds: baseCrud.importSeeds!,
 
   testSource: (
     id: string,
@@ -366,7 +365,6 @@ export const musicSourceAdapter: OnlineSourceManagerAdapter<MusicSourceSummaryDt
   searchRoutePath: '/music/library',
   listSources: onlineMusicApi.listSources,
   importSources: onlineMusicApi.importSources,
-  importSeeds: onlineMusicApi.importSeeds,
   reorderSources: onlineMusicApi.reorderSources,
   batchSources: onlineMusicApi.batchSources,
   exportSourcesBatch: onlineMusicApi.exportSourcesBatch,

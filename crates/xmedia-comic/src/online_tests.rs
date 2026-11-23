@@ -244,8 +244,8 @@ async fn ensure_comic_schema_migrates_legacy_db_without_comic_sources_preserving
 async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let h = setup_test_harness(true).await;
 
-    // 1. Import verified seeds/sources/comic.json twice (idempotent)
-    let seeds_raw = include_str!("../../../seeds/sources/comic.json");
+    // 1. Import verified testdata/online_sources.json twice (idempotent)
+    let seeds_raw = include_str!("../testdata/online_sources.json");
     let (st1, b1) = json_request(
         &h.app,
         "POST",
@@ -864,7 +864,7 @@ async fn mock_mangadex_webtoon_xkcd_full_e2e_replay_and_test_modes() {
     let base = format!("http://{addr}");
 
     // Rewrite seed URLs to our local mock server while keeping exact rule expressions!
-    let seeds_raw = include_str!("../../../seeds/sources/comic.json")
+    let seeds_raw = include_str!("../testdata/online_sources.json")
         .replace("https://api.mangadex.org", &base)
         .replace("https://uploads.mangadex.org", &base)
         .replace("https://www.webtoons.com/", &format!("{base}/"))

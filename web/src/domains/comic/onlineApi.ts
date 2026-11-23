@@ -240,11 +240,10 @@ export function resolveOnlineComicCoverUrl(
   return buildOnlineComicImageUrl(rawCoverUrl, sourceId)
 }
 
-const baseCrud = createDomainSourceApi<ComicSourceSummaryDto>('comic', { hasSeeds: true })
+const baseCrud = createDomainSourceApi<ComicSourceSummaryDto>('comic')
 
 export const onlineComicApi = {
   ...baseCrud,
-  importSeeds: baseCrud.importSeeds!,
 
   testSource: (
     id: string,
@@ -387,7 +386,6 @@ export const comicSourceAdapter: OnlineSourceManagerAdapter<ComicSourceSummaryDt
   searchRoutePath: '/comic/library',
   listSources: onlineComicApi.listSources,
   importSources: onlineComicApi.importSources,
-  importSeeds: onlineComicApi.importSeeds,
   reorderSources: onlineComicApi.reorderSources,
   batchSources: onlineComicApi.batchSources,
   exportSourcesBatch: onlineComicApi.exportSourcesBatch,
