@@ -298,6 +298,7 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
 function handleKeydown(ev: KeyboardEvent): void {
   if (ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (isEditableEventTarget(ev.target)) return
+  if (document.querySelector('[aria-modal="true"]')) return
   if (ev.key === 'ArrowLeft') {
     ev.preventDefault()
     void prevPage()
@@ -535,7 +536,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="relative flex h-full w-full items-center justify-center overflow-hidden bg-surface pt-14 pb-10"
+    class="safe-pt safe-pb relative flex h-full w-full items-center justify-center overflow-hidden bg-surface pt-14 pb-10"
   >
     <div
       v-if="loading"

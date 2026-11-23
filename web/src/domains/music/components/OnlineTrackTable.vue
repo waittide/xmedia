@@ -390,8 +390,8 @@ async function handleTrackAllToLibrary(): Promise<void> {
             {{ tr.duration_secs != null && tr.duration_secs > 0 ? formatDuration(tr.duration_secs) : '—' }}
           </td>
 
-          <td class="w-36 px-2 py-2.5 text-right sm:w-40 sm:px-3" @click.stop>
-            <div class="inline-flex items-center justify-end gap-0.5">
+          <td class="w-40 px-2 py-2.5 text-right sm:w-44 sm:px-3" @click.stop>
+            <div class="inline-flex items-center justify-end gap-2">
               <MdIconButton
                 v-if="authStore.isAdmin"
                 size="sm"

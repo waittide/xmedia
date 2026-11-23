@@ -26,6 +26,7 @@ import {
   MdButton,
   MdChip,
   MdCircularProgress,
+  MdDialog,
   MdIconButton,
   MdSelect,
   MdTextField,
@@ -587,41 +588,38 @@ defineExpose({
           </div>
         </div>
 
-        <div
-          v-if="error"
-          role="alert"
-          class="fixed inset-0 z-30 flex items-center justify-center bg-scrim/75 p-4 backdrop-blur-xs"
+        <MdDialog
+          :open="Boolean(error)"
+          :title="errorTitle || t('player.loadErrorTitle')"
+          size="sm"
+          :teleport-to="shellRootRef"
+          @close="handleBack"
         >
-          <div
-            class="flex w-full max-w-md flex-col items-center rounded-corner-xl bg-surface-container-high p-6 text-center text-on-surface shadow-elevation-3"
-          >
-            <div
-              class="mb-4 flex h-12 w-12 items-center justify-center rounded-corner-lg bg-error-container text-on-error-container"
-            >
+          <template #icon>
+            <div class="flex h-12 w-12 items-center justify-center rounded-corner-lg bg-error-container text-on-error-container">
               <LuAlertCircle class="h-6 w-6" aria-hidden="true" />
             </div>
-            <h2 class="text-title-medium text-on-surface">
-              {{ errorTitle || t('player.loadErrorTitle') }}
-            </h2>
-            <p class="text-body-small mt-1.5 text-on-surface-variant">
-              {{ error }}
-            </p>
-            <div class="mt-5 flex items-center gap-2.5">
-              <MdButton variant="outlined" size="sm" :icon="LuArrowLeft" @click="handleBack">
-                {{ backLabel || t('player.back') }}
-              </MdButton>
-              <MdButton
-                v-if="showRetry"
-                variant="filled"
-                size="sm"
-                :icon="LuRefreshCw"
-                @click="emit('retry')"
-              >
-                {{ t('player.retry') }}
-              </MdButton>
-            </div>
-          </div>
-        </div>
+          </template>
+
+          <p role="alert" class="text-body-medium text-on-surface-variant">
+            {{ error }}
+          </p>
+
+          <template #footer>
+            <MdButton variant="outlined" size="sm" :icon="LuArrowLeft" @click="handleBack">
+              {{ backLabel || t('player.back') }}
+            </MdButton>
+            <MdButton
+              v-if="showRetry"
+              variant="filled"
+              size="sm"
+              :icon="LuRefreshCw"
+              @click="emit('retry')"
+            >
+              {{ t('player.retry') }}
+            </MdButton>
+          </template>
+        </MdDialog>
       </template>
 
       <!-- Mutually-Exclusive MdSheet: Episodes OR Playback Settings -->

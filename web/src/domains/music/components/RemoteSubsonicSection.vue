@@ -495,7 +495,7 @@ defineExpose({
                 {{ formatDuration(song.duration) }}
               </span>
 
-              <div class="flex shrink-0 items-center gap-0.5" @click.stop>
+              <div class="flex shrink-0 items-center gap-2" @click.stop>
                 <MdIconButton
                   size="sm"
                   variant="standard"
@@ -661,31 +661,37 @@ defineExpose({
         <div
           v-for="(song, idx) in albumSongs"
           :key="song.id"
-          class="flex cursor-pointer items-center gap-2.5 py-2.5 transition-colors hover:bg-surface-container-high/50"
+          class="flex items-center gap-2.5 py-2 transition-colors hover:bg-surface-container-high/50"
           :class="isSongCurrent(song) ? 'text-primary' : ''"
-          @click="playSong(song, albumSongs)"
         >
-          <span class="text-body-small w-6 shrink-0 text-center tabular-nums text-on-surface-variant">
-            {{ song.track ?? idx + 1 }}
-          </span>
-          <div class="min-w-0 flex-1">
-            <p
-              class="text-title-small truncate"
-              :class="isSongCurrent(song) ? 'text-primary' : 'text-on-surface'"
-            >
-              {{ song.title }}
-            </p>
-            <p class="text-body-small truncate text-on-surface-variant">
-              {{ song.artist }}
-            </p>
-          </div>
-          <span
-            v-if="song.duration"
-            class="text-body-small shrink-0 font-mono tabular-nums text-on-surface-variant"
+          <button
+            type="button"
+            class="md-state flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-corner-sm px-1.5 py-1 text-left"
+            @click="playSong(song, albumSongs)"
           >
-            {{ formatDuration(song.duration) }}
-          </span>
-          <div class="flex shrink-0 items-center gap-0.5" @click.stop>
+            <span class="text-body-small flex w-6 shrink-0 items-center justify-center tabular-nums text-on-surface-variant">
+              <LuVolume2 v-if="isSongCurrent(song)" class="h-4 w-4 text-primary" aria-hidden="true" />
+              <template v-else>{{ song.track ?? idx + 1 }}</template>
+            </span>
+            <span class="min-w-0 flex-1">
+              <span
+                class="text-title-small block truncate"
+                :class="isSongCurrent(song) ? 'text-primary' : 'text-on-surface'"
+              >
+                {{ song.title }}
+              </span>
+              <span class="text-body-small block truncate text-on-surface-variant">
+                {{ song.artist }}
+              </span>
+            </span>
+            <span
+              v-if="song.duration"
+              class="text-body-small shrink-0 font-mono tabular-nums text-on-surface-variant"
+            >
+              {{ formatDuration(song.duration) }}
+            </span>
+          </button>
+          <div class="flex shrink-0 items-center gap-2">
             <MdIconButton
               size="sm"
               variant="standard"

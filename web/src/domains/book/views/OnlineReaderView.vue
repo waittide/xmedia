@@ -10,7 +10,6 @@ import {
   LuSlidersHorizontal,
 } from 'vue-icons-plus/lu'
 import { ImmersiveMediaTemplate } from '@/components/domain'
-import ThemePopover from '@/components/ThemePopover.vue'
 import { MdIconButton, MdMenu, MdMenuItem, MdTextField } from '@/components/ui'
 import BookSourceSwitchDialog from '@/domains/book/components/BookSourceSwitchDialog.vue'
 import OnlineDownloadModal from '@/domains/book/components/OnlineDownloadModal.vue'
@@ -152,8 +151,6 @@ function handleRetryPrimary(): void {
         :tooltip="t('reader.typography')"
         @click="openOverlay('typography')"
       />
-
-      <ThemePopover />
 
       <MdMenu placement="bottom-end" :aria-label="t('detail.moreActions')">
         <template #trigger="{ toggle, triggerAttrs }">

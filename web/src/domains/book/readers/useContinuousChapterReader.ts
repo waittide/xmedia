@@ -309,6 +309,7 @@ export function useContinuousChapterReader(
     if (ev.metaKey || ev.ctrlKey || ev.altKey) return
     if (options.isBlocked?.() || loadingChapter.value) return
     if (isEditableTarget(ev.target)) return
+    if (document.querySelector('[aria-modal="true"]')) return
     if (ev.key === 'ArrowLeft' && prevPos.value !== null) {
       ev.preventDefault()
       void openChapter(prevPos.value)

@@ -20,7 +20,6 @@ import {
   MediaErrorState,
   type ImmersiveTapMode,
 } from '@/components/domain'
-import ThemePopover from '@/components/ThemePopover.vue'
 import {
   MdButton,
   MdCircularProgress,
@@ -276,6 +275,7 @@ function handleReaderKeydown(ev: KeyboardEvent): void {
       target.isContentEditable)
 
   if (isTyping || ev.metaKey || ev.ctrlKey || ev.altKey) return
+  if (document.querySelector('[aria-modal="true"]')) return
   if (ev.key.toLowerCase() === 'b') {
     ev.preventDefault()
     toggleSheet('bookmarks')
@@ -538,8 +538,6 @@ onBeforeUnmount(() => {
         :tooltip="t('reader.typography')"
         @click="toggleSheet('typography')"
       />
-
-      <ThemePopover />
     </template>
 
     <!-- Main Reader Stage -->

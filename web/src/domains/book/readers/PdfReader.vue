@@ -237,6 +237,7 @@ function handleTouchEnd(ev: TouchEvent): void {
 
 function handleKeydown(ev: KeyboardEvent): void {
   if (ev.metaKey || ev.ctrlKey || ev.altKey) return
+  if (document.querySelector('[aria-modal="true"]')) return
   const target = ev.target
   if (
     target instanceof HTMLElement &&
@@ -334,7 +335,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="scrollAreaEl"
-    class="flex h-full w-full justify-center overflow-auto bg-surface-container px-3 pt-16 pb-20 sm:px-6"
+    class="safe-pt safe-pb flex h-full w-full justify-center overflow-auto bg-surface-container px-3 pt-16 pb-20 sm:px-6"
     @touchstart.passive="handleTouchStart"
     @touchend.passive="handleTouchEnd"
   >
@@ -358,7 +359,7 @@ onBeforeUnmount(() => {
     <canvas
       v-show="!loading && !errorMsg"
       ref="canvasEl"
-      class="self-start rounded-corner-md border border-outline-variant/50 bg-surface-container-lowest shadow-elevation-2"
+      class="self-start rounded-corner-md bg-surface-container-lowest shadow-elevation-2"
     />
   </div>
 </template>

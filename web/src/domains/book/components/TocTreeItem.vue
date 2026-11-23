@@ -31,7 +31,7 @@ const emit = defineEmits<{
     <!-- Group / Volume Node with Children -->
     <template v-if="node.children.length > 0">
       <div
-        class="group flex items-center justify-between gap-1.5 rounded-corner-md px-2 transition-colors duration-150 ease-standard"
+        class="group flex items-center justify-between gap-2 rounded-corner-md px-2 transition-colors duration-150 ease-standard"
         :class="[
           depth === 0 ? 'py-2' : 'py-1.5',
           subtreeContainsActive(node, activeHref)
@@ -42,7 +42,8 @@ const emit = defineEmits<{
         <button
           type="button"
           :aria-expanded="expandedKeys.has(node.key)"
-          class="md-state md-touch-target flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-corner-sm text-on-surface-variant hover:text-on-surface"
+          :aria-label="node.item.title"
+          class="md-state flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-corner-sm text-on-surface-variant hover:text-on-surface focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
           @click.stop="emit('toggleExpand', node.key)"
         >
           <LuChevronRight
@@ -54,7 +55,7 @@ const emit = defineEmits<{
 
         <button
           type="button"
-          class="text-title-small min-w-0 flex-1 cursor-pointer truncate text-left"
+          class="text-title-small min-h-9 min-w-0 flex-1 cursor-pointer truncate rounded-corner-xs px-1 text-left focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
           @click="emit('volumeClick', node)"
         >
           {{ node.item.title }}

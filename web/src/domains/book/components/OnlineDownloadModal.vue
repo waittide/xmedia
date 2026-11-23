@@ -13,7 +13,6 @@ import {
   MdCircularProgress,
   MdDialog,
   MdLinearProgress,
-  MdRadio,
   MdTextField,
 } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
@@ -268,8 +267,11 @@ function openImportedBook(): void {
             :aria-label="t('online.exportFormat')"
             class="grid grid-cols-1 gap-2 sm:grid-cols-2"
           >
-            <div
-              class="rounded-corner-md border px-3.5 py-3 transition-colors duration-150 ease-standard"
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="format === 'epub'"
+              class="md-state cursor-pointer rounded-corner-md border px-3.5 py-3 text-left transition-colors duration-150 ease-standard"
               :class="
                 format === 'epub'
                   ? 'border-primary bg-primary-container/40'
@@ -277,18 +279,29 @@ function openImportedBook(): void {
               "
               @click="format = 'epub'"
             >
-              <MdRadio
-                :checked="format === 'epub'"
-                :label="t('online.formatEpubTitle')"
-                @select="format = 'epub'"
-              />
-              <p class="text-body-small mt-1 pl-7 text-on-surface-variant">
+              <span class="flex items-center gap-2.5 text-label-large text-on-surface">
+                <span
+                  aria-hidden="true"
+                  class="flex h-4 w-4 shrink-0 items-center justify-center rounded-corner-full border-2"
+                  :class="format === 'epub' ? 'border-primary' : 'border-outline'"
+                >
+                  <span
+                    v-if="format === 'epub'"
+                    class="h-2 w-2 rounded-corner-full bg-primary"
+                  />
+                </span>
+                <span>{{ t('online.formatEpubTitle') }}</span>
+              </span>
+              <p class="text-body-small mt-1 pl-6.5 text-on-surface-variant">
                 {{ t('online.formatEpubDesc') }}
               </p>
-            </div>
+            </button>
 
-            <div
-              class="rounded-corner-md border px-3.5 py-3 transition-colors duration-150 ease-standard"
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="format === 'txt'"
+              class="md-state cursor-pointer rounded-corner-md border px-3.5 py-3 text-left transition-colors duration-150 ease-standard"
               :class="
                 format === 'txt'
                   ? 'border-primary bg-primary-container/40'
@@ -296,15 +309,23 @@ function openImportedBook(): void {
               "
               @click="format = 'txt'"
             >
-              <MdRadio
-                :checked="format === 'txt'"
-                :label="t('online.formatTxtTitle')"
-                @select="format = 'txt'"
-              />
-              <p class="text-body-small mt-1 pl-7 text-on-surface-variant">
+              <span class="flex items-center gap-2.5 text-label-large text-on-surface">
+                <span
+                  aria-hidden="true"
+                  class="flex h-4 w-4 shrink-0 items-center justify-center rounded-corner-full border-2"
+                  :class="format === 'txt' ? 'border-primary' : 'border-outline'"
+                >
+                  <span
+                    v-if="format === 'txt'"
+                    class="h-2 w-2 rounded-corner-full bg-primary"
+                  />
+                </span>
+                <span>{{ t('online.formatTxtTitle') }}</span>
+              </span>
+              <p class="text-body-small mt-1 pl-6.5 text-on-surface-variant">
                 {{ t('online.formatTxtDesc') }}
               </p>
-            </div>
+            </button>
           </div>
         </div>
 

@@ -305,6 +305,35 @@ function formatCellDuration(secs: number): string {
   return formatActivityDuration(secs, isZh.value)
 }
 
+const activeRovingDate = computed<string>(() => {
+  if (selectedCell.value?.inRange) return selectedCell.value.date
+  for (let w = calendarMatrix.value.weeks.length - 1; w >= 0; w -= 1) {
+    const week = calendarMatrix.value.weeks[w]!
+    for (let r = week.length - 1; r >= 0; r -= 1) {
+      if (week[r]!.inRange) return week[r]!.date
+    }
+  }
+  return ''
+})
+
+function handleCellKeydown(colIdx: number, rowIdx: number, ev: KeyboardEvent): void {
+  let nextCol = colIdx
+  let nextRow = rowIdx
+  if (ev.key === 'ArrowRight') nextCol += 1
+  else if (ev.key === 'ArrowLeft') nextCol -= 1
+  else if (ev.key === 'ArrowDown') nextRow += 1
+  else if (ev.key === 'ArrowUp') nextRow -= 1
+  else return
+
+  ev.preventDefault()
+  const target = calendarMatrix.value.weeks[nextCol]?.[nextRow]
+  if (!target || !target.inRange) return
+  selectedDate.value = target.date
+  const grid = (ev.currentTarget as HTMLElement)?.closest('[role="grid"]')
+  const nextBtn = grid?.querySelector<HTMLButtonElement>(`button[data-date="${target.date}"]`)
+  nextBtn?.focus()
+}
+
 function handleCellEnter(cell: HeatmapCell, ev: Event): void {
   if (!cell.inRange) return
   hoveredCell.value = cell
@@ -505,12 +534,13 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
               role="rowgroup"
             >
               <button
-                v-for="cell in week"
+                v-for="(cell, rowIdx) in week"
                 :key="cell.date"
+                :data-date="cell.date"
                 type="button"
                 role="gridcell"
                 :disabled="!cell.inRange"
-                :tabindex="cell.inRange ? 0 : -1"
+                :tabindex="cell.inRange && cell.date === activeRovingDate ? 0 : -1"
                 :aria-label="
                   cell.inRange
                     ? `${formatDateHeading(cell.date, cell.weekdayIndex)}: ${formatCellDuration(cell.durationSecs)}`
@@ -535,6 +565,7 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
                 @focus="handleCellEnter(cell, $event)"
                 @blur="handleCellLeave"
                 @click="handleCellSelect(cell)"
+                @keydown="handleCellKeydown(colIdx, rowIdx, $event)"
               />
             </div>
           </div>

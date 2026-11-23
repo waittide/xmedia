@@ -191,7 +191,7 @@ function pageImageStyle(pageNum: number): Record<string, string> {
   const scale = zoomPercent.value / 100
   if (props.fitMode === 'fit_height') {
     return {
-      maxHeight: `${Math.round(100 * scale)}vh`,
+      maxHeight: `${Math.round(100 * scale)}dvh`,
       width: 'auto',
       maxWidth:
         currentSpread.value.length > 1
@@ -448,10 +448,20 @@ function toggleSheet(id: ReaderSheetId): void {
   activeSheet.value = activeSheet.value === id ? null : id
 }
 
+function preferredScrollBehavior(): ScrollBehavior {
+  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    return 'auto'
+  }
+  return 'smooth'
+}
+
 function advanceForward(): void {
   if (!props.hasContent || props.loading) return
   if (props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({ top: window.innerHeight * 0.82, behavior: 'smooth' })
+    webtoonContainerRef.value?.scrollBy({
+      top: window.innerHeight * 0.82,
+      behavior: preferredScrollBehavior(),
+    })
     return
   }
 
@@ -482,7 +492,10 @@ function stepBackward(): void {
   if (!props.hasContent || props.loading) return
   pendingNextChapterTap.value = false
   if (props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({ top: -window.innerHeight * 0.82, behavior: 'smooth' })
+    webtoonContainerRef.value?.scrollBy({
+      top: -window.innerHeight * 0.82,
+      behavior: preferredScrollBehavior(),
+    })
     return
   }
 
@@ -646,9 +659,9 @@ function onKeydown(e: KeyboardEvent): void {
     if (isRtl.value) stepBackward()
     else advanceForward()
   } else if (e.key === 'ArrowDown' && props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({ top: 320, behavior: 'smooth' })
+    webtoonContainerRef.value?.scrollBy({ top: 320, behavior: preferredScrollBehavior() })
   } else if (e.key === 'ArrowUp' && props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({ top: -320, behavior: 'smooth' })
+    webtoonContainerRef.value?.scrollBy({ top: -320, behavior: preferredScrollBehavior() })
   } else if (e.key === '+' || e.key === '=') {
     e.preventDefault()
     adjustZoom(10)
@@ -789,7 +802,7 @@ defineExpose({
       <div
         v-else-if="readerMode === 'webtoon'"
         ref="webtoonContainerRef"
-        class="h-full w-full overflow-y-auto scroll-smooth"
+        class="h-full w-full overflow-y-auto motion-safe:scroll-smooth"
         @scroll.passive="onWebtoonScroll"
       >
         <div

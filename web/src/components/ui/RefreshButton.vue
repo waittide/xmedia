@@ -40,22 +40,22 @@ const iconClasses = computed(() => (props.size === 'md' ? 'h-4 w-4' : 'h-3.5 w-3
 const stateClasses = computed(() => {
   if (feedback.done.value) {
     return props.variant === 'ghost'
-      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-      : 'border border-[var(--md-sys-color-success)]/45 bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+      ? 'bg-success-container text-on-success-container'
+      : 'border border-success/45 bg-success-container text-on-success-container'
   }
   if (feedback.errored.value) {
     return props.variant === 'ghost'
-      ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-      : 'border border-[var(--md-sys-color-error)]/45 bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+      ? 'bg-error-container text-on-error-container'
+      : 'border border-error/45 bg-error-container text-on-error-container'
   }
   if (isSpinning.value) {
     return props.variant === 'ghost'
-      ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-      : 'border border-[var(--md-sys-color-primary)]/60 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-primary)]'
+      ? 'bg-primary-container text-on-primary-container'
+      : 'border border-primary/60 bg-surface text-primary'
   }
   return props.variant === 'ghost'
-    ? 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-    : 'border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)] hover:border-[var(--md-sys-color-outline)] hover:text-[var(--md-sys-color-on-surface)]'
+    ? 'text-on-surface-variant hover:text-on-surface'
+    : 'border border-outline-variant bg-surface text-on-surface-variant hover:border-outline hover:text-on-surface'
 })
 
 function handleClick(): void {
@@ -70,12 +70,12 @@ function handleClick(): void {
     :disabled="isSpinning"
     :title="effectiveTitle"
     :aria-label="effectiveTitle"
-    class="md-state inline-flex shrink-0 cursor-pointer items-center justify-center rounded-full active:scale-95 disabled:cursor-wait"
+    class="md-state md-touch-target inline-flex shrink-0 cursor-pointer items-center justify-center rounded-corner-full disabled:cursor-wait"
     :class="[sizeClasses, stateClasses]"
     @click="handleClick"
   >
-    <LuCheck v-if="feedback.done.value && !isSpinning" :class="iconClasses" />
-    <LuAlertCircle v-else-if="feedback.errored.value && !isSpinning" :class="iconClasses" />
-    <LuRefreshCw v-else :class="[iconClasses, isSpinning ? 'animate-spin' : '']" />
+    <LuCheck v-if="feedback.done.value && !isSpinning" :class="iconClasses" aria-hidden="true" />
+    <LuAlertCircle v-else-if="feedback.errored.value && !isSpinning" :class="iconClasses" aria-hidden="true" />
+    <LuRefreshCw v-else :class="[iconClasses, isSpinning ? 'animate-spin' : '']" aria-hidden="true" />
   </button>
 </template>

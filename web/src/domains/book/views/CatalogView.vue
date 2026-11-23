@@ -1670,8 +1670,11 @@ function onUploadFilesChange(ev: Event): void {
               <tr
                 v-for="book in catalogStore.books"
                 :key="book.id"
-                class="group cursor-pointer transition-colors duration-150 ease-standard hover:bg-surface-container"
+                tabindex="0"
+                class="group cursor-pointer transition-colors duration-150 ease-standard hover:bg-surface-container focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
                 @click="router.push(itemRoute({ scope: 'local', domain: 'book', id: book.id }))"
+                @keydown.enter.self="router.push(itemRoute({ scope: 'local', domain: 'book', id: book.id }))"
+                @keydown.space.self.prevent="router.push(itemRoute({ scope: 'local', domain: 'book', id: book.id }))"
               >
                 <td class="py-2.5 pl-4" @click.stop>
                   <AppCheckbox
@@ -1750,8 +1753,11 @@ function onUploadFilesChange(ev: Event): void {
               <tr
                 v-for="entry in visibleOnlineShelfEntries"
                 :key="`online-row-${entry.book.id}`"
-                class="group cursor-pointer transition-colors duration-150 ease-standard hover:bg-surface-container"
+                tabindex="0"
+                class="group cursor-pointer transition-colors duration-150 ease-standard hover:bg-surface-container focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
                 @click="router.push(entry.vm.playTo ?? entry.vm.to)"
+                @keydown.enter.self="router.push(entry.vm.playTo ?? entry.vm.to)"
+                @keydown.space.self.prevent="router.push(entry.vm.playTo ?? entry.vm.to)"
               >
                 <td class="py-2.5 pl-4" @click.stop />
                 <td class="py-2.5 pr-1" @click.stop />

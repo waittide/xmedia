@@ -61,17 +61,22 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
 <template>
   <div
     :draggable="canReorder"
-    class="relative flex flex-col gap-2.5 rounded-2xl border px-4 py-3.5 transition sm:flex-row sm:items-center sm:justify-between sm:gap-3"
+    :role="selectionMode ? 'checkbox' : undefined"
+    :aria-checked="selectionMode ? selected : undefined"
+    :tabindex="selectionMode ? 0 : undefined"
+    class="relative flex flex-col gap-2.5 rounded-corner-lg px-4 py-3.5 transition-colors duration-150 ease-standard sm:flex-row sm:items-center sm:justify-between sm:gap-3 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
     :class="[
       selectionMode
         ? selected
-          ? 'cursor-pointer select-none border-[var(--md-sys-color-primary)]/50 bg-[var(--md-sys-color-secondary-container)]/35'
-          : 'cursor-pointer select-none border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container-low)] hover:border-[var(--md-sys-color-outline-variant)] hover:bg-[var(--md-sys-color-surface-container)]/70'
-        : 'border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container-low)] hover:border-[var(--md-sys-color-outline-variant)] hover:bg-[var(--md-sys-color-surface-container)]/70',
+          ? 'cursor-pointer select-none bg-secondary-container/45 ring-1 ring-primary/50'
+          : 'cursor-pointer select-none bg-surface-container-low hover:bg-surface-container'
+        : 'bg-surface-container-low hover:bg-surface-container',
       !source.enabled && !selected ? 'opacity-60' : '',
-      dragging ? 'opacity-40 ring-1 ring-[var(--md-sys-color-primary)]/50' : '',
+      dragging ? 'opacity-40 ring-1 ring-primary/50' : '',
     ]"
     @click="selectionMode ? emit('toggle-select', $event.shiftKey) : undefined"
+    @keydown.enter.self="selectionMode ? emit('toggle-select', $event.shiftKey) : undefined"
+    @keydown.space.self.prevent="selectionMode ? emit('toggle-select', $event.shiftKey) : undefined"
     @dragstart="emit('drag-start', $event)"
     @dragover="emit('drag-over', $event)"
     @dragleave="emit('drag-leave', $event)"
@@ -80,11 +85,11 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
   >
     <div
       v-if="dropIndicator === 'before'"
-      class="pointer-events-none absolute -top-1.5 right-3 left-3 h-0.5 rounded-full bg-[var(--md-sys-color-primary)]"
+      class="pointer-events-none absolute -top-1.5 right-3 left-3 h-0.5 rounded-corner-full bg-primary"
     />
     <div
       v-if="dropIndicator === 'after'"
-      class="pointer-events-none absolute right-3 -bottom-1.5 left-3 h-0.5 rounded-full bg-[var(--md-sys-color-primary)]"
+      class="pointer-events-none absolute right-3 -bottom-1.5 left-3 h-0.5 rounded-corner-full bg-primary"
     />
 
     <div class="flex min-w-0 flex-1 items-center gap-2.5">
@@ -93,11 +98,11 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
       </div>
       <div
         v-else-if="totalCount > 1"
-        class="flex h-7 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)]/60 transition"
+        class="flex h-7 w-5 shrink-0 items-center justify-center rounded-corner-xs text-on-surface-variant transition-colors"
         :class="
           canReorder
-            ? 'cursor-grab hover:text-[var(--md-sys-color-on-surface)] active:cursor-grabbing'
-            : 'cursor-not-allowed opacity-35'
+            ? 'cursor-grab hover:text-on-surface active:cursor-grabbing'
+            : 'cursor-not-allowed opacity-38'
         "
         :title="
           canReorder
@@ -105,37 +110,43 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
             : t('onlineSources.card.dragDisabledTitle')
         "
       >
-        <LuGripVertical class="h-4 w-4" />
+        <LuGripVertical class="h-4 w-4" aria-hidden="true" />
       </div>
 
       <div class="min-w-0 flex-1">
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span
-            class="min-w-0 truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]"
+            class="text-title-small min-w-0 truncate text-on-surface"
             :title="source.name"
           >
             {{ source.name }}
           </span>
           <span
             v-if="source.group_name"
-            class="max-w-full shrink-0 truncate rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+            class="text-label-small max-w-full shrink-0 truncate rounded-corner-full bg-surface-container-highest px-2 py-0.5 text-on-surface-variant"
           >
             {{ source.group_name }}
           </span>
         </div>
 
-        <div class="mt-1.5 flex items-center gap-2">
+        <div class="mt-1.5 flex flex-wrap items-center gap-2">
           <span
-            class="h-2.5 w-2.5 shrink-0 rounded-full"
-            :class="statusDotClass(source)"
+            class="text-label-small inline-flex shrink-0 items-center gap-1.5 rounded-corner-full bg-surface-container-high px-2 py-0.5 text-on-surface-variant"
             :title="statusDotTitle(source)"
-          />
-          <span class="truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+          >
+            <span
+              class="h-2 w-2 shrink-0 rounded-corner-full"
+              :class="statusDotClass(source)"
+              aria-hidden="true"
+            />
+            <span>{{ statusDotTitle(source) }}</span>
+          </span>
+          <span class="text-body-small truncate font-mono text-on-surface-variant">
             {{ formatSourceHost(source.source_url) }}
           </span>
           <span
             v-if="source.cookie_hosts.length > 0"
-            class="shrink-0 text-[10px] text-[var(--md-sys-color-on-surface-variant)]/85"
+            class="text-label-small shrink-0 text-on-surface-variant"
           >
             · Cookie({{ source.cookie_hosts.length }})
           </span>

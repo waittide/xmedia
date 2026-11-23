@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { normalizeHex, parseHexRgb, rgbToHex, SEED_PRESETS } from '@/theme/md3'
 
 const props = defineProps<{
@@ -248,6 +249,8 @@ function unbindGlobalListeners(): void {
   window.removeEventListener('scroll', updatePosition, true)
 }
 
+useFocusTrap(panelRef, () => open.value)
+
 watch(open, (isOpen) => {
   if (isOpen) bindGlobalListeners()
   else unbindGlobalListeners()
@@ -263,11 +266,11 @@ onBeforeUnmount(unbindGlobalListeners)
     :title="t('theme.pickColor')"
     :aria-label="`${t('theme.pickColor')} (${modelValue})`"
     :aria-expanded="open"
-    class="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-[var(--md-sys-shape-corner-xs)] border border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] p-0.5 transition hover:border-[var(--md-sys-color-primary)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
+    class="md-touch-target inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-corner-xs border border-outline bg-surface p-0.5 transition-colors hover:border-primary focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
     @click="toggleOpen"
   >
     <span
-      class="h-full w-full rounded-[3px] border border-[var(--md-sys-color-outline-variant)]/40"
+      class="h-full w-full rounded-[3px] border border-outline-variant/40"
       :style="{ backgroundColor: modelValue }"
     />
   </button>
@@ -277,9 +280,10 @@ onBeforeUnmount(unbindGlobalListeners)
       v-if="open"
       ref="panelRef"
       role="dialog"
+      aria-modal="true"
       :aria-label="t('theme.pickColor')"
       :style="panelStyle"
-      class="z-[var(--z-popover)] rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-surface-container)] p-3 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+      class="z-[var(--z-popover)] rounded-corner-md bg-surface-container p-3 text-on-surface shadow-elevation-2"
     >
       <!-- 2D Saturation / Value Canvas -->
       <div
@@ -291,7 +295,7 @@ onBeforeUnmount(unbindGlobalListeners)
         aria-valuemax="100"
         :aria-valuenow="Math.round(sat * 100)"
         :aria-valuetext="`S ${Math.round(sat * 100)}%, V ${Math.round(val * 100)}%`"
-        class="relative h-32 w-full cursor-crosshair overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] select-none touch-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
+        class="relative h-32 w-full cursor-crosshair overflow-hidden rounded-corner-sm select-none touch-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
         :style="{ backgroundColor: pureHueHex }"
         @pointerdown="onSvPointerDown"
         @pointermove="onSvPointerMove"
@@ -302,7 +306,7 @@ onBeforeUnmount(unbindGlobalListeners)
         <div class="absolute inset-0 bg-gradient-to-r from-white to-transparent" />
         <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent" />
         <span
-          class="pointer-events-none absolute h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-md"
+          class="pointer-events-none absolute h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-corner-full border-2 border-white shadow-elevation-1"
           :style="{ left: `${sat * 100}%`, top: `${(1 - val) * 100}%` }"
         />
       </div>
@@ -312,11 +316,11 @@ onBeforeUnmount(unbindGlobalListeners)
         ref="hueBarRef"
         role="slider"
         tabindex="0"
-        aria-label="Hue"
+        :aria-label="t('theme.pickColor')"
         aria-valuemin="0"
         aria-valuemax="360"
         :aria-valuenow="Math.round(hue)"
-        class="relative mt-2.5 h-3 w-full cursor-pointer rounded-full select-none touch-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
+        class="md-touch-target relative mt-2.5 h-3 w-full cursor-pointer rounded-corner-full select-none touch-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
         style="background: linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%)"
         @pointerdown="onHuePointerDown"
         @pointermove="onHuePointerMove"
@@ -325,18 +329,18 @@ onBeforeUnmount(unbindGlobalListeners)
         @keydown="onHueKeydown"
       >
         <span
-          class="pointer-events-none absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow"
+          class="pointer-events-none absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-corner-full border-2 border-white shadow-elevation-1"
           :style="{ left: `${(hue / 360) * 100}%`, backgroundColor: pureHueHex }"
         />
       </div>
 
       <!-- Quick Swatches -->
-      <div class="mt-2.5 grid grid-cols-7 gap-1.5">
+      <div class="mt-2.5 grid grid-cols-7 gap-2">
         <button
           v-for="sw in QUICK_SWATCHES"
           :key="sw"
           type="button"
-          class="h-5 w-5 cursor-pointer rounded-full border border-[var(--md-sys-color-outline)]/40 transition hover:scale-110 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
+          class="h-6 w-6 cursor-pointer rounded-corner-full border border-outline/40 transition-transform hover:scale-110 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
           :aria-label="sw"
           :style="{ backgroundColor: sw }"
           @click="selectSwatch(sw)"
@@ -345,14 +349,15 @@ onBeforeUnmount(unbindGlobalListeners)
 
       <!-- Hex Input -->
       <div class="mt-2.5 flex items-center gap-2">
-        <span class="md-label-small text-[var(--md-sys-color-on-surface-variant)]">
+        <span class="text-label-small text-on-surface-variant">
           {{ t('theme.hexInputLabel') }}
         </span>
         <input
           v-model="hexDraft"
           type="text"
           maxlength="7"
-          class="md-input h-7 min-w-0 flex-1 !px-2 font-mono text-xs"
+          :aria-label="t('theme.hexInputLabel')"
+          class="text-body-small h-8 min-w-0 flex-1 rounded-corner-xs border border-outline-variant bg-surface-container-lowest px-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
           @change="commitHexDraft"
         />
       </div>

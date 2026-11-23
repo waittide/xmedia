@@ -150,7 +150,7 @@ function itemSourceLabel(item: PlayerQueueItem): string | null {
         </span>
       </button>
 
-      <div class="flex shrink-0 items-center gap-0.5">
+      <div class="flex shrink-0 items-center gap-2">
         <LuVolume2
           v-if="idx === playerStore.currentIndex"
           class="mr-1 h-4 w-4 shrink-0 text-on-secondary-container"
@@ -159,7 +159,7 @@ function itemSourceLabel(item: PlayerQueueItem): string | null {
 
         <div
           v-if="playerStore.queue.length > 1"
-          class="flex items-center opacity-100 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
+          class="flex items-center gap-2 opacity-100 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
         >
           <MdIconButton
             size="sm"
