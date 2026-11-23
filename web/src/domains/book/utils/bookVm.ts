@@ -1,5 +1,6 @@
 import { api } from '@/domains/book/api'
-import { itemRoute, playRoute, type MediaItemVM } from '@/sources'
+import { buildOnlineCoverUrl, type OnlineShelfBookDto } from '@/domains/book/onlineApi'
+import { itemRoute, playRoute, type MediaItemVM, type TrackedItemRef } from '@/sources'
 import type { BookSummaryDto, ReadingLocation } from '@/domains/book/types'
 
 export function hasBookProgress(progress: ReadingLocation | null | undefined): boolean {
@@ -66,5 +67,56 @@ export function bookSummaryToVM(
           unitIndex: book.progress?.chapter_index ?? undefined,
           position: book.progress?.progress_percent ?? 0,
         }),
+  }
+}
+
+export function onlineShelfBookToVM(
+  book: OnlineShelfBookDto,
+  unknownAuthor?: string,
+): MediaItemVM {
+  const cover = book.cover_url ? buildOnlineCoverUrl(book.cover_url) || undefined : undefined
+  const ref: TrackedItemRef = {
+    scope: 'online',
+    domain: 'book',
+    sourceId: book.source_id,
+    ref: book.book_url,
+    hints: {
+      title: book.name,
+      cover,
+      author: book.author || undefined,
+      extra: {
+        toc: book.toc_url,
+        chapter: String(book.current_chapter_index || 0),
+      },
+    },
+  }
+  const progressPercent =
+    book.total_chapters > 0
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            Math.round(((book.current_chapter_index + book.scroll_ratio) / book.total_chapters) * 100),
+          ),
+        )
+      : undefined
+
+  return {
+    ref,
+    title: book.name,
+    subtitle: book.current_chapter_title || book.author || unknownAuthor || undefined,
+    cover,
+    badge: {
+      source: book.source_name || undefined,
+      sourceKind: 'online',
+      progressPercent,
+      availability: 'ok',
+      blocked: false,
+    },
+    to: itemRoute(ref),
+    playTo: playRoute(ref, {
+      unitIndex: book.current_chapter_index,
+      position: book.scroll_ratio,
+    }),
   }
 }

@@ -39,6 +39,7 @@ import {
 import { api } from '@/domains/book/api'
 import OnlineBookSearchSection from '@/domains/book/components/OnlineBookSearchSection.vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
+import { onlineBookApi, type OnlineShelfBookDto } from '@/domains/book/onlineApi'
 import { useCatalogStore } from '@/domains/book/store'
 import type {
   BookBookmarkItemDto,
@@ -53,6 +54,7 @@ import {
   formatProgressPercentValue,
   hasBookProgress,
   normalizeBookProgressPercent,
+  onlineShelfBookToVM,
 } from '@/domains/book/utils/bookVm'
 import {
   itemRoute,
@@ -96,6 +98,8 @@ const filterSheetOpen = ref(false)
 const manualRefreshing = ref(false)
 const localError = ref<string | null>(null)
 const deletingBookmarkIds = ref<Set<string>>(new Set())
+const onlineShelfBooks = ref<OnlineShelfBookDto[]>([])
+let onlineShelfSeq = 0
 
 const uploadInputRef = ref<HTMLInputElement | null>(null)
 const onlineSearchRef = ref<InstanceType<typeof OnlineBookSearchSection> | null>(null)
@@ -268,6 +272,18 @@ function applyRouteQuery(): void {
   catalogStore.page = Number.isFinite(qPage) && qPage >= 1 ? qPage : 1
 }
 
+async function fetchOnlineShelfBooks(): Promise<void> {
+  const seq = ++onlineShelfSeq
+  try {
+    const list = await onlineBookApi.listShelf()
+    if (seq === onlineShelfSeq) {
+      onlineShelfBooks.value = list
+    }
+  } catch {
+    // Keep existing online shelf list best-effort if online sources are unavailable
+  }
+}
+
 async function loadActiveLocalData(): Promise<void> {
   if (!isLocalScope.value) return
   localError.value = null
@@ -288,7 +304,7 @@ async function loadActiveLocalData(): Promise<void> {
       await catalogStore.refreshSidebarData()
       return
     }
-    await catalogStore.fetchBooks()
+    await Promise.all([catalogStore.fetchBooks(), fetchOnlineShelfBooks()])
   } catch (err) {
     localError.value = err instanceof Error ? err.message : String(err)
   }
@@ -434,6 +450,47 @@ const localBookVMs = computed<Array<{ book: BookSummaryDto; vm: MediaItemVM }>>(
   })),
 )
 
+const hasLocalOnlyFilters = computed(
+  () =>
+    Boolean(activeCollectionId.value) ||
+    catalogStore.filterFormats.length > 0 ||
+    catalogStore.filterLibraryIds.length > 0 ||
+    catalogStore.filterTags.length > 0 ||
+    catalogStore.includeMissing,
+)
+
+const filteredOnlineShelfEntries = computed<Array<{ book: OnlineShelfBookDto; vm: MediaItemVM }>>(
+  () => {
+    if (!isShowingBooksGrid.value || hasLocalOnlyFilters.value) return []
+    const trackedUrls = new Set(
+      catalogStore.books
+        .map((b) => b.online_tracking?.book_url)
+        .filter((u): u is string => Boolean(u)),
+    )
+    const q = catalogStore.keyword.trim().toLowerCase()
+    const authorSet = new Set(catalogStore.filterAuthors.map((a) => a.toLowerCase()))
+
+    return onlineShelfBooks.value
+      .filter((b) => {
+        if (trackedUrls.has(b.book_url)) return false
+        if (authorSet.size > 0 && !authorSet.has((b.author || '').toLowerCase())) return false
+        if (q) {
+          const hay = `${b.name} ${b.author} ${b.source_name}`.toLowerCase()
+          if (!hay.includes(q)) return false
+        }
+        return true
+      })
+      .map((book) => ({
+        book,
+        vm: onlineShelfBookToVM(book, t('catalog.unknownAuthor')),
+      }))
+  },
+)
+
+const visibleOnlineShelfEntries = computed(() =>
+  catalogStore.page === 1 ? filteredOnlineShelfEntries.value : [],
+)
+
 const filteredAuthors = computed(() => {
   const q = searchInput.value.trim().toLowerCase()
   if (!q) return catalogStore.authors
@@ -472,7 +529,7 @@ const headerCount = computed<number | null>(() => {
   }
   if (activeView.value === 'authors') return filteredAuthors.value.length
   if (activeView.value === 'tags') return filteredTags.value.length
-  return catalogStore.total
+  return catalogStore.total + filteredOnlineShelfEntries.value.length
 })
 
 const templateLoading = computed(() => {
@@ -501,7 +558,7 @@ const templateEmpty = computed(() => {
   }
   if (activeView.value === 'authors') return filteredAuthors.value.length === 0
   if (activeView.value === 'tags') return filteredTags.value.length === 0
-  return catalogStore.books.length === 0
+  return catalogStore.books.length === 0 && visibleOnlineShelfEntries.value.length === 0
 })
 
 const emptyTitle = computed(() => {
@@ -725,6 +782,19 @@ async function handleDeleteBookFromCard(book: BookSummaryDto): Promise<void> {
   try {
     await api.deleteBook(book.id)
     await Promise.all([catalogStore.refreshSidebarData(), loadActiveLocalData()])
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
+async function handleRemoveOnlineShelfBook(book: OnlineShelfBookDto): Promise<void> {
+  try {
+    await onlineBookApi.removeFromShelf(book.id)
+    onlineShelfBooks.value = onlineShelfBooks.value.filter((item) => item.id !== book.id)
+    snackbarStore.show(t('catalog.onlineShelfRemoved'))
   } catch (err) {
     snackbarStore.show({
       message: err instanceof Error ? err.message : String(err),
@@ -1543,6 +1613,33 @@ function onUploadFilesChange(ev: Event): void {
               />
             </template>
           </MediaItemCard>
+
+          <MediaItemCard
+            v-for="entry in visibleOnlineShelfEntries"
+            :key="`online-shelf-${entry.book.id}`"
+            :item="entry.vm"
+            aspect="poster"
+            cover-style="book"
+            prefer-play-route
+          >
+            <template #menu>
+              <MdMenuItem
+                :icon="LuBookOpen"
+                :label="
+                  entry.book.current_chapter_index > 0 || entry.book.scroll_ratio > 0
+                    ? t('catalog.continueReading')
+                    : t('catalog.startReading')
+                "
+                :to="entry.vm.playTo ?? entry.vm.to"
+              />
+              <MdMenuItem
+                :icon="LuTrash2"
+                :label="t('catalog.removeOnlineShelf')"
+                destructive
+                @select="handleRemoveOnlineShelfBook(entry.book)"
+              />
+            </template>
+          </MediaItemCard>
         </div>
 
         <!-- Clean MD3 Table View -->
@@ -1647,6 +1744,63 @@ function onUploadFilesChange(ev: Event): void {
                   class="text-body-small hidden py-2.5 pr-4 text-right tabular-nums text-on-surface-variant sm:table-cell"
                 >
                   {{ formatBytes(book.file_size) }}
+                </td>
+              </tr>
+
+              <tr
+                v-for="entry in visibleOnlineShelfEntries"
+                :key="`online-row-${entry.book.id}`"
+                class="group cursor-pointer transition-colors duration-150 ease-standard hover:bg-surface-container"
+                @click="router.push(entry.vm.playTo ?? entry.vm.to)"
+              >
+                <td class="py-2.5 pl-4" @click.stop />
+                <td class="py-2.5 pr-1" @click.stop />
+                <td class="py-2.5 pr-4">
+                  <div class="flex items-center gap-3">
+                    <div class="h-10 w-7 shrink-0 overflow-hidden rounded-corner-xs">
+                      <MediaCoverImage
+                        :src="entry.vm.cover ?? null"
+                        :alt="entry.book.name"
+                        aspect-class="aspect-[2/3]"
+                        rounded="rounded-corner-xs"
+                        bg-class="bg-surface-container-high"
+                        :fallback-icon="LuBookOpen"
+                        fallback-icon-class="h-3.5 w-3.5 text-on-surface-variant/60"
+                      />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="text-title-small truncate text-on-surface group-hover:text-primary">
+                        {{ entry.book.name }}
+                      </p>
+                      <p
+                        v-if="entry.book.current_chapter_title"
+                        class="text-label-small mt-0.5 truncate text-on-surface-variant"
+                      >
+                        {{ entry.book.current_chapter_title }}
+                      </p>
+                    </div>
+                  </div>
+                </td>
+                <td class="text-body-small hidden py-2.5 pr-4 text-on-surface-variant md:table-cell">
+                  {{ entry.book.author || t('catalog.unknownAuthor') }}
+                </td>
+                <td class="text-label-medium hidden py-2.5 pr-4 tabular-nums sm:table-cell">
+                  <span v-if="entry.vm.badge?.progressPercent !== undefined" class="text-primary">
+                    {{ entry.vm.badge.progressPercent }}%
+                  </span>
+                  <span v-else class="text-on-surface-variant">—</span>
+                </td>
+                <td class="py-2.5 pr-4">
+                  <span
+                    class="text-label-small rounded-corner-xs bg-secondary-container px-2 py-0.5 text-on-secondary-container"
+                  >
+                    {{ entry.book.source_name || t('catalog.onlineBadge') }}
+                  </span>
+                </td>
+                <td
+                  class="text-body-small hidden py-2.5 pr-4 text-right text-on-surface-variant sm:table-cell"
+                >
+                  —
                 </td>
               </tr>
             </tbody>
