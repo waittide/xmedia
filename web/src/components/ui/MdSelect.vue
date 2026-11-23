@@ -282,10 +282,10 @@ onBeforeUnmount(unbindGlobalListeners)
         ref="menuRef"
         role="listbox"
         :style="menuStyle"
-        class="z-[var(--z-popover)] overflow-hidden rounded-corner-xs bg-surface-container py-2 px-1 text-on-surface shadow-elevation-2"
+        class="z-[var(--z-popover)] overflow-hidden rounded-corner-lg bg-surface-container p-1.5 text-on-surface shadow-elevation-2"
         @keydown="onMenuKeydown"
       >
-        <div v-if="showSearchBox" class="relative mb-1.5 px-1 pt-0.5">
+        <div v-if="showSearchBox" class="relative mb-1.5 px-0.5 pt-0.5">
           <LuSearch
             class="pointer-events-none absolute top-1/2 left-3.5 h-3.5 w-3.5 -translate-y-1/2 text-on-surface-variant"
             aria-hidden="true"
@@ -295,7 +295,7 @@ onBeforeUnmount(unbindGlobalListeners)
             v-model="query"
             type="text"
             :placeholder="searchPlaceholder || t('common.filterPlaceholder')"
-            class="text-body-small h-8 w-full rounded-corner-xs border border-outline-variant bg-surface-container-lowest pr-2.5 pl-8 text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            class="text-body-small h-8 w-full rounded-corner-sm border border-outline-variant bg-surface-container-lowest pr-2.5 pl-8 text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:border-primary focus:ring-1 focus:ring-primary"
           />
         </div>
 
@@ -307,7 +307,7 @@ onBeforeUnmount(unbindGlobalListeners)
             type="button"
             role="option"
             :aria-selected="opt.value === modelValue"
-            class="md-state text-body-medium flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 rounded-corner-xs px-3 py-2 text-left"
+            class="md-state text-body-medium flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 rounded-corner-md px-3 py-2 text-left"
             :class="[
               opt.value === modelValue
                 ? 'bg-secondary-container text-on-secondary-container'

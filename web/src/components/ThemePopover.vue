@@ -82,7 +82,7 @@ const locales: { code: LocaleCode; nativeLabel: string }[] = [
         v-if="langOpen"
         role="menu"
         :aria-label="t('theme.languageTitle')"
-        class="absolute top-11 right-0 z-[var(--z-popover)] w-40 max-w-[calc(100vw-2rem)] rounded-corner-xs bg-surface-container py-1 text-on-surface shadow-elevation-2"
+        class="absolute top-11 right-0 z-[var(--z-popover)] w-40 max-w-[calc(100vw-2rem)] rounded-corner-lg bg-surface-container p-1.5 text-on-surface shadow-elevation-2"
       >
         <button
           v-for="loc in locales"
@@ -90,7 +90,7 @@ const locales: { code: LocaleCode; nativeLabel: string }[] = [
           type="button"
           role="menuitemradio"
           :aria-checked="themeStore.locale === loc.code"
-          class="md-state text-body-medium flex h-10 w-full cursor-pointer items-center justify-between px-3"
+          class="md-state text-body-medium flex h-10 w-full cursor-pointer items-center justify-between rounded-corner-md px-3"
           :class="
             themeStore.locale === loc.code
               ? 'bg-secondary-container text-on-secondary-container'

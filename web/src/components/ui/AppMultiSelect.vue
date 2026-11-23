@@ -314,7 +314,7 @@ onBeforeUnmount(unbindGlobalListeners)
       v-if="open"
       ref="menuRef"
       :style="menuStyle"
-      class="z-[var(--z-popover)] overflow-hidden rounded-[var(--md-sys-shape-corner-xs)] bg-[var(--md-sys-color-surface-container)] p-2 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+      class="z-[var(--z-popover)] overflow-hidden rounded-corner-lg bg-[var(--md-sys-color-surface-container)] p-2 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
       @keydown="onMenuKeydown"
     >
       <!-- Optional Header Controls Slot (e.g. Tag Match Any / Match All toggle) -->

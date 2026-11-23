@@ -82,7 +82,7 @@ const rootAttrs = computed(() =>
     :is="isRouterLink ? RouterLink : 'button'"
     v-bind="rootAttrs"
     role="menuitem"
-    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-xs px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
+    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-md px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
     :class="toneClass"
     @click="handleClick"
   >
