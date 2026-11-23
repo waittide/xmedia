@@ -71,7 +71,7 @@ function handleClick(ev: MouseEvent): void {
     v-if="to && !disabled"
     :to="to"
     role="menuitem"
-    class="md-state text-label-large flex h-12 w-full items-center gap-3 px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
+    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-md px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
     :class="toneClass"
     @click="handleClick"
   >
@@ -95,7 +95,7 @@ function handleClick(ev: MouseEvent): void {
     role="menuitem"
     :disabled="disabled"
     :aria-disabled="disabled ? 'true' : undefined"
-    class="md-state text-label-large flex h-12 w-full items-center gap-3 px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
+    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-md px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
     :class="toneClass"
     @click="handleClick"
   >

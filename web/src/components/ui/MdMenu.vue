@@ -113,7 +113,7 @@ function updatePosition(): void {
   const vw = window.innerWidth
   const vh = window.innerHeight
   const margin = 8
-  const gap = 4
+  const gap = 6
 
   const measuredW = menuRef.value?.offsetWidth || Math.max(rect.width, props.minWidth)
   const measuredH = menuRef.value?.offsetHeight || 200
@@ -257,7 +257,7 @@ defineExpose({ open: () => setOpen(true), close, toggle, updatePosition })
         tabindex="-1"
         :aria-label="ariaLabel"
         :style="menuStyle"
-        class="z-[var(--z-popover)] overflow-y-auto rounded-corner-xs bg-surface-container py-2 text-on-surface shadow-elevation-2 outline-none"
+        class="z-[var(--z-popover)] overflow-y-auto rounded-corner-lg border border-outline-variant/40 bg-surface-container p-1.5 text-on-surface shadow-elevation-2 outline-none"
         @keydown="onMenuKeydown"
       >
         <slot :close="() => close(true)" />

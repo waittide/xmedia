@@ -408,7 +408,7 @@ onBeforeUnmount(() => {
               </button>
             </template>
 
-            <div class="px-3 pt-1 pb-2">
+            <div class="px-2.5 pt-1.5 pb-2">
               <p class="text-title-small truncate text-on-surface">
                 {{ authStore.user?.display_name || authStore.user?.username }}
               </p>
@@ -419,7 +419,7 @@ onBeforeUnmount(() => {
             </div>
 
             <!-- Compact 3-state Theme Mode Switcher -->
-            <div class="px-3 pb-2">
+            <div class="px-2 pb-2">
               <div
                 role="radiogroup"
                 :aria-label="t('theme.modeTitle')"
@@ -446,7 +446,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="my-1 border-t border-outline-variant" />
+            <div class="mx-1.5 my-1.5 border-t border-outline-variant/60" />
 
             <MdMenuItem
               :icon="LuListChecks"
