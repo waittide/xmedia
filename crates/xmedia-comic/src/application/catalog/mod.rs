@@ -5,10 +5,13 @@ mod upload;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use uuid::Uuid;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::ports::RealtimeEventPort;
-use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::user::{User, UserId};
 
 use crate::application::dto::{OnlineTrackedSeriesDto, SeriesSummaryDto, TaxonomyCountDto};
 use crate::application::ports::{ArchiveReaderPort, ComicFileStoragePort, ThumbnailGeneratorPort};
@@ -24,6 +27,7 @@ pub struct ComicCatalogService {
     pub(super) series: Arc<dyn SeriesRepository>,
     pub(super) chapters: Arc<dyn ChapterRepository>,
     pub(super) reading: Arc<dyn ComicReadingRepository>,
+    pub(super) bindings: Arc<MediaBindingService>,
     pub(super) archives: Arc<dyn ArchiveReaderPort>,
     pub(super) thumbnails: Arc<dyn ThumbnailGeneratorPort>,
     pub(super) storage: Arc<dyn ComicFileStoragePort>,
@@ -37,6 +41,7 @@ impl ComicCatalogService {
         series: Arc<dyn SeriesRepository>,
         chapters: Arc<dyn ChapterRepository>,
         reading: Arc<dyn ComicReadingRepository>,
+        bindings: Arc<MediaBindingService>,
         archives: Arc<dyn ArchiveReaderPort>,
         thumbnails: Arc<dyn ThumbnailGeneratorPort>,
         storage: Arc<dyn ComicFileStoragePort>,
@@ -47,11 +52,56 @@ impl ComicCatalogService {
             series,
             chapters,
             reading,
+            bindings,
             archives,
             thumbnails,
             storage,
             events,
         }
+    }
+
+    pub fn bindings(&self) -> &Arc<MediaBindingService> {
+        &self.bindings
+    }
+
+    pub async fn list_all_series_ids_for_backfill(&self) -> DomainResult<Vec<Uuid>> {
+        Ok(self
+            .series
+            .list_all()
+            .await?
+            .into_iter()
+            .map(|s| s.id.0)
+            .collect())
+    }
+
+    pub(crate) async fn bind_series_for_user(
+        &self,
+        user_id: UserId,
+        series_id: SeriesId,
+    ) -> DomainResult<bool> {
+        self.bindings
+            .bind(user_id, MediaKind::Comic, series_id.0)
+            .await
+    }
+
+    pub async fn require_series_bound(&self, user: &User, series_id: SeriesId) -> DomainResult<()> {
+        self.bindings
+            .require_bound(user.id, MediaKind::Comic, series_id.0, "series not found")
+            .await
+    }
+
+    pub async fn require_chapter_bound(
+        &self,
+        user: &User,
+        chapter_id: ChapterId,
+    ) -> DomainResult<Chapter> {
+        let chapter = self
+            .chapters
+            .find_by_id(chapter_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user, chapter.series_id).await?;
+        Ok(chapter)
     }
 
     pub(super) async fn load_sorted_chapters_map(

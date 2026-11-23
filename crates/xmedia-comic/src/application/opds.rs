@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
@@ -60,6 +61,7 @@ pub struct ComicOpdsService {
     series: Arc<dyn SeriesRepository>,
     chapters: Arc<dyn ChapterRepository>,
     reading: Arc<dyn ComicReadingRepository>,
+    bindings: Arc<MediaBindingService>,
 }
 
 impl ComicOpdsService {
@@ -68,12 +70,14 @@ impl ComicOpdsService {
         series: Arc<dyn SeriesRepository>,
         chapters: Arc<dyn ChapterRepository>,
         reading: Arc<dyn ComicReadingRepository>,
+        bindings: Arc<MediaBindingService>,
     ) -> Self {
         Self {
             libraries,
             series,
             chapters,
             reading,
+            bindings,
         }
     }
 
@@ -264,11 +268,20 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn libraries_feed(&self, ver_prefix: &str) -> DomainResult<OpdsFeed> {
+    pub async fn libraries_feed(
+        &self,
+        user: &User,
+        catalog: &ComicCatalogService,
+        ver_prefix: &str,
+    ) -> DomainResult<OpdsFeed> {
         let libs = self.libraries.list_by_media(MediaKind::Comic).await?;
+        let counts = catalog.count_bound_series_by_library(user).await?;
         let mut items = Vec::with_capacity(libs.len());
         for l in libs {
-            let count = self.series.count_by_library(l.id).await?;
+            let count = counts.get(&l.id).copied().unwrap_or(0);
+            if count == 0 {
+                continue;
+            }
             items.push(OpdsNavItem {
                 id: format!("urn:xmedia:comic:library:{}", l.id),
                 title: l.name,
@@ -335,10 +348,11 @@ impl ComicOpdsService {
 
     pub async fn tags_feed(
         &self,
+        user: &User,
         catalog: &ComicCatalogService,
         ver_prefix: &str,
     ) -> DomainResult<OpdsFeed> {
-        let tax = catalog.taxonomy_overview().await?;
+        let tax = catalog.taxonomy_overview(user).await?;
         let now = Timestamp::now();
         let mut items = Vec::new();
         for g in tax.genres {
@@ -415,11 +429,21 @@ impl ComicOpdsService {
 
     pub async fn shelves_feed(&self, user: &User, ver_prefix: &str) -> DomainResult<OpdsFeed> {
         let now = Timestamp::now();
-        let favs = self.reading.list_favorites(user.id).await?;
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user.id, MediaKind::Comic)
+            .await?;
+        let fav_count = self
+            .reading
+            .list_favorites(user.id)
+            .await?
+            .into_iter()
+            .filter(|f| bound_ids.contains(&f.series_id.0))
+            .count();
         let mut items = vec![OpdsNavItem {
             id: "urn:xmedia:comic:favorites".into(),
             title: "Favorites / 我的收藏".into(),
-            summary: format!("{} favorite series", favs.len()),
+            summary: format!("{fav_count} favorite series"),
             subsection_path: format!("{ver_prefix}/favorites"),
             cover_url: None,
             updated_at: now,
@@ -427,10 +451,15 @@ impl ComicOpdsService {
 
         let shelves = self.reading.list_shelves(user.id).await?;
         for sh in shelves {
+            let count = sh
+                .series_ids
+                .iter()
+                .filter(|sid| bound_ids.contains(&sid.0))
+                .count();
             items.push(OpdsNavItem {
                 id: format!("urn:xmedia:comic:shelf:{}", sh.id),
                 title: sh.name,
-                summary: format!("{} series", sh.series_ids.len()),
+                summary: format!("{count} series"),
                 subsection_path: format!("{ver_prefix}/shelves/{}", sh.id),
                 cover_url: None,
                 updated_at: sh.updated_at,
@@ -538,6 +567,9 @@ impl ComicOpdsService {
         opds_root: &str,
         ver_prefix: &str,
     ) -> DomainResult<OpdsFeed> {
+        self.bindings
+            .require_bound(user.id, MediaKind::Comic, series_id.0, "series not found")
+            .await?;
         let series = self
             .series
             .find_by_id(series_id)

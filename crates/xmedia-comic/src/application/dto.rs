@@ -67,6 +67,13 @@ pub struct SeriesSummaryDto {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PoolSeriesSummaryDto {
+    #[serde(flatten)]
+    pub series: SeriesSummaryDto,
+    pub bound: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ContinueReadingItemDto {
     pub series: SeriesSummaryDto,
     pub pointer: ContinueReadingPointer,

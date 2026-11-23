@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::user::User;
 
 use crate::application::dto::{
     ChapterItemDto, ComicLibraryStatsDto, ContinueReadingItemDto, HomeOverviewDto,
-    OnlineTrackedSeriesDto, SeriesDetailDto, SeriesQueryFilter, SeriesSummaryDto,
-    TaxonomyOverviewDto,
+    OnlineTrackedSeriesDto, PoolSeriesSummaryDto, SeriesDetailDto, SeriesQueryFilter,
+    SeriesSummaryDto, TaxonomyOverviewDto,
 };
 use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
 use crate::domain::natural::natural_cmp;
@@ -16,9 +17,34 @@ use super::{ComicCatalogService, to_sorted_counts};
 
 impl ComicCatalogService {
     pub async fn home_overview(&self, user: &User) -> DomainResult<HomeOverviewDto> {
-        let all_series = self.series.list_all().await?;
-        let user_progress = self.reading.list_user_progress(user.id).await?;
-        let favorites = self.reading.list_favorites(user.id).await?;
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user.id, MediaKind::Comic)
+            .await?;
+        let all_series: Vec<_> = if bound_ids.is_empty() {
+            Vec::new()
+        } else {
+            self.series
+                .list_all()
+                .await?
+                .into_iter()
+                .filter(|s| bound_ids.contains(&s.id.0))
+                .collect()
+        };
+        let user_progress: Vec<_> = self
+            .reading
+            .list_user_progress(user.id)
+            .await?
+            .into_iter()
+            .filter(|p| bound_ids.contains(&p.series_id.0))
+            .collect();
+        let favorites: Vec<_> = self
+            .reading
+            .list_favorites(user.id)
+            .await?
+            .into_iter()
+            .filter(|f| bound_ids.contains(&f.series_id.0))
+            .collect();
         let fav_set: HashSet<SeriesId> = favorites.iter().map(|f| f.series_id).collect();
 
         let mut progress_by_series: HashMap<SeriesId, Vec<ChapterProgress>> = HashMap::new();
@@ -95,7 +121,13 @@ impl ComicCatalogService {
         recently_updated.truncate(18);
 
         let total_series = summaries.len() as u32;
-        let bookmarks_count = self.reading.list_user_bookmarks(user.id).await?.len() as u32;
+        let bookmarks_count = self
+            .reading
+            .list_user_bookmarks(user.id)
+            .await?
+            .into_iter()
+            .filter(|b| bound_ids.contains(&b.series_id.0))
+            .count() as u32;
         let shelves_count = self.reading.list_shelves(user.id).await?.len() as u32;
         let mut recently_added = summaries;
         recently_added.sort_by_key(|a| std::cmp::Reverse(a.created_at));
@@ -124,11 +156,21 @@ impl ComicCatalogService {
         user: &User,
         filter: SeriesQueryFilter,
     ) -> DomainResult<Vec<SeriesSummaryDto>> {
-        let base_list = if let Some(lib_id) = filter.library_id {
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user.id, MediaKind::Comic)
+            .await?;
+        if bound_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let base_list: Vec<_> = if let Some(lib_id) = filter.library_id {
             self.series.list_by_library(lib_id).await?
         } else {
             self.series.list_all().await?
-        };
+        }
+        .into_iter()
+        .filter(|s| bound_ids.contains(&s.id.0))
+        .collect();
 
         let shelf_filter: Option<HashSet<SeriesId>> = if let Some(shelf_id) = filter.shelf_id {
             let shelf = self
@@ -277,11 +319,98 @@ impl ComicCatalogService {
         Ok(results)
     }
 
+    pub async fn list_pool_series(
+        &self,
+        user: &User,
+        filter: SeriesQueryFilter,
+    ) -> DomainResult<Vec<PoolSeriesSummaryDto>> {
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user.id, MediaKind::Comic)
+            .await?;
+        let base_list = if let Some(lib_id) = filter.library_id {
+            self.series.list_by_library(lib_id).await?
+        } else {
+            self.series.list_all().await?
+        };
+
+        let search_q = filter
+            .search
+            .as_ref()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
+
+        let mut results: Vec<PoolSeriesSummaryDto> = Vec::new();
+        for s in base_list {
+            if s.online_tracking().is_some() {
+                continue;
+            }
+            if let Some(status) = filter.status
+                && s.status != status
+            {
+                continue;
+            }
+            if let Some(q) = &search_q {
+                let matched = s.title.to_lowercase().contains(q)
+                    || s.alt_titles.iter().any(|a| a.to_lowercase().contains(q))
+                    || s.summary.to_lowercase().contains(q)
+                    || s.writers.iter().any(|w| w.to_lowercase().contains(q))
+                    || s.pencillers.iter().any(|p| p.to_lowercase().contains(q))
+                    || s.tags.iter().any(|t| t.to_lowercase().contains(q))
+                    || s.genres.iter().any(|g| g.to_lowercase().contains(q));
+                if !matched {
+                    continue;
+                }
+            }
+            let bound = bound_ids.contains(&s.id.0);
+            let summary = Self::build_series_summary_with_chapters(s, &[], &[], false);
+            results.push(PoolSeriesSummaryDto {
+                series: summary,
+                bound,
+            });
+        }
+
+        let sort_by = filter.sort_by.as_deref().unwrap_or("updated_at");
+        let asc = filter.sort_dir.as_deref() == Some("asc");
+        results.sort_by(|a, b| {
+            let ord = match sort_by {
+                "title" => natural_cmp(&a.series.title, &b.series.title),
+                "created_at" => a.series.created_at.cmp(&b.series.created_at),
+                "chapter_count" => a.series.chapter_count.cmp(&b.series.chapter_count),
+                _ => a.series.updated_at.cmp(&b.series.updated_at),
+            };
+            if asc { ord } else { ord.reverse() }
+        });
+
+        Ok(results)
+    }
+
+    pub async fn count_bound_series_by_library(
+        &self,
+        user: &User,
+    ) -> DomainResult<HashMap<LibraryId, u64>> {
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user.id, MediaKind::Comic)
+            .await?;
+        if bound_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut counts: HashMap<LibraryId, u64> = HashMap::new();
+        for s in self.series.list_all().await? {
+            if bound_ids.contains(&s.id.0) {
+                *counts.entry(s.library_id).or_insert(0) += 1;
+            }
+        }
+        Ok(counts)
+    }
+
     pub async fn get_series_detail(
         &self,
         user: &User,
         series_id: SeriesId,
     ) -> DomainResult<SeriesDetailDto> {
+        self.require_series_bound(user, series_id).await?;
         let series = self
             .series
             .find_by_id(series_id)
@@ -346,8 +475,21 @@ impl ComicCatalogService {
         })
     }
 
-    pub async fn taxonomy_overview(&self) -> DomainResult<TaxonomyOverviewDto> {
-        let all = self.series.list_all().await?;
+    pub async fn taxonomy_overview(&self, user: &User) -> DomainResult<TaxonomyOverviewDto> {
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user.id, MediaKind::Comic)
+            .await?;
+        let all: Vec<_> = if bound_ids.is_empty() {
+            Vec::new()
+        } else {
+            self.series
+                .list_all()
+                .await?
+                .into_iter()
+                .filter(|s| bound_ids.contains(&s.id.0))
+                .collect()
+        };
         let mut tags: HashMap<String, u32> = HashMap::new();
         let mut genres: HashMap<String, u32> = HashMap::new();
         let mut writers: HashMap<String, u32> = HashMap::new();

@@ -257,12 +257,12 @@ async fn serve_feed(
         FeedKind::SeriesChapters(series_id) => {
             opds.series_chapters_feed(&user, series_id, p, &vp).await?
         }
-        FeedKind::Libraries => opds.libraries_feed(&vp).await?,
+        FeedKind::Libraries => opds.libraries_feed(&user, catalog, &vp).await?,
         FeedKind::LibrarySeries(lib_id) => {
             opds.library_series_feed(&user, catalog, lib_id, p, &vp)
                 .await?
         }
-        FeedKind::Tags => opds.tags_feed(catalog, &vp).await?,
+        FeedKind::Tags => opds.tags_feed(&user, catalog, &vp).await?,
         FeedKind::TagSeries { name, is_genre } => {
             opds.tag_series_feed(&user, catalog, &name, is_genre, p, &vp)
                 .await?
@@ -280,21 +280,26 @@ async fn serve_feed(
 
 async fn opds_cover(
     State(state): State<ComicHttpState>,
-    OpdsAuth(_user): OpdsAuth,
+    OpdsAuth(user): OpdsAuth,
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> ApiResult<Response> {
-    let thumb = state.services.catalog.read_cover(&key).await?;
+    let thumb = state.services.catalog.read_cover(&user, &key).await?;
     Ok(respond_with_etag(thumb, &headers))
 }
 
 async fn opds_download_chapter(
     State(state): State<ComicHttpState>,
-    OpdsAuth(_user): OpdsAuth,
+    OpdsAuth(user): OpdsAuth,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
     let chapter_id = ChapterId(id);
+    state
+        .services
+        .catalog
+        .require_chapter_bound(&user, chapter_id)
+        .await?;
     state
         .services
         .online
@@ -304,7 +309,7 @@ async fn opds_download_chapter(
     let (stream, filename, mime) = state
         .services
         .catalog
-        .open_chapter_archive_stream(chapter_id, spec)
+        .open_chapter_archive_stream(&user, chapter_id, spec)
         .await?;
     Ok(into_range_http_response(
         stream,
@@ -325,6 +330,11 @@ async fn opds_pse_stream_page(
     let chapter_id = ChapterId(id);
     state
         .services
+        .catalog
+        .require_chapter_bound(&user, chapter_id)
+        .await?;
+    state
+        .services
         .online
         .ensure_tracked_chapter_cached(chapter_id)
         .await?;
@@ -332,7 +342,7 @@ async fn opds_pse_stream_page(
     let page = state
         .services
         .catalog
-        .read_chapter_page(chapter_id, page_number)
+        .read_chapter_page(&user, chapter_id, page_number)
         .await?;
 
     let _ = state

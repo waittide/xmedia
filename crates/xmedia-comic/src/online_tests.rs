@@ -3318,8 +3318,46 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     assert_eq!(tracked["chapters"][0]["online_tracking"]["cached"], false);
     let ch1_id = tracked["chapters"][0]["id"].as_str().unwrap().to_string();
 
-    // 2. OPDS 1.2 series & chapter feeds expose the tracked online comic
+    // 2. Member cannot see admin's private OnlineTracked comic in OPDS or local pool until member tracks it
     let basic_auth = format!("Basic {}", BASE64.encode("member:memberpassword123"));
+    let unbound_feed_res = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/opds/comic/v1.2/series/{series_id}"))
+                .header(header::AUTHORIZATION, &basic_auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unbound_feed_res.status(), StatusCode::NOT_FOUND);
+
+    let (st_pool, b_pool) =
+        json_request(&h.app, "GET", "/api/v1/comic/pool", &h.member_token, None).await;
+    assert_eq!(st_pool, StatusCode::OK);
+    let pool_items: Vec<serde_json::Value> = serde_json::from_slice(&b_pool).unwrap();
+    assert!(pool_items.is_empty());
+
+    // Member tracks the same online comic -> deduplicates and reuses same pooled series_id
+    let (st_m_track, b_m_track) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/track",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "comic_url": format!("{base}/comic/1"),
+            "toc_url": format!("{base}/toc/1")
+        })),
+    )
+    .await;
+    assert_eq!(st_m_track, StatusCode::OK);
+    let member_tracked: serde_json::Value = serde_json::from_slice(&b_m_track).unwrap();
+    assert_eq!(member_tracked["series"]["id"].as_str().unwrap(), series_id);
+
+    // Now OPDS 1.2 series & chapter feeds expose the tracked online comic to member
     let feed_res = h
         .app
         .clone()
@@ -3409,4 +3447,33 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     assert_eq!(cache_val["already_cached"], 1);
     assert_eq!(cache_val["cached_now"], 1);
     assert!(cache_val["failed"].as_array().unwrap().is_empty());
+
+    // 6. Unbinding removes user visibility; auto-GC deletes pooled OnlineTracked series only at 0 bindings
+    let (st_unb_m, b_unb_m) = json_request(
+        &h.app,
+        "DELETE",
+        &format!("/api/v1/comic/bindings/{series_id}"),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_unb_m, StatusCode::OK);
+    let unb_m: serde_json::Value = serde_json::from_slice(&b_unb_m).unwrap();
+    assert_eq!(unb_m["unbound"], true);
+    assert_eq!(unb_m["remaining_bindings"], 1);
+    assert_eq!(unb_m["deleted_from_pool"], false);
+
+    let (st_unb_a, b_unb_a) = json_request(
+        &h.app,
+        "DELETE",
+        &format!("/api/v1/comic/bindings/{series_id}"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_unb_a, StatusCode::OK);
+    let unb_a: serde_json::Value = serde_json::from_slice(&b_unb_a).unwrap();
+    assert_eq!(unb_a["unbound"], true);
+    assert_eq!(unb_a["remaining_bindings"], 0);
+    assert_eq!(unb_a["deleted_from_pool"], true);
 }

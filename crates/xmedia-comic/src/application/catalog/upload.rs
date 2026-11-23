@@ -2,7 +2,7 @@ use jiff::Timestamp;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::dto::{UploadArchiveInput, UploadArchivePathInput, UploadArchiveResultDto};
 use crate::application::filename_parser::parse_chapter_filename;
@@ -50,8 +50,15 @@ impl ComicCatalogService {
             .store_uploaded_archive(&folder_slug, &input.filename, &input.bytes)
             .await?;
 
-        self.finalize_uploaded_chapter(managed_lib, series, &input.filename, inspection, stored)
-            .await
+        self.finalize_uploaded_chapter(
+            actor.id,
+            managed_lib,
+            series,
+            &input.filename,
+            inspection,
+            stored,
+        )
+        .await
     }
 
     pub async fn upload_archive_from_path(
@@ -90,8 +97,15 @@ impl ComicCatalogService {
             .store_uploaded_archive_from_path(&folder_slug, &input.filename, &input.temp_path)
             .await?;
 
-        self.finalize_uploaded_chapter(managed_lib, series, &input.filename, inspection, stored)
-            .await
+        self.finalize_uploaded_chapter(
+            actor.id,
+            managed_lib,
+            series,
+            &input.filename,
+            inspection,
+            stored,
+        )
+        .await
     }
 
     async fn resolve_upload_series(
@@ -146,6 +160,7 @@ impl ComicCatalogService {
 
     async fn finalize_uploaded_chapter(
         &self,
+        actor_id: UserId,
         managed_lib: Library,
         mut series: Series,
         filename: &str,
@@ -212,6 +227,9 @@ impl ComicCatalogService {
         series.chapter_count = active_count;
         series.updated_at = Timestamp::now();
         self.series.save(&series).await?;
+        self.bindings
+            .bind(actor_id, MediaKind::Comic, series.id.0)
+            .await?;
 
         self.events.publish(SystemEvent::MediaChanged {
             media_kind: MediaKind::Comic,

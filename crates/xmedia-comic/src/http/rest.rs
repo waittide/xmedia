@@ -6,6 +6,9 @@ use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xmedia_core::application::bindings::{
+    BindMediaItemsInput, BindMediaItemsResultDto, UnbindMediaItemResultDto,
+};
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
@@ -15,8 +18,8 @@ use xmedia_core::http::{
 
 use crate::application::dto::{
     ChapterItemDto, ComicBookmarkItemDto, CreateComicBookmarkInput, HomeOverviewDto,
-    ReaderContextDto, SaveSeriesReaderPrefInput, SeriesDetailDto, SeriesQueryFilter,
-    SeriesSummaryDto, ShelfDetailDto, TaxonomyOverviewDto, UpdateProgressInput,
+    PoolSeriesSummaryDto, ReaderContextDto, SaveSeriesReaderPrefInput, SeriesDetailDto,
+    SeriesQueryFilter, SeriesSummaryDto, ShelfDetailDto, TaxonomyOverviewDto, UpdateProgressInput,
     UploadArchivePathInput, UploadArchiveResultDto, UpsertShelfInput,
 };
 use crate::application::ports::PageContent;
@@ -30,6 +33,9 @@ pub fn router() -> Router<ComicHttpState> {
     Router::new()
         .route("/home", get(home_overview))
         .route("/taxonomy", get(taxonomy_overview))
+        .route("/pool", get(list_pool_series))
+        .route("/bindings", post(bind_series))
+        .route("/bindings/{id}", axum::routing::delete(unbind_series))
         .route("/series", get(list_series))
         .route(
             "/series/{id}",
@@ -83,9 +89,53 @@ async fn home_overview(
 
 async fn taxonomy_overview(
     State(state): State<ComicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<TaxonomyOverviewDto>> {
-    Ok(Json(state.services.catalog.taxonomy_overview().await?))
+    Ok(Json(state.services.catalog.taxonomy_overview(&user).await?))
+}
+
+async fn list_pool_series(
+    State(state): State<ComicHttpState>,
+    WebAuth(user): WebAuth,
+    Query(filter): Query<SeriesQueryFilter>,
+) -> ApiResult<Json<Vec<PoolSeriesSummaryDto>>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .list_pool_series(&user, filter)
+            .await?,
+    ))
+}
+
+async fn bind_series(
+    State(state): State<ComicHttpState>,
+    WebAuth(user): WebAuth,
+    Json(input): Json<BindMediaItemsInput>,
+) -> ApiResult<Json<BindMediaItemsResultDto>> {
+    Ok(Json(
+        state.services.catalog.bind_series(&user, input).await?,
+    ))
+}
+
+#[derive(Deserialize, Default)]
+struct UnbindQuery {
+    user_id: Option<Uuid>,
+}
+
+async fn unbind_series(
+    State(state): State<ComicHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    Query(query): Query<UnbindQuery>,
+) -> ApiResult<Json<UnbindMediaItemResultDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .unbind_series(&user, SeriesId(id), query.user_id)
+            .await?,
+    ))
 }
 
 async fn list_series(
@@ -308,6 +358,11 @@ async fn get_reader_context(
     let chapter_id = ChapterId(id);
     state
         .services
+        .catalog
+        .require_chapter_bound(&user, chapter_id)
+        .await?;
+    state
+        .services
         .online
         .ensure_tracked_chapter_cached(chapter_id)
         .await?;
@@ -322,11 +377,16 @@ async fn get_reader_context(
 
 async fn stream_chapter_page(
     State(state): State<ComicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     headers: HeaderMap,
     Path((id, page_num)): Path<(Uuid, u32)>,
 ) -> ApiResult<Response> {
     let chapter_id = ChapterId(id);
+    state
+        .services
+        .catalog
+        .require_chapter_bound(&user, chapter_id)
+        .await?;
     state
         .services
         .online
@@ -335,18 +395,23 @@ async fn stream_chapter_page(
     let page = state
         .services
         .catalog
-        .read_chapter_page(chapter_id, page_num)
+        .read_chapter_page(&user, chapter_id, page_num)
         .await?;
     Ok(respond_with_etag(page, &headers))
 }
 
 async fn download_chapter_archive(
     State(state): State<ComicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
     let chapter_id = ChapterId(id);
+    state
+        .services
+        .catalog
+        .require_chapter_bound(&user, chapter_id)
+        .await?;
     state
         .services
         .online
@@ -356,7 +421,7 @@ async fn download_chapter_archive(
     let (stream, filename, mime) = state
         .services
         .catalog
-        .open_chapter_archive_stream(chapter_id, spec)
+        .open_chapter_archive_stream(&user, chapter_id, spec)
         .await?;
     Ok(into_range_http_response(
         stream,
@@ -375,7 +440,7 @@ struct CoverSizeQuery {
 
 async fn stream_cover(
     State(state): State<ComicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     headers: HeaderMap,
     Path(key): Path<String>,
     Query(query): Query<CoverSizeQuery>,
@@ -383,7 +448,7 @@ async fn stream_cover(
     let thumb = state
         .services
         .catalog
-        .read_cover_sized(&key, query.size)
+        .read_cover_sized(&user, &key, query.size)
         .await?;
     Ok(respond_with_etag(thumb, &headers))
 }

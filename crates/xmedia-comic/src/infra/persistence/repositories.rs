@@ -619,6 +619,66 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
         Ok(())
     }
 
+    async fn delete_by_user_and_series(
+        &self,
+        user_id: UserId,
+        series_id: SeriesId,
+    ) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let progs = ComicChapterProgressModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        for p in progs {
+            if p.series_id == series_id.0 {
+                p.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+        let pref_key = Self::series_key(user_id, series_id);
+        ComicSeriesReaderPrefModel::filter_by_composite_key(&pref_key)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        ComicFavoriteSeriesModel::filter_by_composite_key(&pref_key)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        let bookmarks = ComicBookmarkModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        for bm in bookmarks {
+            if bm.series_id == series_id.0 {
+                bm.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+        for mut shelf in ComicShelfModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            if shelf.series_ids.0.contains(&series_id.0) {
+                let filtered: Vec<Uuid> = shelf
+                    .series_ids
+                    .0
+                    .iter()
+                    .copied()
+                    .filter(|&id| id != series_id.0)
+                    .collect();
+                shelf
+                    .update()
+                    .series_ids(toasty::Json(filtered))
+                    .updated_at(Timestamp::now())
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+        }
+        Ok(())
+    }
+
     async fn get_series_pref(
         &self,
         user_id: UserId,

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::{User, UserId};
 
 use crate::application::catalog::ComicCatalogService;
@@ -23,6 +25,7 @@ pub struct ComicReadingService {
     series: Arc<dyn SeriesRepository>,
     chapters: Arc<dyn ChapterRepository>,
     reading: Arc<dyn ComicReadingRepository>,
+    bindings: Arc<MediaBindingService>,
 }
 
 impl ComicReadingService {
@@ -30,12 +33,20 @@ impl ComicReadingService {
         series: Arc<dyn SeriesRepository>,
         chapters: Arc<dyn ChapterRepository>,
         reading: Arc<dyn ComicReadingRepository>,
+        bindings: Arc<MediaBindingService>,
     ) -> Self {
         Self {
             series,
             chapters,
             reading,
+            bindings,
         }
+    }
+
+    async fn require_series_bound(&self, user_id: UserId, series_id: SeriesId) -> DomainResult<()> {
+        self.bindings
+            .require_bound(user_id, MediaKind::Comic, series_id.0, "series not found")
+            .await
     }
 
     pub async fn update_progress(
@@ -49,6 +60,8 @@ impl ComicReadingService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user_id, chapter.series_id)
+            .await?;
 
         let progress = ChapterProgress::new(
             user_id,
@@ -73,6 +86,8 @@ impl ComicReadingService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user_id, chapter.series_id)
+            .await?;
         if completed {
             let progress = ChapterProgress::new(
                 user_id,
@@ -100,6 +115,7 @@ impl ComicReadingService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user_id, target.series_id).await?;
         let mut chapters = self.chapters.list_by_series(target.series_id).await?;
         chapters.sort_by(|a, b| a.cmp_order(b));
 
@@ -133,6 +149,7 @@ impl ComicReadingService {
         volume_number: f64,
         completed: bool,
     ) -> DomainResult<u32> {
+        self.require_series_bound(user_id, series_id).await?;
         let chapters = self.chapters.list_by_series(series_id).await?;
         let mut affected = 0_u32;
 
@@ -167,6 +184,7 @@ impl ComicReadingService {
         series_id: SeriesId,
         completed: bool,
     ) -> DomainResult<u32> {
+        self.require_series_bound(user_id, series_id).await?;
         let chapters = self.chapters.list_by_series(series_id).await?;
         let mut affected = 0_u32;
 
@@ -198,6 +216,7 @@ impl ComicReadingService {
         series_id: SeriesId,
         input: SaveSeriesReaderPrefInput,
     ) -> DomainResult<SeriesReaderPref> {
+        self.require_series_bound(user_id, series_id).await?;
         if self.series.find_by_id(series_id).await?.is_none() {
             return Err(DomainError::NotFound("series not found".into()));
         }
@@ -220,6 +239,7 @@ impl ComicReadingService {
         series_id: SeriesId,
         favorite: bool,
     ) -> DomainResult<()> {
+        self.require_series_bound(user_id, series_id).await?;
         if self.series.find_by_id(series_id).await?.is_none() {
             return Err(DomainError::NotFound("series not found".into()));
         }
@@ -276,7 +296,14 @@ impl ComicReadingService {
         let mut shelf =
             ComicShelf::new(user_id, input.name, input.description.unwrap_or_default())?;
         if let Some(ids) = input.series_ids {
-            shelf.series_ids = ids;
+            let bound = self
+                .bindings
+                .list_bound_ids(user_id, MediaKind::Comic)
+                .await?;
+            shelf.series_ids = ids
+                .into_iter()
+                .filter(|sid| bound.contains(&sid.0))
+                .collect();
         }
         self.reading.save_shelf(&shelf).await?;
         Ok(shelf)
@@ -305,7 +332,14 @@ impl ComicReadingService {
             shelf.description = desc.trim().to_owned();
         }
         if let Some(ids) = input.series_ids {
-            shelf.series_ids = ids;
+            let bound = self
+                .bindings
+                .list_bound_ids(user_id, MediaKind::Comic)
+                .await?;
+            shelf.series_ids = ids
+                .into_iter()
+                .filter(|sid| bound.contains(&sid.0))
+                .collect();
         }
         shelf.updated_at = Timestamp::now();
         self.reading.save_shelf(&shelf).await?;
@@ -330,6 +364,7 @@ impl ComicReadingService {
         series_id: SeriesId,
         target_shelf_ids: &[ComicShelfId],
     ) -> DomainResult<()> {
+        self.require_series_bound(user_id, series_id).await?;
         let shelves = self.reading.list_shelves(user_id).await?;
         let now = Timestamp::now();
 
@@ -354,6 +389,13 @@ impl ComicReadingService {
         user_id: UserId,
         chapter_id: ChapterId,
     ) -> DomainResult<Vec<ComicBookmark>> {
+        let chapter = self
+            .chapters
+            .find_by_id(chapter_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user_id, chapter.series_id)
+            .await?;
         self.reading
             .list_chapter_bookmarks(user_id, chapter_id)
             .await
@@ -363,13 +405,29 @@ impl ComicReadingService {
         &self,
         user_id: UserId,
     ) -> DomainResult<Vec<ComicBookmarkItemDto>> {
-        let bookmarks = self.reading.list_user_bookmarks(user_id).await?;
+        let bound = self
+            .bindings
+            .list_bound_ids(user_id, MediaKind::Comic)
+            .await?;
+        if bound.is_empty() {
+            return Ok(Vec::new());
+        }
+        let bookmarks: Vec<_> = self
+            .reading
+            .list_user_bookmarks(user_id)
+            .await?
+            .into_iter()
+            .filter(|bm| bound.contains(&bm.series_id.0))
+            .collect();
         if bookmarks.is_empty() {
             return Ok(Vec::new());
         }
         let all_series = self.series.list_all().await?;
-        let series_map: HashMap<SeriesId, Series> =
-            all_series.into_iter().map(|s| (s.id, s)).collect();
+        let series_map: HashMap<SeriesId, Series> = all_series
+            .into_iter()
+            .filter(|s| bound.contains(&s.id.0))
+            .map(|s| (s.id, s))
+            .collect();
 
         let mut chapter_ids: Vec<ChapterId> = Vec::new();
         for bm in &bookmarks {
@@ -421,6 +479,8 @@ impl ComicReadingService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user_id, chapter.series_id)
+            .await?;
         let page = input.page_number.clamp(1, chapter.page_count.max(1));
         let default_title = format!("#{} P.{}", format_chapter_number(chapter.number), page);
         let title = input

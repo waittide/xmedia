@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
 use jiff::Timestamp;
+use uuid::Uuid;
+use xmedia_core::application::bindings::{
+    BindMediaItemsInput, BindMediaItemsResultDto, MediaBindingService, UnbindMediaItemResultDto,
+};
 use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::library::MediaKind;
+use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::user::{ComicReaderMode, User, require_admin};
 
 use crate::application::dto::{
@@ -59,13 +63,81 @@ impl ComicCatalogService {
         Ok(series)
     }
 
-    pub async fn delete_series(&self, actor: &User, series_id: SeriesId) -> DomainResult<()> {
-        require_admin(actor)?;
-        let series = self
-            .series
-            .find_by_id(series_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("series not found".into()))?;
+    pub async fn bind_series(
+        &self,
+        actor: &User,
+        input: BindMediaItemsInput,
+    ) -> DomainResult<BindMediaItemsResultDto> {
+        let target_user_id = MediaBindingService::resolve_target_user_id(actor, input.user_id)?;
+        let mut to_bind: Vec<Uuid> = Vec::new();
+        if let Some(lib_uuid) = input.library_id {
+            let lib_id = LibraryId(lib_uuid);
+            for s in self.series.list_by_library(lib_id).await? {
+                if s.online_tracking().is_none() {
+                    to_bind.push(s.id.0);
+                }
+            }
+        }
+        for raw_id in input.item_ids {
+            let Some(s) = self.series.find_by_id(SeriesId(raw_id)).await? else {
+                continue;
+            };
+            if s.online_tracking().is_some()
+                && !actor.role.is_admin()
+                && !self
+                    .bindings
+                    .is_bound(actor.id, MediaKind::Comic, s.id.0)
+                    .await?
+            {
+                continue;
+            }
+            to_bind.push(s.id.0);
+        }
+        let total_requested = to_bind.len();
+        let bound_count = self
+            .bindings
+            .bind_batch(target_user_id, MediaKind::Comic, &to_bind)
+            .await?;
+        Ok(BindMediaItemsResultDto {
+            bound_count,
+            total_requested,
+        })
+    }
+
+    pub async fn unbind_series(
+        &self,
+        actor: &User,
+        series_id: SeriesId,
+        requested_user_id: Option<Uuid>,
+    ) -> DomainResult<UnbindMediaItemResultDto> {
+        let target_user_id = MediaBindingService::resolve_target_user_id(actor, requested_user_id)?;
+        let series = self.series.find_by_id(series_id).await?;
+        let (unbound, remaining_bindings) = self
+            .bindings
+            .unbind(target_user_id, MediaKind::Comic, series_id.0)
+            .await?;
+        if unbound {
+            self.reading
+                .delete_by_user_and_series(target_user_id, series_id)
+                .await?;
+        }
+        let mut deleted_from_pool = false;
+        if remaining_bindings == 0
+            && let Some(s) = series
+            && s.online_tracking().is_some()
+        {
+            self.delete_series_internal(s).await?;
+            deleted_from_pool = true;
+        }
+        Ok(UnbindMediaItemResultDto {
+            unbound,
+            remaining_bindings,
+            deleted_from_pool,
+        })
+    }
+
+    pub(super) async fn delete_series_internal(&self, series: Series) -> DomainResult<()> {
+        let series_id = series.id;
         let lib = self.libraries.find_by_id(series.library_id).await?;
         let chapters = self.chapters.list_by_series(series_id).await?;
 
@@ -76,6 +148,9 @@ impl ComicCatalogService {
                 }
             }
         }
+        self.bindings
+            .delete_item_bindings(MediaKind::Comic, series_id.0)
+            .await?;
         self.reading.delete_by_series(series_id).await?;
         self.chapters.delete_by_series(series_id).await?;
         self.series.delete(series_id).await?;
@@ -83,6 +158,16 @@ impl ComicCatalogService {
             media_kind: MediaKind::Comic,
         });
         Ok(())
+    }
+
+    pub async fn delete_series(&self, actor: &User, series_id: SeriesId) -> DomainResult<()> {
+        require_admin(actor)?;
+        let series = self
+            .series
+            .find_by_id(series_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("series not found".into()))?;
+        self.delete_series_internal(series).await
     }
 
     pub async fn delete_chapter(&self, actor: &User, chapter_id: ChapterId) -> DomainResult<()> {
@@ -105,6 +190,9 @@ impl ComicCatalogService {
             let mut remaining = self.chapters.list_by_series(series.id).await?;
             remaining.retain(|c| c.id != chapter_id);
             if remaining.is_empty() {
+                self.bindings
+                    .delete_item_bindings(MediaKind::Comic, series.id.0)
+                    .await?;
                 self.reading.delete_by_series(series.id).await?;
                 self.series.delete(series.id).await?;
             } else {
@@ -134,6 +222,7 @@ impl ComicCatalogService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user, target.series_id).await?;
         if target.is_missing {
             return Err(DomainError::NotFound(
                 "chapter archive is missing on disk".into(),
@@ -250,6 +339,7 @@ impl ComicCatalogService {
 
     pub async fn read_chapter_page(
         &self,
+        user: &User,
         chapter_id: ChapterId,
         page_number: u32,
     ) -> DomainResult<PageContent> {
@@ -258,6 +348,7 @@ impl ComicCatalogService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user, chapter.series_id).await?;
         if chapter.is_missing {
             return Err(DomainError::NotFound("chapter source is missing".into()));
         }
@@ -284,6 +375,7 @@ impl ComicCatalogService {
 
     pub async fn download_chapter_archive(
         &self,
+        user: &User,
         chapter_id: ChapterId,
     ) -> DomainResult<(Vec<u8>, String, String)> {
         let chapter = self
@@ -291,6 +383,7 @@ impl ComicCatalogService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user, chapter.series_id).await?;
         if chapter.is_missing {
             return Err(DomainError::NotFound("chapter source is missing".into()));
         }
@@ -305,6 +398,7 @@ impl ComicCatalogService {
 
     pub async fn open_chapter_archive_stream(
         &self,
+        user: &User,
         chapter_id: ChapterId,
         spec: ByteRangeSpec,
     ) -> DomainResult<(ByteRangeStream, String, String)> {
@@ -313,6 +407,7 @@ impl ComicCatalogService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        self.require_series_bound(user, chapter.series_id).await?;
         if chapter.is_missing {
             return Err(DomainError::NotFound("chapter source is missing".into()));
         }
@@ -327,15 +422,47 @@ impl ComicCatalogService {
             .await
     }
 
-    pub async fn read_cover(&self, cover_key: &str) -> DomainResult<PageContent> {
+    async fn ensure_cover_accessible(&self, user: &User, cover_key: &str) -> DomainResult<()> {
+        let base = cover_key.split('.').next().unwrap_or(cover_key);
+        if let Some(rest) = base.strip_prefix("series_custom_") {
+            if let Some((uuid_str, _)) = rest.split_once('_')
+                && let Ok(uid) = Uuid::parse_str(uuid_str)
+                && let Some(series) = self.series.find_by_id(SeriesId(uid)).await?
+                && series.online_tracking().is_some()
+            {
+                self.require_series_bound(user, series.id).await?;
+            }
+        } else if let Some(uuid_str) = base.strip_prefix("series_") {
+            if let Ok(uid) = Uuid::parse_str(uuid_str)
+                && let Some(series) = self.series.find_by_id(SeriesId(uid)).await?
+                && series.online_tracking().is_some()
+            {
+                self.require_series_bound(user, series.id).await?;
+            }
+        } else if let Some(uuid_str) = base
+            .strip_prefix("chapter_")
+            .or_else(|| base.strip_prefix("ch_"))
+            && let Ok(uid) = Uuid::parse_str(uuid_str)
+            && let Some(ch) = self.chapters.find_by_id(ChapterId(uid)).await?
+            && ch.is_online_tracked()
+        {
+            self.require_series_bound(user, ch.series_id).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn read_cover(&self, user: &User, cover_key: &str) -> DomainResult<PageContent> {
+        self.ensure_cover_accessible(user, cover_key).await?;
         self.thumbnails.read_thumbnail(cover_key).await
     }
 
     pub async fn read_cover_sized(
         &self,
+        user: &User,
         cover_key: &str,
         max_size: Option<u32>,
     ) -> DomainResult<PageContent> {
+        self.ensure_cover_accessible(user, cover_key).await?;
         match max_size {
             Some(size) => {
                 self.thumbnails

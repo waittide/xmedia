@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::ScanProgressReporter;
 use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort};
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -25,6 +26,7 @@ pub struct ComicDomainLifecycle {
     series: Arc<dyn SeriesRepository>,
     chapters: Arc<dyn ChapterRepository>,
     reading: Arc<dyn ComicReadingRepository>,
+    bindings: Arc<MediaBindingService>,
     scanner: Arc<dyn ComicScannerPort>,
     archives: Arc<dyn ArchiveReaderPort>,
     thumbnails: Arc<dyn ThumbnailGeneratorPort>,
@@ -39,6 +41,7 @@ impl ComicDomainLifecycle {
         series: Arc<dyn SeriesRepository>,
         chapters: Arc<dyn ChapterRepository>,
         reading: Arc<dyn ComicReadingRepository>,
+        bindings: Arc<MediaBindingService>,
         scanner: Arc<dyn ComicScannerPort>,
         archives: Arc<dyn ArchiveReaderPort>,
         thumbnails: Arc<dyn ThumbnailGeneratorPort>,
@@ -50,6 +53,7 @@ impl ComicDomainLifecycle {
             series,
             chapters,
             reading,
+            bindings,
             scanner,
             archives,
             thumbnails,
@@ -355,6 +359,10 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         for sid in affected_series {
             let chapters_in_series = self.chapters.list_by_series(sid).await?;
             if chapters_in_series.is_empty() {
+                let _ = self
+                    .bindings
+                    .delete_item_bindings(MediaKind::Comic, sid.0)
+                    .await;
                 let _ = self.reading.delete_by_series(sid).await;
                 let _ = self.series.delete(sid).await;
             } else if let Some(mut s) = self.series.find_by_id(sid).await? {
@@ -389,6 +397,9 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                     }
                 }
             }
+            self.bindings
+                .delete_item_bindings(MediaKind::Comic, s.id.0)
+                .await?;
             self.reading.delete_by_series(s.id).await?;
             self.chapters.delete_by_series(s.id).await?;
             self.series.delete(s.id).await?;
@@ -397,7 +408,32 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
     }
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {
-        self.reading.delete_by_user(user_id).await
+        self.reading.delete_by_user(user_id).await?;
+        let unbound_ids = self
+            .bindings
+            .delete_user_bindings_for_media(user_id, MediaKind::Comic)
+            .await?;
+        for raw_id in unbound_ids {
+            let sid = SeriesId(raw_id);
+            let remaining = self
+                .bindings
+                .count_bindings_for_item(MediaKind::Comic, raw_id)
+                .await?;
+            if remaining == 0
+                && let Some(series) = self.series.find_by_id(sid).await?
+                && series.online_tracking().is_some()
+            {
+                for ch in self.chapters.list_by_series(sid).await? {
+                    if let Some(path) = ch.managed_file_path() {
+                        let _ = self.storage.delete_managed_file(&path).await;
+                    }
+                }
+                self.reading.delete_by_series(sid).await?;
+                self.chapters.delete_by_series(sid).await?;
+                self.series.delete(sid).await?;
+            }
+        }
+        Ok(())
     }
 }
 

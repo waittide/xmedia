@@ -11,7 +11,7 @@ use uuid::Uuid;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_core::domain::xml::xml_escape;
 use xmedia_source::http::{HttpClientConfig, resolve_literal_http_url};
 use xmedia_source::proxy::{
@@ -205,7 +205,6 @@ impl ComicOnlineService {
         actor: &User,
         input: TrackOnlineComicInput,
     ) -> DomainResult<SeriesDetailDto> {
-        require_admin(actor)?;
         let rec = self.load_source_for_actor(actor, input.source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
@@ -238,6 +237,9 @@ impl ComicOnlineService {
             s.online_tracking()
                 .is_some_and(|t| t.source_id == input.source_id && t.comic_url == clean_comic_url)
         }) {
+            self.catalog
+                .bind_series_for_user(actor.id, found.id)
+                .await?;
             return self.catalog.get_series_detail(actor, found.id).await;
         }
 
@@ -390,6 +392,9 @@ impl ComicOnlineService {
         series.chapter_count = created_count;
         series.updated_at = Timestamp::now();
         self.series.save(&series).await?;
+        self.catalog
+            .bind_series_for_user(actor.id, series.id)
+            .await?;
 
         self.events.publish(SystemEvent::MediaChanged {
             media_kind: MediaKind::Comic,
@@ -404,7 +409,7 @@ impl ComicOnlineService {
         actor: &User,
         series_id: SeriesId,
     ) -> DomainResult<SeriesDetailDto> {
-        require_admin(actor)?;
+        self.catalog.require_series_bound(actor, series_id).await?;
         let mut series = self
             .series
             .find_by_id(series_id)
@@ -707,7 +712,9 @@ impl ComicOnlineService {
         actor: &User,
         chapter_id: ChapterId,
     ) -> DomainResult<ChapterItemDto> {
-        require_admin(actor)?;
+        self.catalog
+            .require_chapter_bound(actor, chapter_id)
+            .await?;
         let ch = self.ensure_tracked_chapter_cached(chapter_id).await?;
         let (cur_page, done) = self
             .reading
@@ -724,7 +731,7 @@ impl ComicOnlineService {
         series_id: SeriesId,
         chapter_ids: Option<Vec<ChapterId>>,
     ) -> DomainResult<ComicCacheReportDto> {
-        require_admin(actor)?;
+        self.catalog.require_series_bound(actor, series_id).await?;
         let series = self
             .series
             .find_by_id(series_id)

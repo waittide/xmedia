@@ -12,13 +12,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use toasty::Db;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::infra::persistence::repositories::ToastyOnlineLibraryItemRepository;
+use xmedia_core::infra::persistence::repositories::{
+    ToastyOnlineLibraryItemRepository, ToastyUserMediaBindingRepository,
+};
 
 use application::ComicServices;
 use application::catalog::ComicCatalogService;
@@ -63,6 +66,31 @@ pub fn init_comic_module_with_allow_private_ips(
     events: Arc<dyn RealtimeEventPort>,
     allow_private_ips: bool,
 ) -> DomainResult<ComicServices> {
+    let bindings_repo = Arc::new(ToastyUserMediaBindingRepository::new(db.clone()));
+    let bindings = Arc::new(MediaBindingService::new(
+        bindings_repo,
+        Some(events.clone()),
+    ));
+    init_comic_module_with_bindings(
+        db,
+        data_dir,
+        libraries_repo,
+        library_service,
+        events,
+        bindings,
+        allow_private_ips,
+    )
+}
+
+pub fn init_comic_module_with_bindings(
+    db: Db,
+    data_dir: &Path,
+    libraries_repo: Arc<dyn LibraryRepository>,
+    library_service: &LibraryService,
+    events: Arc<dyn RealtimeEventPort>,
+    bindings: Arc<MediaBindingService>,
+    allow_private_ips: bool,
+) -> DomainResult<ComicServices> {
     let series = Arc::new(ToastySeriesRepository::new(db.clone()));
     let chapters = Arc::new(ToastyChapterRepository::new(db.clone()));
     let sources = Arc::new(ToastyComicSourceRepository::new(db.clone()));
@@ -79,6 +107,7 @@ pub fn init_comic_module_with_allow_private_ips(
         series.clone(),
         chapters.clone(),
         reading_repo.clone(),
+        bindings.clone(),
         scanner,
         archives.clone(),
         thumbnails.clone(),
@@ -92,6 +121,7 @@ pub fn init_comic_module_with_allow_private_ips(
         series.clone(),
         chapters.clone(),
         reading_repo.clone(),
+        bindings.clone(),
         archives,
         thumbnails.clone(),
         storage.clone(),
@@ -101,12 +131,14 @@ pub fn init_comic_module_with_allow_private_ips(
         series.clone(),
         chapters.clone(),
         reading_repo.clone(),
+        bindings.clone(),
     ));
     let opds = Arc::new(ComicOpdsService::new(
         libraries_repo.clone(),
         series.clone(),
         chapters.clone(),
         reading_repo.clone(),
+        bindings,
     ));
     let engine = ComicSourceEngine::new(
         source::http::HttpClientConfig {
@@ -161,6 +193,7 @@ mod tests {
     use toasty::schema::ModelSet;
     use tower::ServiceExt;
     use xmedia_core::application::auth::AuthService;
+    use xmedia_core::application::bindings::BindMediaItemsInput;
     use xmedia_core::application::dto::{CreateLibraryInput, SetupAdminInput};
     use xmedia_core::application::library::LibraryService;
     use xmedia_core::domain::error::DomainError;
@@ -471,7 +504,49 @@ mod tests {
             1
         );
 
-        // 5. Verify uploaded comic with same title as LocalMount series does NOT merge into local library
+        // 5. Verify scanned local pool series is hidden from personal library until claimed,
+        // and uploaded comic with same title does NOT merge into local library
+        let before_claim = comic_services
+            .catalog
+            .list_series(
+                &admin,
+                SeriesQueryFilter {
+                    library_id: Some(created_lib.id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(before_claim.is_empty());
+
+        let pool_list = comic_services
+            .catalog
+            .list_pool_series(
+                &admin,
+                SeriesQueryFilter {
+                    library_id: Some(created_lib.id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(pool_list.len(), 1);
+        assert!(!pool_list[0].bound);
+
+        let bound_res = comic_services
+            .catalog
+            .bind_series(
+                &admin,
+                BindMediaItemsInput {
+                    item_ids: Vec::new(),
+                    library_id: Some(created_lib.id.0),
+                    user_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(bound_res.bound_count, 1);
+
         let local_list = comic_services
             .catalog
             .list_series(
