@@ -55,6 +55,14 @@ const paddingClass = computed(() => {
       return ''
   }
 })
+
+function onSemanticKeydown(ev: KeyboardEvent): void {
+  if (!isInteractive.value || ev.target !== ev.currentTarget) return
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault()
+    ;(ev.currentTarget as HTMLElement | null)?.click()
+  }
+}
 </script>
 
 <template>
@@ -80,6 +88,8 @@ const paddingClass = computed(() => {
   <component
     :is="as"
     v-else
+    :role="isInteractive ? 'button' : undefined"
+    :tabindex="isInteractive ? 0 : undefined"
     class="rounded-corner-md"
     :class="[
       variantClass,
@@ -87,6 +97,7 @@ const paddingClass = computed(() => {
       isInteractive ? 'md-state cursor-pointer' : '',
       disabled ? 'opacity-38' : '',
     ]"
+    @keydown="onSemanticKeydown"
   >
     <slot />
   </component>

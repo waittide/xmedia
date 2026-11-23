@@ -25,13 +25,13 @@ function handleWindowKeydown(ev: KeyboardEvent): void {
 
 function ensureListener(): void {
   if (listenerAttached || typeof window === 'undefined') return
-  window.addEventListener('keydown', handleWindowKeydown)
+  window.addEventListener('keydown', handleWindowKeydown, true)
   listenerAttached = true
 }
 
 function maybeDetachListener(): void {
   if (!listenerAttached || stack.length > 0 || typeof window === 'undefined') return
-  window.removeEventListener('keydown', handleWindowKeydown)
+  window.removeEventListener('keydown', handleWindowKeydown, true)
   listenerAttached = false
 }
 

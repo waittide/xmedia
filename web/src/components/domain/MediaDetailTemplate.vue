@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, useSlots, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink, type RouteLocationRaw } from 'vue-router'
+import type { RouteLocationRaw } from 'vue-router'
 import {
   LuAlertTriangle,
   LuArrowLeft,
@@ -432,9 +432,12 @@ const showSkeleton = useDelayedLoading(() => props.loading)
           <!-- Restrained Tag Chips (max 5 visible by default) -->
           <div v-if="tags.length > 0" class="flex flex-wrap items-center gap-1.5">
             <template v-for="tag in visibleTags" :key="tag.value ?? tag.label">
-              <RouterLink v-if="tag.to" :to="tag.to" class="inline-flex">
-                <MdChip variant="assist" :label="tag.label" />
-              </RouterLink>
+              <MdChip
+                v-if="tag.to"
+                variant="assist"
+                :label="tag.label"
+                :to="tag.to"
+              />
               <MdChip
                 v-else
                 variant="assist"

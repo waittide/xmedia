@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import { LuCheck, LuX } from 'vue-icons-plus/lu'
 
 export type MdChipVariant = 'assist' | 'filter' | 'input' | 'suggestion'
@@ -10,6 +11,7 @@ const props = withDefaults(
     variant?: MdChipVariant
     label?: string
     icon?: Component
+    to?: RouteLocationRaw
     selected?: boolean
     elevated?: boolean
     removable?: boolean
@@ -20,6 +22,7 @@ const props = withDefaults(
     variant: 'assist',
     label: '',
     icon: undefined,
+    to: undefined,
     selected: false,
     elevated: false,
     removable: false,
@@ -76,7 +79,33 @@ function onRemoveClick(): void {
     class="inline-flex h-8 max-w-full items-center rounded-corner-sm select-none"
     :class="surfaceClass"
   >
+    <RouterLink
+      v-if="to && !disabled"
+      :to="to"
+      class="md-state md-touch-target text-label-large inline-flex h-full min-w-0 cursor-pointer items-center gap-2 rounded-corner-sm whitespace-nowrap"
+      :class="[
+        showCheck || icon || $slots.icon ? 'pl-2' : 'pl-4',
+        showRemove ? 'pr-1.5' : 'pr-4',
+      ]"
+      @click="emit('click', $event)"
+    >
+      <LuCheck v-if="showCheck" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+      <slot v-else name="icon">
+        <component
+          :is="icon"
+          v-if="icon"
+          class="h-[18px] w-[18px] shrink-0"
+          :class="selected ? '' : 'text-primary'"
+          aria-hidden="true"
+        />
+      </slot>
+      <span class="truncate">
+        <slot>{{ label }}</slot>
+      </span>
+    </RouterLink>
+
     <button
+      v-else
       type="button"
       :disabled="disabled"
       :aria-pressed="variant === 'filter' ? selected : undefined"
