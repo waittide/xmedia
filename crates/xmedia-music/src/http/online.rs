@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
-    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_SECURITY_POLICY,
-    CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
+    CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
@@ -10,7 +10,8 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
-use xmedia_core::http::{ApiError, ApiResult, WebAuth};
+use xmedia_core::domain::error::DomainError;
+use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename};
 use xmedia_source::crud::{
     ExportSourcesBatchRequest, ImportSourcesRequest, LoginActionRequest, ReorderSourcesRequest,
     SourceVariableResponse,
@@ -134,9 +135,110 @@ struct OnlineLyricsRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct MediaProxyQuery {
+struct CoverProxyQuery {
+    url: Option<String>,
+    source_id: Option<Uuid>,
+    cover_id: Option<String>,
+    track_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AudioProxyQuery {
     url: String,
     source_id: Option<Uuid>,
+    download: Option<String>,
+    filename: Option<String>,
+    format: Option<String>,
+}
+
+fn is_truthy_query_flag(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn infer_audio_extension(content_type: &str, format_hint: Option<&str>, raw_url: &str) -> String {
+    let base_ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    match base_ct.as_str() {
+        "audio/flac" | "audio/x-flac" => return "flac".to_string(),
+        "audio/mpeg" | "audio/mp3" => return "mp3".to_string(),
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" | "audio/aac" | "audio/x-aac" => {
+            return "m4a".to_string();
+        }
+        "audio/ogg" | "application/ogg" => return "ogg".to_string(),
+        "audio/opus" => return "opus".to_string(),
+        "audio/wav" | "audio/x-wav" | "audio/wave" => return "wav".to_string(),
+        "audio/webm" => return "webm".to_string(),
+        "audio/x-ape" | "audio/ape" => return "ape".to_string(),
+        _ => {}
+    }
+
+    if let Some(hint) = format_hint.map(str::trim).filter(|s| !s.is_empty()) {
+        let lower = hint.to_ascii_lowercase();
+        let clean: String = lower
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if matches!(
+            clean.as_str(),
+            "flac" | "mp3" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "webm" | "ape" | "alac"
+        ) {
+            return if clean == "alac" || clean == "aac" {
+                "m4a".to_string()
+            } else {
+                clean
+            };
+        }
+    }
+
+    let path_part = raw_url.split('?').next().unwrap_or(raw_url);
+    if let Some((_, ext)) = path_part.rsplit_once('.') {
+        let lower = ext.trim().to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "flac" | "mp3" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "webm" | "ape"
+        ) {
+            return lower;
+        }
+    }
+
+    "mp3".to_string()
+}
+
+fn encode_attachment_disposition(filename: &str) -> Option<HeaderValue> {
+    let ascii_fallback: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded_name: String = filename
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.') {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    HeaderValue::from_str(&format!(
+        "attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_name}"
+    ))
+    .ok()
 }
 
 async fn list_sources(
@@ -411,13 +513,29 @@ async fn cache_tracked_track(
 async fn online_cover_proxy(
     State(state): State<MusicHttpState>,
     WebAuth(user): WebAuth,
-    Query(q): Query<MediaProxyQuery>,
+    Query(q): Query<CoverProxyQuery>,
 ) -> Result<Response, ApiError> {
-    let (bytes, mime) = state
-        .services
-        .online
-        .fetch_cover_proxy(&user, &q.url, q.source_id)
-        .await?;
+    let (bytes, mime) = if let Some(url) = q.url.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    {
+        state
+            .services
+            .online
+            .fetch_cover_proxy(&user, url, q.source_id)
+            .await?
+    } else if let Some(source_id) = q.source_id {
+        state
+            .services
+            .online
+            .fetch_cover_proxy_by_id(
+                &user,
+                source_id,
+                q.cover_id.as_deref(),
+                q.track_id.as_deref(),
+            )
+            .await?
+    } else {
+        return Err(DomainError::Validation("缺少封面 URL 或 source_id 参数".into()).into());
+    };
     let mut resp = Response::new(Body::from(bytes));
     if let Ok(hv) = HeaderValue::from_str(mime) {
         resp.headers_mut().insert(CONTENT_TYPE, hv);
@@ -438,7 +556,7 @@ async fn online_cover_proxy(
 async fn online_audio_proxy(
     State(state): State<MusicHttpState>,
     WebAuth(user): WebAuth,
-    Query(q): Query<MediaProxyQuery>,
+    Query(q): Query<AudioProxyQuery>,
     req_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let proxy_resp = state
@@ -452,6 +570,19 @@ async fn online_audio_proxy(
 
     if let Ok(hv) = HeaderValue::from_str(&proxy_resp.content_type) {
         resp.headers_mut().insert(CONTENT_TYPE, hv);
+    }
+    if is_truthy_query_flag(q.download.as_deref()) {
+        let ext = infer_audio_extension(&proxy_resp.content_type, q.format.as_deref(), &q.url);
+        let base_name = q
+            .filename
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("track");
+        let filename = sanitize_download_filename(base_name, &ext);
+        if let Some(disp) = encode_attachment_disposition(&filename) {
+            resp.headers_mut().insert(CONTENT_DISPOSITION, disp);
+        }
     }
     if let Some(len) = proxy_resp.content_length
         && let Ok(hv) = HeaderValue::from_str(&len)

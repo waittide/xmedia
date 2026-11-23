@@ -4,6 +4,7 @@ import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuCheck,
   LuDisc3,
+  LuDownload,
   LuHeart,
   LuLibrary,
   LuListPlus,
@@ -23,6 +24,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime as formatDuration } from '@/utils/format'
+import { downloadOnlineTrack } from '../download'
 import { useMusicI18n as useI18n } from '../i18n'
 import {
   onlineMusicApi,
@@ -55,6 +57,7 @@ const snackbarStore = useSnackbarStore()
 
 const favoriteBusy = ref<Record<string, boolean>>({})
 const trackingBusy = ref<Record<string, boolean>>({})
+const downloadingKeys = ref<Record<string, boolean>>({})
 const trackedKeys = ref<Record<string, boolean>>({})
 const batchTracking = ref(false)
 
@@ -73,7 +76,13 @@ function isCurrentTrack(tr: OnlineMusicTrackDto): boolean {
 }
 
 function resolveCoverSrc(tr: OnlineMusicTrackDto): string | null {
-  const resolved = resolveOnlineMusicCoverUrl(tr.proxy_cover_url, tr.cover_url, tr.source_id)
+  const resolved = resolveOnlineMusicCoverUrl(
+    tr.proxy_cover_url,
+    tr.cover_url,
+    tr.source_id,
+    tr.cover_id,
+    tr.track_id,
+  )
   return resolved || null
 }
 
@@ -112,6 +121,33 @@ function handleEnqueueTrack(tr: OnlineMusicTrackDto): void {
 function handlePlayNext(tr: OnlineMusicTrackDto): void {
   playerStore.enqueueOnlineTrackNext(tr)
   snackbarStore.show(t('online.playNextToast'))
+}
+
+async function handleDownloadTrack(tr: OnlineMusicTrackDto): Promise<void> {
+  const key = trackKey(tr)
+  if (downloadingKeys.value[key]) return
+  downloadingKeys.value = { ...downloadingKeys.value, [key]: true }
+  try {
+    const activeItem =
+      playerStore.currentOnlineItem?.key === key ? playerStore.currentOnlineItem : null
+    await downloadOnlineTrack(tr, {
+      resolved: activeItem?.resolved,
+      resolvedAtMs: activeItem?.resolvedAtMs,
+      quality: activeItem?.selectedQuality,
+    })
+    snackbarStore.show(t('online.downloadStartedToast', { title: tr.title }))
+  } catch (err) {
+    snackbarStore.show({
+      message: t('online.downloadFailedToast', {
+        message: err instanceof Error ? err.message : String(err),
+      }),
+      tone: 'error',
+    })
+  } finally {
+    const next = { ...downloadingKeys.value }
+    delete next[key]
+    downloadingKeys.value = next
+  }
 }
 
 async function applyOnlineFavorite(
@@ -267,7 +303,7 @@ async function handleTrackAllToLibrary(): Promise<void> {
           <th class="hidden w-16 px-3 py-3 text-right sm:table-cell">
             {{ t('catalog.colDuration') }}
           </th>
-          <th class="w-36 px-2 py-3 text-right sm:w-40 sm:px-3" />
+          <th class="w-40 px-2 py-3 text-right sm:w-48 sm:px-3" />
         </tr>
       </thead>
       <tbody class="divide-y divide-outline-variant/35">
@@ -389,8 +425,8 @@ async function handleTrackAllToLibrary(): Promise<void> {
             {{ tr.duration_secs != null && tr.duration_secs > 0 ? formatDuration(tr.duration_secs) : '—' }}
           </td>
 
-          <td class="w-40 px-2 py-2.5 text-right sm:w-44 sm:px-3" @click.stop>
-            <div class="inline-flex items-center justify-end gap-2">
+          <td class="w-40 px-2 py-2.5 text-right sm:w-48 sm:px-3" @click.stop>
+            <div class="inline-flex items-center justify-end gap-1">
               <MdIconButton
                 v-if="authStore.isAdmin"
                 size="sm"
@@ -439,6 +475,18 @@ async function handleTrackAllToLibrary(): Promise<void> {
                 <LuListPlus v-else class="h-4 w-4" />
               </MdIconButton>
 
+              <span class="hidden sm:inline-flex">
+                <MdIconButton
+                  size="sm"
+                  variant="standard"
+                  :icon="LuDownload"
+                  :loading="Boolean(downloadingKeys[trackKey(tr)])"
+                  :aria-label="t('common.download')"
+                  :tooltip="t('common.download')"
+                  @click="handleDownloadTrack(tr)"
+                />
+              </span>
+
               <MdMenu placement="bottom-end" :min-width="208" :aria-label="t('common.moreActions')">
                 <template #trigger="{ toggle, triggerAttrs }">
                   <MdIconButton
@@ -464,6 +512,12 @@ async function handleTrackAllToLibrary(): Promise<void> {
                   :icon="LuListPlus"
                   :label="t('online.playNext')"
                   @select="handlePlayNext(tr)"
+                />
+                <MdMenuItem
+                  :icon="LuDownload"
+                  :label="t('common.download')"
+                  :disabled="Boolean(downloadingKeys[trackKey(tr)])"
+                  @select="handleDownloadTrack(tr)"
                 />
                 <MdMenuItem
                   :icon="LuHeart"

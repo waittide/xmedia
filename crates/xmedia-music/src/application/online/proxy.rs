@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -22,8 +23,9 @@ use xmedia_source::proxy::{
     has_unclosed_leading_xml_or_comment, is_only_bom_or_whitespace, looks_like_html_or_svg_bytes,
 };
 
-use super::MusicOnlineService;
-use crate::source::model::MusicSourceSpec;
+use super::{COVER_URL_CACHE_MAX_ENTRIES, CancelOnDrop, MusicOnlineService};
+use crate::source::engine::is_http_url;
+use crate::source::model::{MusicSourceSpec, MusicTrackContext};
 
 const AUDIO_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const AUDIO_PROXY_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -224,6 +226,141 @@ impl MusicOnlineService {
             &cfg,
         )
         .await
+    }
+
+    pub async fn fetch_cover_proxy_by_id(
+        &self,
+        actor: &User,
+        source_id: Uuid,
+        cover_id: Option<&str>,
+        track_id: Option<&str>,
+    ) -> DomainResult<(Vec<u8>, &'static str)> {
+        let cid = cover_id.map(str::trim).filter(|s| !s.is_empty());
+        let tid = track_id.map(str::trim).filter(|s| !s.is_empty());
+        if cid.is_none() && tid.is_none() {
+            return Err(DomainError::Validation(
+                "缺少封面 URL 或 cover_id 参数".into(),
+            ));
+        }
+
+        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let cache_key = (
+            source_id,
+            format!("{}|{}", cid.unwrap_or(""), tid.unwrap_or("")),
+        );
+
+        let cached_url = {
+            let guard = self
+                .cover_url_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            guard.get(&cache_key).cloned()
+        };
+        if let Some(url) = cached_url {
+            return self.fetch_cover_proxy(actor, &url, Some(source_id)).await;
+        }
+
+        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
+            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        if parsed.rule_cover.is_none() {
+            return Err(DomainError::NotFound("音源未配置封面解析规则".into()));
+        }
+
+        let _permit = self
+            .cover_resolve_sem
+            .acquire()
+            .await
+            .map_err(|_| DomainError::Storage("封面解析调度已关闭".into()))?;
+
+        // Re-check cache in case another concurrent request just resolved this cover_id.
+        let cached_after_wait = {
+            let guard = self
+                .cover_url_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            guard.get(&cache_key).cloned()
+        };
+        if let Some(url) = cached_after_wait {
+            return self.fetch_cover_proxy(actor, &url, Some(source_id)).await;
+        }
+
+        let cover_timeout = self.op_timeout.min(Duration::from_secs(15));
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), cover_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
+
+        let ctx = MusicTrackContext {
+            track_id: tid.unwrap_or_default().to_string(),
+            cover_id: cid.map(ToString::to_string),
+            ..Default::default()
+        };
+        let engine = self.engine.clone();
+        let prev_state = rec.runtime_state.clone();
+        let prev_state_cmp = prev_state.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
+
+        let timed = tokio::time::timeout(
+            cover_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .resolve_cover_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &ctx,
+                        cover_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::NotFound(format!("解析封面地址失败: {err}")));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("封面解析线程异常: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation("解析封面地址超时".into()));
+            }
+        };
+
+        if out.state != prev_state_cmp {
+            let _ = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await;
+        }
+
+        let resolved_url = out
+            .data
+            .map(|u| u.trim().to_string())
+            .filter(|u| is_http_url(u))
+            .ok_or_else(|| DomainError::NotFound("音源未返回有效封面地址".into()))?;
+
+        {
+            let mut guard = self
+                .cover_url_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if guard.len() >= COVER_URL_CACHE_MAX_ENTRIES {
+                guard.clear();
+            }
+            guard.insert(cache_key, resolved_url.clone());
+        }
+
+        self.fetch_cover_proxy(actor, &resolved_url, Some(source_id))
+            .await
     }
 
     pub async fn stream_audio_proxy(

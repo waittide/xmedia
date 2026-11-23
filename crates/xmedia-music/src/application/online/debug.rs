@@ -63,6 +63,7 @@ impl MusicOnlineService {
         let kw_clone = effective_keyword.clone();
         let source_name = rec.name.clone();
         let qualities = parsed.supported_qualities.clone();
+        let has_cover_rule = parsed.rule_cover.is_some();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
         let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
@@ -152,7 +153,15 @@ impl MusicOnlineService {
                                 .data
                                 .into_iter()
                                 .take(20)
-                                .map(|item| track_item_to_dto(id, &source_name, &qualities, item))
+                                .map(|item| {
+                                    track_item_to_dto(
+                                        id,
+                                        &source_name,
+                                        &qualities,
+                                        has_cover_rule,
+                                        item,
+                                    )
+                                })
                                 .collect();
                             steps.push(SourceDebugStepDto {
                                 stage: "search".into(),
@@ -222,7 +231,15 @@ impl MusicOnlineService {
                                 .tracks
                                 .into_iter()
                                 .take(20)
-                                .map(|item| track_item_to_dto(id, &source_name, &qualities, item))
+                                .map(|item| {
+                                    track_item_to_dto(
+                                        id,
+                                        &source_name,
+                                        &qualities,
+                                        has_cover_rule,
+                                        item,
+                                    )
+                                })
                                 .collect();
                             steps.push(SourceDebugStepDto {
                                 stage: "explore".into(),
@@ -515,7 +532,8 @@ impl MusicOnlineService {
                 }
 
                 let resolved_track = active_item.map(|item| {
-                    let mut dto = track_item_to_dto(id, &source_name, &qualities, item);
+                    let mut dto =
+                        track_item_to_dto(id, &source_name, &qualities, has_cover_rule, item);
                     let final_cover = cover_resolved.clone().or_else(|| dto.cover_url.clone());
                     if let Some(ref c) = final_cover {
                         dto.cover_url = Some(c.clone());

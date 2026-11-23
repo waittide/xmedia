@@ -5,6 +5,7 @@ import {
   LuBookmark,
   LuChevronDown,
   LuDisc3,
+  LuDownload,
   LuHeart,
   LuLanguages,
   LuListMusic,
@@ -39,6 +40,7 @@ import { useSnackbarStore } from '@/stores/snackbar'
 import { stripAriaModalOnLeave } from '@/utils/dom'
 import { formatTime } from '@/utils/format'
 import { api, buildCoverUrl } from '../api'
+import { downloadQueueItem } from '../download'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
@@ -60,6 +62,7 @@ const lineRefs = ref<(HTMLButtonElement | null)[]>([])
 
 const scrubPreviewSecs = ref<number | null>(null)
 const savingBookmark = ref(false)
+const downloadingCurrent = ref(false)
 const showQueuePanel = ref(false)
 const showTranslation = ref(true)
 const mobileTab = ref<MobileStageTab>('lyrics')
@@ -305,6 +308,26 @@ async function saveCurrentBookmark(): Promise<void> {
   }
 }
 
+async function handleDownloadCurrent(): Promise<void> {
+  const item = playerStore.currentItem
+  if (!item || downloadingCurrent.value) return
+  downloadingCurrent.value = true
+  const title = playerStore.currentTrack?.title || ''
+  try {
+    await downloadQueueItem(item)
+    snackbar.show({ message: t('online.downloadStartedToast', { title }) })
+  } catch (err) {
+    snackbar.show({
+      message: t('online.downloadFailedToast', {
+        message: err instanceof Error ? err.message : String(err),
+      }),
+      tone: 'error',
+    })
+  } finally {
+    downloadingCurrent.value = false
+  }
+}
+
 function closeQueueStage(): void {
   showQueuePanel.value = false
   mobileTab.value = 'lyrics'
@@ -397,7 +420,7 @@ onBeforeUnmount(() => {
             />
 
             <MdMenu
-              v-if="hasQualityMenuItems || playerStore.currentLocalTrack"
+              v-if="playerStore.currentTrack"
               placement="bottom-end"
               :min-width="220"
               :aria-label="t('player.optionsMenu')"
@@ -449,8 +472,14 @@ onBeforeUnmount(() => {
                 </template>
               </template>
 
+              <div v-if="hasQualityMenuItems" class="my-1 border-t border-outline-variant" role="separator" />
+              <MdMenuItem
+                :icon="LuDownload"
+                :label="t('common.download')"
+                :disabled="downloadingCurrent"
+                @select="handleDownloadCurrent"
+              />
               <template v-if="playerStore.currentLocalTrack">
-                <div class="my-1 border-t border-outline-variant" role="separator" />
                 <MdMenuItem
                   :icon="LuBookmark"
                   :label="t('player.bookmarkBtn')"

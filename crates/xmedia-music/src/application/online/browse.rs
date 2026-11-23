@@ -33,6 +33,28 @@ pub(super) fn build_proxy_cover_url(source_id: Uuid, cover_url: &str) -> Option<
     }
 }
 
+pub(super) fn build_proxy_cover_url_by_id(
+    source_id: Uuid,
+    cover_id: &str,
+    track_id: &str,
+) -> Option<String> {
+    let cid = cover_id.trim();
+    let tid = track_id.trim();
+    if cid.is_empty() && tid.is_empty() {
+        return None;
+    }
+    let mut qs = format!("source_id={source_id}");
+    if !cid.is_empty() {
+        qs.push_str("&cover_id=");
+        qs.push_str(&url_encode_component(cid));
+    }
+    if !tid.is_empty() && tid != cid {
+        qs.push_str("&track_id=");
+        qs.push_str(&url_encode_component(tid));
+    }
+    Some(format!("/api/v1/music/online/cover-proxy?{qs}"))
+}
+
 pub(super) fn build_proxy_stream_url(source_id: Uuid, stream_url: &str) -> String {
     format!(
         "/api/v1/music/online/audio-proxy?url={}&source_id={source_id}",
@@ -44,12 +66,22 @@ pub(super) fn track_item_to_dto(
     source_id: Uuid,
     source_name: &str,
     qualities: &[String],
+    has_cover_rule: bool,
     item: OnlineMusicTrackItem,
 ) -> OnlineMusicTrackDto {
     let proxy_cover_url = item
         .cover_url
         .as_deref()
-        .and_then(|u| build_proxy_cover_url(source_id, u));
+        .and_then(|u| build_proxy_cover_url(source_id, u))
+        .or_else(|| {
+            if has_cover_rule {
+                item.cover_id
+                    .as_deref()
+                    .and_then(|cid| build_proxy_cover_url_by_id(source_id, cid, &item.track_id))
+            } else {
+                None
+            }
+        });
     OnlineMusicTrackDto {
         source_id,
         source_name: source_name.to_string(),
@@ -126,22 +158,32 @@ impl MusicOnlineService {
                             sid,
                             sname,
                             Vec::new(),
+                            false,
                             prev_state_cmp,
                             Err(format!("音源解析失败: {e}")),
                         );
                     }
                 };
                 let qualities = parsed.supported_qualities.clone();
+                let has_cover_rule = parsed.rule_cover.is_some();
                 if let Some(rate) = parsed.parse_concurrent_rate()
                     && let Err(e) = rate_limiter.acquire(rate, op_timeout).await
                 {
-                    return (sid, sname, qualities, prev_state_cmp, Err(e));
+                    return (
+                        sid,
+                        sname,
+                        qualities,
+                        has_cover_rule,
+                        prev_state_cmp,
+                        Err(e),
+                    );
                 }
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (
                         sid,
                         sname,
                         qualities,
+                        has_cover_rule,
                         prev_state_cmp,
                         Err("搜索并发调度已关闭".into()),
                     );
@@ -168,7 +210,7 @@ impl MusicOnlineService {
                 match timed {
                     Ok(Ok(res)) => {
                         cancel_guard.disarm();
-                        (sid, sname, qualities, prev_state_cmp, res)
+                        (sid, sname, qualities, has_cover_rule, prev_state_cmp, res)
                     }
                     Ok(Err(e)) => {
                         cancel_guard.disarm();
@@ -176,6 +218,7 @@ impl MusicOnlineService {
                             sid,
                             sname,
                             qualities,
+                            has_cover_rule,
                             prev_state_cmp,
                             Err(format!("搜索任务异常: {e}")),
                         )
@@ -186,6 +229,7 @@ impl MusicOnlineService {
                             sid,
                             sname,
                             qualities,
+                            has_cover_rule,
                             prev_state_cmp,
                             Err(format!("搜索超时（超过 {} 秒）", op_timeout.as_secs())),
                         )
@@ -201,7 +245,7 @@ impl MusicOnlineService {
         let mut toasts = Vec::new();
 
         for h in handles {
-            let Ok((sid, sname, qualities, prev_state, res)) = h.await else {
+            let Ok((sid, sname, qualities, has_cover_rule, prev_state, res)) = h.await else {
                 continue;
             };
             match res {
@@ -217,7 +261,13 @@ impl MusicOnlineService {
                         }
                     }
                     for item in out.data {
-                        results.push(track_item_to_dto(sid, &sname, &qualities, item));
+                        results.push(track_item_to_dto(
+                            sid,
+                            &sname,
+                            &qualities,
+                            has_cover_rule,
+                            item,
+                        ));
                     }
                 }
                 Err(message) => {
@@ -258,6 +308,7 @@ impl MusicOnlineService {
             .map_err(DomainError::Validation)?;
 
         let qualities = parsed.supported_qualities.clone();
+        let has_cover_rule = parsed.rule_cover.is_some();
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
@@ -324,7 +375,7 @@ impl MusicOnlineService {
             .data
             .tracks
             .into_iter()
-            .map(|item| track_item_to_dto(source_id, &rec.name, &qualities, item))
+            .map(|item| track_item_to_dto(source_id, &rec.name, &qualities, has_cover_rule, item))
             .collect();
         let categories = out
             .data
@@ -365,6 +416,7 @@ impl MusicOnlineService {
             ctx.quality = Some(q.clone());
         }
         let qualities = parsed.supported_qualities.clone();
+        let has_cover_rule = parsed.rule_cover.is_some();
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
@@ -575,7 +627,13 @@ impl MusicOnlineService {
             diag.logs.clear();
         }
 
-        let mut track_dto = track_item_to_dto(source_id, &rec.name, &qualities, resolved_track);
+        let mut track_dto = track_item_to_dto(
+            source_id,
+            &rec.name,
+            &qualities,
+            has_cover_rule,
+            resolved_track,
+        );
         if let Some(ref cover) = resolved_cover {
             track_dto.cover_url = Some(cover.clone());
             track_dto.proxy_cover_url = build_proxy_cover_url(source_id, cover);

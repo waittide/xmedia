@@ -31,6 +31,8 @@ use crate::domain::repository::{MusicCatalogRepository, MusicSourceRepository};
 use crate::source::MusicSourceEngine;
 
 pub(super) const SEARCH_MAX_CONCURRENCY: usize = 16;
+pub(super) const COVER_RESOLVE_MAX_CONCURRENCY: usize = 6;
+pub(super) const COVER_URL_CACHE_MAX_ENTRIES: usize = 2048;
 pub(super) const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const TRACK_INFO_OP_TIMEOUT: Duration = Duration::from_secs(45);
 pub(super) const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
@@ -52,6 +54,8 @@ pub struct MusicOnlineService {
     pub(super) source_state_locks: AsyncLockMap<Uuid>,
     pub(super) track_cache_locks: AsyncLockMap<TrackId>,
     pub(super) rate_limiters: RateLimiterMap,
+    pub(super) cover_resolve_sem: Arc<tokio::sync::Semaphore>,
+    pub(super) cover_url_cache: Arc<Mutex<HashMap<(Uuid, String), String>>>,
     pub(super) seed_import_lock: tokio::sync::Mutex<()>,
     pub(super) tracking: Option<MusicTrackingDeps>,
     pub(super) allow_private_ips: bool,
@@ -75,6 +79,8 @@ impl MusicOnlineService {
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
             track_cache_locks: Arc::new(Mutex::new(HashMap::new())),
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
+            cover_resolve_sem: Arc::new(tokio::sync::Semaphore::new(COVER_RESOLVE_MAX_CONCURRENCY)),
+            cover_url_cache: Arc::new(Mutex::new(HashMap::new())),
             seed_import_lock: tokio::sync::Mutex::new(()),
             tracking: None,
             allow_private_ips,
@@ -106,5 +112,13 @@ impl MusicOnlineService {
         timeout: Duration,
     ) -> Result<(), String> {
         acquire_source_rate_slot(&self.rate_limiters, source_id, spec, timeout).await
+    }
+
+    pub(super) fn invalidate_cover_cache_for_source(&self, source_id: Uuid) {
+        let mut guard = self
+            .cover_url_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.retain(|(sid, _), _| *sid != source_id);
     }
 }

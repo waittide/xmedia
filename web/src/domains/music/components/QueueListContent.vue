@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { LuArrowDown, LuArrowUp, LuDisc3, LuTrash2, LuVolume2 } from 'vue-icons-plus/lu'
+import { LuArrowDown, LuArrowUp, LuDisc3, LuDownload, LuTrash2, LuVolume2 } from 'vue-icons-plus/lu'
 import { MdIconButton } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { buildCoverUrl } from '../api'
+import { downloadQueueItem } from '../download'
 import { useMusicI18n as useI18n } from '../i18n'
 import { resolveOnlineItemCoverUrl, usePlayerStore, type PlayerQueueItem } from '../player'
 
@@ -19,8 +21,10 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
+const snackbarStore = useSnackbarStore()
 const playerStore = usePlayerStore()
 const rowRefs = ref<(HTMLDivElement | null)[]>([])
+const downloadingKeys = ref<Record<string, boolean>>({})
 
 function setRowRef(el: unknown, idx: number): void {
   rowRefs.value[idx] = el instanceof HTMLDivElement ? el : null
@@ -84,6 +88,27 @@ function itemSourceLabel(item: PlayerQueueItem): string | null {
   }
   return null
 }
+
+async function handleDownloadItem(item: PlayerQueueItem): Promise<void> {
+  if (downloadingKeys.value[item.key]) return
+  downloadingKeys.value = { ...downloadingKeys.value, [item.key]: true }
+  const title = itemTitle(item)
+  try {
+    await downloadQueueItem(item)
+    snackbarStore.show(t('online.downloadStartedToast', { title }))
+  } catch (err) {
+    snackbarStore.show({
+      message: t('online.downloadFailedToast', {
+        message: err instanceof Error ? err.message : String(err),
+      }),
+      tone: 'error',
+    })
+  } finally {
+    const next = { ...downloadingKeys.value }
+    delete next[item.key]
+    downloadingKeys.value = next
+  }
+}
 </script>
 
 <template>
@@ -99,7 +124,7 @@ function itemSourceLabel(item: PlayerQueueItem): string | null {
       v-for="(item, idx) in playerStore.queue"
       :key="`${item.key}-${idx}`"
       :ref="(el) => setRowRef(el, idx)"
-      class="group flex items-center gap-3 rounded-corner-md transition-colors duration-150 ease-standard"
+      class="group flex items-center gap-2 rounded-corner-md transition-colors duration-150 ease-standard"
       :class="[
         compact ? 'px-2.5 py-1.5' : 'px-3 py-2',
         idx === playerStore.currentIndex
@@ -109,7 +134,7 @@ function itemSourceLabel(item: PlayerQueueItem): string | null {
     >
       <button
         type="button"
-        class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-secondary"
+        class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 overflow-hidden text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-secondary"
         @click="playerStore.playAtIndex(idx)"
       >
         <MediaCoverImage
@@ -120,53 +145,59 @@ function itemSourceLabel(item: PlayerQueueItem): string | null {
           :fallback-icon="LuDisc3"
         />
 
-        <span class="min-w-0 flex-1">
-          <span class="flex items-center gap-1.5">
-            <span class="text-body-medium truncate font-medium">
+        <span class="min-w-0 flex-1 overflow-hidden">
+          <span class="flex min-w-0 items-center gap-1.5">
+            <LuVolume2
+              v-if="idx === playerStore.currentIndex"
+              class="h-3.5 w-3.5 shrink-0 text-on-secondary-container"
+              aria-hidden="true"
+            />
+            <span
+              class="text-title-small min-w-0 flex-1 truncate font-medium"
+              :title="itemTitle(item)"
+            >
               {{ itemTitle(item) }}
+            </span>
+          </span>
+          <span class="mt-0.5 flex min-w-0 items-center gap-1.5">
+            <span
+              class="text-body-small min-w-0 flex-1 truncate"
+              :class="
+                idx === playerStore.currentIndex
+                  ? 'text-on-secondary-container/80'
+                  : 'text-on-surface-variant'
+              "
+              :title="itemSubtitle(item) || undefined"
+            >
+              {{ itemSubtitle(item) }}
             </span>
             <span
               v-if="itemSourceLabel(item)"
-              class="text-label-small shrink-0 rounded-corner-full px-2 py-0.5"
+              class="text-label-small max-w-24 shrink-0 truncate rounded-corner-full px-1.5 py-0.5"
               :class="
                 idx === playerStore.currentIndex
                   ? 'bg-on-secondary-container/12 text-on-secondary-container'
                   : 'bg-surface-container-highest text-on-surface-variant'
               "
+              :title="itemSourceLabel(item) || undefined"
             >
               {{ itemSourceLabel(item) }}
             </span>
           </span>
-          <span
-            class="text-body-small block truncate"
-            :class="
-              idx === playerStore.currentIndex
-                ? 'text-on-secondary-container/80'
-                : 'text-on-surface-variant'
-            "
-          >
-            {{ itemSubtitle(item) }}
-          </span>
         </span>
       </button>
 
-      <div class="flex shrink-0 items-center gap-2">
-        <LuVolume2
-          v-if="idx === playerStore.currentIndex"
-          class="mr-1 h-4 w-4 shrink-0 text-on-secondary-container"
-          aria-hidden="true"
-        />
-
+      <div class="flex shrink-0 items-center gap-0.5">
         <div
           v-if="playerStore.queue.length > 1"
-          class="flex items-center gap-2 opacity-100 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
+          class="flex items-center gap-0.5 sm:hidden sm:group-focus-within:flex sm:group-hover:flex"
         >
           <MdIconButton
             size="sm"
             :icon="LuArrowUp"
             :disabled="idx === 0"
             :aria-label="t('player.moveUp')"
-            :title="t('player.moveUp')"
+            :tooltip="t('player.moveUp')"
             @click="playerStore.moveQueueItem(idx, idx - 1)"
           />
           <MdIconButton
@@ -174,16 +205,25 @@ function itemSourceLabel(item: PlayerQueueItem): string | null {
             :icon="LuArrowDown"
             :disabled="idx === playerStore.queue.length - 1"
             :aria-label="t('player.moveDown')"
-            :title="t('player.moveDown')"
+            :tooltip="t('player.moveDown')"
             @click="playerStore.moveQueueItem(idx, idx + 1)"
           />
         </div>
 
         <MdIconButton
           size="sm"
+          :icon="LuDownload"
+          :loading="Boolean(downloadingKeys[item.key])"
+          :aria-label="t('common.download')"
+          :tooltip="t('common.download')"
+          @click="handleDownloadItem(item)"
+        />
+
+        <MdIconButton
+          size="sm"
           :icon="LuTrash2"
           :aria-label="t('common.delete')"
-          :title="t('common.delete')"
+          :tooltip="t('common.delete')"
           @click="playerStore.removeQueueAt(idx)"
         />
       </div>

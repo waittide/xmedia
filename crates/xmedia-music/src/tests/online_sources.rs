@@ -1128,6 +1128,17 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         search_dto["results"][0]["artist"],
         "Artist One / Artist Two"
     );
+    let lazy_cover_url = search_dto["results"][0]["proxy_cover_url"]
+        .as_str()
+        .expect("search item with cover_id + ruleCover should expose lazy proxy_cover_url")
+        .to_string();
+    assert!(lazy_cover_url.starts_with("/api/v1/music/online/cover-proxy?source_id="));
+    assert!(lazy_cover_url.contains("cover_id=pic-1"));
+    let rel_lazy_cover = lazy_cover_url.strip_prefix("/api/v1/music").unwrap();
+    let (st, hdrs, bytes) = send_json(&h.app, "GET", rel_lazy_cover, &h.member_token, None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(bytes, PNG_1X1);
+    assert_eq!(hdrs.get(header::CONTENT_TYPE).unwrap(), "image/png");
 
     let (st, _, body) = send_json(
         &h.app,
@@ -1326,6 +1337,20 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         assert_eq!(cap.get("range").map(String::as_str), Some("bytes=10-29"));
         assert_ne!(cap.get("host").map(String::as_str), Some("spoofed.local"));
     }
+
+    // 9b. Audio proxy download mode: attachment Content-Disposition with inferred extension
+    let download_uri = format!("{rel_audio}&download=1&filename=Artist%20-%20Song");
+    let (st, dl_hdrs, dl_bytes) =
+        send_json(&h.app, "GET", &download_uri, &h.member_token, None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(dl_bytes.len(), 120);
+    let disp = dl_hdrs
+        .get(header::CONTENT_DISPOSITION)
+        .expect("download=1 should set Content-Disposition")
+        .to_str()
+        .unwrap();
+    assert!(disp.starts_with("attachment;"));
+    assert!(disp.contains("Artist%20-%20Song.mp3"));
 
     // 10. Audio proxy: 200 OK full multi-chunk stream
     let (st, hdrs, full_bytes) = send_json(&h.app, "GET", rel_audio, &h.member_token, None).await;

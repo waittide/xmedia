@@ -215,6 +215,7 @@ impl MusicOnlineService {
                     updated_at: now,
                 };
                 if let Some(rec) = self.sources.update_metadata_if_exists(id, patch).await? {
+                    self.invalidate_cover_cache_for_source(id);
                     let summary = Self::record_to_summary(&rec, true);
                     if let Some(&pos) = out_by_id.get(&rec.id) {
                         out[pos] = summary;
@@ -339,6 +340,7 @@ impl MusicOnlineService {
             .update_metadata_if_exists(id, patch)
             .await?
             .ok_or_else(|| DomainError::NotFound(format!("未找到音源 {id}")))?;
+        self.invalidate_cover_cache_for_source(id);
         Ok(Self::record_to_summary(&updated, true))
     }
 
@@ -348,6 +350,7 @@ impl MusicOnlineService {
         let _guard = lock.lock().await;
         let _ = self.load_source(id).await?;
         self.sources.delete(id).await?;
+        self.invalidate_cover_cache_for_source(id);
         Ok(())
     }
 

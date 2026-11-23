@@ -155,6 +155,20 @@ export function buildOnlineMusicCoverUrl(
   return withAuthToken(`/api/v1/music/online/cover-proxy?${qs.toString()}`)
 }
 
+export function buildOnlineMusicCoverByIdUrl(
+  sourceId?: string | null,
+  coverId?: string | null,
+  trackId?: string | null,
+): string {
+  const sid = sourceId?.trim()
+  const cid = coverId?.trim()
+  if (!sid || !cid) return ''
+  const qs = new URLSearchParams({ source_id: sid, cover_id: cid })
+  const tid = trackId?.trim()
+  if (tid && tid !== cid) qs.set('track_id', tid)
+  return withAuthToken(`/api/v1/music/online/cover-proxy?${qs.toString()}`)
+}
+
 export function buildOnlineMusicAudioUrl(
   rawUrl: string | null | undefined,
   sourceId?: string | null,
@@ -165,10 +179,26 @@ export function buildOnlineMusicAudioUrl(
   return withAuthToken(`/api/v1/music/online/audio-proxy?${qs.toString()}`)
 }
 
+export function buildOnlineMusicDownloadUrl(
+  rawUrl: string | null | undefined,
+  sourceId?: string | null,
+  filename?: string | null,
+  format?: string | null,
+): string {
+  if (!rawUrl || !rawUrl.trim() || !isSafeHttpUrl(rawUrl)) return ''
+  const qs = new URLSearchParams({ url: rawUrl.trim(), download: '1' })
+  if (sourceId) qs.set('source_id', sourceId)
+  if (filename && filename.trim()) qs.set('filename', filename.trim())
+  if (format && format.trim()) qs.set('format', format.trim())
+  return withAuthToken(`/api/v1/music/online/audio-proxy?${qs.toString()}`)
+}
+
 export function resolveOnlineMusicCoverUrl(
   proxyCoverUrl?: string | null,
   rawCoverUrl?: string | null,
   sourceId?: string | null,
+  coverId?: string | null,
+  trackId?: string | null,
 ): string {
   const proxy = proxyCoverUrl?.trim()
   if (proxy) {
@@ -181,7 +211,13 @@ export function resolveOnlineMusicCoverUrl(
         if (parsed.origin !== 'http://localhost') return ''
         if (parsed.pathname !== '/api/v1/music/online/cover-proxy') return ''
         const innerUrl = parsed.searchParams.get('url')?.trim()
-        if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+        const hasValidDirectUrl = Boolean(innerUrl && isSafeHttpUrl(innerUrl))
+        const hasValidCoverId = Boolean(
+          parsed.searchParams.get('source_id')?.trim() &&
+            (parsed.searchParams.get('cover_id')?.trim() ||
+              parsed.searchParams.get('track_id')?.trim()),
+        )
+        if (!hasValidDirectUrl && !hasValidCoverId) return ''
         return withAuthToken(proxy)
       } catch {
         return ''
@@ -192,7 +228,9 @@ export function resolveOnlineMusicCoverUrl(
     }
     return ''
   }
-  return buildOnlineMusicCoverUrl(rawCoverUrl, sourceId)
+  const direct = buildOnlineMusicCoverUrl(rawCoverUrl, sourceId)
+  if (direct) return direct
+  return buildOnlineMusicCoverByIdUrl(sourceId, coverId, trackId)
 }
 
 export function resolveOnlineMusicAudioUrl(

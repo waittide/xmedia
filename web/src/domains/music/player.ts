@@ -88,6 +88,8 @@ export function resolveOnlineItemCoverUrl(item: OnlineQueueItem): string | null 
     item.resolved?.proxy_cover_url || item.track.proxy_cover_url,
     item.resolved?.cover_url || item.track.cover_url,
     item.source_id,
+    item.resolved?.track.cover_id || item.track.cover_id,
+    item.resolved?.track.track_id || item.track.track_id,
   )
   return resolved || null
 }

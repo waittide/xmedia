@@ -17,7 +17,13 @@ export function getOnlineTrackItemKey(track: OnlineMusicTrackDto): string {
 }
 
 export function onlineTrackToTrackedRef(track: OnlineMusicTrackDto): TrackedItemRef {
-  const cover = resolveOnlineMusicCoverUrl(track.proxy_cover_url, track.cover_url, track.source_id)
+  const cover = resolveOnlineMusicCoverUrl(
+    track.proxy_cover_url,
+    track.cover_url,
+    track.source_id,
+    track.cover_id,
+    track.track_id,
+  )
   return {
     scope: 'online',
     domain: 'music',
