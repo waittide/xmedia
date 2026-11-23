@@ -4,7 +4,10 @@ import { useI18n } from 'vue-i18n'
 import {
   LuBan,
   LuCheckCircle2,
+  LuChevronDown,
+  LuClipboardPaste,
   LuDownload,
+  LuFileJson,
   LuFolder,
   LuListChecks,
   LuLoader2,
@@ -62,17 +65,68 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const escapeStack = useEscapeStack()
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const importMenuRef = ref<HTMLElement | null>(null)
+const importMenuOpen = ref(false)
+const importOpenedByHover = ref(false)
 const actionsMenuRef = ref<HTMLElement | null>(null)
 const actionsMenuOpen = ref(false)
+let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null
 
 escapeStack.register(
-  () => actionsMenuOpen.value,
+  () => importMenuOpen.value || actionsMenuOpen.value,
   () => {
+    clearHoverCloseTimer()
+    importMenuOpen.value = false
+    importOpenedByHover.value = false
     actionsMenuOpen.value = false
   },
 )
 
+function clearHoverCloseTimer(): void {
+  if (hoverCloseTimer !== null) {
+    clearTimeout(hoverCloseTimer)
+    hoverCloseTimer = null
+  }
+}
+
+function handleImportMouseEnter(): void {
+  clearHoverCloseTimer()
+  actionsMenuOpen.value = false
+  importMenuOpen.value = true
+  importOpenedByHover.value = true
+}
+
+function handleImportMouseLeave(): void {
+  clearHoverCloseTimer()
+  hoverCloseTimer = setTimeout(() => {
+    importMenuOpen.value = false
+    importOpenedByHover.value = false
+    hoverCloseTimer = null
+  }, 140)
+}
+
+function handleImportTriggerClick(): void {
+  clearHoverCloseTimer()
+  actionsMenuOpen.value = false
+  if (importMenuOpen.value && !importOpenedByHover.value) {
+    importMenuOpen.value = false
+  } else {
+    importMenuOpen.value = true
+    importOpenedByHover.value = false
+  }
+}
+
+function openPasteImportBox(): void {
+  clearHoverCloseTimer()
+  importMenuOpen.value = false
+  importOpenedByHover.value = false
+  emit('update:showImportBox', true)
+}
+
 function triggerFileImport(): void {
+  clearHoverCloseTimer()
+  importMenuOpen.value = false
+  importOpenedByHover.value = false
   actionsMenuOpen.value = false
   fileInputRef.value?.click()
 }
@@ -83,10 +137,20 @@ function handleImportSeedsClick(): void {
 }
 
 function handleOutsideClick(ev: MouseEvent): void {
+  const target = ev.target as Node
+  if (
+    importMenuOpen.value &&
+    importMenuRef.value &&
+    !importMenuRef.value.contains(target)
+  ) {
+    clearHoverCloseTimer()
+    importMenuOpen.value = false
+    importOpenedByHover.value = false
+  }
   if (
     actionsMenuOpen.value &&
     actionsMenuRef.value &&
-    !actionsMenuRef.value.contains(ev.target as Node)
+    !actionsMenuRef.value.contains(target)
   ) {
     actionsMenuOpen.value = false
   }
@@ -97,6 +161,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearHoverCloseTimer()
   document.removeEventListener('mousedown', handleOutsideClick)
 })
 </script>
@@ -156,20 +221,69 @@ onBeforeUnmount(() => {
           @change="emit('file-selected', $event)"
         />
 
-        <!-- Primary Import JSON button (MUST be first button matching /导入|import/i; hidden when import box is open to avoid T4-05 en-US button collision) -->
-        <button
+        <!-- Primary Import hover/click dropdown (MUST be first button matching /导入|import/i; hidden when import box is open) -->
+        <div
           v-if="!showImportBox"
-          type="button"
-          class="md-btn md-btn-sm md-btn-filled md-state"
-          :title="t('onlineSources.toolbar.importJsonTitle', { domain: domainLabel })"
-          @click="emit('update:showImportBox', true)"
+          ref="importMenuRef"
+          class="relative"
+          @mouseenter="handleImportMouseEnter"
+          @mouseleave="handleImportMouseLeave"
         >
-          <LuPlus class="h-3.5 w-3.5" />
-          <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
-        </button>
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            :title="t('onlineSources.toolbar.importJsonTitle', { domain: domainLabel })"
+            aria-haspopup="menu"
+            :aria-expanded="importMenuOpen"
+            @click="handleImportTriggerClick"
+          >
+            <LuPlus class="h-3.5 w-3.5" />
+            <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
+            <LuChevronDown
+              class="h-3.5 w-3.5 transition-transform duration-150 ease-standard"
+              :class="importMenuOpen ? 'rotate-180' : ''"
+              aria-hidden="true"
+            />
+          </button>
 
-        <!-- Secondary Actions Overflow (File Picker & Default Seeds; aria-label/title avoid matching card "更多|more|菜单|menu|⋮" and primary "导入|import") -->
-        <div v-if="!showImportBox || canImportSeeds" ref="actionsMenuRef" class="relative">
+          <Transition name="md-dialog">
+            <div
+              v-if="importMenuOpen"
+              class="absolute top-full right-0 z-[var(--z-popover)] pt-1.5"
+            >
+              <div
+                role="menu"
+                :aria-label="t('onlineSources.toolbar.importJsonBtn')"
+                class="w-44 rounded-corner-lg border border-outline-variant/40 bg-surface-container-high p-1.5 shadow-elevation-3"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="md-state flex w-full cursor-pointer items-center gap-2.5 rounded-corner-md px-3 py-2 text-left text-xs font-medium text-on-surface"
+                  :title="t('onlineSources.toolbar.pasteJsonTitle', { domain: domainLabel })"
+                  @click="openPasteImportBox"
+                >
+                  <LuClipboardPaste class="h-4 w-4 shrink-0 text-on-surface-variant" />
+                  <span>{{ t('onlineSources.toolbar.pasteJsonOption') }}</span>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="md-state flex w-full cursor-pointer items-center gap-2.5 rounded-corner-md px-3 py-2 text-left text-xs font-medium text-on-surface"
+                  :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
+                  @click="triggerFileImport"
+                >
+                  <LuFileJson class="h-4 w-4 shrink-0 text-on-surface-variant" />
+                  <span>{{ t('onlineSources.toolbar.importJsonFileOption') }}</span>
+                </button>
+              </div>
+            </div>
+          </Transition>
+        </div>
+
+        <!-- Secondary Actions Overflow (Default Seeds only; aria-label/title avoid matching card "更多|more|菜单|menu|⋮" and primary "导入|import") -->
+        <div v-if="canImportSeeds" ref="actionsMenuRef" class="relative">
           <button
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state"
@@ -191,36 +305,23 @@ onBeforeUnmount(() => {
             <div
               v-if="actionsMenuOpen"
               role="menu"
-              class="absolute top-10 right-0 z-[var(--z-popover)] w-48 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-1.5 shadow-[var(--md-sys-elevation-3)]"
+              class="absolute top-10 right-0 z-[var(--z-popover)] w-48 rounded-corner-lg border border-outline-variant/40 bg-surface-container-high p-1.5 shadow-elevation-3"
             >
               <button
-                v-if="!showImportBox"
-                type="button"
-                role="menuitem"
-                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
-                :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
-                @click="triggerFileImport"
-              >
-                <LuUpload class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
-                <span>{{ t('onlineSources.toolbar.uploadFileBtn') }}</span>
-              </button>
-
-              <button
-                v-if="canImportSeeds"
                 type="button"
                 role="menuitem"
                 :disabled="seeding"
-                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)] disabled:opacity-50"
+                class="md-state flex w-full cursor-pointer items-center gap-2.5 rounded-corner-md px-3 py-2 text-left text-xs font-medium text-on-surface disabled:opacity-50"
                 :title="t('onlineSources.toolbar.importSeedsTitle', { domain: domainLabel })"
                 @click="handleImportSeedsClick"
               >
                 <LuLoader2
                   v-if="seeding"
-                  class="h-4 w-4 shrink-0 animate-spin text-[var(--md-sys-color-primary)]"
+                  class="h-4 w-4 shrink-0 animate-spin text-primary"
                 />
                 <LuSparkles
                   v-else
-                  class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
+                  class="h-4 w-4 shrink-0 text-on-surface-variant"
                 />
                 <span>
                   {{
