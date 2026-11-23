@@ -376,15 +376,8 @@ impl MusicIngestService {
             .await?
             .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
 
-        if let TrackSource::Managed {
-            ref storage_key,
-            ref sidecar_lrc_key,
-        } = track.source
-        {
-            let _ = self.storage.delete_managed_file(storage_key).await;
-            if let Some(lrc_key) = sidecar_lrc_key {
-                let _ = self.storage.delete_managed_file(lrc_key).await;
-            }
+        for key in track.source.managed_file_keys() {
+            let _ = self.storage.delete_managed_file(key).await;
         }
 
         self.catalog_repo.delete_track(track_id).await?;
@@ -422,7 +415,7 @@ impl MusicIngestService {
         Ok(())
     }
 
-    async fn ensure_default_managed_library(&self) -> DomainResult<Library> {
+    pub(crate) async fn ensure_default_managed_library(&self) -> DomainResult<Library> {
         if let Some(existing) = self
             .libraries
             .find_managed_by_media(MediaKind::Music)
@@ -519,7 +512,7 @@ impl MusicIngestService {
         })
     }
 
-    async fn ensure_artist(
+    pub(crate) async fn ensure_artist(
         &self,
         raw_name: &str,
         as_album_artist: bool,
@@ -574,7 +567,7 @@ impl MusicIngestService {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn ensure_album(
+    pub(crate) async fn ensure_album(
         &self,
         library_id: LibraryId,
         raw_title: &str,
@@ -861,15 +854,8 @@ impl MediaDomainLifecycle for MusicIngestService {
             candidate_artists.insert(tr.artist_id);
             candidate_artists.insert(tr.album_artist_id);
 
-            if let TrackSource::Managed {
-                ref storage_key,
-                ref sidecar_lrc_key,
-            } = tr.source
-            {
-                files_to_delete.push(storage_key.clone());
-                if let Some(lrc) = sidecar_lrc_key {
-                    files_to_delete.push(lrc.clone());
-                }
+            for key in tr.source.managed_file_keys() {
+                files_to_delete.push(key.to_string());
             }
         }
 

@@ -17,12 +17,15 @@ use xmedia_source::crud::{
 };
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
+use crate::application::dto::TrackDto;
 use crate::application::online::{
     BatchMusicSourcesInput, BatchMusicSourcesReportDto, ImportMusicSourcesReportDto,
     LoginActionResponseDto, MusicSourceSummaryDto, MusicSourceTestInput, MusicSourceTestReportDto,
     OnlineMusicExploreResponseDto, OnlineMusicResolvedTrackDto, OnlineMusicSearchResponseDto,
-    OnlineMusicStreamResponseDto, StructuredLyricsDto, UpdateMusicSourceInput,
+    OnlineMusicStreamResponseDto, StructuredLyricsDto, TrackOnlineMusicBatchInput,
+    TrackOnlineMusicInput, UpdateMusicSourceInput,
 };
+use crate::domain::catalog::TrackId;
 use crate::http::state::MusicHttpState;
 use crate::source::model::MusicTrackContext;
 
@@ -48,6 +51,9 @@ pub fn router() -> Router<MusicHttpState> {
         .route("/online/track-info", post(online_track_info))
         .route("/online/stream", post(online_stream))
         .route("/online/lyrics", post(online_lyrics))
+        .route("/online/track", post(track_online_track))
+        .route("/online/track-batch", post(track_online_tracks_batch))
+        .route("/tracks/{id}/online/cache", post(cache_tracked_track))
         .route("/online/cover-proxy", get(online_cover_proxy))
         .route("/online/audio-proxy", get(online_audio_proxy))
         // Per-user online/remote music favorites & playback progress
@@ -363,6 +369,41 @@ async fn online_lyrics(
         .services
         .online
         .fetch_lyrics(&user, req.source_id, ctx)
+        .await?;
+    Ok(Json(out))
+}
+
+async fn track_online_track(
+    State(state): State<MusicHttpState>,
+    WebAuth(user): WebAuth,
+    Json(req): Json<TrackOnlineMusicInput>,
+) -> ApiResult<Json<TrackDto>> {
+    let out = state.services.online.track_online_track(&user, req).await?;
+    Ok(Json(out))
+}
+
+async fn track_online_tracks_batch(
+    State(state): State<MusicHttpState>,
+    WebAuth(user): WebAuth,
+    Json(req): Json<TrackOnlineMusicBatchInput>,
+) -> ApiResult<Json<Vec<TrackDto>>> {
+    let out = state
+        .services
+        .online
+        .track_online_tracks_batch(&user, req.tracks)
+        .await?;
+    Ok(Json(out))
+}
+
+async fn cache_tracked_track(
+    State(state): State<MusicHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<TrackDto>> {
+    let out = state
+        .services
+        .online
+        .cache_tracked_track(&user, TrackId(id))
         .await?;
     Ok(Json(out))
 }

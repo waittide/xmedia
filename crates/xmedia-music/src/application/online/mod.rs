@@ -4,6 +4,7 @@ mod dto;
 mod items;
 mod proxy;
 mod sources;
+mod tracked;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +12,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use uuid::Uuid;
+use xmedia_core::application::ports::RealtimeEventPort;
+use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_source::model::ConcurrentRateSpec;
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
@@ -18,7 +21,11 @@ pub use dto::*;
 pub use items::MusicOnlineSourceDirectory;
 pub use proxy::AudioProxyResponse;
 
-use crate::domain::repository::MusicSourceRepository;
+use crate::application::catalog::MusicCatalogService;
+use crate::application::ingest::MusicIngestService;
+use crate::application::ports::{AudioMetadataProbePort, MusicStoragePort};
+use crate::domain::catalog::TrackId;
+use crate::domain::repository::{MusicCatalogRepository, MusicSourceRepository};
 use crate::source::MusicSourceEngine;
 
 pub(super) const SEARCH_MAX_CONCURRENCY: usize = 16;
@@ -100,12 +107,25 @@ pub(super) fn get_or_insert_weak_lock<K: Eq + std::hash::Hash + Clone>(
     created
 }
 
+#[derive(Clone)]
+pub struct MusicTrackingDeps {
+    pub libraries: Arc<dyn LibraryRepository>,
+    pub catalog_repo: Arc<dyn MusicCatalogRepository>,
+    pub catalog_service: Arc<MusicCatalogService>,
+    pub ingest_service: Arc<MusicIngestService>,
+    pub storage: Arc<dyn MusicStoragePort>,
+    pub probe: Arc<dyn AudioMetadataProbePort>,
+    pub events: Arc<dyn RealtimeEventPort>,
+}
+
 pub struct MusicOnlineService {
     pub(super) sources: Arc<dyn MusicSourceRepository>,
     pub(super) engine: MusicSourceEngine,
     pub(super) source_state_locks: AsyncLockMap<Uuid>,
+    pub(super) track_cache_locks: AsyncLockMap<TrackId>,
     pub(super) rate_limiters: RateLimiterMap,
     pub(super) seed_import_lock: tokio::sync::Mutex<()>,
+    pub(super) tracking: Option<MusicTrackingDeps>,
     pub(super) allow_private_ips: bool,
     pub(super) op_timeout: Duration,
     pub(super) track_info_timeout: Duration,
@@ -125,12 +145,19 @@ impl MusicOnlineService {
             sources,
             engine,
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            track_cache_locks: Arc::new(Mutex::new(HashMap::new())),
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             seed_import_lock: tokio::sync::Mutex::new(()),
+            tracking: None,
             allow_private_ips,
             op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
             track_info_timeout: TRACK_INFO_OP_TIMEOUT,
         }
+    }
+
+    pub fn with_tracking(mut self, deps: MusicTrackingDeps) -> Self {
+        self.tracking = Some(deps);
+        self
     }
 
     #[cfg(test)]

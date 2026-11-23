@@ -48,6 +48,17 @@ impl LocalMusicStorage {
             (LibraryKind::Managed, TrackSource::Managed { storage_key, .. }) => {
                 sanitize_join(&self.uploads_dir, storage_key)
             }
+            (LibraryKind::Managed, TrackSource::OnlineTracked(info)) => {
+                if info.cached
+                    && let Some(ref key) = info.storage_key
+                {
+                    sanitize_join(&self.uploads_dir, key)
+                } else {
+                    Err(DomainError::NotFound(
+                        "online-tracked audio is not cached yet".into(),
+                    ))
+                }
+            }
             (
                 LibraryKind::LocalMount { root_path },
                 TrackSource::LocalPath { relative_path, .. },
@@ -191,6 +202,23 @@ impl MusicStoragePort for LocalMusicStorage {
                         .await?
                 {
                     return Ok(Some(Bytes::from(b)));
+                }
+                Ok(None)
+            }
+            (LibraryKind::Managed, TrackSource::OnlineTracked(info))
+                if info.sidecar_lrc_key.is_some() =>
+            {
+                if let Some(ref key) = info.sidecar_lrc_key {
+                    let p = sanitize_join(&self.lyrics_dir, key)?;
+                    if let Some(b) = read_regular_bounded_async(
+                        &p,
+                        Some(&self.lyrics_dir),
+                        MAX_SIDECAR_LRC_BYTES,
+                    )
+                    .await?
+                    {
+                        return Ok(Some(Bytes::from(b)));
+                    }
                 }
                 Ok(None)
             }

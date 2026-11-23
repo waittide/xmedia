@@ -26,8 +26,8 @@ use super::MusicOnlineService;
 use crate::source::model::MusicSourceSpec;
 
 const AUDIO_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const AUDIO_PROXY_READ_TIMEOUT: Duration = Duration::from_secs(30);
-const AUDIO_SNIFF_PREFIX_MAX_BYTES: usize = 4096;
+pub(super) const AUDIO_PROXY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const AUDIO_SNIFF_PREFIX_MAX_BYTES: usize = 4096;
 const AUDIO_SNIFF_MIN_NON_WS_BYTES: usize = 16;
 
 static AUDIO_STREAMING_CLIENT_CACHE: LazyLock<Mutex<HashMap<bool, reqwest::Client>>> =
@@ -42,7 +42,9 @@ pub struct AudioProxyResponse {
     pub stream: ByteChunkStream,
 }
 
-fn get_or_build_audio_streaming_client(allow_private_ips: bool) -> DomainResult<reqwest::Client> {
+pub(super) fn get_or_build_audio_streaming_client(
+    allow_private_ips: bool,
+) -> DomainResult<reqwest::Client> {
     {
         let guard = AUDIO_STREAMING_CLIENT_CACHE
             .lock()
@@ -76,7 +78,10 @@ fn get_or_build_audio_streaming_client(allow_private_ips: bool) -> DomainResult<
     Ok(guard.entry(allow_private_ips).or_insert(client).clone())
 }
 
-fn lookup_cookie_for_url(cookies: &HashMap<String, String>, target_url: &str) -> Option<String> {
+pub(super) fn lookup_cookie_for_url(
+    cookies: &HashMap<String, String>,
+    target_url: &str,
+) -> Option<String> {
     let key = normalize_cookie_key(target_url);
     if key.is_empty() {
         return None;
@@ -111,7 +116,7 @@ fn lookup_cookie_for_url(cookies: &HashMap<String, String>, target_url: &str) ->
     best.map(|(_, v)| v.to_string())
 }
 
-fn is_allowed_audio_content_type(ct_lower: &str) -> bool {
+pub(super) fn is_allowed_audio_content_type(ct_lower: &str) -> bool {
     ct_lower.is_empty()
         || ct_lower.starts_with("audio/")
         || matches!(
@@ -124,7 +129,7 @@ fn is_allowed_audio_content_type(ct_lower: &str) -> bool {
         )
 }
 
-async fn read_audio_sniff_prefix(
+pub(super) async fn read_audio_sniff_prefix(
     resp: &mut reqwest::Response,
     max_sniff_bytes: usize,
 ) -> DomainResult<Bytes> {

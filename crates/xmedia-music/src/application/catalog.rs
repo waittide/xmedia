@@ -11,7 +11,7 @@ use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::dto::{
     AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BookmarkDto, CatalogStatsDto,
-    HomeOverviewDto, PlayQueueDto, SearchResultDto, TrackDto,
+    HomeOverviewDto, OnlineTrackedTrackDto, PlayQueueDto, SearchResultDto, TrackDto,
 };
 use crate::application::ports::{LyricsResolverPort, MusicStoragePort};
 use crate::domain::catalog::{
@@ -73,6 +73,14 @@ impl MusicCatalogService {
                     .get(&t.id)
                     .map(|(c, ts)| (*c, Some(*ts)))
                     .unwrap_or((0, None));
+                let online_tracking =
+                    t.source
+                        .online_tracking_info()
+                        .map(|(source_id, item_id, cached)| OnlineTrackedTrackDto {
+                            source_id,
+                            item_id: item_id.to_string(),
+                            cached,
+                        });
                 TrackDto {
                     id: t.id,
                     library_id: t.library_id,
@@ -109,6 +117,7 @@ impl MusicCatalogService {
                     play_count,
                     last_played_at,
                     created_at: t.created_at,
+                    online_tracking,
                 }
             })
             .collect()

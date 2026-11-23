@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
@@ -31,6 +32,13 @@ pub struct UploadBatchResultDto {
 pub struct GlobalScanStatusDto {
     pub scanning: bool,
     pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnlineTrackedTrackDto {
+    pub source_id: Uuid,
+    pub item_id: String,
+    pub cached: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +79,8 @@ pub struct TrackDto {
     pub play_count: u64,
     pub last_played_at: Option<Timestamp>,
     pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_tracking: Option<OnlineTrackedTrackDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

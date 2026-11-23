@@ -500,6 +500,11 @@ async fn handle_authenticated_method(
 
         "stream" => {
             let id = parse_uuid_param(params, "id")?;
+            state
+                .services
+                .online
+                .ensure_tracked_track_cached(TrackId(id))
+                .await?;
             let spec = parse_http_range_spec(headers);
             let resolved = state
                 .services
@@ -517,6 +522,11 @@ async fn handle_authenticated_method(
 
         "download" => {
             let id = parse_uuid_param(params, "id")?;
+            state
+                .services
+                .online
+                .ensure_tracked_track_cached(TrackId(id))
+                .await?;
             let spec = parse_http_range_spec(headers);
             let resolved = state
                 .services
@@ -558,6 +568,11 @@ async fn handle_authenticated_method(
 
         "getLyricsBySongId" => {
             let id = parse_uuid_param(params, "id")?;
+            let _ = state
+                .services
+                .online
+                .ensure_tracked_lyrics_cached(TrackId(id))
+                .await;
             let lyr = state
                 .services
                 .catalog

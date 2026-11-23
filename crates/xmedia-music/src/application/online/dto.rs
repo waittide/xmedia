@@ -126,3 +126,38 @@ pub struct MusicSourceTestPayload {
 
 pub type MusicSourceTestReportDto =
     SourceTestReportDto<MusicSourceTestMode, MusicSourceTestPayload>;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackOnlineMusicInput {
+    pub source_id: Uuid,
+    #[serde(default)]
+    pub track_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: Option<String>,
+    #[serde(default)]
+    pub duration_secs: Option<u32>,
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    #[serde(default)]
+    pub cover_id: Option<String>,
+    #[serde(default)]
+    pub url_id: Option<String>,
+    #[serde(default)]
+    pub lyric_id: Option<String>,
+    #[serde(default)]
+    pub play_url: Option<String>,
+    #[serde(default)]
+    pub detail_url: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackOnlineMusicBatchInput {
+    pub tracks: Vec<TrackOnlineMusicInput>,
+}

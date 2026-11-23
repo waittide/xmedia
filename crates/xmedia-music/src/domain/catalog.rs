@@ -1,5 +1,6 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 pub use xmedia_core::domain::media::{PagedResult, SortOrder};
@@ -90,6 +91,32 @@ pub struct ReplayGain {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnlineTrackedTrackSource {
+    #[serde(default)]
+    pub storage_key: Option<String>,
+    pub source_id: Uuid,
+    pub item_id: String,
+    #[serde(default)]
+    pub detail_url: Option<String>,
+    #[serde(default)]
+    pub play_url: Option<String>,
+    #[serde(default)]
+    pub url_id: Option<String>,
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    #[serde(default)]
+    pub cover_id: Option<String>,
+    #[serde(default)]
+    pub lyric_id: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(default)]
+    pub sidecar_lrc_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrackSource {
     Managed {
@@ -103,6 +130,7 @@ pub enum TrackSource {
         #[serde(default)]
         sidecar_lrc_path: Option<String>,
     },
+    OnlineTracked(Box<OnlineTrackedTrackSource>),
 }
 
 impl TrackSource {
@@ -110,7 +138,57 @@ impl TrackSource {
         match self {
             Self::Managed { storage_key, .. } => storage_key.as_str(),
             Self::LocalPath { relative_path, .. } => relative_path.as_str(),
+            Self::OnlineTracked(info) => {
+                info.storage_key.as_deref().unwrap_or(info.item_id.as_str())
+            }
         }
+    }
+
+    pub fn is_online_tracked(&self) -> bool {
+        matches!(self, Self::OnlineTracked(_))
+    }
+
+    pub fn is_cached(&self) -> bool {
+        match self {
+            Self::Managed { .. } | Self::LocalPath { .. } => true,
+            Self::OnlineTracked(info) => info.cached && info.storage_key.is_some(),
+        }
+    }
+
+    pub fn online_tracking_info(&self) -> Option<(Uuid, &str, bool)> {
+        match self {
+            Self::OnlineTracked(info) => Some((
+                info.source_id,
+                info.item_id.as_str(),
+                info.cached && info.storage_key.is_some(),
+            )),
+            _ => None,
+        }
+    }
+
+    pub fn managed_file_keys(&self) -> Vec<&str> {
+        let mut keys = Vec::new();
+        match self {
+            Self::Managed {
+                storage_key,
+                sidecar_lrc_key,
+            } => {
+                keys.push(storage_key.as_str());
+                if let Some(lrc) = sidecar_lrc_key {
+                    keys.push(lrc.as_str());
+                }
+            }
+            Self::OnlineTracked(info) => {
+                if let Some(ref key) = info.storage_key {
+                    keys.push(key.as_str());
+                }
+                if let Some(ref lrc) = info.sidecar_lrc_key {
+                    keys.push(lrc.as_str());
+                }
+            }
+            Self::LocalPath { .. } => {}
+        }
+        keys
     }
 }
 

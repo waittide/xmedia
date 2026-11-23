@@ -401,6 +401,11 @@ async fn get_track_lyrics(
     WebAuth(_user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<StructuredLyrics>> {
+    let _ = state
+        .services
+        .online
+        .ensure_tracked_lyrics_cached(TrackId(id))
+        .await;
     Ok(Json(
         state
             .services
@@ -417,6 +422,11 @@ async fn stream_track(
     Query(p): Query<StreamParams>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    state
+        .services
+        .online
+        .ensure_tracked_track_cached(TrackId(id))
+        .await?;
     let spec = parse_http_range_spec(&headers);
     let resolved = state
         .services
@@ -438,6 +448,11 @@ async fn download_track(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    state
+        .services
+        .online
+        .ensure_tracked_track_cached(TrackId(id))
+        .await?;
     let spec = parse_http_range_spec(&headers);
     let resolved = state
         .services

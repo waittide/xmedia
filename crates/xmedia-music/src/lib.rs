@@ -26,7 +26,7 @@ use application::MusicServices;
 use application::catalog::MusicCatalogService;
 use application::collection::MusicCollectionService;
 use application::ingest::MusicIngestService;
-use application::online::{MusicOnlineService, MusicOnlineSourceDirectory};
+use application::online::{MusicOnlineService, MusicOnlineSourceDirectory, MusicTrackingDeps};
 use application::streaming::MusicStreamingService;
 use infra::audio_probe::LoftyAudioProbe;
 use infra::lyrics::HybridLyricsResolver;
@@ -78,34 +78,34 @@ pub fn init_music_module_with_allow_private_ips(
     let lyrics = Arc::new(HybridLyricsResolver);
     let transcoder = Arc::new(FfmpegAudioTranscoder::new(ffmpeg));
 
-    let catalog = MusicCatalogService::new(
+    let catalog = Arc::new(MusicCatalogService::new(
         libraries_repo.clone(),
         catalog_repo.clone(),
         collections_repo.clone(),
         storage.clone(),
         lyrics,
-    );
+    ));
     let collection = Arc::new(MusicCollectionService::new(
         catalog_repo.clone(),
         collections_repo.clone(),
-        catalog.clone(),
+        (*catalog).clone(),
     ));
     let ingest = Arc::new(MusicIngestService::new(
         libraries_repo.clone(),
         catalog_repo.clone(),
         collections_repo,
-        catalog.clone(),
+        (*catalog).clone(),
         storage.clone(),
         scanner,
-        probe,
-        events,
+        probe.clone(),
+        events.clone(),
     ));
     library_service.register_lifecycle(ingest.clone());
 
     let streaming = Arc::new(MusicStreamingService::new(
-        libraries_repo,
-        catalog_repo,
-        storage,
+        libraries_repo.clone(),
+        catalog_repo.clone(),
+        storage.clone(),
         transcoder,
     ));
 
@@ -116,11 +116,18 @@ pub fn init_music_module_with_allow_private_ips(
         },
         Duration::from_secs(45),
     );
-    let online = Arc::new(MusicOnlineService::with_engine(
-        sources_repo.clone(),
-        engine,
-        allow_private_ips,
-    ));
+    let online = Arc::new(
+        MusicOnlineService::with_engine(sources_repo.clone(), engine, allow_private_ips)
+            .with_tracking(MusicTrackingDeps {
+                libraries: libraries_repo,
+                catalog_repo,
+                catalog_service: catalog.clone(),
+                ingest_service: ingest.clone(),
+                storage,
+                probe,
+                events,
+            }),
+    );
     let online_items = Arc::new(OnlineLibraryService::new(
         MediaKind::Music,
         online_items_repo,
@@ -128,7 +135,7 @@ pub fn init_music_module_with_allow_private_ips(
     ));
 
     Ok(MusicServices::new(
-        Arc::new(catalog),
+        catalog,
         collection,
         ingest,
         streaming,
