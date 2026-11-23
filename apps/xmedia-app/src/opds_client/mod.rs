@@ -13,9 +13,6 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use helpers::{is_windows_reserved_stem, percent_decode_utf8};
 pub(crate) use helpers::{parse_filename_from_content_disposition, sanitize_filename_component};
 pub(crate) use http::{
     LimitedByteStream, ReadLimitError, apply_proxy_security_headers,

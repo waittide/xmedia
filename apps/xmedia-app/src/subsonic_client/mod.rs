@@ -12,8 +12,6 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-pub use parser::build_subsonic_url;
-
 pub(super) const SUBSONIC_API_VERSION: &str = "1.16.1";
 pub(super) const SUBSONIC_CLIENT_NAME: &str = "XMedia";
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
