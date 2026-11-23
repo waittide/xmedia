@@ -96,22 +96,6 @@ impl XMediaApp {
         .await
     }
 
-    pub async fn connect_and_init_with_cors_origins(
-        cfg: XMediaConfig,
-        allow_permissive_cors: bool,
-        cors_allow_origins: &[String],
-    ) -> anyhow::Result<Self> {
-        Self::connect_and_init_with_options(
-            cfg,
-            XMediaInitOptions {
-                allow_permissive_cors,
-                cors_allow_origins: cors_allow_origins.to_vec(),
-                ..Default::default()
-            },
-        )
-        .await
-    }
-
     pub async fn connect_and_init_with_options(
         cfg: XMediaConfig,
         opts: XMediaInitOptions,

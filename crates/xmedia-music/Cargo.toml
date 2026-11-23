@@ -17,7 +17,6 @@ serde_json.workspace = true
 toasty.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-url.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 xmedia-core.workspace = true

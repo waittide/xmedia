@@ -202,8 +202,10 @@ pub(crate) fn wrap_full_xhtml_document(
 
 pub(super) fn sanitize_xhtml_fragment(raw: &str) -> String {
     static VOID_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)<(?P<tag>br|hr|img|meta|link|col|input) (?P<attrs>[^>]*?)(?P<slash>/?)>")
-            .expect("valid void tag regex")
+        Regex::new(
+            r"(?i)<(?P<tag>br|hr|img|meta|link|col|input)(?P<attrs>\s+[^>]*?)?(?P<slash>/?)>",
+        )
+        .expect("valid void tag regex")
     });
     let replaced_entities = raw.replace("&nbsp;", "&#160;");
     VOID_TAG_RE
@@ -378,4 +380,15 @@ pub(crate) fn render_book_jacket_xhtml(
         l = escape(lang),
         t = escape(meta.title.trim()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_xhtml_fragment;
+
+    #[test]
+    fn sanitize_xhtml_fragment_closes_bare_and_attributed_void_tags() {
+        let out = sanitize_xhtml_fragment(r#"<p>a<br>b<hr><img src="a.jpg"><br/></p>"#);
+        assert_eq!(out, r#"<p>a<br/>b<hr/><img src="a.jpg"/><br/></p>"#);
+    }
 }

@@ -16,3 +16,4 @@
 *.key
 /apps/xmedia-app/target
 /apps/xmedia-app/gen
+/e2e/live_verification_report.*

@@ -60,13 +60,6 @@ impl XMediaToolApp {
         .await
     }
 
-    pub async fn init_with_providers(
-        cfg: XMediaToolConfig,
-        providers: Vec<Arc<dyn ScraperProviderPort>>,
-    ) -> anyhow::Result<Self> {
-        Self::init_with_providers_and_cors(cfg, providers, &[]).await
-    }
-
     pub async fn init_with_providers_and_cors(
         cfg: XMediaToolConfig,
         providers: Vec<Arc<dyn ScraperProviderPort>>,

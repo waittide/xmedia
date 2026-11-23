@@ -14,13 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::gateway::RunningGateway;
 
-pub struct GatewayUrlState(pub String);
 struct GatewayLifecycleState(Mutex<Option<RunningGateway>>);
-
-#[tauri::command]
-fn get_local_gateway_url(state: tauri::State<'_, GatewayUrlState>) -> String {
-    state.0.clone()
-}
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -92,7 +86,6 @@ pub fn run() {
     }
 
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_local_gateway_url])
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -107,7 +100,6 @@ pub fn run() {
             let gateway_url = gateway.url.clone();
             tracing::info!(url = %gateway_url, "started Tauri standalone local loopback gateway");
 
-            app.manage(GatewayUrlState(gateway_url.clone()));
             app.manage(GatewayLifecycleState(Mutex::new(Some(gateway))));
 
             let external_url: tauri::Url = gateway_url.parse()?;

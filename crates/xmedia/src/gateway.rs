@@ -33,6 +33,7 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{UserId, UserPreferences};
 use xmedia_core::http::{
     AUTH_COOKIE_NAME, ApiResult, attach_cookie, build_clear_cookie, build_session_cookie,
+    error_json_response,
 };
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
@@ -534,16 +535,11 @@ async fn events_stream(
     CoreWebAuth(user): CoreWebAuth,
 ) -> Response {
     let Some(permit) = state.sse_limiter.try_acquire(user.id) else {
-        return (
+        return error_json_response(
             StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({
-                "error": {
-                    "code": "rate_limited",
-                    "message": "too many concurrent event stream connections for this user"
-                }
-            })),
-        )
-            .into_response();
+            "rate_limited",
+            "too many concurrent event stream connections for this user",
+        );
     };
     let rx = state.events.subscribe();
     let initial_scans = state

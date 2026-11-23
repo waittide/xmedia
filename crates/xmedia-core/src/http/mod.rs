@@ -59,7 +59,7 @@ struct ErrorBody<'a> {
     message: &'a str,
 }
 
-fn error_json_response(status: StatusCode, code: &'static str, message: &str) -> Response {
+pub fn error_json_response(status: StatusCode, code: &'static str, message: &str) -> Response {
     (
         status,
         Json(ErrorEnvelope {

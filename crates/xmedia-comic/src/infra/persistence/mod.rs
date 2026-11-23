@@ -68,7 +68,7 @@ pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResul
     {
         push_single_comic_model::<ComicChapterProgressModel>(
             database_url,
-            "comic_chapter_progress",
+            "comic_chapter_progresses",
         )
         .await?;
     }

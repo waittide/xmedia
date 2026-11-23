@@ -7,13 +7,18 @@ Unified self-hosted multi-user media server & web workspace built in Rust — br
 ```text
 xmedia/
 ├── crates/
-│   ├── xmedia-core/    # Shared auth (JWT/Cookie/Basic/ApiKey/Subsonic), libraries, event bus, Range & WebP & FFmpeg toolkit
+│   ├── xmedia-core/    # Shared auth (JWT/Cookie/Basic/ApiKey/Subsonic), libraries, online items, event bus, Range/WebP/FFmpeg
+│   ├── xmedia-source/  # Shared Legado HTTP/SSRF/Cookie/template engine, CSS/JSONPath rules, QuickJS sandbox, concurrency & CRUD
 │   ├── xmedia-book/    # EPUB/PDF/TXT parsers, book_* persistence, /api/v1/book REST + OPDS 1.2 & 2.0
 │   ├── xmedia-comic/   # CBZ/ZIP/EPUB/folder scanner, ComicInfo.xml, comic_* persistence, ETag/304 + OPDS PSE 1.1
 │   ├── xmedia-music/   # Lofty tags/ReplayGain, SYLT/LRC multi-encoding lyrics, FFmpeg audio pipe, OpenSubsonic 1.16.1
-│   ├── xmedia-video/   # FFprobe multi-audio/subtitle probing, fMP4 smart remux/transcode, SRT/ASS→WebVTT, show/season scanner
+│   ├── xmedia-video/   # FFprobe multi-audio/subtitle probing, fMP4 smart remux/transcode, SRT/ASS→WebVTT, Jellyfin API
+│   ├── xmedia-tool/    # Standalone metadata scraper, inspector, EPUB content editor, and batch organizer backend
 │   └── xmedia/         # Feature-gated unified HTTP/WebSocket gateway, rust-embed SPA host, CLI server binary
-└── web/                # Unified Vue 3 + TypeScript + Tailwind v4 SPA (Material Design 3 dynamic color, EPUB/PDF/TXT/Manga/Music/Video players)
+├── apps/
+│   └── xmedia-app/     # Tauri v2 cross-platform desktop/mobile client with embedded local engine & remote OPDS/Subsonic gateway
+├── web/                # Vue 3 + TypeScript + Tailwind v4 SPAs (main workspace SPA + xmedia-tool workbench SPA, Material Design 3)
+└── e2e/                # Dependency-free Node.js API + CDP browser E2E verification suite
 ```
 
 ## Build & Run
@@ -53,3 +58,4 @@ cargo build --release -p xmedia --no-default-features --features book,music
 - **Books OPDS 2.0 (JSON)**: `http://<host>:8090/opds/book/v2`
 - **Comics OPDS 1.2 + PSE 1.1 Page Streaming**: `http://<host>:8090/opds/comic/v1.2`
 - **Music OpenSubsonic 1.16.1**: `http://<host>:8090` (mounts `/rest/*` for Symfonium, Feishin, Supersonic, Amperfy, etc.)
+- **Video Jellyfin-Compatible API**: `http://<host>:8090` (for Infuse, SenPlayer, Swiftfin, etc.)
