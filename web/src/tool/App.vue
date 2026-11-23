@@ -88,7 +88,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     v-if="booting"
-    class="flex h-screen w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] text-xs text-[var(--md-sys-color-on-surface-variant)]"
+    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] text-xs text-[var(--md-sys-color-on-surface-variant)]"
   >
     <LuRefreshCw class="mr-2 h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
     <span>{{ txt.boot.connecting }}</span>
@@ -97,7 +97,7 @@ onBeforeUnmount(() => {
   <!-- Connection Error / Retry State -->
   <div
     v-else-if="bootError || !status"
-    class="flex h-screen w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
+    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
   >
     <div
       class="w-full max-w-sm space-y-4 rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-6 shadow-[var(--md-sys-elevation-3)]"
@@ -139,7 +139,7 @@ onBeforeUnmount(() => {
   <!-- Password Gate when `--password` / `XMEDIA_TOOL_PASSWORD` is configured -->
   <div
     v-else-if="status?.requires_password && !status.authenticated"
-    class="flex h-screen w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
+    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
   >
     <form
       class="w-full max-w-sm space-y-4 rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-6 shadow-[var(--md-sys-elevation-3)]"

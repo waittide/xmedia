@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from 'vue'
 import { LuBookOpen, LuClapperboard, LuDisc3, LuLayers } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
+import { stripAriaModalOnLeave } from '@/utils/dom'
 import { toolApi } from '../api'
 import { entryCompositeKey } from '../completeness'
 import { useToolText } from '../i18n'
@@ -84,6 +87,13 @@ function handleDesktopBreakpointChange(ev: MediaQueryListEvent): void {
   }
 }
 
+const largeMediaQuery =
+  typeof window !== 'undefined' ? window.matchMedia('(min-width: 1200px)') : null
+const isLargeDesktop = ref(largeMediaQuery ? largeMediaQuery.matches : true)
+function handleLargeBreakpointChange(ev: MediaQueryListEvent): void {
+  isLargeDesktop.value = ev.matches
+}
+
 const viewMode = ref<BrowseViewMode>(loadSavedViewMode())
 const sortField = ref<SortField>(loadSavedSortField())
 const sortDir = ref<SortDir>(
@@ -116,6 +126,7 @@ const selectedPaths = ref<Set<string>>(new Set())
 const inspectingPath = ref<string | null>(null)
 const activeDetail = ref<MediaFileDetail | null>(null)
 const inspectorRef = ref<InstanceType<typeof MetadataInspectorDrawerType> | null>(null)
+const inspectorOverlayRef = ref<HTMLElement | null>(null)
 const scrapeWorkbenchRef = ref<InstanceType<typeof ScrapeWorkbenchViewType> | null>(null)
 const scrapeWorkbenchActive = ref(false)
 const scrapeWorkbenchPaths = ref<string[] | null>(null)
@@ -451,15 +462,38 @@ function exitSettings(): void {
   syncHashFromState()
 }
 
+const escapeStack = useEscapeStack()
+const inspectorVisible = computed(
+  () =>
+    (activeNav.value === 'home' || activeNav.value === 'items') &&
+    Boolean(activeDetail.value || loadingInspector.value),
+)
+const inspectorModalActive = computed(() => !isLargeDesktop.value && inspectorVisible.value)
+
+async function closeInspectorOverlay(): Promise<void> {
+  if (!(await confirmActiveEditorClean())) return
+  clearActiveDetail()
+}
+
+useFocusTrap(inspectorOverlayRef, () => inspectorModalActive.value)
+escapeStack.register(
+  () => inspectorModalActive.value,
+  () => {
+    void closeInspectorOverlay()
+  },
+)
+
 onMounted(() => {
   window.addEventListener('hashchange', handleHashChange)
   desktopMediaQuery?.addEventListener('change', handleDesktopBreakpointChange)
+  largeMediaQuery?.addEventListener('change', handleLargeBreakpointChange)
   void loadInitial()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', handleHashChange)
   desktopMediaQuery?.removeEventListener('change', handleDesktopBreakpointChange)
+  largeMediaQuery?.removeEventListener('change', handleLargeBreakpointChange)
 })
 </script>
 
@@ -674,13 +708,23 @@ onBeforeUnmount(() => {
             />
           </div>
 
-          <Transition name="md-sheet-right">
+          <Transition name="md-fade">
             <div
-              v-if="
-                (activeNav === 'home' || activeNav === 'items') &&
-                (activeDetail || loadingInspector)
-              "
-              class="fixed inset-y-0 right-0 z-40 flex w-full max-w-full bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] lg:static lg:z-auto lg:w-auto lg:shadow-none"
+              v-if="inspectorModalActive"
+              class="fixed inset-0 z-[var(--z-sheet)] bg-scrim/32 lg:hidden"
+              aria-hidden="true"
+              @mousedown="closeInspectorOverlay"
+            />
+          </Transition>
+
+          <Transition name="md-sheet-right" @before-leave="stripAriaModalOnLeave">
+            <div
+              v-if="inspectorVisible"
+              ref="inspectorOverlayRef"
+              :role="inspectorModalActive ? 'dialog' : undefined"
+              :aria-modal="inspectorModalActive ? 'true' : undefined"
+              :tabindex="inspectorModalActive ? -1 : undefined"
+              class="fixed inset-y-0 right-0 z-[var(--z-sheet)] flex w-full max-w-full bg-surface-container-low shadow-elevation-3 outline-none sm:w-[440px] lg:static lg:z-auto lg:w-auto lg:shadow-none"
             >
               <div
                 v-if="loadingInspector && !activeDetail"

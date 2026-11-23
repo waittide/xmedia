@@ -95,42 +95,42 @@ defineExpose({
             class="flex h-dvh w-full max-w-xl flex-col overflow-hidden rounded-corner-none bg-surface-container-high text-on-surface shadow-elevation-3 outline-none sm:h-auto sm:max-h-[75dvh] sm:rounded-corner-xl"
           >
             <!-- MD3 Search View Input Header -->
-            <div
-              class="safe-pt flex h-14 shrink-0 items-center gap-2 border-b border-outline-variant px-2 sm:px-3"
-            >
-              <MdIconButton
-                size="sm"
-                :icon="LuArrowLeft"
-                :aria-label="t('common.close')"
-                @click="emit('close')"
-              />
+            <div class="safe-pt shrink-0 border-b border-outline-variant">
+              <div class="flex h-14 items-center gap-2 px-2 sm:px-3">
+                <MdIconButton
+                  size="sm"
+                  :icon="LuArrowLeft"
+                  :aria-label="t('common.close')"
+                  @click="emit('close')"
+                />
 
-              <input
-                ref="inputRef"
-                :value="modelValue"
-                type="search"
-                :placeholder="placeholder || t('common.search')"
-                :aria-label="ariaLabel || placeholder || t('common.search')"
-                class="text-body-large min-w-0 flex-1 bg-transparent text-on-surface placeholder:text-on-surface-variant caret-primary outline-none [&::-webkit-search-cancel-button]:hidden"
-                @input="onInput"
-                @keydown="onKeydown"
-              />
+                <input
+                  ref="inputRef"
+                  :value="modelValue"
+                  type="search"
+                  :placeholder="placeholder || t('common.search')"
+                  :aria-label="ariaLabel || placeholder || t('common.search')"
+                  class="text-body-large min-w-0 flex-1 bg-transparent text-on-surface placeholder:text-on-surface-variant caret-primary outline-none [&::-webkit-search-cancel-button]:hidden"
+                  @input="onInput"
+                  @keydown="onKeydown"
+                />
 
-              <LuLoader2
-                v-if="loading"
-                class="h-4 w-4 shrink-0 animate-spin text-primary"
-                aria-hidden="true"
-              />
+                <LuLoader2
+                  v-if="loading"
+                  class="h-4 w-4 shrink-0 animate-spin text-primary"
+                  aria-hidden="true"
+                />
 
-              <MdIconButton
-                v-if="modelValue.length > 0"
-                size="sm"
-                :icon="LuX"
-                :aria-label="t('common.clear')"
-                @click="onClear"
-              />
+                <MdIconButton
+                  v-if="modelValue.length > 0"
+                  size="sm"
+                  :icon="LuX"
+                  :aria-label="t('common.clear')"
+                  @click="onClear"
+                />
 
-              <slot name="header-actions" />
+                <slot name="header-actions" />
+              </div>
             </div>
 
             <!-- Scrollable Body: History, Results, and Online Quick Actions -->
