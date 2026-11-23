@@ -421,7 +421,10 @@ async fn online_poster_proxy(
     Ok(resp)
 }
 
-fn build_stream_response(payload: ProxyStreamPayload, has_query_token: bool) -> Response {
+pub(crate) fn build_stream_response(
+    payload: ProxyStreamPayload,
+    has_query_token: bool,
+) -> Response {
     let status = StatusCode::from_u16(payload.status).unwrap_or(StatusCode::OK);
     let mut resp = Response::new(Body::from_stream(payload.stream));
     *resp.status_mut() = status;
@@ -458,7 +461,7 @@ fn build_stream_response(payload: ProxyStreamPayload, has_query_token: bool) -> 
     resp
 }
 
-fn build_416_response(content_range: Option<String>) -> Response {
+pub(crate) fn build_416_response(content_range: Option<String>) -> Response {
     let mut resp = Response::new(Body::empty());
     *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
     if let Some(ref cr) = content_range

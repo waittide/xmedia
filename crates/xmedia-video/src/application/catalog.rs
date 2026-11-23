@@ -817,4 +817,26 @@ impl VideoCatalogService {
     ) -> DomainResult<BinaryPayload> {
         self.storage.read_poster(key, max_size).await
     }
+
+    pub(crate) async fn find_raw_video(
+        &self,
+        video_id: VideoId,
+    ) -> DomainResult<Option<VideoItem>> {
+        Ok(self
+            .catalog
+            .find_video_by_id(video_id)
+            .await?
+            .filter(|v| !v.is_missing))
+    }
+
+    pub(crate) async fn find_raw_show(&self, show_id: ShowId) -> DomainResult<Option<VideoShow>> {
+        self.catalog.find_show_by_id(show_id).await
+    }
+
+    pub(crate) async fn list_raw_shows(
+        &self,
+        filter: &ShowQueryFilter,
+    ) -> DomainResult<Vec<VideoShow>> {
+        self.catalog.list_shows(filter).await
+    }
 }

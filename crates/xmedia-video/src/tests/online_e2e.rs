@@ -4355,3 +4355,614 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
 
     srv_handle.abort();
 }
+
+#[tokio::test]
+async fn jellyfin_api_local_and_online_tracked_video_e2e() {
+    use bytes::Bytes;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("xmedia_video_jellyfin.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_video_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_video_schema(&mut db, &db_url).await.unwrap();
+
+    let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
+    let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let events = Arc::new(BroadcastEventHub::default());
+    let security = Arc::new(SecurityManager::new("video-jf-secret"));
+    let tokens = Arc::new(JwtTokenService::new("video-jf-secret", 3600));
+
+    let auth_svc = Arc::new(AuthService::new(
+        users_repo,
+        security,
+        tokens,
+        lifecycles.clone(),
+    ));
+    let library_svc = Arc::new(LibraryService::new(
+        libraries_repo.clone(),
+        events.clone(),
+        lifecycles,
+    ));
+    let video_services = init_video_module_with_allow_private_ips(
+        db,
+        tmp.path(),
+        FfmpegToolkit::new("__missing_ffmpeg__", "__missing_ffprobe__"),
+        libraries_repo,
+        &library_svc,
+        events,
+        true,
+    )
+    .unwrap();
+
+    let admin_session = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "adminpassword123".into(),
+        })
+        .await
+        .unwrap();
+    let admin = auth_svc
+        .authenticate_jwt(&admin_session.token)
+        .await
+        .unwrap();
+
+    // 1. Upload one local movie into managed library
+    let local_mp4 = fake_mp4_payload();
+    let uploaded = video_services
+        .ingest
+        .upload_files(
+            &admin,
+            vec![crate::application::dto::VideoUploadItem {
+                filename: "Local Classic (2020).mp4".into(),
+                bytes: Bytes::from(local_mp4.clone()),
+            }],
+        )
+        .await
+        .unwrap();
+    let local_movie_id = uploaded.uploaded_videos[0].id;
+
+    let state = VideoHttpState::new(auth_svc, library_svc, video_services);
+    let app = Router::new()
+        .nest("/api/v1/video", rest_router(state.clone()))
+        .nest("/jellyfin", crate::http::jellyfin_router(state));
+
+    // 2. Start mock upstream video server (1 MP4 movie + 1 HLS multi-episode show)
+    let ts_seg = Arc::new(fake_ts_segment());
+    let ts_for_srv = Arc::clone(&ts_seg);
+    let online_mp4 = Arc::new(fake_mp4_payload());
+    let online_mp4_srv = Arc::clone(&online_mp4);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+    let base_srv = base_url.clone();
+
+    let mock_router = Router::new()
+        .route(
+            "/api.php/provide/vod/",
+            get(move |Query(q): Query<AppleCmsQuery>| {
+                let b = base_srv.clone();
+                async move {
+                    let ids = q.ids.unwrap_or_default();
+                    let list = if ids == "m1" {
+                        serde_json::json!([{
+                            "vod_id": "m1",
+                            "vod_name": "在线电影MP4",
+                            "vod_pic": format!("{b}/poster.png"),
+                            "vod_year": "2025",
+                            "vod_area": "动作",
+                            "vod_play_from": "mp4",
+                            "vod_play_url": format!("正片${b}/direct.mp4")
+                        }])
+                    } else if ids == "s1" {
+                        serde_json::json!([{
+                            "vod_id": "s1",
+                            "vod_name": "在线追更番剧",
+                            "vod_pic": format!("{b}/poster.png"),
+                            "vod_year": "2026",
+                            "vod_area": "动画",
+                            "vod_play_from": "hls",
+                            "vod_play_url": format!("第01集${b}/hls/ep1.m3u8#第02集${b}/hls/ep2.m3u8")
+                        }])
+                    } else {
+                        serde_json::json!([])
+                    };
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        serde_json::json!({ "code": 1, "list": list }).to_string(),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/direct.mp4",
+            get(move || {
+                let d = Arc::clone(&online_mp4_srv);
+                async move {
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "video/mp4")],
+                        (*d).clone(),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/hls/ep1.m3u8",
+            get(|| async {
+                let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n";
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+                    m3u8,
+                )
+            }),
+        )
+        .route(
+            "/hls/seg0.ts",
+            get(move || {
+                let s = Arc::clone(&ts_for_srv);
+                async move {
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "video/mp2t")],
+                        (*s).clone(),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/poster.png",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "image/png")],
+                    PNG_1X1.to_vec(),
+                )
+            }),
+        );
+    let srv_handle = tokio::spawn(async move {
+        axum::serve(listener, mock_router).await.unwrap();
+    });
+
+    // Import source & track both online movie (MP4) and online show (HLS) WITHOUT caching locally
+    let src_spec = serde_json::json!({
+        "sourceName": "JF Mock Source",
+        "sourceUrl": base_url,
+        "apiUrl": format!("{base_url}/api.php/provide/vod/"),
+        "sourceFormat": "applecms_v10",
+        "enabled": true
+    });
+    let (st_imp, imp_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/sources/import",
+        &admin_session.token,
+        Some(serde_json::json!({ "raw_json": src_spec.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st_m1, m1_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/online/track",
+        &admin_session.token,
+        Some(serde_json::json!({ "source_id": source_id, "video_id": "m1" })),
+    )
+    .await;
+    assert_eq!(st_m1, StatusCode::OK);
+    let tracked_movie_id = m1_val["video"]["id"].as_str().unwrap().to_string();
+    let tracked_movie_poster = m1_val["video"]["poster_key"].as_str().unwrap().to_string();
+
+    let (st_s1, s1_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/online/track",
+        &admin_session.token,
+        Some(serde_json::json!({ "source_id": source_id, "video_id": "s1" })),
+    )
+    .await;
+    assert_eq!(st_s1, StatusCode::OK);
+    let tracked_show_id = s1_val["show"]["show"]["id"].as_str().unwrap().to_string();
+    let tracked_ep1_id = s1_val["show"]["seasons"][0]["episodes"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 3. Jellyfin public discovery & AuthenticateByName
+    let pub_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/jellyfin/System/Info/Public")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pub_resp.status(), StatusCode::OK);
+    let pub_json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(pub_resp.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(pub_json["ServerName"], "XMedia");
+    assert_eq!(pub_json["StartupWizardCompleted"], true);
+
+    let auth_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jellyfin/Users/AuthenticateByName")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(
+                    "X-Emby-Authorization",
+                    r#"MediaBrowser Client="Infuse", Device="AppleTV", DeviceId="tv-1", Version="8.0""#,
+                )
+                .body(Body::from(
+                    serde_json::json!({
+                        "Username": "admin",
+                        "Pw": "adminpassword123"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(auth_resp.status(), StatusCode::OK);
+    let auth_json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(auth_resp.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    let jf_token = auth_json["AccessToken"].as_str().unwrap().to_string();
+    let jf_user_id = auth_json["User"]["Id"].as_str().unwrap().to_string();
+    assert!(!jf_token.is_empty());
+
+    // 4. Views -> Items exposes BOTH local movie AND uncached online-tracked movie & show
+    let views_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jellyfin/Users/{jf_user_id}/Views"))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(views_resp.status(), StatusCode::OK);
+    let views_json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(views_resp.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    let lib_id = views_json["Items"][0]["Id"].as_str().unwrap().to_string();
+
+    let items_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/jellyfin/Users/{jf_user_id}/Items?ParentId={lib_id}"
+                ))
+                .header(
+                    header::AUTHORIZATION,
+                    format!(r#"MediaBrowser Client="Swiftfin", Token="{jf_token}""#),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(items_resp.status(), StatusCode::OK);
+    let items_json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(items_resp.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(items_json["TotalRecordCount"], 3);
+
+    // 5. Series -> Seasons -> Episodes navigation works for online-tracked show
+    let seasons_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jellyfin/Shows/{tracked_show_id}/Seasons"))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(seasons_resp.status(), StatusCode::OK);
+    let seasons_json: serde_json::Value = serde_json::from_slice(
+        &to_bytes(seasons_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(seasons_json["TotalRecordCount"], 1);
+    let season1_id = seasons_json["Items"][0]["Id"].as_str().unwrap().to_string();
+
+    let eps_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/jellyfin/Shows/{tracked_show_id}/Episodes?SeasonId={season1_id}"
+                ))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eps_resp.status(), StatusCode::OK);
+    let eps_json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(eps_resp.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(eps_json["TotalRecordCount"], 2);
+
+    // 6. Local movie PlaybackInfo + Range stream
+    let local_pb_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jellyfin/Items/{local_movie_id}/PlaybackInfo"))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(local_pb_resp.status(), StatusCode::OK);
+    let local_pb: serde_json::Value = serde_json::from_slice(
+        &to_bytes(local_pb_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let local_stream_url = local_pb["MediaSources"][0]["DirectStreamUrl"]
+        .as_str()
+        .unwrap();
+    let local_stream_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jellyfin{local_stream_url}"))
+                .header(header::RANGE, "bytes=0-15")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(local_stream_resp.status(), StatusCode::PARTIAL_CONTENT);
+    let local_chunk = to_bytes(local_stream_resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(&local_chunk[..16], &local_mp4[..16]);
+
+    // 7. Uncached tracked MP4 movie PlaybackInfo + transparent proxy stream
+    let mp4_pb_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jellyfin/Items/{tracked_movie_id}/PlaybackInfo"))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mp4_pb_resp.status(), StatusCode::OK);
+    let mp4_pb: serde_json::Value = serde_json::from_slice(
+        &to_bytes(mp4_pb_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mp4_stream_url = mp4_pb["MediaSources"][0]["DirectStreamUrl"]
+        .as_str()
+        .unwrap();
+    let mp4_stream_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jellyfin{mp4_stream_url}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mp4_stream_resp.status(), StatusCode::OK);
+    let mp4_chunk = to_bytes(mp4_stream_resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(mp4_chunk.as_ref(), online_mp4.as_slice());
+
+    // 8. Uncached tracked HLS episode PlaybackInfo -> rewritten master.m3u8 -> proxied TS segment
+    let hls_pb_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jellyfin/Items/{tracked_ep1_id}/PlaybackInfo"))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hls_pb_resp.status(), StatusCode::OK);
+    let hls_pb: serde_json::Value = serde_json::from_slice(
+        &to_bytes(hls_pb_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let hls_url = hls_pb["MediaSources"][0]["TranscodingUrl"]
+        .as_str()
+        .unwrap();
+    assert!(hls_url.contains("/hls/master.m3u8"));
+
+    let m3u8_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jellyfin{hls_url}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(m3u8_resp.status(), StatusCode::OK);
+    let m3u8_text = String::from_utf8(
+        to_bytes(m3u8_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let seg_rel_line = m3u8_text
+        .lines()
+        .find(|l| l.starts_with("proxy?url="))
+        .expect("rewritten relative proxy segment URL");
+
+    let seg_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/jellyfin/Videos/{}/hls/{seg_rel_line}",
+                    tracked_ep1_id.replace('-', "")
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(seg_resp.status(), StatusCode::OK);
+    let seg_bytes = to_bytes(seg_resp.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(seg_bytes.as_ref(), ts_seg.as_slice());
+
+    // 9. Poster image allows matching ?tag= without auth, rejects anonymous without tag
+    let unauth_img = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jellyfin/Items/{tracked_movie_id}/Images/Primary"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauth_img.status(), StatusCode::UNAUTHORIZED);
+
+    let tagged_img = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/jellyfin/Items/{tracked_movie_id}/Images/Primary?tag={tracked_movie_poster}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tagged_img.status(), StatusCode::OK);
+
+    // 10. Two-way progress & favorite sync between Jellyfin and XMedia REST
+    let prog_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jellyfin/Sessions/Playing/Progress")
+                .header("X-Emby-Token", &jf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "ItemId": tracked_ep1_id,
+                        "PositionTicks": 1_250_000_000i64
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prog_resp.status(), StatusCode::NO_CONTENT);
+
+    let fav_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/jellyfin/Users/{jf_user_id}/FavoriteItems/{tracked_show_id}"
+                ))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fav_resp.status(), StatusCode::OK);
+
+    // Verify synced state in Jellyfin /Items/Resume and XMedia REST API
+    let resume_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jellyfin/Users/{jf_user_id}/Items/Resume"))
+                .header("X-Emby-Token", &jf_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resume_resp.status(), StatusCode::OK);
+    let resume_json: serde_json::Value = serde_json::from_slice(
+        &to_bytes(resume_resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(resume_json["TotalRecordCount"], 1);
+    assert_eq!(
+        resume_json["Items"][0]["UserData"]["PlaybackPositionTicks"],
+        1_250_000_000i64
+    );
+
+    let (st_native, native_detail) = send_json_with_method(
+        &app,
+        "GET",
+        &format!("/api/v1/video/videos/{tracked_ep1_id}"),
+        &admin_session.token,
+        None,
+    )
+    .await;
+    assert_eq!(st_native, StatusCode::OK);
+    assert_eq!(native_detail["video"]["progress"]["position_secs"], 125.0);
+
+    let (st_native_show, native_show) = send_json_with_method(
+        &app,
+        "GET",
+        &format!("/api/v1/video/shows/{tracked_show_id}"),
+        &admin_session.token,
+        None,
+    )
+    .await;
+    assert_eq!(st_native_show, StatusCode::OK);
+    assert_eq!(native_show["show"]["is_favorite"], true);
+
+    srv_handle.abort();
+}

@@ -1,3 +1,4 @@
+pub mod jellyfin;
 pub mod online;
 pub mod rest;
 pub mod state;
@@ -13,6 +14,10 @@ use state::VideoHttpState;
 
 pub fn rest_router(state: VideoHttpState) -> Router {
     rest::router().merge(online::router()).with_state(state)
+}
+
+pub fn jellyfin_router(state: VideoHttpState) -> Router {
+    jellyfin::router().with_state(state)
 }
 
 pub(crate) fn into_video_http_response(

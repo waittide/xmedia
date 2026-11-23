@@ -355,8 +355,12 @@ impl XMediaApp {
                 video_services,
             );
             let video_router = xmedia_video::http::rest_router(video_state.clone())
-                .merge(seeds::video_seed_router(video_state));
+                .merge(seeds::video_seed_router(video_state.clone()));
             api_v1 = api_v1.nest("/video", video_router);
+            root_protocols = root_protocols.nest(
+                "/jellyfin",
+                xmedia_video::http::jellyfin_router(video_state),
+            );
         }
 
         let _ = (db, opts.allow_private_ips, opts.seed_sources);
