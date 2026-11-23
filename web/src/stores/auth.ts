@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { ApiRequestError, api, setStoredToken } from '@/api/client'
+import { ApiRequestError, api } from '@/api/client'
 import { setHomeCacheUser } from '@/config/homeCache'
 import { resetAllSessionState } from '@/stores/sessionReset'
 import { useThemeStore } from '@/stores/theme'
@@ -44,8 +44,6 @@ export const useAuthStore = defineStore('auth', () => {
             if (err instanceof ApiRequestError && (err.status === 401 || err.status === 403)) {
               if (user.value !== null) {
                 clearLocalSession()
-              } else {
-                setStoredToken(null)
               }
             }
           }
@@ -87,7 +85,6 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function clearLocalSession(): void {
-    setStoredToken(null)
     user.value = null
     setHomeCacheUser(null)
     resetAllSessionState()

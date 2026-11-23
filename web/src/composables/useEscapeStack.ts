@@ -35,7 +35,7 @@ function maybeDetachListener(): void {
   listenerAttached = false
 }
 
-export function pushEscapeHandler(handler: () => boolean | void): () => void {
+function pushEscapeHandler(handler: () => boolean | void): () => void {
   ensureListener()
   const id = Symbol('escape-layer')
   stack.push({ id, handler })

@@ -85,14 +85,6 @@ function clearLegacyToolToken(): void {
 
 clearLegacyToolToken()
 
-export function getToolToken(): string | null {
-  return null
-}
-
-export function setToolToken(_token: string | null): void {
-  clearLegacyToolToken()
-}
-
 interface ToolRequestError extends Error {
   status?: number
   streamRouteMissing?: boolean
@@ -122,7 +114,6 @@ function createToolHttpError(
   checkStreamRouteMissing = false,
 ): ToolRequestError {
   if (status === 401 && path !== '/auth/unlock') {
-    setToolToken(null)
     window.dispatchEvent(new CustomEvent('xmedia-tool:unauthorized'))
   }
   let errMsg = `HTTP ${status}`

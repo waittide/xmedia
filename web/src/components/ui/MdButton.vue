@@ -85,8 +85,33 @@ const iconSizeClass = computed(() =>
   props.size === 'sm' ? 'h-4 w-4 shrink-0' : 'h-[18px] w-[18px] shrink-0',
 )
 
-function onLinkClick(ev: MouseEvent): void {
-  if (isDisabled.value) {
+const rootTag = computed(() => {
+  if (props.to && !isDisabled.value) return RouterLink
+  if (props.href) return 'a'
+  return 'button'
+})
+
+const rootAttrs = computed(() => {
+  if (props.to && !isDisabled.value) {
+    return { to: props.to }
+  }
+  if (props.href) {
+    return {
+      href: isDisabled.value ? undefined : props.href,
+      'aria-disabled': isDisabled.value ? 'true' : undefined,
+      'aria-busy': props.loading ? 'true' : undefined,
+      tabindex: isDisabled.value ? -1 : undefined,
+    }
+  }
+  return {
+    type: isLink.value ? 'button' : props.type,
+    disabled: isDisabled.value,
+    'aria-busy': props.loading ? 'true' : undefined,
+  }
+})
+
+function onRootClick(ev: MouseEvent): void {
+  if (props.href && isDisabled.value) {
     ev.preventDefault()
     ev.stopPropagation()
   }
@@ -94,29 +119,17 @@ function onLinkClick(ev: MouseEvent): void {
 </script>
 
 <template>
-  <RouterLink
-    v-if="to && !isDisabled"
-    :to="to"
-    class="md-state inline-flex cursor-pointer items-center justify-center rounded-corner-full whitespace-nowrap select-none"
-    :class="[sizeClass, variantClass, block ? 'w-full' : '']"
-  >
-    <LuLoader2 v-if="loading" :class="[iconSizeClass, 'animate-spin']" aria-hidden="true" />
-    <slot v-else name="icon">
-      <component :is="icon" v-if="icon" :class="iconSizeClass" aria-hidden="true" />
-    </slot>
-    <slot />
-    <slot name="trailing" />
-  </RouterLink>
-
-  <a
-    v-else-if="href"
-    :href="isDisabled ? undefined : href"
-    :aria-disabled="isDisabled ? 'true' : undefined"
-    :aria-busy="loading ? 'true' : undefined"
-    :tabindex="isDisabled ? -1 : undefined"
+  <component
+    :is="rootTag"
+    v-bind="rootAttrs"
     class="md-state inline-flex items-center justify-center rounded-corner-full whitespace-nowrap select-none"
-    :class="[sizeClass, variantClass, block ? 'w-full' : '', isDisabled ? 'cursor-not-allowed' : 'cursor-pointer']"
-    @click="onLinkClick"
+    :class="[
+      sizeClass,
+      variantClass,
+      block ? 'w-full' : '',
+      isDisabled ? 'cursor-not-allowed' : 'cursor-pointer',
+    ]"
+    @click="onRootClick"
   >
     <LuLoader2 v-if="loading" :class="[iconSizeClass, 'animate-spin']" aria-hidden="true" />
     <slot v-else name="icon">
@@ -124,21 +137,5 @@ function onLinkClick(ev: MouseEvent): void {
     </slot>
     <slot />
     <slot name="trailing" />
-  </a>
-
-  <button
-    v-else
-    :type="isLink ? 'button' : type"
-    :disabled="isDisabled"
-    :aria-busy="loading ? 'true' : undefined"
-    class="md-state inline-flex items-center justify-center rounded-corner-full whitespace-nowrap select-none"
-    :class="[sizeClass, variantClass, block ? 'w-full' : '', isDisabled ? 'cursor-not-allowed' : 'cursor-pointer']"
-  >
-    <LuLoader2 v-if="loading" :class="[iconSizeClass, 'animate-spin']" aria-hidden="true" />
-    <slot v-else name="icon">
-      <component :is="icon" v-if="icon" :class="iconSizeClass" aria-hidden="true" />
-    </slot>
-    <slot />
-    <slot name="trailing" />
-  </button>
+  </component>
 </template>

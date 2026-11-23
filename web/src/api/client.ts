@@ -27,14 +27,6 @@ export function setUnauthorizedHandler(handler: () => void): void {
   unauthorizedHandler = handler
 }
 
-export function getStoredToken(): string | null {
-  return null
-}
-
-export function setStoredToken(_token: string | null): void {
-  clearLegacyStoredToken()
-}
-
 export function withAuthToken(rawUrl: string | null | undefined): string {
   return rawUrl || ''
 }

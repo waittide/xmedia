@@ -62,85 +62,44 @@ const stateClass = computed(() => {
   return 'text-on-surface'
 })
 
-const isInteractive = computed(() => !props.disabled && (props.clickable || Boolean(props.to)))
+const rootTag = computed(() => {
+  if (props.to && !props.disabled) return RouterLink
+  if (props.clickable) return 'button'
+  return 'div'
+})
+
+const rootAttrs = computed(() => {
+  if (props.to && !props.disabled) {
+    return {
+      to: props.to,
+      'aria-current': props.active ? 'page' : undefined,
+    }
+  }
+  if (props.clickable) {
+    return {
+      type: 'button',
+      disabled: props.disabled,
+      'aria-current': props.active ? 'true' : undefined,
+    }
+  }
+  return {}
+})
+
+const rootInteractionClass = computed(() => {
+  if (props.to && !props.disabled) return 'md-state cursor-pointer select-none'
+  if (props.clickable) {
+    return props.disabled ? 'md-state cursor-not-allowed select-none' : 'md-state cursor-pointer select-none'
+  }
+  return ''
+})
 </script>
 
 <template>
-  <RouterLink
-    v-if="to && !disabled"
-    :to="to"
-    :aria-current="active ? 'page' : undefined"
-    class="md-state flex w-full cursor-pointer gap-4 px-4 text-left select-none"
-    :class="[heightClass, stateClass]"
-  >
-    <div v-if="$slots.leading" class="flex shrink-0 items-center justify-center text-on-surface-variant">
-      <slot name="leading" />
-    </div>
-
-    <div class="min-w-0 flex-1">
-      <p v-if="overline" class="text-label-small truncate text-on-surface-variant">
-        {{ overline }}
-      </p>
-      <p class="text-body-large truncate">
-        <slot>{{ headline }}</slot>
-      </p>
-      <p
-        v-if="supportingText || $slots.supporting"
-        class="text-body-medium text-on-surface-variant"
-        :class="resolvedLines === 3 ? 'line-clamp-2' : 'truncate'"
-      >
-        <slot name="supporting">{{ supportingText }}</slot>
-      </p>
-    </div>
-
-    <div v-if="trailingSupportingText || $slots.trailing" class="flex shrink-0 items-center gap-2 text-on-surface-variant">
-      <span v-if="trailingSupportingText" class="text-label-small tabular-nums">
-        {{ trailingSupportingText }}
-      </span>
-      <slot name="trailing" />
-    </div>
-  </RouterLink>
-
-  <button
-    v-else-if="clickable"
-    type="button"
-    :disabled="disabled"
-    :aria-current="active ? 'true' : undefined"
-    class="md-state flex w-full gap-4 px-4 text-left select-none"
-    :class="[heightClass, stateClass, disabled ? 'cursor-not-allowed' : 'cursor-pointer']"
-  >
-    <div v-if="$slots.leading" class="flex shrink-0 items-center justify-center text-on-surface-variant">
-      <slot name="leading" />
-    </div>
-
-    <div class="min-w-0 flex-1">
-      <p v-if="overline" class="text-label-small truncate text-on-surface-variant">
-        {{ overline }}
-      </p>
-      <p class="text-body-large truncate">
-        <slot>{{ headline }}</slot>
-      </p>
-      <p
-        v-if="supportingText || $slots.supporting"
-        class="text-body-medium text-on-surface-variant"
-        :class="resolvedLines === 3 ? 'line-clamp-2' : 'truncate'"
-      >
-        <slot name="supporting">{{ supportingText }}</slot>
-      </p>
-    </div>
-
-    <div v-if="trailingSupportingText || $slots.trailing" class="flex shrink-0 items-center gap-2 text-on-surface-variant">
-      <span v-if="trailingSupportingText" class="text-label-small tabular-nums">
-        {{ trailingSupportingText }}
-      </span>
-      <slot name="trailing" />
-    </div>
-  </button>
-
-  <div
-    v-else
+  <component
+    :is="rootTag"
+    v-bind="rootAttrs"
     class="flex w-full gap-4 px-4 text-left"
-    :class="[heightClass, stateClass, isInteractive ? 'md-state cursor-pointer' : '']"
+    :class="[heightClass, stateClass, rootInteractionClass]"
   >
     <div v-if="$slots.leading" class="flex shrink-0 items-center justify-center text-on-surface-variant">
       <slot name="leading" />
@@ -168,5 +127,5 @@ const isInteractive = computed(() => !props.disabled && (props.clickable || Bool
       </span>
       <slot name="trailing" />
     </div>
-  </div>
+  </component>
 </template>

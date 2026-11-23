@@ -4,7 +4,7 @@ import { LuAlertCircle, LuLock, LuRefreshCw, LuWrench } from 'vue-icons-plus/lu'
 import AppDialogHost from '@/components/ui/AppDialogHost.vue'
 import MdSnackbarHost from '@/components/ui/MdSnackbarHost.vue'
 import { useThemeStore } from '@/stores/theme'
-import { setToolToken, toolApi } from './api'
+import { toolApi } from './api'
 import ToolWorkspace from './components/ToolWorkspace.vue'
 import { useToolText } from './i18n'
 import { useToolTaskStore } from './tasks'
@@ -61,7 +61,6 @@ async function handleUnlock(): Promise<void> {
 
 async function handleLock(): Promise<void> {
   taskStore.resetState()
-  setToolToken(null)
   try {
     await toolApi.lock()
   } catch {

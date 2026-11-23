@@ -71,63 +71,74 @@ const sourceTypeOptions = computed<SelectOption[]>(() => [
   { value: '3', label: bt('sourceEditor.typeFile') },
 ])
 
-const searchRuleFields: RuleFieldDef[] = [
-  { key: 'checkKeyWord', label: '校验关键词', hint: 'checkKeyWord', placeholder: '调试默认搜索词，例如：我的' },
-  { key: 'bookList', label: '书籍列表规则', hint: 'bookList', placeholder: 'CSS / JSONPath / @js 列表选择器', fullWidth: true },
-  { key: 'name', label: '书名规则', hint: 'name' },
-  { key: 'author', label: '作者规则', hint: 'author' },
-  { key: 'bookUrl', label: '详情页 URL', hint: 'bookUrl', fullWidth: true },
-  { key: 'coverUrl', label: '封面 URL', hint: 'coverUrl', fullWidth: true },
-  { key: 'kind', label: '分类 / 标签', hint: 'kind' },
-  { key: 'wordCount', label: '字数规则', hint: 'wordCount' },
-  { key: 'lastChapter', label: '最新章节', hint: 'lastChapter', fullWidth: true },
-  { key: 'intro', label: '简介规则', hint: 'intro', multiline: true, rows: 2, fullWidth: true },
-]
+const searchRuleFields = computed<RuleFieldDef[]>(() => [
+  {
+    key: 'checkKeyWord',
+    label: bt('sourceEditor.fields.checkKeyWord'),
+    hint: 'checkKeyWord',
+    placeholder: bt('sourceEditor.fields.checkKeyWordPlaceholder'),
+  },
+  {
+    key: 'bookList',
+    label: bt('sourceEditor.fields.bookList'),
+    hint: 'bookList',
+    placeholder: bt('sourceEditor.fields.bookListPlaceholder'),
+    fullWidth: true,
+  },
+  { key: 'name', label: bt('sourceEditor.fields.name'), hint: 'name' },
+  { key: 'author', label: bt('sourceEditor.fields.author'), hint: 'author' },
+  { key: 'bookUrl', label: bt('sourceEditor.fields.bookUrl'), hint: 'bookUrl', fullWidth: true },
+  { key: 'coverUrl', label: bt('sourceEditor.fields.coverUrl'), hint: 'coverUrl', fullWidth: true },
+  { key: 'kind', label: bt('sourceEditor.fields.kind'), hint: 'kind' },
+  { key: 'wordCount', label: bt('sourceEditor.fields.wordCount'), hint: 'wordCount' },
+  { key: 'lastChapter', label: bt('sourceEditor.fields.lastChapter'), hint: 'lastChapter', fullWidth: true },
+  { key: 'intro', label: bt('sourceEditor.fields.intro'), hint: 'intro', multiline: true, rows: 2, fullWidth: true },
+])
 
-const exploreRuleFields: RuleFieldDef[] = [
-  { key: 'bookList', label: '书籍列表规则', hint: 'bookList', fullWidth: true },
-  { key: 'name', label: '书名规则', hint: 'name' },
-  { key: 'author', label: '作者规则', hint: 'author' },
-  { key: 'bookUrl', label: '详情页 URL', hint: 'bookUrl', fullWidth: true },
-  { key: 'coverUrl', label: '封面 URL', hint: 'coverUrl', fullWidth: true },
-  { key: 'kind', label: '分类 / 标签', hint: 'kind' },
-  { key: 'wordCount', label: '字数规则', hint: 'wordCount' },
-  { key: 'lastChapter', label: '最新章节', hint: 'lastChapter', fullWidth: true },
-  { key: 'intro', label: '简介规则', hint: 'intro', multiline: true, rows: 2, fullWidth: true },
-]
+const exploreRuleFields = computed<RuleFieldDef[]>(() => [
+  { key: 'bookList', label: bt('sourceEditor.fields.bookList'), hint: 'bookList', fullWidth: true },
+  { key: 'name', label: bt('sourceEditor.fields.name'), hint: 'name' },
+  { key: 'author', label: bt('sourceEditor.fields.author'), hint: 'author' },
+  { key: 'bookUrl', label: bt('sourceEditor.fields.bookUrl'), hint: 'bookUrl', fullWidth: true },
+  { key: 'coverUrl', label: bt('sourceEditor.fields.coverUrl'), hint: 'coverUrl', fullWidth: true },
+  { key: 'kind', label: bt('sourceEditor.fields.kind'), hint: 'kind' },
+  { key: 'wordCount', label: bt('sourceEditor.fields.wordCount'), hint: 'wordCount' },
+  { key: 'lastChapter', label: bt('sourceEditor.fields.lastChapter'), hint: 'lastChapter', fullWidth: true },
+  { key: 'intro', label: bt('sourceEditor.fields.intro'), hint: 'intro', multiline: true, rows: 2, fullWidth: true },
+])
 
-const bookInfoRuleFields: RuleFieldDef[] = [
-  { key: 'init', label: '预处理规则', hint: 'init', multiline: true, rows: 2, fullWidth: true },
-  { key: 'name', label: '书名规则', hint: 'name' },
-  { key: 'author', label: '作者规则', hint: 'author' },
-  { key: 'tocUrl', label: '目录页 URL', hint: 'tocUrl', fullWidth: true },
-  { key: 'coverUrl', label: '封面 URL', hint: 'coverUrl', fullWidth: true },
-  { key: 'kind', label: '分类 / 标签', hint: 'kind' },
-  { key: 'wordCount', label: '字数规则', hint: 'wordCount' },
-  { key: 'lastChapter', label: '最新章节', hint: 'lastChapter' },
-  { key: 'canReName', label: '允许修改书名', hint: 'canReName' },
-  { key: 'intro', label: '简介规则', hint: 'intro', multiline: true, rows: 3, fullWidth: true },
-]
+const bookInfoRuleFields = computed<RuleFieldDef[]>(() => [
+  { key: 'init', label: bt('sourceEditor.fields.init'), hint: 'init', multiline: true, rows: 2, fullWidth: true },
+  { key: 'name', label: bt('sourceEditor.fields.name'), hint: 'name' },
+  { key: 'author', label: bt('sourceEditor.fields.author'), hint: 'author' },
+  { key: 'tocUrl', label: bt('sourceEditor.fields.tocUrl'), hint: 'tocUrl', fullWidth: true },
+  { key: 'coverUrl', label: bt('sourceEditor.fields.coverUrl'), hint: 'coverUrl', fullWidth: true },
+  { key: 'kind', label: bt('sourceEditor.fields.kind'), hint: 'kind' },
+  { key: 'wordCount', label: bt('sourceEditor.fields.wordCount'), hint: 'wordCount' },
+  { key: 'lastChapter', label: bt('sourceEditor.fields.lastChapter'), hint: 'lastChapter' },
+  { key: 'canReName', label: bt('sourceEditor.fields.canReName'), hint: 'canReName' },
+  { key: 'intro', label: bt('sourceEditor.fields.intro'), hint: 'intro', multiline: true, rows: 3, fullWidth: true },
+])
 
-const tocRuleFields: RuleFieldDef[] = [
-  { key: 'chapterList', label: '章节列表规则', hint: 'chapterList', fullWidth: true },
-  { key: 'chapterName', label: '章节名称规则', hint: 'chapterName' },
-  { key: 'chapterUrl', label: '章节链接规则', hint: 'chapterUrl' },
-  { key: 'nextTocUrl', label: '下一页目录 URL', hint: 'nextTocUrl', fullWidth: true },
-  { key: 'updateTime', label: '章节更新时间', hint: 'updateTime' },
-  { key: 'isVolume', label: '卷标判断规则', hint: 'isVolume' },
-  { key: 'isVip', label: 'VIP 章节判断', hint: 'isVip' },
-  { key: 'preUpdateJs', label: '目录前置 JS', hint: 'preUpdateJs', multiline: true, rows: 3, fullWidth: true },
-]
+const tocRuleFields = computed<RuleFieldDef[]>(() => [
+  { key: 'chapterList', label: bt('sourceEditor.fields.chapterList'), hint: 'chapterList', fullWidth: true },
+  { key: 'chapterName', label: bt('sourceEditor.fields.chapterName'), hint: 'chapterName' },
+  { key: 'chapterUrl', label: bt('sourceEditor.fields.chapterUrl'), hint: 'chapterUrl' },
+  { key: 'nextTocUrl', label: bt('sourceEditor.fields.nextTocUrl'), hint: 'nextTocUrl', fullWidth: true },
+  { key: 'updateTime', label: bt('sourceEditor.fields.updateTime'), hint: 'updateTime' },
+  { key: 'isVolume', label: bt('sourceEditor.fields.isVolume'), hint: 'isVolume' },
+  { key: 'isVip', label: bt('sourceEditor.fields.isVip'), hint: 'isVip' },
+  { key: 'preUpdateJs', label: bt('sourceEditor.fields.preUpdateJs'), hint: 'preUpdateJs', multiline: true, rows: 3, fullWidth: true },
+])
 
-const contentRuleFields: RuleFieldDef[] = [
-  { key: 'content', label: '正文内容规则', hint: 'content', multiline: true, rows: 4, fullWidth: true },
-  { key: 'title', label: '章节标题规则', hint: 'title' },
-  { key: 'nextContentUrl', label: '正文下一页 URL', hint: 'nextContentUrl' },
-  { key: 'replaceRegex', label: '正文净化正则', hint: 'replaceRegex', multiline: true, rows: 2, fullWidth: true },
-  { key: 'sourceRegex', label: '资源 sniffing 正则', hint: 'sourceRegex', fullWidth: true },
-  { key: 'webJs', label: 'WebView 注入 JS', hint: 'webJs', multiline: true, rows: 3, fullWidth: true },
-]
+const contentRuleFields = computed<RuleFieldDef[]>(() => [
+  { key: 'content', label: bt('sourceEditor.fields.content'), hint: 'content', multiline: true, rows: 4, fullWidth: true },
+  { key: 'title', label: bt('sourceEditor.fields.title'), hint: 'title' },
+  { key: 'nextContentUrl', label: bt('sourceEditor.fields.nextContentUrl'), hint: 'nextContentUrl' },
+  { key: 'replaceRegex', label: bt('sourceEditor.fields.replaceRegex'), hint: 'replaceRegex', multiline: true, rows: 2, fullWidth: true },
+  { key: 'sourceRegex', label: bt('sourceEditor.fields.sourceRegex'), hint: 'sourceRegex', fullWidth: true },
+  { key: 'webJs', label: bt('sourceEditor.fields.webJs'), hint: 'webJs', multiline: true, rows: 3, fullWidth: true },
+])
 
 interface FormSnapshot {
   bookSourceGroup: string
@@ -203,11 +214,11 @@ function clearFormState(): void {
   form.jsLib = ''
   form.searchUrl = ''
   form.exploreUrl = ''
-  form.ruleSearch = readRuleMap(undefined, searchRuleFields)
-  form.ruleExplore = readRuleMap(undefined, exploreRuleFields)
-  form.ruleBookInfo = readRuleMap(undefined, bookInfoRuleFields)
-  form.ruleToc = readRuleMap(undefined, tocRuleFields)
-  form.ruleContent = readRuleMap(undefined, contentRuleFields)
+  form.ruleSearch = readRuleMap(undefined, searchRuleFields.value)
+  form.ruleExplore = readRuleMap(undefined, exploreRuleFields.value)
+  form.ruleBookInfo = readRuleMap(undefined, bookInfoRuleFields.value)
+  form.ruleToc = readRuleMap(undefined, tocRuleFields.value)
+  form.ruleContent = readRuleMap(undefined, contentRuleFields.value)
 }
 
 function captureSnapshot(): FormSnapshot {
@@ -261,11 +272,11 @@ function hydrateFormFromObject(
   form.jsLib = strVal(obj.jsLib)
   form.searchUrl = strVal(obj.searchUrl)
   form.exploreUrl = strVal(obj.exploreUrl)
-  form.ruleSearch = readRuleMap(obj.ruleSearch, searchRuleFields)
-  form.ruleExplore = readRuleMap(obj.ruleExplore, exploreRuleFields)
-  form.ruleBookInfo = readRuleMap(obj.ruleBookInfo, bookInfoRuleFields)
-  form.ruleToc = readRuleMap(obj.ruleToc, tocRuleFields)
-  form.ruleContent = readRuleMap(obj.ruleContent, contentRuleFields)
+  form.ruleSearch = readRuleMap(obj.ruleSearch, searchRuleFields.value)
+  form.ruleExplore = readRuleMap(obj.ruleExplore, exploreRuleFields.value)
+  form.ruleBookInfo = readRuleMap(obj.ruleBookInfo, bookInfoRuleFields.value)
+  form.ruleToc = readRuleMap(obj.ruleToc, tocRuleFields.value)
+  form.ruleContent = readRuleMap(obj.ruleContent, contentRuleFields.value)
   initialSnapshot = captureSnapshot()
 }
 
@@ -330,11 +341,11 @@ const {
     const sections: Array<
       [string, Record<string, string>, Record<string, string> | undefined, RuleFieldDef[]]
     > = [
-      ['ruleSearch', form.ruleSearch, snap?.ruleSearch, searchRuleFields],
-      ['ruleExplore', form.ruleExplore, snap?.ruleExplore, exploreRuleFields],
-      ['ruleBookInfo', form.ruleBookInfo, snap?.ruleBookInfo, bookInfoRuleFields],
-      ['ruleToc', form.ruleToc, snap?.ruleToc, tocRuleFields],
-      ['ruleContent', form.ruleContent, snap?.ruleContent, contentRuleFields],
+      ['ruleSearch', form.ruleSearch, snap?.ruleSearch, searchRuleFields.value],
+      ['ruleExplore', form.ruleExplore, snap?.ruleExplore, exploreRuleFields.value],
+      ['ruleBookInfo', form.ruleBookInfo, snap?.ruleBookInfo, bookInfoRuleFields.value],
+      ['ruleToc', form.ruleToc, snap?.ruleToc, tocRuleFields.value],
+      ['ruleContent', form.ruleContent, snap?.ruleContent, contentRuleFields.value],
     ]
     for (const [key, map, initMap, fields] of sections) {
       const merged = mergeRuleSection(base[key], map, initMap, fields)

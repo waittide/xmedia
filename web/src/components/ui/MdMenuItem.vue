@@ -64,14 +64,25 @@ function handleClick(ev: MouseEvent): void {
     menuCtx?.close()
   }
 }
+const isRouterLink = computed(() => Boolean(props.to && !props.disabled))
+
+const rootAttrs = computed(() =>
+  isRouterLink.value
+    ? { to: props.to }
+    : {
+        type: 'button',
+        disabled: props.disabled,
+        'aria-disabled': props.disabled ? 'true' : undefined,
+      },
+)
 </script>
 
 <template>
-  <RouterLink
-    v-if="to && !disabled"
-    :to="to"
+  <component
+    :is="isRouterLink ? RouterLink : 'button'"
+    v-bind="rootAttrs"
     role="menuitem"
-    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-md px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
+    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-xs px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
     :class="toneClass"
     @click="handleClick"
   >
@@ -87,29 +98,5 @@ function handleClick(ev: MouseEvent): void {
     <slot name="trailing">
       <LuCheck v-if="selected" class="h-4 w-4 shrink-0" aria-hidden="true" />
     </slot>
-  </RouterLink>
-
-  <button
-    v-else
-    type="button"
-    role="menuitem"
-    :disabled="disabled"
-    :aria-disabled="disabled ? 'true' : undefined"
-    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-md px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
-    :class="toneClass"
-    @click="handleClick"
-  >
-    <slot name="leading">
-      <component :is="icon" v-if="icon" class="h-5 w-5 shrink-0" :class="iconToneClass" aria-hidden="true" />
-    </slot>
-    <span class="min-w-0 flex-1 truncate">
-      <slot>{{ label }}</slot>
-    </span>
-    <span v-if="trailingText" class="text-label-small shrink-0 text-on-surface-variant">
-      {{ trailingText }}
-    </span>
-    <slot name="trailing">
-      <LuCheck v-if="selected" class="h-4 w-4 shrink-0" aria-hidden="true" />
-    </slot>
-  </button>
+  </component>
 </template>
