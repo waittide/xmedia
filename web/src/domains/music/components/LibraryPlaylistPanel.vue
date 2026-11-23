@@ -22,6 +22,7 @@ import {
   MdSkeleton,
   MediaCoverImage,
 } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -50,6 +51,7 @@ const snackbarStore = useSnackbarStore()
 
 const detail = ref<PlaylistDetailDto | null>(null)
 const loading = ref(true)
+const showSkeleton = useDelayedLoading(() => loading.value && !detail.value)
 const error = ref<string | null>(null)
 let loadSeq = 0
 
@@ -169,7 +171,7 @@ watch(() => props.playlistId, loadPlaylist)
     />
 
     <div v-else-if="loading && !detail" class="space-y-6" aria-busy="true">
-      <div class="flex items-center gap-5 rounded-corner-xl bg-surface-container-low p-5">
+      <div v-if="showSkeleton" class="flex items-center gap-5 rounded-corner-xl bg-surface-container-low p-5">
         <MdSkeleton variant="rect" width="7rem" height="7rem" class="shrink-0 rounded-corner-md" />
         <div class="flex-1 space-y-2.5">
           <MdSkeleton variant="text" width="45%" height="1.75rem" />

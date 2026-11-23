@@ -19,6 +19,7 @@ import {
   MdSkeleton,
   MediaCoverImage,
 } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import {
   isAvailabilityBlocked,
   useMergedShelf,
@@ -314,6 +315,8 @@ function handlePlayOnlineContinue(item: MediaItemVM): void {
   }
 }
 
+const showSkeleton = useDelayedLoading(isLoading)
+
 onMounted(loadLocalContinue)
 watch(() => [props.scope, musicStore.catalogVersion], loadLocalContinue)
 
@@ -330,10 +333,12 @@ defineExpose({ refresh })
     />
 
     <div v-else-if="isLoading" class="space-y-4" aria-busy="true">
-      <MdSkeleton variant="rect" height="6.5rem" />
-      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <MdSkeleton v-for="i in 4" :key="`c-sk-${i}`" variant="rect" height="4.5rem" />
-      </div>
+      <template v-if="showSkeleton">
+        <MdSkeleton variant="rect" height="6.5rem" />
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <MdSkeleton v-for="i in 4" :key="`c-sk-${i}`" variant="rect" height="4.5rem" />
+        </div>
+      </template>
     </div>
 
     <MdEmptyState

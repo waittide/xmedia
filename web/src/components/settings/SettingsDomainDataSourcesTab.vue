@@ -9,6 +9,7 @@ import {
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
 import { MdCard, MdChip, MdSwitch } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import BookOnlineSourceManagerPanel from '@/domains/book/components/OnlineSourceManagerPanel.vue'
 import { onlineBookApi, type BookSourceSummaryDto } from '@/domains/book/onlineApi'
 import ComicSourceDebugSheet from '@/domains/comic/components/ComicSourceDebugSheet.vue'
@@ -151,6 +152,8 @@ watch(
   },
 )
 
+const showLoadingSpinner = useDelayedLoading(() => isActiveLoading.value && !isActiveLoaded.value)
+
 watch(
   () => props.focusKind,
   () => {
@@ -214,8 +217,10 @@ watch(
       v-if="isActiveLoading && !isActiveLoaded"
       class="text-body-small flex items-center justify-center gap-2 py-16 text-on-surface-variant"
     >
-      <LuLoader2 class="h-4 w-4 animate-spin" />
-      <span>{{ t('common.loading') }}</span>
+      <template v-if="showLoadingSpinner">
+        <LuLoader2 class="h-4 w-4 animate-spin" />
+        <span>{{ t('common.loading') }}</span>
+      </template>
     </div>
 
     <!-- Basic Mode (Progressive Disclosure Default) -->

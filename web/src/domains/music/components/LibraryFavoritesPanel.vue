@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { LuDisc3, LuHeart, LuPlay, LuShuffle } from 'vue-icons-plus/lu'
 import { MediaErrorState, MediaItemCard } from '@/components/domain'
 import { MdButton, MdChip, MdEmptyState, MdSkeleton } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import {
   isAvailabilityBlocked,
   onlineItemsApi,
@@ -153,6 +154,17 @@ async function handleUnfavoriteOnline(item: MediaItemVM): Promise<void> {
   }
 }
 
+const showOnlineSkeleton = useDelayedLoading(
+  () => onlineFavShelf.loading.value && onlineFavShelf.items.value.length === 0,
+)
+const showLocalSkeleton = useDelayedLoading(
+  () =>
+    loadingLocal.value &&
+    activeSubTab.value !== 'online' &&
+    starred.value.tracks.length === 0 &&
+    starred.value.albums.length === 0,
+)
+
 onMounted(loadStarred)
 watch(() => [props.scope, musicStore.catalogVersion, musicStore.favoritesVersion], loadStarred)
 
@@ -174,7 +186,9 @@ defineExpose({ refresh })
         class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
         aria-busy="true"
       >
-        <MdSkeleton v-for="i in 8" :key="`of-sk-${i}`" variant="card" aspect="square" />
+        <template v-if="showOnlineSkeleton">
+          <MdSkeleton v-for="i in 8" :key="`of-sk-${i}`" variant="card" aspect="square" />
+        </template>
       </div>
       <MdEmptyState
         v-else-if="onlineFavShelf.items.value.length === 0"
@@ -268,7 +282,9 @@ defineExpose({ refresh })
         class="space-y-2.5"
         aria-busy="true"
       >
-        <MdSkeleton v-for="i in 6" :key="`fv-sk-${i}`" variant="rect" height="3.5rem" />
+        <template v-if="showLocalSkeleton">
+          <MdSkeleton v-for="i in 6" :key="`fv-sk-${i}`" variant="rect" height="3.5rem" />
+        </template>
       </div>
 
       <template v-else-if="activeSubTab === 'tracks'">

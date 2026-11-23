@@ -157,6 +157,7 @@ let fetchSeq = 0
 
 // Local view data state
 const loading = ref(false)
+const manualRefreshing = ref(false)
 const fetchError = ref<string | null>(null)
 const tracks = ref<TrackDto[]>([])
 const tracksTotal = ref(0)
@@ -557,23 +558,29 @@ async function fetchLocalCatalog(): Promise<void> {
 }
 
 async function handleRefresh(): Promise<void> {
-  if (activeTab.value === 'continue') {
-    await continuePanelRef.value?.refresh()
-    return
+  if (manualRefreshing.value) return
+  manualRefreshing.value = true
+  try {
+    if (activeTab.value === 'continue') {
+      await continuePanelRef.value?.refresh()
+      return
+    }
+    if (activeTab.value === 'favorites') {
+      await favoritesPanelRef.value?.refresh()
+      return
+    }
+    if (activeScope.value === 'online') {
+      await onlineSearchRef.value?.retryInit()
+      return
+    }
+    if (activeScope.value === 'remote') {
+      remoteSearchRef.value?.reload()
+      return
+    }
+    await Promise.allSettled([musicStore.refreshSidebar(), fetchLocalCatalog()])
+  } finally {
+    manualRefreshing.value = false
   }
-  if (activeTab.value === 'favorites') {
-    await favoritesPanelRef.value?.refresh()
-    return
-  }
-  if (activeScope.value === 'online') {
-    await onlineSearchRef.value?.retryInit()
-    return
-  }
-  if (activeScope.value === 'remote') {
-    remoteSearchRef.value?.reload()
-    return
-  }
-  await Promise.allSettled([musicStore.refreshSidebar(), fetchLocalCatalog()])
 }
 
 function handleTagsUpdated(payload: { trackId: string; tags: string[] }): void {
@@ -726,7 +733,7 @@ onBeforeUnmount(clearDebounce)
           size="sm"
           variant="standard"
           :icon="LuRefreshCw"
-          :loading="loading"
+          :loading="manualRefreshing"
           :aria-label="globalT('common.refresh')"
           :tooltip="globalT('common.refresh')"
           @click="handleRefresh"

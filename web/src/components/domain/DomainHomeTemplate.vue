@@ -14,6 +14,7 @@ import {
   LuUpload,
 } from 'vue-icons-plus/lu'
 import { MdButton, MdEmptyState, MdIconButton, MdSkeleton } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import { libraryRoute, type MediaItemVM } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import type { MediaKind } from '@/types/api'
@@ -158,6 +159,7 @@ const gridClass = computed(() =>
 )
 
 const skeletonCount = computed(() => (resolvedAspect.value === 'video' ? 8 : 12))
+const showSkeleton = useDelayedLoading(() => props.loading && !hasAnyContent.value)
 
 const hasAnyContent = computed(
   () => props.continueItems.length > 0 || props.recentItems.length > 0,
@@ -228,33 +230,35 @@ function itemKey(item: MediaItemVM, idx: number): string {
       @retry="emit('retry')"
     />
 
-    <!-- Initial loading skeleton -->
+    <!-- Initial loading skeleton (delayed to avoid flash on fast navigations) -->
     <div v-else-if="loading && !hasAnyContent" class="space-y-8" aria-busy="true">
-      <section class="space-y-3">
-        <MdSkeleton variant="text" width="10rem" height="1.5rem" />
-        <div class="flex gap-4 overflow-hidden">
-          <MdSkeleton
-            v-for="idx in 3"
-            :key="`cont-sk-${idx}`"
-            variant="rect"
-            width="18rem"
-            height="5.5rem"
-            class="shrink-0"
-          />
-        </div>
-      </section>
+      <template v-if="showSkeleton">
+        <section class="space-y-3">
+          <MdSkeleton variant="text" width="10rem" height="1.5rem" />
+          <div class="flex gap-4 overflow-hidden">
+            <MdSkeleton
+              v-for="idx in 3"
+              :key="`cont-sk-${idx}`"
+              variant="rect"
+              width="18rem"
+              height="5.5rem"
+              class="shrink-0"
+            />
+          </div>
+        </section>
 
-      <section class="space-y-3">
-        <MdSkeleton variant="text" width="8rem" height="1.5rem" />
-        <div :class="gridClass">
-          <MdSkeleton
-            v-for="idx in skeletonCount"
-            :key="`rec-sk-${idx}`"
-            variant="card"
-            :aspect="resolvedAspect"
-          />
-        </div>
-      </section>
+        <section class="space-y-3">
+          <MdSkeleton variant="text" width="8rem" height="1.5rem" />
+          <div :class="gridClass">
+            <MdSkeleton
+              v-for="idx in skeletonCount"
+              :key="`rec-sk-${idx}`"
+              variant="card"
+              :aspect="resolvedAspect"
+            />
+          </div>
+        </section>
+      </template>
     </div>
 
     <!-- Unified empty library onboarding -->

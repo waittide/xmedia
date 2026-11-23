@@ -23,6 +23,7 @@ import {
 } from '@/api/appHost'
 import RemoteSourceFormDialog from '@/components/remote/RemoteSourceFormDialog.vue'
 import { MdButton, MdCard, MdEmptyState, MdIconButton } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import { resolveLibraryRoute, useSettingsI18n } from '@/components/settings/i18nHelper'
 import { useAppClientStore } from '@/stores/appServers'
 import { useDialogStore } from '@/stores/dialog'
@@ -47,6 +48,7 @@ const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
 
 const initLoading = ref(false)
+const showInitSpinner = useDelayedLoading(initLoading)
 const formDialogOpen = ref(false)
 const editingSource = ref<RemoteSourceSummaryDto | null>(null)
 const formDefaultProtocol = ref<RemoteProtocol>(props.embeddedProtocol ?? 'opds')
@@ -256,8 +258,10 @@ onMounted(async () => {
       v-if="initLoading"
       class="text-body-small flex items-center justify-center gap-2 py-12 text-on-surface-variant"
     >
-      <LuLoader2 class="h-4 w-4 animate-spin" />
-      <span>{{ t('common.loading') }}</span>
+      <template v-if="showInitSpinner">
+        <LuLoader2 class="h-4 w-4 animate-spin" />
+        <span>{{ t('common.loading') }}</span>
+      </template>
     </div>
 
     <MdEmptyState

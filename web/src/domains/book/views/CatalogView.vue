@@ -93,6 +93,7 @@ const activeView = ref<BookBrowseView>('items')
 const activeCollectionId = ref('')
 const searchInput = ref('')
 const filterSheetOpen = ref(false)
+const manualRefreshing = ref(false)
 const localError = ref<string | null>(null)
 const deletingBookmarkIds = ref<Set<string>>(new Set())
 
@@ -892,7 +893,13 @@ async function handleDeleteBookmark(entry: BookBookmarkItemDto): Promise<void> {
 }
 
 async function handleRefresh(): Promise<void> {
-  await Promise.allSettled([catalogStore.refreshSidebarData(), loadActiveLocalData()])
+  if (manualRefreshing.value) return
+  manualRefreshing.value = true
+  try {
+    await Promise.allSettled([catalogStore.refreshSidebarData(), loadActiveLocalData()])
+  } finally {
+    manualRefreshing.value = false
+  }
 }
 
 function triggerUpload(): void {
@@ -1074,8 +1081,9 @@ function onUploadFilesChange(ev: Event): void {
           variant="standard"
           size="sm"
           :icon="LuRefreshCw"
-          :loading="templateLoading"
-          :aria-label="t('common.loading')"
+          :loading="manualRefreshing"
+          :aria-label="t('common.refresh')"
+          :tooltip="t('common.refresh')"
           @click="handleRefresh"
         />
       </template>

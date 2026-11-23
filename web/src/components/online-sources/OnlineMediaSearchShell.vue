@@ -24,6 +24,7 @@ import {
   type MediaItemCoverStyle,
 } from '@/components/domain'
 import { MdButton, MdChip, MdEmptyState, MdSkeleton, MdTextField } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import {
   useOnlineItemStates,
   type MediaItemVM,
@@ -365,6 +366,8 @@ function itemKey(item: MediaItemVM, idx: number): string {
   return `${item.ref.scope}:${item.ref.sourceId}:${item.ref.ref}:${idx}`
 }
 
+const showSkeleton = useDelayedLoading(isLoadingContent)
+
 function handleKeywordClear(): void {
   emit('update:keyword', '')
   emit('search-clear')
@@ -539,14 +542,16 @@ function handleKeywordClear(): void {
       </template>
     </MdEmptyState>
 
-    <!-- Primary Loading Skeleton -->
+    <!-- Primary Loading Skeleton (delayed to avoid flash on fast navigations) -->
     <div v-else-if="isLoadingContent" :class="gridClass" aria-busy="true">
-      <MdSkeleton
-        v-for="idx in skeletonCount"
-        :key="`online-sk-${idx}`"
-        variant="card"
-        :aspect="resolvedAspect"
-      />
+      <template v-if="showSkeleton">
+        <MdSkeleton
+          v-for="idx in skeletonCount"
+          :key="`online-sk-${idx}`"
+          variant="card"
+          :aspect="resolvedAspect"
+        />
+      </template>
     </div>
 
     <!-- Empty Search Results (only when no search errors) -->

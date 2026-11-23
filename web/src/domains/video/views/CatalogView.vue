@@ -569,12 +569,20 @@ async function fetchActiveData(): Promise<void> {
   }
 }
 
+const manualRefreshing = ref(false)
+
 async function handleRefresh(): Promise<void> {
-  if (isOnlineSearchMode.value) {
-    await onlineSearchRef.value?.refresh()
-    return
+  if (manualRefreshing.value) return
+  manualRefreshing.value = true
+  try {
+    if (isOnlineSearchMode.value) {
+      await onlineSearchRef.value?.refresh()
+      return
+    }
+    await Promise.allSettled([videoStore.refreshSidebar(true), fetchActiveData()])
+  } finally {
+    manualRefreshing.value = false
   }
-  await Promise.allSettled([videoStore.refreshSidebar(true), fetchActiveData()])
 }
 
 // Collection (Shelf) actions
@@ -801,7 +809,7 @@ onBeforeUnmount(() => {
           variant="standard"
           size="sm"
           :icon="LuRefreshCw"
-          :loading="templateLoading"
+          :loading="manualRefreshing"
           :aria-label="t('common.refresh')"
           :tooltip="t('common.refresh')"
           @click="handleRefresh"

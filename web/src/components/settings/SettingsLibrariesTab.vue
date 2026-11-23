@@ -321,7 +321,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
       </div>
 
       <div class="flex shrink-0 items-center gap-2">
-        <RefreshButton size="sm" :busy="loading" :action="refreshAdminLibraries" />
+        <RefreshButton size="sm" :action="refreshAdminLibraries" />
         <MdButton
           v-if="hasLocalMountInView"
           variant="outlined"

@@ -18,6 +18,7 @@ import {
   MdTextField,
   type MdTabItem,
 } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import type { SourceScope } from '@/sources'
 import type { MediaKind } from '@/types/api'
 import MediaErrorState from './MediaErrorState.vue'
@@ -188,6 +189,8 @@ const skeletonGridClass = computed(() =>
     : 'grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6',
 )
 
+const showSkeleton = useDelayedLoading(() => props.loading)
+
 function handleScopeUpdate(next: SourceScope): void {
   emit('update:scope', next)
   emit('scope-change', next)
@@ -295,22 +298,24 @@ function handleSearchClear(): void {
     />
 
     <div v-else-if="loading" aria-busy="true">
-      <div v-if="skeletonMode === 'list'" class="space-y-2.5">
-        <MdSkeleton
-          v-for="idx in Math.min(skeletonCount, 10)"
-          :key="`list-sk-${idx}`"
-          variant="rect"
-          height="3.5rem"
-        />
-      </div>
-      <div v-else :class="skeletonGridClass">
-        <MdSkeleton
-          v-for="idx in skeletonCount"
-          :key="`grid-sk-${idx}`"
-          variant="card"
-          :aspect="resolvedAspect"
-        />
-      </div>
+      <template v-if="showSkeleton">
+        <div v-if="skeletonMode === 'list'" class="space-y-2.5">
+          <MdSkeleton
+            v-for="idx in Math.min(skeletonCount, 10)"
+            :key="`list-sk-${idx}`"
+            variant="rect"
+            height="3.5rem"
+          />
+        </div>
+        <div v-else :class="skeletonGridClass">
+          <MdSkeleton
+            v-for="idx in skeletonCount"
+            :key="`grid-sk-${idx}`"
+            variant="card"
+            :aspect="resolvedAspect"
+          />
+        </div>
+      </template>
     </div>
 
     <MdEmptyState

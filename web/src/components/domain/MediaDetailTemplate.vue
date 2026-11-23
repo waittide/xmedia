@@ -23,6 +23,7 @@ import {
   MediaCoverImage,
   type MdTabItem,
 } from '@/components/ui'
+import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import MediaErrorState from './MediaErrorState.vue'
 import type { MediaItemCardAspect, MediaItemCoverStyle } from './MediaItemCard.vue'
 
@@ -211,6 +212,7 @@ const favoriteAriaLabel = computed(() =>
 const moreAriaLabel = computed(() => (isZh.value ? '更多操作' : 'More actions'))
 const expandTextLabel = computed(() => (isZh.value ? '展开全部' : 'Show more'))
 const collapseTextLabel = computed(() => (isZh.value ? '收起' : 'Show less'))
+const showSkeleton = useDelayedLoading(() => props.loading)
 </script>
 
 <template>
@@ -236,9 +238,9 @@ const collapseTextLabel = computed(() => (isZh.value ? '收起' : 'Show less'))
       @retry="emit('retry')"
     />
 
-    <!-- Loading Skeleton -->
+    <!-- Loading Skeleton (delayed to avoid flash on fast navigations) -->
     <div v-else-if="loading" class="space-y-6" aria-busy="true">
-      <div class="flex flex-col gap-5 sm:flex-row">
+      <div v-if="showSkeleton" class="flex flex-col gap-5 sm:flex-row">
         <MdSkeleton
           variant="rect"
           :aspect="aspect"

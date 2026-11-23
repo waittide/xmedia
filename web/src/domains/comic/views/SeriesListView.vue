@@ -225,6 +225,7 @@ const mergedShelf = useMergedShelf('comic', mergedView, {
 // Local series list state
 const seriesList = ref<SeriesSummaryDto[]>([])
 const localLoading = ref(false)
+const manualRefreshing = ref(false)
 const localError = ref<string | null>(null)
 let fetchSeq = 0
 
@@ -579,15 +580,21 @@ async function fetchLocalSeries(): Promise<void> {
 }
 
 async function refreshActiveView(): Promise<void> {
-  if (isOnlineBrowseView.value) {
-    await onlineSearchRef.value?.refresh()
-    return
+  if (manualRefreshing.value) return
+  manualRefreshing.value = true
+  try {
+    if (isOnlineBrowseView.value) {
+      await onlineSearchRef.value?.refresh()
+      return
+    }
+    if (isMergedTab.value) {
+      await Promise.allSettled([mergedShelf.refresh(), sidebarStore.refresh()])
+      return
+    }
+    await Promise.allSettled([sidebarStore.refresh(), fetchLocalSeries()])
+  } finally {
+    manualRefreshing.value = false
   }
-  if (isMergedTab.value) {
-    await Promise.allSettled([mergedShelf.refresh(), sidebarStore.refresh()])
-    return
-  }
-  await Promise.allSettled([sidebarStore.refresh(), fetchLocalSeries()])
 }
 
 async function toggleLocalSeriesFavorite(series: SeriesSummaryDto): Promise<void> {
@@ -833,7 +840,7 @@ onMounted(async () => {
           variant="standard"
           size="sm"
           :icon="LuRefreshCw"
-          :loading="templateLoading"
+          :loading="manualRefreshing"
           :aria-label="globalT('common.refresh')"
           :tooltip="globalT('common.refresh')"
           @click="refreshActiveView"
