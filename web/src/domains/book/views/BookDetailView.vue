@@ -34,6 +34,11 @@ import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onlineApi'
 import { useCatalogStore } from '@/domains/book/store'
 import type { Bookmark, BookSummaryDto, TocItem } from '@/domains/book/types'
+import {
+  formatProgressPercentValue,
+  hasBookProgress,
+  normalizeBookProgressPercent,
+} from '@/domains/book/utils/bookVm'
 import { libraryRoute, playRoute } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
@@ -86,18 +91,15 @@ const trackedDownloadJob = computed(() =>
     : null,
 )
 
-const hasProgress = computed(
-  () => Boolean(book.value?.progress && book.value.progress.progress_percent > 0),
-)
+const hasProgress = computed(() => hasBookProgress(book.value?.progress))
 
-const progressPercent = computed<number | null>(() => {
-  const pct = book.value?.progress?.progress_percent
-  return pct && pct > 0 ? pct : null
-})
+const progressPercent = computed<number | null>(() =>
+  normalizeBookProgressPercent(book.value?.progress),
+)
 
 const progressLabel = computed(() =>
   progressPercent.value !== null
-    ? t('catalog.progressLabel', { percent: Math.round(progressPercent.value) })
+    ? t('catalog.progressLabel', { percent: formatProgressPercentValue(progressPercent.value) })
     : '',
 )
 

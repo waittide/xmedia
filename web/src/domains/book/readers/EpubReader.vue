@@ -13,6 +13,7 @@ import { resolveFontStack } from '@/utils/format'
 const LOCATIONS_CACHE_PREFIX = 'xmedia.epub.locations:'
 const LOCATIONS_INDEX_KEY = 'xmedia.epub.locations.__index'
 const MAX_CACHED_BOOKS = 12
+const MAX_LOCATIONS_GENERATE_BYTES = 2 * 1024 * 1024
 const SWIPE_THRESHOLD_PX = 48
 
 const props = withDefaults(
@@ -62,8 +63,16 @@ interface EpubLocationsWithCache {
   save?: () => string
 }
 
+interface EpubBookWithSpine extends Book {
+  spine?: {
+    spineItems?: unknown[]
+    length?: number
+  }
+}
+
 interface EpubRenditionWithOff extends Rendition {
   off?: (event: string, handler: (...args: unknown[]) => void) => void
+  currentLocation?: () => EpubRelocatedLocation | undefined
 }
 
 function buildLocationsCacheKey(bookId: string, byteLength: number): string {
@@ -303,21 +312,84 @@ function handleRenditionKeydown(...args: unknown[]): void {
   }
 }
 
-function handleRelocated(...args: unknown[]): void {
-  if (unmounted) return
-  const loc = args[0] as { start?: { cfi?: string; percentage?: number } } | undefined
+interface EpubRelocatedLocation {
+  start?: {
+    cfi?: string
+    index?: number
+    percentage?: number
+    displayed?: {
+      page?: number
+      total?: number
+    }
+  }
+}
+
+function getSpineLength(): number {
+  const spine = (book as EpubBookWithSpine | null)?.spine
+  if (!spine) return 0
+  if (Array.isArray(spine.spineItems) && spine.spineItems.length > 0) {
+    return spine.spineItems.length
+  }
+  return typeof spine.length === 'number' && spine.length > 0 ? spine.length : 0
+}
+
+function estimateSpineProgress(loc: EpubRelocatedLocation): number {
+  const spineLength = getSpineLength()
+  if (spineLength <= 0) return 0
+  const rawIdx = loc.start?.index
+  const chapterIdx =
+    typeof rawIdx === 'number' && Number.isFinite(rawIdx)
+      ? Math.min(spineLength - 1, Math.max(0, rawIdx))
+      : 0
+  const displayed = loc.start?.displayed
+  const page =
+    displayed && typeof displayed.page === 'number' && displayed.page >= 1 ? displayed.page : 1
+  const total =
+    displayed && typeof displayed.total === 'number' && displayed.total >= 1 ? displayed.total : 1
+  const chapterFraction = Math.min(1, Math.max(0, page / total))
+  const raw = ((chapterIdx + chapterFraction) / spineLength) * 100
+  if (!Number.isFinite(raw) || raw <= 0) return 0
+  return Math.min(100, Math.max(0.01, Number(raw.toFixed(2))))
+}
+
+function emitLocationProgress(loc: EpubRelocatedLocation | undefined): void {
   const cfi = loc?.start?.cfi
   if (!cfi) return
   lastKnownCfi = cfi
-  let pct = (loc?.start?.percentage ?? 0) * 100
+  const chapterIndex =
+    typeof loc?.start?.index === 'number' && Number.isFinite(loc.start.index)
+      ? loc.start.index
+      : null
+
+  let pct = 0
   if (locationsReady && book) {
-    pct = book.locations.percentageFromCfi(cfi) * 100
+    const fromCfi = book.locations.percentageFromCfi(cfi) * 100
+    if (Number.isFinite(fromCfi) && fromCfi > 0) {
+      pct = fromCfi
+    }
   }
-  if (!Number.isFinite(pct)) pct = 0
+  if (pct <= 0) {
+    const rawPct = (loc?.start?.percentage ?? 0) * 100
+    if (Number.isFinite(rawPct) && rawPct > 0) {
+      pct = rawPct
+    }
+  }
+  if (pct <= 0) {
+    pct = estimateSpineProgress(loc ?? {})
+  }
+  if (!Number.isFinite(pct) || pct < 0) pct = 0
+  if (pct > 0 && pct < 0.01) pct = 0.01
+
   emit('progress', {
     progress_percent: Math.min(100, Math.max(0, Number(pct.toFixed(2)))),
     locator: cfi,
+    chapter_index: chapterIndex,
   })
+}
+
+function handleRelocated(...args: unknown[]): void {
+  if (unmounted) return
+  emitLocationProgress(args[0] as EpubRelocatedLocation | undefined)
 }
 
 async function loadEpub(): Promise<void> {
@@ -364,7 +436,17 @@ async function loadEpub(): Promise<void> {
     }
     loading.value = false
 
-    if (!locationsReady) {
+    // Self-heal saved progress records that have a locator but 0% progress (e.g. large EPUBs)
+    if (startTarget && !(props.initialLocation && props.initialLocation.progress_percent > 0)) {
+      const current = (rendition as EpubRenditionWithOff | null)?.currentLocation?.()
+      if (current?.start?.cfi) {
+        emitLocationProgress(current)
+      }
+    }
+
+    // Skip full-book locations.generate on huge EPUBs (> 2 MiB) to avoid freezing UI / overflowing localStorage;
+    // spine-based progress estimation already reports smooth instant progress.
+    if (!locationsReady && buffer.byteLength <= MAX_LOCATIONS_GENERATE_BYTES) {
       const currentBook = localBook
       const currentLocations = currentBook.locations as unknown as EpubLocationsWithCache
       void currentBook.locations
@@ -383,10 +465,16 @@ async function loadEpub(): Promise<void> {
           }
           if (lastKnownCfi) {
             const pct = currentBook.locations.percentageFromCfi(lastKnownCfi) * 100
-            if (Number.isFinite(pct)) {
+            if (Number.isFinite(pct) && pct > 0) {
+              const current = (rendition as EpubRenditionWithOff | null)?.currentLocation?.()
+              const chapterIndex =
+                typeof current?.start?.index === 'number' && Number.isFinite(current.start.index)
+                  ? current.start.index
+                  : null
               emit('progress', {
-                progress_percent: Math.min(100, Math.max(0, Number(pct.toFixed(2)))),
+                progress_percent: Math.min(100, Math.max(0.01, Number(pct.toFixed(2)))),
                 locator: lastKnownCfi,
+                chapter_index: chapterIndex,
               })
             }
           }

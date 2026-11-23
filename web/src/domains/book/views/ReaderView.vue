@@ -37,6 +37,7 @@ import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onlineApi'
 import type { PdfFitMode, PdfReaderState } from '@/domains/book/readers/PdfReader.vue'
 import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
+import { formatProgressPercentValue } from '@/domains/book/utils/bookVm'
 import { itemRoute, libraryRoute } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -120,10 +121,11 @@ const centerTapMode = computed<ImmersiveTapMode>(() =>
 
 const progressSubtitle = computed(() => {
   if (!currentLocation.value) return ''
+  const pctText = `${formatProgressPercentValue(currentLocation.value.progress_percent)}%`
   if (isPdf.value && pdfState.value.totalPages > 0) {
-    return `${pdfState.value.currentPage} / ${pdfState.value.totalPages} · ${Math.round(currentLocation.value.progress_percent)}%`
+    return `${pdfState.value.currentPage} / ${pdfState.value.totalPages} · ${pctText}`
   }
-  return `${Math.round(currentLocation.value.progress_percent)}%`
+  return pctText
 })
 
 const sheetTitle = computed(() => {
@@ -376,7 +378,7 @@ async function jumpToTarget(hrefOrLocator: string, scrollRatio = 0): Promise<voi
 async function handleAddBookmark(): Promise<void> {
   if (!currentLocation.value || !bookId.value) return
   const loc = currentLocation.value
-  const defaultTitle = `${Math.round(loc.progress_percent)}% · ${book.value?.metadata.title ?? ''}`
+  const defaultTitle = `${formatProgressPercentValue(loc.progress_percent)}% · ${book.value?.metadata.title ?? ''}`
   try {
     const created = await api.createBookmark(bookId.value, {
       title: bookmarkLabel.value.trim() || defaultTitle,

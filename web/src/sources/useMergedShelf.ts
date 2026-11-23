@@ -200,9 +200,10 @@ function mapOnlineItemToVM(
 
 function mapBookToVM(book: BookSummaryDto, view: MergedShelfView): MediaItemVM {
   const ref = { scope: 'local' as const, domain: 'book' as const, id: book.id }
-  const progressPercent = book.progress
-    ? Math.min(100, Math.max(0, Math.round(book.progress.progress_percent)))
-    : undefined
+  const progressPercent =
+    book.progress && (book.progress.progress_percent > 0 || Boolean(book.progress.locator?.trim()))
+      ? Math.min(100, Math.max(0.01, book.progress.progress_percent))
+      : undefined
   const ts =
     view === 'continue'
       ? parseTimestampMs(book.last_read_at ?? book.updated_at)

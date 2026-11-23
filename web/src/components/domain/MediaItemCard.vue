@@ -131,7 +131,7 @@ const coverEffectClass = computed(() => {
 const progressPercent = computed<number | null>(() => {
   const raw = props.item.badge?.progressPercent
   if (raw === undefined || raw === null || !Number.isFinite(raw) || raw <= 0) return null
-  return Math.min(100, Math.max(0, Math.round(raw)))
+  return Math.min(100, Math.max(1, Math.round(raw)))
 })
 
 const sourceBadgeText = computed(() => {

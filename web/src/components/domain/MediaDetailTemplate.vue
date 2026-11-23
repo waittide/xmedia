@@ -148,7 +148,7 @@ const hasOverflowMenu = computed(
 const normalizedProgress = computed<number | null>(() => {
   const raw = props.progressPercent
   if (raw === null || raw === undefined || !Number.isFinite(raw) || raw <= 0) return null
-  return Math.min(100, Math.max(0, Math.round(raw)))
+  return Math.min(100, Math.max(1, Math.round(raw)))
 })
 
 const aspectClass = computed(() => {

@@ -1,6 +1,28 @@
 import { api } from '@/domains/book/api'
 import { itemRoute, playRoute, type MediaItemVM } from '@/sources'
-import type { BookSummaryDto } from '@/domains/book/types'
+import type { BookSummaryDto, ReadingLocation } from '@/domains/book/types'
+
+export function hasBookProgress(progress: ReadingLocation | null | undefined): boolean {
+  if (!progress) return false
+  return progress.progress_percent > 0 || Boolean(progress.locator?.trim())
+}
+
+export function normalizeBookProgressPercent(
+  progress: ReadingLocation | null | undefined,
+): number | null {
+  if (!hasBookProgress(progress) || !progress) return null
+  const pct = progress.progress_percent
+  if (Number.isFinite(pct) && pct > 0) {
+    return Math.min(100, pct)
+  }
+  return 0.01
+}
+
+export function formatProgressPercentValue(pct: number): string {
+  if (!Number.isFinite(pct) || pct <= 0) return '0'
+  if (pct < 1) return '<1'
+  return String(Math.min(100, Math.round(pct)))
+}
 
 export function bookSummaryToVM(
   book: BookSummaryDto,
@@ -11,9 +33,8 @@ export function bookSummaryToVM(
   },
 ): MediaItemVM {
   const ref = { scope: 'local' as const, domain: 'book' as const, id: book.id }
-  const progressPercent = book.progress
-    ? Math.min(100, Math.max(0, Math.round(book.progress.progress_percent)))
-    : undefined
+  const normalizedPct = normalizeBookProgressPercent(book.progress)
+  const progressPercent = normalizedPct !== null ? normalizedPct : undefined
 
   const authorsText = book.metadata.authors.join(', ')
   const subtitle =

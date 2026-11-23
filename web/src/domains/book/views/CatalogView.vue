@@ -48,7 +48,12 @@ import type {
   ShelfDto,
   TagMatchMode,
 } from '@/domains/book/types'
-import { bookSummaryToVM } from '@/domains/book/utils/bookVm'
+import {
+  bookSummaryToVM,
+  formatProgressPercentValue,
+  hasBookProgress,
+  normalizeBookProgressPercent,
+} from '@/domains/book/utils/bookVm'
 import {
   itemRoute,
   playRoute,
@@ -1510,7 +1515,7 @@ function onUploadFilesChange(ev: Event): void {
                 v-if="!entry.book.is_missing"
                 :icon="LuBookOpen"
                 :label="
-                  entry.book.progress && entry.book.progress.progress_percent > 0
+                  hasBookProgress(entry.book.progress)
                     ? t('catalog.continueReading')
                     : t('catalog.startReading')
                 "
@@ -1618,8 +1623,8 @@ function onUploadFilesChange(ev: Event): void {
                   {{ book.metadata.authors.join(', ') || t('catalog.unknownAuthor') }}
                 </td>
                 <td class="text-label-medium hidden py-2.5 pr-4 tabular-nums sm:table-cell">
-                  <span v-if="book.progress" class="text-primary">
-                    {{ Math.round(book.progress.progress_percent) }}%
+                  <span v-if="hasBookProgress(book.progress)" class="text-primary">
+                    {{ formatProgressPercentValue(normalizeBookProgressPercent(book.progress) ?? 0) }}%
                   </span>
                   <span v-else class="text-on-surface-variant">—</span>
                 </td>
