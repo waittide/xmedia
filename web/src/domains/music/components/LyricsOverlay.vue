@@ -3,11 +3,13 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   LuBookmark,
+  LuCheck,
   LuChevronDown,
   LuDisc3,
   LuDownload,
   LuHeart,
   LuLanguages,
+  LuLibrary,
   LuListMusic,
   LuLoader2,
   LuMic2,
@@ -157,15 +159,7 @@ const backdropStyle = computed<Record<string, string>>(() => {
   return { backgroundImage: `url("${escaped}")` }
 })
 
-const isCurrentStarred = computed(() => {
-  if (playerStore.currentLocalTrack) {
-    return Boolean(playerStore.currentLocalTrack.starred_at)
-  }
-  if (playerStore.currentTrack) {
-    return playerStore.currentOnlineFavorite
-  }
-  return false
-})
+const isCurrentStarred = computed(() => Boolean(playerStore.currentLocalTrack?.starred_at))
 
 const displayTimeSecs = computed(() => scrubPreviewSecs.value ?? playerStore.currentTimeSecs)
 
@@ -284,10 +278,6 @@ function handleLyricLineClick(startMs: number): void {
 async function handleToggleFavorite(): Promise<void> {
   if (playerStore.currentLocalTrack) {
     await musicStore.toggleTrackStar(playerStore.currentLocalTrack)
-    return
-  }
-  if (playerStore.currentTrack) {
-    await playerStore.toggleCurrentOnlineFavorite()
   }
 }
 
@@ -474,6 +464,17 @@ onBeforeUnmount(() => {
 
               <div v-if="hasQualityMenuItems" class="my-1 border-t border-outline-variant" role="separator" />
               <MdMenuItem
+                v-if="playerStore.isCurrentOnline"
+                :icon="playerStore.isCurrentOnlineTracked ? LuCheck : LuLibrary"
+                :label="
+                  playerStore.isCurrentOnlineTracked
+                    ? t('online.trackedInLibrary')
+                    : t('online.trackToLibrary')
+                "
+                :disabled="playerStore.trackingCurrentOnline"
+                @select="playerStore.trackCurrentOnlineToLibrary()"
+              />
+              <MdMenuItem
                 :icon="LuDownload"
                 :label="t('common.download')"
                 :disabled="downloadingCurrent"
@@ -600,6 +601,7 @@ onBeforeUnmount(() => {
                 </div>
 
                 <MdIconButton
+                  v-if="playerStore.currentLocalTrack"
                   :selected="isCurrentStarred"
                   :aria-label="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
                   :title="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
@@ -609,6 +611,25 @@ onBeforeUnmount(() => {
                     class="h-5 w-5"
                     :class="isCurrentStarred ? 'fill-error text-error' : 'text-on-surface-variant'"
                   />
+                </MdIconButton>
+                <MdIconButton
+                  v-else-if="playerStore.isCurrentOnline"
+                  :selected="playerStore.isCurrentOnlineTracked"
+                  :loading="playerStore.trackingCurrentOnline"
+                  :aria-label="
+                    playerStore.isCurrentOnlineTracked
+                      ? t('online.trackedInLibrary')
+                      : t('online.trackToLibrary')
+                  "
+                  :tooltip="
+                    playerStore.isCurrentOnlineTracked
+                      ? t('online.trackedInLibrary')
+                      : t('online.trackToLibrary')
+                  "
+                  @click="playerStore.trackCurrentOnlineToLibrary()"
+                >
+                  <LuCheck v-if="playerStore.isCurrentOnlineTracked" class="h-5 w-5 text-primary" />
+                  <LuLibrary v-else class="h-5 w-5 text-on-surface-variant" />
                 </MdIconButton>
               </div>
 

@@ -18,10 +18,8 @@ import {
   isAvailabilityBlocked,
   itemRoute,
   useMergedShelf,
-  useOnlineItemStates,
   useSourceFilter,
   type MediaItemVM,
-  type TrackedItemRef,
 } from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { getAcceptedUploadExtensions, useUploadStore } from '@/stores/uploads'
@@ -30,7 +28,6 @@ import { api, buildCoverUrl } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import TrackTable from '../components/TrackTable.vue'
 import { useMusicI18n as useI18n } from '../i18n'
-import { snapshotToOnlineMusicTrack, snapshotToRemoteSubsonicSong } from '../onlineTrackRef'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { AlbumDto, TrackDto } from '../types'
@@ -60,19 +57,7 @@ const { overview, loading, error: homeError, refreshPage } = useHomeOverview('mu
 const continueShelf = useMergedShelf('music', 'continue', { limit: 12 })
 const favoritesShelf = useMergedShelf('music', 'favorites', { limit: 12 })
 
-const trackedContinueRefs = computed<TrackedItemRef[]>(() => {
-  const out: TrackedItemRef[] = []
-  for (const item of [...continueShelf.items.value, ...favoritesShelf.items.value]) {
-    if (item.ref.scope === 'online' || item.ref.scope === 'remote') {
-      out.push(item.ref)
-    }
-  }
-  return out
-})
-
-const onlineStates = useOnlineItemStates(trackedContinueRefs, { autoLoad: false })
-
-// Combine active/saved local play queue track (with real progress) + cross-source merged continue shelf
+// Combine active/saved local play queue track (with real progress) + bound local continue shelf
 const continueItems = computed<MediaItemVM[]>(() => {
   const ov = overview.value
   const list: MediaItemVM[] = []
@@ -213,22 +198,6 @@ async function handlePlayShelfItem(item: MediaItemVM): Promise<void> {
     } catch {
       void router.push(item.to)
     }
-    return
-  }
-
-  const snap = onlineStates.getState(item.ref)
-  if (snap) {
-    const resumeSecs = Math.max(0, snap.progress?.position ?? 0)
-    if (item.ref.scope === 'online') {
-      playerStore.playOnlineTrackAt(snapshotToOnlineMusicTrack(snap), resumeSecs)
-      return
-    }
-    playerStore.playRemoteSongAt(
-      snap.sourceId,
-      snap.sourceName || snap.sourceId,
-      snapshotToRemoteSubsonicSong(snap),
-      resumeSecs,
-    )
     return
   }
 

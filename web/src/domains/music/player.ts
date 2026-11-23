@@ -1,11 +1,6 @@
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { SubsonicSongDto } from '@/api/appHost'
-import {
-  useOnlineItemState,
-  type OnlineItemMetadataInput,
-  type TrackedItemRef,
-} from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { usePreferencesStore } from '@/stores/preferences'
@@ -18,13 +13,8 @@ import {
   type OnlineMusicResolvedTrackDto,
   type OnlineMusicTrackDto,
 } from './onlineApi'
-import {
-  buildRemoteSubsonicStreamUrl,
-  onlineTrackToItemMeta,
-  onlineTrackToTrackedRef,
-  remoteSongToItemMeta,
-  remoteSongToTrackedRef,
-} from './onlineTrackRef'
+import { buildRemoteSubsonicStreamUrl } from './onlineTrackRef'
+import { useMusicStore } from './store'
 import type { PlayMode, StructuredLyricsDto, TrackDto, TranscodeProfile } from './types'
 
 export interface LocalQueueItem {
@@ -196,14 +186,15 @@ export const usePlayerStore = defineStore('player', () => {
   const translatedLyrics = ref<StructuredLyricsDto | null>(null)
 
   let scrobbledCurrent = false
-  let lastReportedOnlineSecs = -1
-  let lastReportedOnlineKey: string | null = null
   let queueSyncTimer: ReturnType<typeof setTimeout> | null = null
   let pendingSeekHandler: (() => void) | null = null
   let lyricsLoadedTrackId: string | null = null
   let playHistory: number[] = []
   let shufflePool: number[] = []
   let queueHadLocalOnClear = false
+
+  const trackingCurrentOnline = ref(false)
+  const trackedOnlineKeys = ref<Record<string, boolean>>({})
 
   const currentItem = computed<PlayerQueueItem | null>(() => {
     const idx = currentIndex.value
@@ -229,63 +220,52 @@ export const usePlayerStore = defineStore('player', () => {
   const isCurrentOnline = computed<boolean>(() => currentItem.value?.kind === 'online')
   const isCurrentRemote = computed<boolean>(() => currentItem.value?.kind === 'remote')
 
-  // Persisted favorite & playback progress for online / remote tracks via `useOnlineItemState`
-  const currentTrackedRef = computed<TrackedItemRef | null>(() => {
-    if (!useAuthStore().isAuthenticated) return null
-    const item = currentItem.value
-    if (!item || item.kind === 'local') return null
-    if (item.kind === 'online') {
-      return onlineTrackToTrackedRef(item.resolved?.track ?? item.track)
-    }
-    return remoteSongToTrackedRef(item.source_id, item.song)
+  const isCurrentOnlineTracked = computed<boolean>(() => {
+    const item = currentOnlineItem.value
+    return item ? Boolean(trackedOnlineKeys.value[item.key]) : false
   })
 
-  const currentTrackedMeta = computed<OnlineItemMetadataInput | null>(() => {
-    const item = currentItem.value
-    if (!item || item.kind === 'local') return null
-    if (item.kind === 'online') {
-      const mergedTrack: OnlineMusicTrackDto = item.resolved?.track
+  async function trackCurrentOnlineToLibrary(): Promise<void> {
+    const item = currentOnlineItem.value
+    if (!item || trackingCurrentOnline.value) return
+    trackingCurrentOnline.value = true
+    try {
+      const tr = item.resolved?.track
         ? {
             ...item.track,
             ...item.resolved.track,
             cover_url: item.resolved.cover_url || item.resolved.track.cover_url || item.track.cover_url,
           }
         : item.track
-      return onlineTrackToItemMeta(mergedTrack)
+      await onlineMusicApi.trackOnlineTrack({
+        source_id: tr.source_id,
+        track_id: tr.track_id,
+        title: tr.title,
+        artist: tr.artist,
+        album: tr.album,
+        duration_secs: tr.duration_secs,
+        cover_url: tr.cover_url,
+        cover_id: tr.cover_id,
+        url_id: tr.url_id,
+        lyric_id: tr.lyric_id,
+        play_url: tr.play_url,
+        detail_url: tr.detail_url,
+        format: tr.format,
+        quality: item.selectedQuality ?? tr.qualities?.[0] ?? null,
+      })
+      trackedOnlineKeys.value = { ...trackedOnlineKeys.value, [item.key]: true }
+      const musicStore = useMusicStore()
+      musicStore.bumpCatalogVersion()
+      void musicStore.refreshSidebar()
+      useSnackbarStore().show(tMusic('online.trackedToast', { title: tr.title }))
+    } catch (err) {
+      useSnackbarStore().show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
+    } finally {
+      trackingCurrentOnline.value = false
     }
-    return remoteSongToItemMeta(item.source_id, item.song)
-  })
-
-  const onlineItemState = useOnlineItemState(currentTrackedRef, currentTrackedMeta)
-  const currentOnlineFavorite = computed<boolean>(() => onlineItemState.favorite.value)
-
-  async function toggleCurrentOnlineFavorite(): Promise<void> {
-    if (!currentTrackedRef.value) return
-    await onlineItemState.toggleFavorite()
-  }
-
-  function reportTrackedProgress(posSecs: number, opts?: { completed?: boolean; immediate?: boolean }): void {
-    const item = currentItem.value
-    if (!item || item.kind === 'local' || !currentTrackedRef.value) return
-    if (!opts?.completed && posSecs < 1) return
-    if (
-      !opts?.immediate &&
-      !opts?.completed &&
-      lastReportedOnlineKey === item.key &&
-      Math.abs(posSecs - lastReportedOnlineSecs) < 2
-    ) {
-      return
-    }
-    lastReportedOnlineKey = item.key
-    lastReportedOnlineSecs = posSecs
-    onlineItemState.saveProgress(
-      {
-        position: Math.max(0, Math.round(posSecs)),
-        duration: durationSecs.value > 0 ? Math.round(durationSecs.value) : undefined,
-        completed: Boolean(opts?.completed),
-      },
-      { immediate: opts?.immediate },
-    )
   }
 
   function dismissPlaybackError(): void {
@@ -458,8 +438,6 @@ export const usePlayerStore = defineStore('player', () => {
         item.track.play_count += 1
         void api.scrobble(item.track.id, true).catch(() => {})
       }
-    } else if (item && item.kind !== 'local' && !audio.paused && t >= 1) {
-      reportTrackedProgress(t)
     }
   })
 
@@ -475,18 +453,9 @@ export const usePlayerStore = defineStore('player', () => {
   audio.addEventListener('pause', () => {
     isPlaying.value = false
     scheduleQueueSync()
-    if (currentItem.value && currentItem.value.kind !== 'local' && currentTimeSecs.value >= 1) {
-      reportTrackedProgress(currentTimeSecs.value, { immediate: true })
-    }
   })
 
   audio.addEventListener('ended', () => {
-    if (currentItem.value && currentItem.value.kind !== 'local') {
-      reportTrackedProgress(durationSecs.value || currentTimeSecs.value, {
-        completed: true,
-        immediate: true,
-      })
-    }
     if (playMode.value === 'loop_one' && currentTrack.value) {
       scrobbledCurrent = false
       void loadAndPlayCurrent(0, true)
@@ -1239,9 +1208,6 @@ export const usePlayerStore = defineStore('player', () => {
       void loadAndPlayCurrent(clamped, isPlaying.value)
     }
     scheduleQueueSync()
-    if (currentItem.value && currentItem.value.kind !== 'local') {
-      reportTrackedProgress(clamped, { immediate: true })
-    }
   }
 
   function setTranscodeProfile(next: TranscodeProfile): void {
@@ -1364,8 +1330,6 @@ export const usePlayerStore = defineStore('player', () => {
     lyrics.value = null
     translatedLyrics.value = null
     lyricsLoadedTrackId = null
-    lastReportedOnlineSecs = -1
-    lastReportedOnlineKey = null
     resetShuffleAndHistory()
     scheduleQueueSync()
   }
@@ -1401,8 +1365,8 @@ export const usePlayerStore = defineStore('player', () => {
     lyrics.value = null
     translatedLyrics.value = null
     lyricsLoadedTrackId = null
-    lastReportedOnlineSecs = -1
-    lastReportedOnlineKey = null
+    trackedOnlineKeys.value = {}
+    trackingCurrentOnline.value = false
     scrobbledCurrent = false
     resetShuffleAndHistory()
     updateMediaSession(null)
@@ -1522,8 +1486,9 @@ export const usePlayerStore = defineStore('player', () => {
     lyrics,
     translatedLyrics,
     activeLyricIndex,
-    currentOnlineFavorite,
-    toggleCurrentOnlineFavorite,
+    isCurrentOnlineTracked,
+    trackingCurrentOnline,
+    trackCurrentOnlineToLibrary,
     dismissPlaybackError,
     attachAudioElement,
     detachAudioElement,

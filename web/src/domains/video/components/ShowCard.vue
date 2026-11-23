@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { LuTv } from 'vue-icons-plus/lu'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
+import { LuTrash2, LuTv } from 'vue-icons-plus/lu'
 import { MediaItemCard } from '@/components/domain'
+import { MdMenuItem } from '@/components/ui'
 import type { MediaItemVM } from '@/sources'
+import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { buildPosterUrl } from '../api'
+import { api, buildPosterUrl } from '../api'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
 import type { ShowSummaryDto } from '../types'
@@ -13,8 +16,14 @@ const props = defineProps<{
   show: ShowSummaryDto
 }>()
 
+const emit = defineEmits<{
+  unbound: [showId: string]
+}>()
+
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const videoStore = useVideoStore()
+const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 const favoriteBusy = ref(false)
 
@@ -69,6 +78,28 @@ async function handleToggleFavorite(): Promise<void> {
     favoriteBusy.value = false
   }
 }
+
+async function handleUnbindShow(close: () => void): Promise<void> {
+  close()
+  const ok = await dialogStore.confirm({
+    title: globalT('pool.unbindBtn'),
+    message: globalT('pool.unbindConfirm', { title: props.show.title }),
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await api.unbindItem(props.show.id)
+    await videoStore.refreshSidebar(true)
+    videoStore.bumpCatalogVersion()
+    snackbar.show({ message: globalT('pool.unboundToast') })
+    emit('unbound', props.show.id)
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
 </script>
 
 <template>
@@ -81,5 +112,14 @@ async function handleToggleFavorite(): Promise<void> {
     :favorite="show.is_favorite"
     :favorite-loading="favoriteBusy"
     @toggle-favorite="handleToggleFavorite"
-  />
+  >
+    <template #menu="{ close }">
+      <MdMenuItem
+        :icon="LuTrash2"
+        :label="globalT('pool.unbindBtn')"
+        destructive
+        @select="handleUnbindShow(close)"
+      />
+    </template>
+  </MediaItemCard>
 </template>

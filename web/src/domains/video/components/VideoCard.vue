@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuCheck,
   LuDownload,
@@ -45,6 +46,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const authStore = useAuthStore()
 const videoStore = useVideoStore()
 const dialogStore = useDialogStore()
@@ -154,6 +156,30 @@ function handleDownload(close: () => void): void {
   a.remove()
 }
 
+async function handleConfirmUnbind(close: () => void): Promise<void> {
+  close()
+  const targetId = props.video.show_id || props.video.id
+  const title = props.video.show_title || props.video.title
+  const ok = await dialogStore.confirm({
+    title: globalT('pool.unbindBtn'),
+    message: globalT('pool.unbindConfirm', { title }),
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await api.unbindItem(targetId)
+    await videoStore.refreshSidebar(true)
+    videoStore.bumpCatalogVersion()
+    snackbar.show({ message: globalT('pool.unboundToast') })
+    emit('deleted', props.video.id)
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
 async function handleConfirmDelete(close: () => void): Promise<void> {
   close()
   const ok = await dialogStore.confirm({
@@ -247,11 +273,17 @@ async function handleConfirmDelete(close: () => void): Promise<void> {
       />
 
       <div
-        v-if="authStore.isAdmin"
         class="my-1 border-t border-outline-variant pt-1"
         role="separator"
       >
         <MdMenuItem
+          :icon="LuTrash2"
+          :label="globalT('pool.unbindBtn')"
+          destructive
+          @select="handleConfirmUnbind(close)"
+        />
+        <MdMenuItem
+          v-if="authStore.isAdmin"
           :icon="LuTrash2"
           :label="t('common.delete')"
           destructive

@@ -260,7 +260,7 @@ export function useOnlineSearchBrowse<
   })
 
   const itemStates = useOnlineItemStates(trackedRefs, {
-    autoLoad: Boolean(adapter.toTrackedRef),
+    autoLoad: false,
   })
 
   const displayVMs = computed<MediaItemVM[]>(() => {

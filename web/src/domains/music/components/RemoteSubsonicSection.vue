@@ -7,7 +7,6 @@ import {
   LuCloud,
   LuDisc3,
   LuDownload,
-  LuHeart,
   LuListPlus,
   LuLoader2,
   LuPause,
@@ -35,19 +34,11 @@ import {
   MediaCoverImage,
   type SegmentedOption,
 } from '@/components/ui'
-import {
-  onlineItemsApi,
-  sanitizeCoverUrlForApi,
-  seedOnlineItemStateCache,
-  useOnlineItemStates,
-  type TrackedItemRef,
-} from '@/sources'
 import { useAppClientStore } from '@/stores/appServers'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 import { formatTime as formatDuration } from '@/utils/format'
 import { useMusicI18n as useI18n } from '../i18n'
-import { remoteSongToItemMeta, remoteSongToTrackedRef } from '../onlineTrackRef'
 import { buildRemoteSongKey, usePlayerStore } from '../player'
 
 const ALBUM_PAGE_SIZE = 30
@@ -102,7 +93,6 @@ const albumDetailError = ref<string | null>(null)
 
 const importingIds = ref<Record<string, boolean>>({})
 const importedIds = ref<Record<string, boolean>>({})
-const favoriteBusy = ref<Record<string, boolean>>({})
 
 let listSeq = 0
 let detailSeq = 0
@@ -113,27 +103,11 @@ const sortOptions = computed<SegmentedOption<SubsonicAlbumListType>[]>(() => [
   { value: 'alphabeticalByName', label: globalT('remote.subsonicSortName') },
 ])
 
-const visibleSongs = computed<SubsonicSongDto[]>(() =>
-  albumSheetOpen.value ? albumSongs.value : searchSongs.value,
-)
-
-const trackedRefs = computed<TrackedItemRef[]>(() => {
-  if (!activeSourceId.value) return []
-  return visibleSongs.value.map((song) => remoteSongToTrackedRef(activeSourceId.value, song))
-})
-
-const itemStates = useOnlineItemStates(trackedRefs)
-
 function isSongCurrent(song: SubsonicSongDto): boolean {
   return (
     playerStore.currentTrack?.kind === 'remote' &&
     playerStore.currentTrack.id === buildRemoteSongKey(activeSourceId.value, song.id)
   )
-}
-
-function isSongFavorite(song: SubsonicSongDto): boolean {
-  if (!activeSourceId.value) return false
-  return itemStates.isFavorite(remoteSongToTrackedRef(activeSourceId.value, song))
 }
 
 function importKey(songId: string): string {
@@ -251,53 +225,6 @@ function enqueueSong(song: SubsonicSongDto): void {
   if (playerStore.isRemoteSongInQueue(activeSourceId.value, song.id)) return
   playerStore.enqueueRemoteSong(activeSourceId.value, activeSourceName.value, song)
   snackbarStore.show(t('online.queuedToast'))
-}
-
-async function applyRemoteFavorite(
-  song: SubsonicSongDto,
-  nextFav: boolean,
-  showUndo: boolean,
-): Promise<void> {
-  const sourceId = activeSourceId.value
-  if (!sourceId) return
-  const key = buildRemoteSongKey(sourceId, song.id)
-  if (favoriteBusy.value[key]) return
-  favoriteBusy.value = { ...favoriteBusy.value, [key]: true }
-
-  const tracked = remoteSongToTrackedRef(sourceId, song)
-  const meta = remoteSongToItemMeta(sourceId, song)
-  try {
-    const saved = await onlineItemsApi.upsert('music', {
-      source_kind: 'remote',
-      source_id: tracked.sourceId,
-      item_key: tracked.ref,
-      title: meta.title,
-      subtitle: meta.subtitle ?? null,
-      cover_url: sanitizeCoverUrlForApi(meta.coverUrl),
-      kind: 'track',
-      extra: meta.extra ?? null,
-      favorite: nextFav,
-    })
-    seedOnlineItemStateCache([saved])
-    if (!nextFav && showUndo) {
-      snackbarStore.show({
-        message: globalT('common.removedFromFavorites'),
-        actionLabel: globalT('common.undo'),
-        onAction: () => {
-          void applyRemoteFavorite(song, true, false)
-        },
-      })
-    }
-  } catch (err) {
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    const next = { ...favoriteBusy.value }
-    delete next[key]
-    favoriteBusy.value = next
-  }
 }
 
 async function handleImportSong(song: SubsonicSongDto): Promise<void> {
@@ -497,19 +424,6 @@ defineExpose({
                 <MdIconButton
                   size="sm"
                   variant="standard"
-                  :selected="isSongFavorite(song)"
-                  :loading="Boolean(favoriteBusy[buildRemoteSongKey(activeSourceId, song.id)])"
-                  :aria-label="isSongFavorite(song) ? t('common.unfavorite') : t('common.favorite')"
-                  @click="applyRemoteFavorite(song, !isSongFavorite(song), true)"
-                >
-                  <LuHeart
-                    class="h-4 w-4"
-                    :class="isSongFavorite(song) ? 'fill-current text-tertiary' : ''"
-                  />
-                </MdIconButton>
-                <MdIconButton
-                  size="sm"
-                  variant="standard"
                   :selected="playerStore.isRemoteSongInQueue(activeSourceId, song.id)"
                   :aria-label="t('online.enqueue')"
                   @click="enqueueSong(song)"
@@ -690,19 +604,6 @@ defineExpose({
             </span>
           </button>
           <div class="flex shrink-0 items-center gap-2">
-            <MdIconButton
-              size="sm"
-              variant="standard"
-              :selected="isSongFavorite(song)"
-              :loading="Boolean(favoriteBusy[buildRemoteSongKey(activeSourceId, song.id)])"
-              :aria-label="isSongFavorite(song) ? t('common.unfavorite') : t('common.favorite')"
-              @click="applyRemoteFavorite(song, !isSongFavorite(song), true)"
-            >
-              <LuHeart
-                class="h-4 w-4"
-                :class="isSongFavorite(song) ? 'fill-current text-tertiary' : ''"
-              />
-            </MdIconButton>
             <MdIconButton
               size="sm"
               variant="standard"

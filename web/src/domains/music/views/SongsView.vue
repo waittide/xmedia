@@ -15,7 +15,7 @@ import {
   LuShuffle,
   LuTag,
 } from 'vue-icons-plus/lu'
-import { DomainLibraryTemplate } from '@/components/domain'
+import { DomainLibraryTemplate, DomainPoolSection } from '@/components/domain'
 import {
   MdButton,
   MdChip,
@@ -96,9 +96,9 @@ const isSubDetailView = computed(
 )
 
 const activeTab = computed<LibraryTab>(() => {
+  if (activeScope.value !== 'local') return 'all'
   const raw = readSingleQuery('tab') as LibraryTab
   if (VALID_TABS.includes(raw)) {
-    if (activeScope.value !== 'local' && raw === 'collections') return 'all'
     return raw
   }
   return 'all'
@@ -171,16 +171,13 @@ const isLocalCatalogMode = computed(
 )
 
 const tabs = computed<MdTabItem<string>[]>(() => {
-  if (isSubDetailView.value) return []
-  const base: MdTabItem<string>[] = [
+  if (isSubDetailView.value || activeScope.value !== 'local') return []
+  return [
     { value: 'all', label: t('nav.all'), icon: LuMusic },
     { value: 'continue', label: t('nav.continueListening'), icon: LuClock },
     { value: 'favorites', label: t('nav.favorites'), icon: LuHeart },
+    { value: 'collections', label: t('nav.collections'), icon: LuListMusic },
   ]
-  if (activeScope.value === 'local') {
-    base.push({ value: 'collections', label: t('nav.collections'), icon: LuListMusic })
-  }
-  return base
 })
 
 const viewChips = computed<Array<{ value: MusicViewMode; label: string; icon: typeof LuDisc3 }>>(
@@ -199,6 +196,7 @@ const activeLibraryName = computed(() => {
 })
 
 const pageTitle = computed(() => {
+  if (activeScope.value === 'pool') return globalT('pool.title')
   if (activeScope.value === 'online') return t('online.scopeOnline')
   if (activeScope.value === 'remote') return globalT('remote.subsonicTab')
   if (activeLibraryName.value) return activeLibraryName.value
@@ -589,6 +587,11 @@ function handleTagsUpdated(payload: { trackId: string; tags: string[] }): void {
   )
 }
 
+function handlePoolChanged(): void {
+  musicStore.bumpCatalogVersion()
+  void musicStore.refreshSidebar()
+}
+
 watch(committedQuery, (next) => {
   if (next !== searchInput.value.trim()) {
     searchInput.value = next
@@ -830,22 +833,25 @@ onBeforeUnmount(clearDebounce)
       <LibraryContinuePanel
         v-else-if="activeTab === 'continue'"
         ref="continuePanelRef"
-        :scope="activeScope"
-        :source-id="activeSourceId"
         :query="searchInput"
       />
 
       <LibraryFavoritesPanel
         v-else-if="activeTab === 'favorites'"
         ref="favoritesPanelRef"
-        :scope="activeScope"
-        :source-id="activeSourceId"
         :query="searchInput"
       />
 
       <LibraryCollectionsPanel
         v-else-if="activeScope === 'local' && activeTab === 'collections'"
         :query="searchInput"
+      />
+
+      <DomainPoolSection
+        v-else-if="activeScope === 'pool'"
+        domain="music"
+        :search-query="searchInput"
+        @changed="handlePoolChanged"
       />
 
       <OnlineMusicSearchSection

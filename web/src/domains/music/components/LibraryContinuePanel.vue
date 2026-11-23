@@ -10,7 +10,7 @@ import {
   LuShuffle,
   LuTrash2,
 } from 'vue-icons-plus/lu'
-import { MediaErrorState, MediaItemCard } from '@/components/domain'
+import { MediaErrorState } from '@/components/domain'
 import {
   MdButton,
   MdEmptyState,
@@ -20,19 +20,10 @@ import {
   MediaCoverImage,
 } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
-import {
-  isAvailabilityBlocked,
-  useMergedShelf,
-  useOnlineItemStates,
-  type MediaItemVM,
-  type SourceScope,
-  type TrackedItemRef,
-} from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime } from '@/utils/format'
 import { api, buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
-import { snapshotToOnlineMusicTrack, snapshotToRemoteSubsonicSong } from '../onlineTrackRef'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { AlbumDto, BookmarkDto, PlayQueueDto, TrackDto } from '../types'
@@ -41,12 +32,9 @@ import TrackTable from './TrackTable.vue'
 
 const props = withDefaults(
   defineProps<{
-    scope: SourceScope
-    sourceId?: string | null
     query?: string
   }>(),
   {
-    sourceId: null,
     query: '',
   },
 )
@@ -62,29 +50,6 @@ const savedQueue = ref<PlayQueueDto | null>(null)
 const bookmarks = ref<BookmarkDto[]>([])
 const recentAlbums = ref<AlbumDto[]>([])
 const recentTracks = ref<TrackDto[]>([])
-
-const onlineShelfScope = computed<SourceScope | 'all'>(() =>
-  props.scope === 'local' ? 'online' : props.scope,
-)
-
-const onlineContinueShelf = useMergedShelf('music', 'continue', {
-  scope: onlineShelfScope,
-  sourceId: () => props.sourceId ?? null,
-  query: () => props.query,
-  limit: 30,
-})
-
-const trackedRefs = computed<TrackedItemRef[]>(() => {
-  const out: TrackedItemRef[] = []
-  for (const item of onlineContinueShelf.items.value) {
-    if (item.ref.scope === 'online' || item.ref.scope === 'remote') {
-      out.push(item.ref)
-    }
-  }
-  return out
-})
-
-const onlineStates = useOnlineItemStates(trackedRefs, { autoLoad: false })
 
 const queryNeedle = computed(() => props.query.trim().toLowerCase())
 
@@ -121,7 +86,6 @@ const filteredRecentTracks = computed(() => {
 })
 
 const resumeSession = computed(() => {
-  if (props.scope !== 'local') return null
   if (playerStore.currentTrack && playerStore.queue.length > 0) {
     const tr = playerStore.currentTrack
     const posSecs = playerStore.currentTimeSecs
@@ -172,30 +136,23 @@ const isLocalPlaying = computed(
   () => resumeSession.value?.source === 'local' && playerStore.isPlaying,
 )
 
-const isLoading = computed(() =>
-  props.scope === 'local'
-    ? loadingLocal.value &&
-      !resumeSession.value &&
-      bookmarks.value.length === 0 &&
-      recentTracks.value.length === 0
-    : onlineContinueShelf.loading.value && onlineContinueShelf.items.value.length === 0,
+const isLoading = computed(
+  () =>
+    loadingLocal.value &&
+    !resumeSession.value &&
+    bookmarks.value.length === 0 &&
+    recentTracks.value.length === 0,
 )
 
-const hasAnyContent = computed(() => {
-  if (props.scope !== 'local') {
-    return onlineContinueShelf.items.value.length > 0
-  }
-  return (
+const hasAnyContent = computed(
+  () =>
     resumeSession.value !== null ||
     filteredBookmarks.value.length > 0 ||
-    onlineContinueShelf.items.value.length > 0 ||
     filteredRecentAlbums.value.length > 0 ||
-    filteredRecentTracks.value.length > 0
-  )
-})
+    filteredRecentTracks.value.length > 0,
+)
 
 async function loadLocalContinue(): Promise<void> {
-  if (props.scope !== 'local') return
   loadingLocal.value = true
   localError.value = null
   try {
@@ -224,7 +181,7 @@ async function loadLocalContinue(): Promise<void> {
 }
 
 async function refresh(): Promise<void> {
-  await Promise.allSettled([loadLocalContinue(), onlineContinueShelf.refresh()])
+  await loadLocalContinue()
 }
 
 // Fixes P1-3: Never pause accidentally when already playing; show explicit Pause/Resume toggle
@@ -294,31 +251,10 @@ function bookmarkPercent(bm: BookmarkDto): number {
   return Math.min(100, Math.round((bm.position_ms / durMs) * 100))
 }
 
-function handlePlayOnlineContinue(item: MediaItemVM): void {
-  if (item.badge?.blocked || isAvailabilityBlocked(item.badge?.availability)) {
-    snackbarStore.show({ message: t('common.sourceUnavailable'), tone: 'error' })
-    return
-  }
-  if (item.ref.scope === 'local') return
-  const snap = onlineStates.getState(item.ref)
-  if (!snap) return
-  const resumeSecs = Math.max(0, snap.progress?.position ?? 0)
-  if (item.ref.scope === 'online') {
-    playerStore.playOnlineTrackAt(snapshotToOnlineMusicTrack(snap), resumeSecs)
-  } else {
-    playerStore.playRemoteSongAt(
-      snap.sourceId,
-      snap.sourceName || snap.sourceId,
-      snapshotToRemoteSubsonicSong(snap),
-      resumeSecs,
-    )
-  }
-}
-
 const showSkeleton = useDelayedLoading(isLoading)
 
 onMounted(loadLocalContinue)
-watch(() => [props.scope, musicStore.catalogVersion], loadLocalContinue)
+watch(() => musicStore.catalogVersion, loadLocalContinue)
 
 defineExpose({ refresh })
 </script>
@@ -326,8 +262,8 @@ defineExpose({ refresh })
 <template>
   <div class="space-y-6">
     <MediaErrorState
-      v-if="scope === 'local' ? localError : onlineContinueShelf.error.value"
-      :message="(scope === 'local' ? localError : onlineContinueShelf.error.value) ?? ''"
+      v-if="localError"
+      :message="localError"
       :retrying="isLoading"
       @retry="refresh"
     />
@@ -416,27 +352,8 @@ defineExpose({ refresh })
         </div>
       </section>
 
-      <!-- 2. Online / Remote Continue Listening -->
-      <section v-if="onlineContinueShelf.items.value.length > 0" class="space-y-3">
-        <h2 v-if="scope === 'local'" class="text-title-large text-on-surface">
-          {{ t('online.scopeOnline') }}
-        </h2>
-        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <MediaItemCard
-            v-for="(item, idx) in onlineContinueShelf.items.value"
-            :key="`oc-${idx}-${item.ref.scope === 'local' ? item.ref.id : item.ref.ref}`"
-            :item="item"
-            aspect="square"
-            layout="horizontal"
-            as-button
-            :fallback-icon="LuDisc3"
-            @select="handlePlayOnlineContinue"
-          />
-        </div>
-      </section>
-
-      <!-- 3. Audio Bookmarks (single click target, undo snackbar on delete) -->
-      <section v-if="scope === 'local' && filteredBookmarks.length > 0" class="space-y-3">
+      <!-- 2. Audio Bookmarks (single click target, undo snackbar on delete) -->
+      <section v-if="filteredBookmarks.length > 0" class="space-y-3">
         <h2 class="text-title-large text-on-surface">
           {{ t('continueView.bookmarksSection') }}
         </h2>
@@ -498,8 +415,8 @@ defineExpose({ refresh })
         </div>
       </section>
 
-      <!-- 4. Recently Played Albums -->
-      <section v-if="scope === 'local' && filteredRecentAlbums.length > 0" class="space-y-3">
+      <!-- 3. Recently Played Albums -->
+      <section v-if="filteredRecentAlbums.length > 0" class="space-y-3">
         <h2 class="text-title-large text-on-surface">
           {{ t('continueView.recentAlbumsSection') }}
         </h2>
@@ -508,8 +425,8 @@ defineExpose({ refresh })
         </div>
       </section>
 
-      <!-- 5. Recently Played Tracks -->
-      <section v-if="scope === 'local' && filteredRecentTracks.length > 0" class="space-y-3">
+      <!-- 4. Recently Played Tracks -->
+      <section v-if="filteredRecentTracks.length > 0" class="space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-title-large text-on-surface">
             {{ t('continueView.recentTracksSection') }}

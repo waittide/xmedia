@@ -1,20 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { SelectOption } from '@/components/ui'
+import { LuLibrary } from 'vue-icons-plus/lu'
+import { MdButton, type SelectOption } from '@/components/ui'
 import { usePlayerStore } from '@/domains/music/player'
-import {
-  libraryRoute,
-  useOnlineItemState,
-  type OnlineItemMetadataInput,
-  type TrackedItemRef,
-} from '@/sources'
+import { libraryRoute } from '@/sources'
 import { usePreferencesStore } from '@/stores/preferences'
+import { useSnackbarStore } from '@/stores/snackbar'
+import { api as videoApi } from '../api'
 import VideoPlayerShell, { type VideoPlayerEpisodeItem } from '../components/VideoPlayerShell.vue'
 import {
   buildOnlineVideoDetailRoute,
   buildOnlineVideoPlayRoute,
-  buildOnlineVideoTrackedRef,
   hydrateOnlineVideoPlayerContext,
   readQueryString,
   writeStoredPlayerContext,
@@ -39,6 +36,7 @@ import {
   type OnlineVideoPlayResponseDto,
   type OnlineVideoSubtitle,
 } from '../onlineApi'
+import { useVideoStore } from '../store'
 
 interface ResolvedOnlineVideoSubtitle extends OnlineVideoSubtitle {
   resolvedUrl: string
@@ -49,6 +47,9 @@ const route = useRoute()
 const router = useRouter()
 const preferencesStore = usePreferencesStore()
 const musicPlayerStore = usePlayerStore()
+const videoStore = useVideoStore()
+const snackbar = useSnackbarStore()
+const trackingToLibrary = ref(false)
 
 const shellRef = ref<InstanceType<typeof VideoPlayerShell> | null>(null)
 const videoEl = ref<HTMLVideoElement | null>(null)
@@ -97,35 +98,6 @@ let detailSeq = 0
 let syncUrlSeq = 0
 let syncingUrl = false
 let unmounted = false
-let lastSavedProgressAt = 0
-
-// Unified online progress & favorite state
-const trackedRef = computed<TrackedItemRef | null>(() =>
-  buildOnlineVideoTrackedRef({
-    sourceId: sourceId.value,
-    detailUrl: detailUrl.value,
-    videoId: videoId.value,
-    ref: currentPlayUrl.value || undefined,
-    title: title.value || sourceName.value || 'Online Video',
-    cover: coverUrl.value,
-    sourceName: sourceName.value,
-  }),
-)
-
-const itemMeta = computed<OnlineItemMetadataInput>(() => {
-  const extra: Record<string, unknown> = {}
-  if (videoId.value) extra.vid = videoId.value
-  if (detailUrl.value) extra.detail_url = detailUrl.value
-  if (sourceName.value) extra.source_name = sourceName.value
-  return {
-    title: title.value || sourceName.value || 'Online Video',
-    subtitle: sourceName.value || undefined,
-    coverUrl: coverUrl.value,
-    extra,
-  }
-})
-
-const itemState = useOnlineItemState(trackedRef, itemMeta, { autoLoad: false })
 
 const activeGroup = computed<OnlineVideoPlayGroup | null>(() => {
   if (playGroups.value.length === 0) return null
@@ -258,49 +230,71 @@ function applyHydratedContext(): void {
   currentPlayUrl.value = ctx.currentPlayUrl
 }
 
-function buildOnlineProgressPayload(opts?: { completed?: boolean }) {
-  if (!trackedRef.value || !currentPlayUrl.value) return null
-  const pos = Math.max(0, currentTimeSecs.value)
-  const dur = Number.isFinite(durationSecs.value) && durationSecs.value > 0 ? durationSecs.value : undefined
-  const completed =
-    opts?.completed ?? (dur !== undefined && dur > 30 && pos / dur >= 0.95 ? true : false)
-  return {
-    unitIndex: currentEpisodeIndex.value,
-    unitKey: currentPlayUrl.value,
-    unitTitle: currentEpisode.value?.name,
-    unitGroup: activeGroupName.value || undefined,
-    position: pos,
-    duration: dur,
-    totalUnits: activeEpisodes.value.length > 0 ? activeEpisodes.value.length : undefined,
-    completed,
+async function handleTrackToLibrary(): Promise<void> {
+  if (
+    trackingToLibrary.value ||
+    !sourceId.value ||
+    (!videoId.value && !detailUrl.value)
+  ) {
+    return
   }
-}
+  trackingToLibrary.value = true
+  try {
+    const res = await onlineVideoApi.trackOnlineVideo({
+      source_id: sourceId.value,
+      video_id: videoId.value || null,
+      detail_url: detailUrl.value || null,
+      group_name: activeGroupName.value || null,
+    })
 
-function reportOnlineProgress(opts?: { immediate?: boolean; completed?: boolean }): void {
-  const payload = buildOnlineProgressPayload({ completed: opts?.completed })
-  if (!payload) return
-  if (!opts?.immediate && !opts?.completed && payload.position < 1) return
-  itemState.saveProgress(payload, { immediate: opts?.immediate })
-}
+    let targetVideoId: string | null = null
+    if (res.kind === 'show' && res.show) {
+      const allEps = res.show.seasons.flatMap((s) => s.episodes)
+      const curEp = currentEpisode.value
+      const matched =
+        (curEp
+          ? allEps.find(
+              (ep) =>
+                ep.episode_number === currentEpisodeIndex.value + 1 ||
+                ep.title === curEp.name,
+            )
+          : undefined) ??
+        allEps[currentEpisodeIndex.value] ??
+        allEps[0]
+      targetVideoId = matched?.id ?? null
+    } else if (res.video) {
+      targetVideoId = res.video.id
+    }
 
-function flushOnlineVideoProgressOnPageHide(): void {
-  const payload = buildOnlineProgressPayload()
-  if (payload && payload.position > 1) {
-    itemState.flushProgressKeepalive(payload)
-  } else {
-    itemState.flushProgressKeepalive()
+    if (targetVideoId && currentTimeSecs.value > 1) {
+      try {
+        await videoApi.saveProgress(targetVideoId, {
+          position_secs: Math.round(currentTimeSecs.value),
+          duration_secs: durationSecs.value > 0 ? Math.round(durationSecs.value) : undefined,
+          completed: false,
+        })
+      } catch {
+        // Non-fatal: still transition to local player even if initial progress transfer fails
+      }
+    }
+
+    videoStore.bumpCatalogVersion()
+    void videoStore.refreshSidebar(true)
+    snackbar.show({ message: t('online.trackedToLibraryToast') })
+
+    if (targetVideoId) {
+      stopAndClearVideoElement()
+      clearVideoMediaSession()
+      await router.replace(`/video/play/${encodeURIComponent(targetVideoId)}`)
+    }
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    trackingToLibrary.value = false
   }
-}
-
-function resolveSavedResumeSeconds(): number {
-  const saved = itemState.progress.value
-  if (!saved || saved.completed || saved.position <= 3) return 0
-  const matchesEpisode =
-    (saved.unitKey && saved.unitKey === currentPlayUrl.value) ||
-    (saved.unitIndex !== undefined &&
-      saved.unitIndex === currentEpisodeIndex.value &&
-      (!saved.unitGroup || !activeGroupName.value || saved.unitGroup === activeGroupName.value))
-  return matchesEpisode ? saved.position : 0
 }
 
 async function fetchDetailFallbackIfNeeded(): Promise<boolean> {
@@ -376,7 +370,7 @@ function syncMediaSession(): void {
   })
 }
 
-async function loadPlay(options?: { preserveTimeSecs?: number; checkSavedResume?: boolean }): Promise<void> {
+async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> {
   const seq = ++playSeq
   const requestedPreserve = options?.preserveTimeSecs ?? 0
 
@@ -409,19 +403,7 @@ async function loadPlay(options?: { preserveTimeSecs?: number; checkSavedResume?
     return
   }
 
-  let targetStartSecs = requestedPreserve
-  if (targetStartSecs <= 0 && options?.checkSavedResume && trackedRef.value) {
-    try {
-      await itemState.refresh(false)
-    } catch {
-      // ignore non-fatal state lookup error
-    }
-    if (unmounted || seq !== playSeq) return
-    targetStartSecs = resolveSavedResumeSeconds()
-    if (targetStartSecs > 0) {
-      currentTimeSecs.value = targetStartSecs
-    }
-  }
+  const targetStartSecs = requestedPreserve
 
   persistPlayerContext()
   syncMediaSession()
@@ -509,11 +491,6 @@ function selectEpisode(
   const targetGroup = playGroups.value.find((g) => g.name === targetGroupName) ?? activeGroup.value
   if (!targetGroup || !targetGroup.episodes[epIndex]) return
 
-  // Save outgoing episode progress when moving to a different episode
-  if (!opts?.preserveTimeSecs && currentTimeSecs.value > 1) {
-    reportOnlineProgress({ immediate: true })
-  }
-
   const ep = targetGroup.episodes[epIndex]!
   activeGroupName.value = targetGroup.name
   currentEpisodeIndex.value = epIndex
@@ -599,7 +576,6 @@ function seekTo(targetSecs: number): void {
   const clamped = Math.max(0, Math.min(maxDur, targetSecs))
   el.currentTime = clamped
   currentTimeSecs.value = clamped
-  reportOnlineProgress()
 }
 
 function onPlaybackRateChange(rate: number): void {
@@ -642,11 +618,6 @@ function onTimeUpdate(): void {
   const el = videoEl.value
   if (!el) return
   currentTimeSecs.value = el.currentTime || 0
-  const now = Date.now()
-  if (isPlaying.value && currentTimeSecs.value > 1 && now - lastSavedProgressAt >= 4000) {
-    lastSavedProgressAt = now
-    reportOnlineProgress()
-  }
 }
 
 function onDurationChange(): void {
@@ -665,16 +636,12 @@ function onVideoPlay(): void {
 function onVideoPause(): void {
   isPlaying.value = false
   setVideoMediaSessionState('paused')
-  if (currentTimeSecs.value > 1 && !videoEl.value?.ended) {
-    reportOnlineProgress({ immediate: true })
-  }
 }
 
 function onVideoEnded(): void {
   isPlaying.value = false
   isBuffering.value = false
   setVideoMediaSessionState('paused')
-  reportOnlineProgress({ immediate: true, completed: true })
   if (preferencesStore.video.autoplay_next && hasNextEpisode.value) {
     goToNextEpisode()
   }
@@ -690,9 +657,6 @@ function onVideoError(): void {
 }
 
 function goBack(): void {
-  if (currentTimeSecs.value > 1) {
-    reportOnlineProgress({ immediate: true })
-  }
   stopAndClearVideoElement()
   clearVideoMediaSession()
 
@@ -721,13 +685,12 @@ function goBack(): void {
 onMounted(() => {
   unmounted = false
   musicPlayerStore.pause()
-  window.addEventListener('pagehide', flushOnlineVideoProgressOnPageHide)
   if (videoEl.value) {
     videoEl.value.volume = volume.value
     videoEl.value.muted = muted.value
   }
   applyHydratedContext()
-  void loadPlay({ checkSavedResume: true })
+  void loadPlay()
   if (playGroups.value.length === 0 && currentPlayUrl.value) {
     void fetchDetailFallbackIfNeeded()
   }
@@ -735,12 +698,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unmounted = true
-  window.removeEventListener('pagehide', flushOnlineVideoProgressOnPageHide)
   playSeq += 1
   detailSeq += 1
-  if (currentTimeSecs.value > 1) {
-    reportOnlineProgress({ immediate: true })
-  }
   stopAndClearVideoElement()
   clearVideoMediaSession()
 })
@@ -774,7 +733,7 @@ watch(
       return
     }
     applyHydratedContext()
-    void loadPlay({ checkSavedResume: true })
+    void loadPlay()
     if (playGroups.value.length === 0 && currentPlayUrl.value) {
       void fetchDetailFallbackIfNeeded()
     }
@@ -830,6 +789,19 @@ watch(
     @update:subtitle="selectedSubtitleIdx = $event"
     @select-episode="handleSelectEpisodeById"
   >
+    <template v-if="sourceId && (videoId || detailUrl)" #header-actions>
+      <MdButton
+        variant="tonal"
+        size="sm"
+        :icon="LuLibrary"
+        :loading="trackingToLibrary"
+        :disabled="trackingToLibrary"
+        @click="handleTrackToLibrary"
+      >
+        {{ trackingToLibrary ? t('online.trackingBtn') : t('online.trackToLibraryBtn') }}
+      </MdButton>
+    </template>
+
     <video
       ref="videoEl"
       class="h-full w-full bg-black object-contain"

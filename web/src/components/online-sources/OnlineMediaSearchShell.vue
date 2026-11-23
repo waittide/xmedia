@@ -166,7 +166,7 @@ const internalTrackedRefs = computed<TrackedItemRef[]>(() => {
 })
 
 const internalItemStates = useOnlineItemStates(internalTrackedRefs, {
-  autoLoad: !props.itemStates,
+  autoLoad: false,
 })
 
 const resolvedItemStates = computed(() => props.itemStates ?? internalItemStates)

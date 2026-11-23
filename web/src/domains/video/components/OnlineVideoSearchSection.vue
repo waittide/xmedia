@@ -1,18 +1,11 @@
 <script setup lang="ts">
 import { computed, toRef } from 'vue'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
 import OnlineMediaSearchShell from '@/components/online-sources/OnlineMediaSearchShell.vue'
 import {
   useOnlineSearchBrowse,
   type OnlineBrowseCategory,
 } from '@/components/online-sources/useOnlineSearchBrowse'
-import {
-  onlineItemsApi,
-  sanitizeCoverUrlForApi,
-  seedOnlineItemStateCache,
-  type MediaItemVM,
-} from '@/sources'
-import { useSnackbarStore } from '@/stores/snackbar'
+import type { MediaItemVM } from '@/sources'
 import {
   buildOnlineVideoDetailRoute,
   buildOnlineVideoTrackedRef,
@@ -44,8 +37,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
-const snackbar = useSnackbarStore()
 
 const sourceNameById = new Map<string, string>()
 
@@ -202,50 +193,6 @@ function handleSelectItem(vm: MediaItemVM): void {
   })
 }
 
-async function applyCardFavorite(vm: MediaItemVM, nextFavorite: boolean, allowUndo: boolean): Promise<void> {
-  if (vm.ref.scope === 'local') return
-  const raw = findRawItem(vm)
-  const extra: Record<string, unknown> = {}
-  if (raw?.vod_id) extra.vid = raw.vod_id
-  if (raw?.detail_url) extra.detail_url = raw.detail_url
-  if (raw?.source_name) extra.source_name = raw.source_name
-  if (raw?.remarks) extra.remarks = raw.remarks
-
-  try {
-    const saved = await onlineItemsApi.upsert('video', {
-      source_kind: vm.ref.scope,
-      source_id: vm.ref.sourceId,
-      item_key: vm.ref.ref,
-      title: raw?.title || vm.title,
-      subtitle: vm.subtitle ?? null,
-      cover_url: sanitizeCoverUrlForApi(raw?.cover_url ?? vm.ref.hints?.cover ?? null),
-      extra: Object.keys(extra).length > 0 ? extra : null,
-      favorite: nextFavorite,
-    })
-    seedOnlineItemStateCache([saved])
-    if (!nextFavorite && allowUndo) {
-      snackbar.show({
-        message: globalT('common.removedFromFavorites'),
-        actionLabel: globalT('common.undo'),
-        onAction: async () => {
-          await applyCardFavorite(vm, true, false)
-        },
-      })
-    }
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  }
-}
-
-function handleToggleFavorite(vm: MediaItemVM): void {
-  if (vm.ref.scope === 'local') return
-  const current = browse.itemStates.isFavorite(vm.ref)
-  void applyCardFavorite(vm, !current, true)
-}
-
 function submitKeyword(nextKw: string): void {
   browse.setKeyword(nextKw, { debounce: false })
   void browse.submitSearch()
@@ -288,7 +235,7 @@ defineExpose({
     :item-states="browse.itemStates"
     item-aspect="poster"
     item-cover-style="plain"
-    :show-favorite-on-cards="true"
+    :show-favorite-on-cards="false"
     :has-more="browse.activeHasMore.value"
     :loading-more="browse.activeLoadingMore.value"
     :idle-hint="t('online.browseEmpty')"
@@ -303,6 +250,5 @@ defineExpose({
     @retry-search="browse.retrySearch()"
     @load-more="browse.loadMore()"
     @select-item="handleSelectItem"
-    @toggle-favorite="handleToggleFavorite"
   />
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import {
   LuCheck,
@@ -43,6 +44,7 @@ import { useVideoStore } from '../store'
 import type { ShowDetailDto, VideoDetailDto, VideoSummaryDto } from '../types'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -419,6 +421,32 @@ function triggerVideoDownload(videoId: string, close?: () => void): void {
   a.remove()
 }
 
+async function handleUnbindCurrent(close?: () => void): Promise<void> {
+  close?.()
+  const targetId =
+    mode.value === 'movie' ? movieDetail.value?.video.id : showDetail.value?.show.id
+  const title = displayTitle.value
+  if (!targetId) return
+  const ok = await dialogStore.confirm({
+    title: globalT('pool.unbindBtn'),
+    message: globalT('pool.unbindConfirm', { title }),
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await api.unbindItem(targetId)
+    await videoStore.refreshSidebar(true)
+    videoStore.bumpCatalogVersion()
+    snackbar.show({ message: globalT('pool.unboundToast') })
+    await router.replace(libraryRoute('video'))
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
 async function handleDeleteVideo(video: VideoSummaryDto, close?: () => void): Promise<void> {
   close?.()
   const ok = await dialogStore.confirm({
@@ -464,7 +492,7 @@ function episodeProgressPercent(ep: VideoSummaryDto): number {
 
 async function handleRefreshTrackedShow(close?: () => void): Promise<void> {
   close?.()
-  if (!authStore.isAdmin || !showDetail.value || refreshingTrackedShow.value) return
+  if (!showDetail.value || refreshingTrackedShow.value) return
   refreshingTrackedShow.value = true
   try {
     const updated = await onlineVideoApi.refreshTrackedShow(showDetail.value.show.id)
@@ -492,7 +520,7 @@ async function handleRefreshTrackedShow(close?: () => void): Promise<void> {
 
 async function handleCacheTrackedShow(close?: () => void): Promise<void> {
   close?.()
-  if (!authStore.isAdmin || !showDetail.value || cachingShow.value) return
+  if (!showDetail.value || cachingShow.value) return
   cachingShow.value = true
   try {
     const report = await onlineVideoApi.cacheTrackedShow(showDetail.value.show.id)
@@ -526,7 +554,7 @@ async function handleCacheTrackedShow(close?: () => void): Promise<void> {
 
 async function handleCacheTrackedVideo(video: VideoSummaryDto, close?: () => void): Promise<void> {
   close?.()
-  if (!authStore.isAdmin || cachingVideoIds.value.has(video.id)) return
+  if (cachingVideoIds.value.has(video.id)) return
   const next = new Set(cachingVideoIds.value)
   next.add(video.id)
   cachingVideoIds.value = next
@@ -631,7 +659,7 @@ watch([itemId, isMovieQuery], () => {
       <template #overflow-menu="{ close }">
         <template v-if="mode === 'movie' && movieDetail">
           <MdMenuItem
-            v-if="authStore.isAdmin && movieTracking && !movieTracking.cached"
+            v-if="movieTracking && !movieTracking.cached"
             :icon="LuCloud"
             :label="t('online.cacheVideoBtn')"
             :disabled="cachingVideoIds.has(movieDetail.video.id)"
@@ -664,7 +692,7 @@ watch([itemId, isMovieQuery], () => {
         </template>
 
         <template v-else-if="mode === 'show' && showDetail">
-          <template v-if="authStore.isAdmin && showTrackedStats.isTracked">
+          <template v-if="showTrackedStats.isTracked">
             <MdMenuItem
               :icon="LuRefreshCw"
               :label="
@@ -706,8 +734,15 @@ watch([itemId, isMovieQuery], () => {
         />
       </template>
 
-      <template v-if="mode === 'movie' && movieDetail && authStore.isAdmin" #overflow-danger="{ close }">
+      <template v-if="showDetail || movieDetail" #overflow-danger="{ close }">
         <MdMenuItem
+          :icon="LuTrash2"
+          :label="globalT('pool.unbindBtn')"
+          destructive
+          @select="handleUnbindCurrent(close)"
+        />
+        <MdMenuItem
+          v-if="mode === 'movie' && movieDetail && authStore.isAdmin"
           :icon="LuTrash2"
           :label="t('common.delete')"
           destructive
@@ -816,7 +851,7 @@ watch([itemId, isMovieQuery], () => {
                 </template>
                 <template #default="{ close }">
                   <MdMenuItem
-                    v-if="authStore.isAdmin && ep.online_tracking && !ep.online_tracking.cached"
+                    v-if="ep.online_tracking && !ep.online_tracking.cached"
                     :icon="LuCloud"
                     :label="t('online.cacheVideoBtn')"
                     :disabled="cachingVideoIds.has(ep.id)"

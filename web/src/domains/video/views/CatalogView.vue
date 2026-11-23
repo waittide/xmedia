@@ -17,7 +17,7 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu'
-import { DomainLibraryTemplate, MediaItemCard } from '@/components/domain'
+import { DomainLibraryTemplate, DomainPoolSection, MediaItemCard } from '@/components/domain'
 import {
   MdButton,
   MdCard,
@@ -32,8 +32,6 @@ import {
   type SelectOption,
 } from '@/components/ui'
 import {
-  onlineItemsApi,
-  seedOnlineItemStateCache,
   useMergedShelf,
   useSourceFilter,
   type LibraryTab,
@@ -100,9 +98,10 @@ function readQueryStr(key: string): string {
   return ''
 }
 
-const activeScope = computed<SourceScope>(() =>
-  sourceFilter.filter.value.scope === 'online' ? 'online' : 'local',
-)
+const activeScope = computed<SourceScope>(() => {
+  const scope = sourceFilter.filter.value.scope
+  return scope === 'online' || scope === 'pool' ? scope : 'local'
+})
 const onlineSourceId = computed<string | null>(() => sourceFilter.filter.value.sourceId)
 
 const activeCollectionId = computed(() =>
@@ -110,9 +109,9 @@ const activeCollectionId = computed(() =>
 )
 
 const activeTab = computed<LibraryTab>(() => {
+  if (activeScope.value !== 'local') return 'all'
   const raw = readQueryStr('tab') as LibraryTab
   if (VALID_TABS.has(raw)) {
-    if (activeScope.value === 'online' && raw === 'collections') return 'all'
     return raw
   }
   return 'all'
@@ -155,20 +154,19 @@ watch(routeQueryQ, (next) => {
   }
 })
 
-// Cross-source Continue & Favorites via useMergedShelf
+// Local Continue & Favorites via useMergedShelf
 const isShelfTab = computed(
-  () => !activeCollectionId.value && (activeTab.value === 'continue' || activeTab.value === 'favorites'),
+  () =>
+    activeScope.value === 'local' &&
+    !activeCollectionId.value &&
+    (activeTab.value === 'continue' || activeTab.value === 'favorites'),
 )
 const mergedShelfView = computed<'continue' | 'favorites'>(() =>
   activeTab.value === 'favorites' ? 'favorites' : 'continue',
 )
-const mergedShelfScope = computed<'all' | 'online'>(() =>
-  activeScope.value === 'online' ? 'online' : 'all',
-)
 
 const mergedShelf = useMergedShelf('video', mergedShelfView, {
-  scope: mergedShelfScope,
-  sourceId: onlineSourceId,
+  scope: 'local',
   query: routeQueryQ,
   limit: 100,
   autoLoad: false,
@@ -313,16 +311,13 @@ function handleOnlineSourceSync(nextSourceId: string | null): void {
 
 // Tabs & options
 const primaryTabs = computed<MdTabItem<string>[]>(() => {
-  if (activeCollectionId.value) return []
-  const base: MdTabItem<string>[] = [
+  if (activeCollectionId.value || activeScope.value !== 'local') return []
+  return [
     { value: 'all', label: t('nav.all') },
     { value: 'continue', label: t('nav.continueWatching') },
     { value: 'favorites', label: t('nav.favorites') },
+    { value: 'collections', label: t('nav.collections') },
   ]
-  if (activeScope.value === 'local') {
-    base.push({ value: 'collections', label: t('nav.collections') })
-  }
-  return base
 })
 
 const viewChipOptions = computed<Array<{ value: VideoLibraryView; label: string }>>(() => [
@@ -431,6 +426,7 @@ const pageTitle = computed(() => {
   if (activeCollectionId.value) {
     return shelfDetail.value?.shelf.name || t('nav.collections')
   }
+  if (activeScope.value === 'pool') return globalT('pool.title')
   if (activeScope.value === 'online') return t('online.scopeOnline')
   if (activeTab.value === 'continue') return t('continueView.title')
   if (activeTab.value === 'favorites') return t('favorites.title')
@@ -445,8 +441,14 @@ const pageTitle = computed(() => {
   return t('nav.library')
 })
 
+const isPoolBrowseMode = computed(() => activeScope.value === 'pool')
+
+const isOnlineSearchMode = computed(
+  () => activeScope.value === 'online' && activeTab.value === 'all',
+)
+
 const pageCount = computed<number | null>(() => {
-  if (activeScope.value === 'online' && activeTab.value === 'all') return null
+  if (isPoolBrowseMode.value || isOnlineSearchMode.value) return null
   if (isShelfTab.value) return mergedShelfItems.value.length
   if (activeCollectionId.value) return filteredShelfVideos.value.length
   if (activeTab.value === 'collections') return filteredShelves.value.length
@@ -456,24 +458,27 @@ const pageCount = computed<number | null>(() => {
   return videos.value.length
 })
 
-const isOnlineSearchMode = computed(
-  () => activeScope.value === 'online' && activeTab.value === 'all',
-)
-
 const templateLoading = computed(() => {
-  if (isOnlineSearchMode.value) return false
+  if (isPoolBrowseMode.value || isOnlineSearchMode.value) return false
   if (isShelfTab.value) return mergedShelf.loading.value
   return localLoading.value
 })
 
 const templateError = computed<string | null>(() => {
-  if (isOnlineSearchMode.value) return null
+  if (isPoolBrowseMode.value || isOnlineSearchMode.value) return null
   if (isShelfTab.value) return mergedShelf.error.value
   return localError.value
 })
 
 const templateEmpty = computed(() => {
-  if (isOnlineSearchMode.value || templateLoading.value || templateError.value) return false
+  if (
+    isPoolBrowseMode.value ||
+    isOnlineSearchMode.value ||
+    templateLoading.value ||
+    templateError.value
+  ) {
+    return false
+  }
   if (isShelfTab.value) return mergedShelfItems.value.length === 0
   if (activeCollectionId.value) return filteredShelfVideos.value.length === 0
   if (activeTab.value === 'collections') return filteredShelves.value.length === 0
@@ -503,7 +508,7 @@ const skeletonAspect = computed<'video' | 'poster'>(() =>
 
 // Data fetching
 async function fetchActiveData(): Promise<void> {
-  if (isOnlineSearchMode.value) {
+  if (isPoolBrowseMode.value || isOnlineSearchMode.value) {
     localLoading.value = false
     localError.value = null
     return
@@ -671,28 +676,23 @@ async function handleRemoveVideoFromShelf(videoId: string): Promise<void> {
   }
 }
 
-// Merged continue/favorites item quick actions
+function handlePoolChanged(): void {
+  videoStore.bumpCatalogVersion()
+  void videoStore.refreshSidebar(true)
+}
+
+// Local continue/favorites item quick actions
 async function handleMergedRemoveFavorite(item: MediaItemVM): Promise<void> {
+  if (item.ref.scope !== 'local') return
   try {
-    if (item.ref.scope === 'local') {
-      const isShow =
-        typeof item.to === 'object' &&
-        item.to &&
-        'path' in item.to &&
-        typeof item.to.path === 'string' &&
-        item.to.path.startsWith('/video/item/') &&
-        !('query' in item.to && (item.to.query as Record<string, unknown>)?.kind === 'movie')
-      await api.setFavorite(isShow ? 'show' : 'video', item.ref.id, false)
-    } else {
-      const saved = await onlineItemsApi.upsert('video', {
-        source_kind: item.ref.scope,
-        source_id: item.ref.sourceId,
-        item_key: item.ref.ref,
-        title: item.title,
-        favorite: false,
-      })
-      seedOnlineItemStateCache([saved])
-    }
+    const isShow =
+      typeof item.to === 'object' &&
+      item.to &&
+      'path' in item.to &&
+      typeof item.to.path === 'string' &&
+      item.to.path.startsWith('/video/item/') &&
+      !('query' in item.to && (item.to.query as Record<string, unknown>)?.kind === 'movie')
+    await api.setFavorite(isShow ? 'show' : 'video', item.ref.id, false)
     await mergedShelf.refresh()
     snackbar.show({
       message: globalT('common.removedFromFavorites'),
@@ -707,19 +707,9 @@ async function handleMergedRemoveFavorite(item: MediaItemVM): Promise<void> {
 
 async function handleMergedClearContinue(item: MediaItemVM, close: () => void): Promise<void> {
   close()
+  if (item.ref.scope !== 'local') return
   try {
-    if (item.ref.scope === 'local') {
-      await api.setWatched(item.ref.id, true)
-    } else {
-      const lookup = await onlineItemsApi.lookup('video', [
-        { source_kind: item.ref.scope, source_id: item.ref.sourceId, item_key: item.ref.ref },
-      ])
-      const existing = lookup.items[0]
-      if (existing) {
-        const updated = await onlineItemsApi.clearProgress('video', existing.id)
-        seedOnlineItemStateCache([updated])
-      }
-    }
+    await api.setWatched(item.ref.id, true)
     await mergedShelf.refresh()
   } catch (err) {
     snackbar.show({
@@ -752,7 +742,7 @@ watch(
 watch(
   () => [videoStore.catalogVersion, uploadStore.versionCounter],
   () => {
-    if (!isOnlineSearchMode.value) {
+    if (!isPoolBrowseMode.value && !isOnlineSearchMode.value) {
       void fetchActiveData()
     }
   },
@@ -1055,9 +1045,17 @@ onBeforeUnmount(() => {
         </form>
       </template>
 
+      <!-- Mode 0: Resource Pool Browse -->
+      <DomainPoolSection
+        v-if="isPoolBrowseMode"
+        domain="video"
+        :search-query="searchInput"
+        @changed="handlePoolChanged"
+      />
+
       <!-- Mode 1: Online Search & Explore Shell (single search bar lives in DomainLibraryTemplate) -->
       <OnlineVideoSearchSection
-        v-if="isOnlineSearchMode"
+        v-else-if="isOnlineSearchMode"
         ref="onlineSearchRef"
         :keyword="routeQueryQ"
         :initial-source-id="onlineSourceId"
@@ -1210,7 +1208,7 @@ onBeforeUnmount(() => {
         v-else-if="activeView === 'shows'"
         class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
       >
-        <ShowCard v-for="sh in shows" :key="sh.id" :show="sh" />
+        <ShowCard v-for="sh in shows" :key="sh.id" :show="sh" @unbound="fetchActiveData" />
       </div>
 
       <!-- Mode 7: Videos / Movies Grid (view=items | view=movies) -->

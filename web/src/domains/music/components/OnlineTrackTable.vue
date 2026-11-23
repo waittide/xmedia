@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
+import { ref } from 'vue'
 import {
   LuCheck,
   LuDisc3,
   LuDownload,
-  LuHeart,
   LuLibrary,
   LuListPlus,
   LuMoreHorizontal,
@@ -14,14 +12,6 @@ import {
   LuVolume2,
 } from 'vue-icons-plus/lu'
 import { MdButton, MdIconButton, MdMenu, MdMenuItem, MediaCoverImage } from '@/components/ui'
-import {
-  onlineItemsApi,
-  sanitizeCoverUrlForApi,
-  seedOnlineItemStateCache,
-  useOnlineItemStates,
-  type TrackedItemRef,
-} from '@/sources'
-import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime as formatDuration } from '@/utils/format'
 import { downloadOnlineTrack } from '../download'
@@ -32,7 +22,6 @@ import {
   type OnlineMusicTrackDto,
   type TrackOnlineMusicInput,
 } from '../onlineApi'
-import { onlineTrackToItemMeta, onlineTrackToTrackedRef } from '../onlineTrackRef'
 import { buildOnlineTrackKey, usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 
@@ -49,23 +38,14 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
-const authStore = useAuthStore()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 const snackbarStore = useSnackbarStore()
 
-const favoriteBusy = ref<Record<string, boolean>>({})
 const trackingBusy = ref<Record<string, boolean>>({})
 const downloadingKeys = ref<Record<string, boolean>>({})
 const trackedKeys = ref<Record<string, boolean>>({})
 const batchTracking = ref(false)
-
-const trackedRefs = computed<TrackedItemRef[]>(() =>
-  props.tracks.map((tr) => onlineTrackToTrackedRef(tr)),
-)
-
-const itemStates = useOnlineItemStates(trackedRefs)
 
 function trackKey(tr: OnlineMusicTrackDto): string {
   return buildOnlineTrackKey(tr)
@@ -84,10 +64,6 @@ function resolveCoverSrc(tr: OnlineMusicTrackDto): string | null {
     tr.track_id,
   )
   return resolved || null
-}
-
-function isTrackFavorite(tr: OnlineMusicTrackDto): boolean {
-  return itemStates.isFavorite(onlineTrackToTrackedRef(tr))
 }
 
 function formatOnlineQuality(tr: OnlineMusicTrackDto): string {
@@ -150,55 +126,6 @@ async function handleDownloadTrack(tr: OnlineMusicTrackDto): Promise<void> {
   }
 }
 
-async function applyOnlineFavorite(
-  tr: OnlineMusicTrackDto,
-  nextFav: boolean,
-  showUndo: boolean,
-): Promise<void> {
-  const key = trackKey(tr)
-  if (favoriteBusy.value[key]) return
-  favoriteBusy.value = { ...favoriteBusy.value, [key]: true }
-
-  const tracked = onlineTrackToTrackedRef(tr)
-  const meta = onlineTrackToItemMeta(tr)
-  try {
-    const saved = await onlineItemsApi.upsert('music', {
-      source_kind: tracked.scope,
-      source_id: tracked.sourceId,
-      item_key: tracked.ref,
-      title: meta.title,
-      subtitle: meta.subtitle ?? null,
-      cover_url: sanitizeCoverUrlForApi(meta.coverUrl),
-      kind: meta.kind ?? 'track',
-      extra: meta.extra ?? null,
-      favorite: nextFav,
-    })
-    seedOnlineItemStateCache([saved])
-    if (!nextFav && showUndo) {
-      snackbarStore.show({
-        message: globalT('common.removedFromFavorites'),
-        actionLabel: globalT('common.undo'),
-        onAction: () => {
-          void applyOnlineFavorite(tr, true, false)
-        },
-      })
-    }
-  } catch (err) {
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    const next = { ...favoriteBusy.value }
-    delete next[key]
-    favoriteBusy.value = next
-  }
-}
-
-async function handleToggleFavorite(tr: OnlineMusicTrackDto): Promise<void> {
-  await applyOnlineFavorite(tr, !isTrackFavorite(tr), true)
-}
-
 function toTrackOnlineInput(tr: OnlineMusicTrackDto): TrackOnlineMusicInput {
   return {
     source_id: tr.source_id,
@@ -219,7 +146,6 @@ function toTrackOnlineInput(tr: OnlineMusicTrackDto): TrackOnlineMusicInput {
 }
 
 async function handleTrackToLibrary(tr: OnlineMusicTrackDto): Promise<void> {
-  if (!authStore.isAdmin) return
   const key = trackKey(tr)
   if (trackingBusy.value[key]) return
   trackingBusy.value = { ...trackingBusy.value, [key]: true }
@@ -242,7 +168,7 @@ async function handleTrackToLibrary(tr: OnlineMusicTrackDto): Promise<void> {
 }
 
 async function handleTrackAllToLibrary(): Promise<void> {
-  if (!authStore.isAdmin || batchTracking.value || props.tracks.length === 0) return
+  if (batchTracking.value || props.tracks.length === 0) return
   batchTracking.value = true
   try {
     const created = await onlineMusicApi.trackOnlineTracksBatch(
@@ -270,7 +196,7 @@ async function handleTrackAllToLibrary(): Promise<void> {
 <template>
   <div class="overflow-hidden rounded-corner-lg bg-surface-container-low">
     <div
-      v-if="authStore.isAdmin && tracks.length > 1"
+      v-if="tracks.length > 1"
       class="flex items-center justify-end border-b border-outline-variant/50 px-3 py-2"
     >
       <MdButton
@@ -428,7 +354,6 @@ async function handleTrackAllToLibrary(): Promise<void> {
           <td class="w-40 px-2 py-2.5 text-right sm:w-48 sm:px-3" @click.stop>
             <div class="inline-flex items-center justify-end gap-1">
               <MdIconButton
-                v-if="authStore.isAdmin"
                 size="sm"
                 variant="standard"
                 :selected="Boolean(trackedKeys[trackKey(tr)])"
@@ -443,20 +368,6 @@ async function handleTrackAllToLibrary(): Promise<void> {
               >
                 <LuCheck v-if="trackedKeys[trackKey(tr)]" class="h-4 w-4 text-primary" />
                 <LuLibrary v-else class="h-4 w-4" />
-              </MdIconButton>
-
-              <MdIconButton
-                size="sm"
-                variant="standard"
-                :selected="isTrackFavorite(tr)"
-                :loading="Boolean(favoriteBusy[trackKey(tr)])"
-                :aria-label="isTrackFavorite(tr) ? t('common.unfavorite') : t('common.favorite')"
-                @click="handleToggleFavorite(tr)"
-              >
-                <LuHeart
-                  class="h-4 w-4"
-                  :class="isTrackFavorite(tr) ? 'fill-current text-tertiary' : ''"
-                />
               </MdIconButton>
 
               <MdIconButton
@@ -500,7 +411,6 @@ async function handleTrackAllToLibrary(): Promise<void> {
                 </template>
 
                 <MdMenuItem
-                  v-if="authStore.isAdmin"
                   :icon="LuLibrary"
                   :label="
                     trackedKeys[trackKey(tr)] ? t('online.trackedInLibrary') : t('online.trackToLibrary')
@@ -518,11 +428,6 @@ async function handleTrackAllToLibrary(): Promise<void> {
                   :label="t('common.download')"
                   :disabled="Boolean(downloadingKeys[trackKey(tr)])"
                   @select="handleDownloadTrack(tr)"
-                />
-                <MdMenuItem
-                  :icon="LuHeart"
-                  :label="isTrackFavorite(tr) ? t('common.unfavorite') : t('common.favorite')"
-                  @select="handleToggleFavorite(tr)"
                 />
               </MdMenu>
             </div>

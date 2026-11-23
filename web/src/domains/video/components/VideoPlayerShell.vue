@@ -435,8 +435,10 @@ defineExpose({
         </div>
       </template>
 
-      <!-- Top HUD Controls (strictly <= 2 controls: 1 dark MD3 combobox + 1 Settings button) -->
+      <!-- Top HUD Controls -->
       <template #header-controls>
+        <slot name="header-actions" />
+
         <div v-if="headerSelectOptions.length > 0" class="w-32 sm:w-40">
           <MdSelect
             :model-value="headerSelectValue"

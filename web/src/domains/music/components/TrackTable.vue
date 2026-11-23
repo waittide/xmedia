@@ -198,6 +198,27 @@ async function editTrackTags(track: TrackDto): Promise<void> {
   }
 }
 
+async function confirmUnbindTrack(track: TrackDto): Promise<void> {
+  const confirmed = await dialogStore.confirm({
+    title: globalT('pool.unbindBtn'),
+    message: globalT('pool.unbindConfirm', { title: track.title }),
+    danger: true,
+  })
+  if (!confirmed) return
+  try {
+    await api.unbindItem(track.id)
+    playerStore.removeByTrackId(track.id)
+    musicStore.bumpCatalogVersion()
+    await musicStore.refreshSidebar()
+    snackbarStore.show({ message: globalT('pool.unboundToast') })
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
 async function confirmDeleteTrack(track: TrackDto): Promise<void> {
   const confirmed = await dialogStore.confirm({
     title: t('common.deleteTrackConfirmTitle'),
@@ -229,7 +250,7 @@ function triggerDownload(trackId: string): void {
 }
 
 async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
-  if (!authStore.isAdmin || cachingTrackIds.value.has(track.id)) return
+  if (cachingTrackIds.value.has(track.id)) return
   const next = new Set(cachingTrackIds.value)
   next.add(track.id)
   cachingTrackIds.value = next
@@ -491,11 +512,7 @@ async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
                   </div>
 
                   <MdMenuItem
-                    v-if="
-                      authStore.isAdmin &&
-                      entry.track.online_tracking &&
-                      !isTrackedCached(entry.track)
-                    "
+                    v-if="entry.track.online_tracking && !isTrackedCached(entry.track)"
                     :icon="LuCloud"
                     :label="t('online.cacheTrackBtn')"
                     :disabled="cachingTrackIds.has(entry.track.id)"
@@ -508,16 +525,19 @@ async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
                     @select="triggerDownload(entry.track.id)"
                   />
 
-                  <div
-                    v-if="removable || authStore.isAdmin"
-                    class="my-1 border-t border-outline-variant pt-1"
-                  >
+                  <div class="my-1 border-t border-outline-variant pt-1">
                     <MdMenuItem
                       v-if="removable"
                       :icon="LuTrash2"
                       :label="t('playlist.removeTrack')"
                       destructive
                       @select="emit('remove', entry.index)"
+                    />
+                    <MdMenuItem
+                      :icon="LuTrash2"
+                      :label="globalT('pool.unbindBtn')"
+                      destructive
+                      @select="confirmUnbindTrack(entry.track)"
                     />
                     <MdMenuItem
                       v-if="authStore.isAdmin"

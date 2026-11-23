@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuDisc3,
   LuListPlus,
@@ -9,6 +10,7 @@ import {
   LuRefreshCw,
   LuShuffle,
   LuTag,
+  LuTrash2,
 } from 'vue-icons-plus/lu'
 import {
   MediaDetailTemplate,
@@ -16,6 +18,7 @@ import {
   type MediaDetailTag,
 } from '@/components/domain'
 import { MdMenuItem } from '@/components/ui'
+import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { api, buildCoverUrl } from '../api'
 import TrackTable from '../components/TrackTable.vue'
@@ -25,10 +28,12 @@ import { useMusicStore } from '../store'
 import type { AlbumDetailDto } from '../types'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const musicStore = useMusicStore()
 const playerStore = usePlayerStore()
+const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
 
 const detail = ref<AlbumDetailDto | null>(null)
@@ -156,6 +161,33 @@ function handleTagsUpdated(payload: { trackId: string; tags: string[] }): void {
   }
 }
 
+async function handleUnbindAlbum(close?: () => void): Promise<void> {
+  close?.()
+  const cur = detail.value
+  if (!cur || cur.tracks.length === 0) return
+  const ok = await dialogStore.confirm({
+    title: globalT('pool.unbindBtn'),
+    message: globalT('pool.unbindConfirm', { title: cur.album.title }),
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await Promise.all(cur.tracks.map((tr) => api.unbindItem(tr.id)))
+    for (const tr of cur.tracks) {
+      playerStore.removeByTrackId(tr.id)
+    }
+    musicStore.bumpCatalogVersion()
+    await musicStore.refreshSidebar()
+    snackbarStore.show({ message: globalT('pool.unboundToast') })
+    await router.replace({ path: '/music/library', query: { view: 'items' } })
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
 onMounted(loadAlbum)
 watch(() => route.params.id, loadAlbum)
 </script>
@@ -211,6 +243,15 @@ watch(() => route.params.id, loadAlbum)
           :icon="LuRefreshCw"
           :label="$t('common.refresh')"
           @select="loadAlbum"
+        />
+      </template>
+
+      <template v-if="detail && detail.tracks.length > 0" #overflow-danger="{ close }">
+        <MdMenuItem
+          :icon="LuTrash2"
+          :label="globalT('pool.unbindBtn')"
+          destructive
+          @select="handleUnbindAlbum(close)"
         />
       </template>
 
