@@ -59,6 +59,16 @@ impl ReadingDirection {
     }
 }
 
+pub const ONLINE_TRACKED_SERIES_DIR_PREFIX: &str = "online_tracked:";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnlineTrackedSeriesRef {
+    pub source_id: uuid::Uuid,
+    pub comic_url: String,
+    #[serde(default)]
+    pub toc_url: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Series {
     pub id: SeriesId,
@@ -137,6 +147,19 @@ impl Series {
             created_at: now,
             updated_at: now,
         })
+    }
+
+    pub fn encode_online_tracking(info: &OnlineTrackedSeriesRef) -> DomainResult<String> {
+        let json = serde_json::to_string(info)
+            .map_err(|e| DomainError::Validation(format!("serialize tracked series ref: {e}")))?;
+        Ok(format!("{ONLINE_TRACKED_SERIES_DIR_PREFIX}{json}"))
+    }
+
+    pub fn online_tracking(&self) -> Option<OnlineTrackedSeriesRef> {
+        let raw = self
+            .source_dir
+            .strip_prefix(ONLINE_TRACKED_SERIES_DIR_PREFIX)?;
+        serde_json::from_str::<OnlineTrackedSeriesRef>(raw).ok()
     }
 
     pub fn apply_patch(&mut self, patch: SeriesMetadataPatch) -> DomainResult<()> {

@@ -16,13 +16,15 @@ use xmedia_source::crud::{
 };
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
+use crate::application::dto::{ChapterItemDto, SeriesDetailDto};
 use crate::application::online::{
-    BatchComicSourcesInput, BatchComicSourcesReportDto, ComicSourceSummaryDto,
+    BatchComicSourcesInput, BatchComicSourcesReportDto, ComicCacheReportDto, ComicSourceSummaryDto,
     ComicSourceTestInput, ComicSourceTestReportDto, ImportComicSourcesReportDto,
     LoginActionResponseDto, OnlineComicChaptersResponseDto, OnlineComicDetailResponseDto,
     OnlineComicExploreResponseDto, OnlineComicPagesResponseDto, OnlineComicSearchResponseDto,
-    UpdateComicSourceInput,
+    TrackOnlineComicInput, UpdateComicSourceInput,
 };
+use crate::domain::id::{ChapterId, SeriesId};
 use crate::http::state::ComicHttpState;
 use crate::source::model::{ComicChapterJsContext, ComicJsContext};
 
@@ -49,6 +51,11 @@ pub fn router() -> Router<ComicHttpState> {
         .route("/online/chapters", post(online_chapters))
         .route("/online/pages", post(online_pages))
         .route("/online/image-proxy", get(online_image_proxy))
+        // Online-tracked comic series (hybrid mode: track, refresh TOC, offline cache CBZ)
+        .route("/online/track", post(track_online_comic))
+        .route("/series/{id}/online/refresh", post(refresh_tracked_series))
+        .route("/series/{id}/online/cache", post(cache_tracked_series))
+        .route("/chapters/{id}/online/cache", post(cache_tracked_chapter))
         // Per-user online comic favorites & reading progress
         .nest(
             "/online/items",
@@ -341,4 +348,66 @@ async fn online_image_proxy(
         HeaderValue::from_static(IMAGE_PROXY_CACHE_CONTROL),
     );
     Ok(resp)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CacheTrackedSeriesRequest {
+    #[serde(default)]
+    chapter_ids: Option<Vec<Uuid>>,
+}
+
+async fn track_online_comic(
+    State(state): State<ComicHttpState>,
+    WebAuth(user): WebAuth,
+    Json(input): Json<TrackOnlineComicInput>,
+) -> ApiResult<Json<SeriesDetailDto>> {
+    let detail = state
+        .services
+        .online
+        .track_online_comic(&user, input)
+        .await?;
+    Ok(Json(detail))
+}
+
+async fn refresh_tracked_series(
+    State(state): State<ComicHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<SeriesDetailDto>> {
+    let detail = state
+        .services
+        .online
+        .refresh_tracked_series(&user, SeriesId(id))
+        .await?;
+    Ok(Json(detail))
+}
+
+async fn cache_tracked_series(
+    State(state): State<ComicHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    payload: Option<Json<CacheTrackedSeriesRequest>>,
+) -> ApiResult<Json<ComicCacheReportDto>> {
+    let chapter_ids = payload
+        .and_then(|Json(req)| req.chapter_ids)
+        .map(|ids| ids.into_iter().map(ChapterId).collect());
+    let report = state
+        .services
+        .online
+        .cache_tracked_series(&user, SeriesId(id), chapter_ids)
+        .await?;
+    Ok(Json(report))
+}
+
+async fn cache_tracked_chapter(
+    State(state): State<ComicHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<ChapterItemDto>> {
+    let ch = state
+        .services
+        .online
+        .cache_tracked_chapter(&user, ChapterId(id))
+        .await?;
+    Ok(Json(ch))
 }

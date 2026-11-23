@@ -71,7 +71,9 @@ impl ComicCatalogService {
 
         if lib.is_some_and(|l| l.kind.is_managed()) {
             for ch in &chapters {
-                let _ = self.storage.delete_managed_file(&ch.source_path).await;
+                if let Some(path) = ch.managed_file_path() {
+                    let _ = self.storage.delete_managed_file(&path).await;
+                }
             }
         }
         self.reading.delete_by_series(series_id).await?;
@@ -91,8 +93,10 @@ impl ComicCatalogService {
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
         let lib = self.libraries.find_by_id(chapter.library_id).await?;
-        if lib.is_some_and(|l| l.kind.is_managed()) {
-            let _ = self.storage.delete_managed_file(&chapter.source_path).await;
+        if lib.is_some_and(|l| l.kind.is_managed())
+            && let Some(path) = chapter.managed_file_path()
+        {
+            let _ = self.storage.delete_managed_file(&path).await;
         }
         self.reading.delete_by_chapter(chapter_id).await?;
         self.chapters.delete(chapter_id).await?;
@@ -271,10 +275,15 @@ impl ComicCatalogService {
                 chapter.page_count
             )));
         }
+        let Some((effective_kind, effective_path)) = chapter.resolved_local_source() else {
+            return Err(DomainError::NotFound(
+                "online tracked chapter is not cached yet".into(),
+            ));
+        };
         self.archives
             .read_page(
-                chapter.source_kind,
-                &chapter.source_path,
+                effective_kind,
+                &effective_path,
                 page_number,
                 &chapter.file_hash,
             )
@@ -290,12 +299,16 @@ impl ComicCatalogService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
-        if chapter.is_missing || chapter.source_kind != ChapterSourceKind::ArchiveFile {
+        if chapter.is_missing {
+            return Err(DomainError::NotFound("chapter source is missing".into()));
+        }
+        let Some((ChapterSourceKind::ArchiveFile, archive_path)) = chapter.resolved_local_source()
+        else {
             return Err(DomainError::Validation(
                 "direct download is only available for archive-backed chapters".into(),
             ));
-        }
-        self.archives.read_raw_archive(&chapter.source_path).await
+        };
+        self.archives.read_raw_archive(&archive_path).await
     }
 
     pub async fn open_chapter_archive_stream(
@@ -308,13 +321,17 @@ impl ComicCatalogService {
             .find_by_id(chapter_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
-        if chapter.is_missing || chapter.source_kind != ChapterSourceKind::ArchiveFile {
+        if chapter.is_missing {
+            return Err(DomainError::NotFound("chapter source is missing".into()));
+        }
+        let Some((ChapterSourceKind::ArchiveFile, archive_path)) = chapter.resolved_local_source()
+        else {
             return Err(DomainError::Validation(
                 "direct download is only available for archive-backed chapters".into(),
             ));
-        }
+        };
         self.archives
-            .open_raw_archive_stream(&chapter.source_path, spec)
+            .open_raw_archive_stream(&archive_path, spec)
             .await
     }
 

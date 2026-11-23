@@ -124,7 +124,9 @@ async fn setup_test_harness(allow_private_ips: bool) -> TestHarness {
     let member_sess = auth.login("member", "memberpassword123").await.unwrap();
 
     let state = ComicHttpState::new(auth, library_svc, comic_services);
-    let app = Router::new().nest("/api/v1/comic", rest_router(state));
+    let app = Router::new()
+        .nest("/api/v1/comic", rest_router(state.clone()))
+        .nest("/opds/comic", crate::http::opds_router(state));
 
     TestHarness {
         _tmp: tmp,
@@ -3158,4 +3160,253 @@ async fn online_comic_items_favorites_progress_and_availability_e2e() {
     )
     .await;
     assert_eq!(st_del, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let release_ch2 = Arc::new(AtomicBool::new(false));
+    let release_ch2_srv = Arc::clone(&release_ch2);
+    let png = valid_png_bytes();
+    let png_1 = png.clone();
+    let png_2 = png.clone();
+    let png_cov = png;
+
+    let origin = Router::new()
+        .route(
+            "/comic/1",
+            get(move || {
+                let has_ch2 = release_ch2_srv.load(Ordering::Relaxed);
+                async move {
+                    let mut chapters = vec![serde_json::json!({
+                        "title": "第1话 初遇",
+                        "url": "/ch/1"
+                    })];
+                    if has_ch2 {
+                        chapters.push(serde_json::json!({
+                            "title": "第2话 启程",
+                            "url": "/ch/2"
+                        }));
+                    }
+                    serde_json::json!({
+                        "name": "追更示例漫",
+                        "author": "测试作者",
+                        "cover": "/img/cover.png",
+                        "intro": "追更混合模式测试简介",
+                        "tocUrl": "/toc/1",
+                        "chapters": chapters
+                    })
+                    .to_string()
+                }
+            }),
+        )
+        .route(
+            "/toc/1",
+            get({
+                let flag = Arc::clone(&release_ch2);
+                move || {
+                    let has_ch2 = flag.load(Ordering::Relaxed);
+                    async move {
+                        let mut chapters = vec![serde_json::json!({
+                            "title": "第1话 初遇",
+                            "url": "/ch/1"
+                        })];
+                        if has_ch2 {
+                            chapters.push(serde_json::json!({
+                                "title": "第2话 启程",
+                                "url": "/ch/2"
+                            }));
+                        }
+                        serde_json::json!({ "chapters": chapters }).to_string()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/ch/1",
+            get(|| async {
+                serde_json::json!({ "pages": ["/img/p1.png", "/img/p2.png"] }).to_string()
+            }),
+        )
+        .route(
+            "/ch/2",
+            get(|| async { serde_json::json!({ "pages": ["/img/p1.png"] }).to_string() }),
+        )
+        .route(
+            "/img/cover.png",
+            get(move || {
+                let bytes = png_cov.clone();
+                async move { ([(header::CONTENT_TYPE, "image/png")], bytes) }
+            }),
+        )
+        .route(
+            "/img/p1.png",
+            get(move || {
+                let bytes = png_1.clone();
+                async move { ([(header::CONTENT_TYPE, "image/png")], bytes) }
+            }),
+        )
+        .route(
+            "/img/p2.png",
+            get(move || {
+                let bytes = png_2.clone();
+                async move { ([(header::CONTENT_TYPE, "image/png")], bytes) }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let _srv = tokio::spawn(async move {
+        axum::serve(listener, origin).await.unwrap();
+    });
+
+    let h = setup_test_harness(true).await;
+
+    let src_json = serde_json::json!([{
+        "sourceName": "TrackedComicMock",
+        "sourceUrl": base,
+        "ruleBookInfo": {
+            "name": "$.name",
+            "author": "$.author",
+            "coverUrl": "$.cover",
+            "intro": "$.intro",
+            "tocUrl": "$.tocUrl"
+        },
+        "ruleToc": {
+            "chapterList": "$.chapters[*]",
+            "chapterName": "$.title",
+            "chapterUrl": "$.url"
+        },
+        "ruleContent": {
+            "content": "@js:(result.pages||[]).join('\\n')"
+        }
+    }]);
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 1. Track online comic (lightweight, chapters uncached initially)
+    let (st_track, b_track) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/track",
+        &h.admin_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "comic_url": format!("{base}/comic/1"),
+            "toc_url": format!("{base}/toc/1")
+        })),
+    )
+    .await;
+    assert_eq!(st_track, StatusCode::OK);
+    let tracked: serde_json::Value = serde_json::from_slice(&b_track).unwrap();
+    let series_id = tracked["series"]["id"].as_str().unwrap().to_string();
+    assert_eq!(tracked["series"]["title"], "追更示例漫");
+    assert_eq!(tracked["chapters"].as_array().unwrap().len(), 1);
+    assert_eq!(tracked["chapters"][0]["online_tracking"]["cached"], false);
+    let ch1_id = tracked["chapters"][0]["id"].as_str().unwrap().to_string();
+
+    // 2. OPDS 1.2 series & chapter feeds expose the tracked online comic
+    let basic_auth = format!("Basic {}", BASE64.encode("member:memberpassword123"));
+    let feed_res = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/opds/comic/v1.2/series/{series_id}"))
+                .header(header::AUTHORIZATION, &basic_auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(feed_res.status(), StatusCode::OK);
+    let feed_xml = String::from_utf8(
+        to_bytes(feed_res.into_body(), 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(feed_xml.contains("追更示例漫"));
+    assert!(feed_xml.contains(&format!("/opds/comic/v1.2/chapters/{ch1_id}/download")));
+
+    // 3. OPDS PSE page 0 request triggers on-demand CBZ caching transparently
+    let pse_res = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/opds/comic/v1.2/chapters/{ch1_id}/pse/0"))
+                .header(header::AUTHORIZATION, &basic_auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pse_res.status(), StatusCode::OK);
+    assert_eq!(
+        pse_res.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png"
+    );
+
+    // 4. OPDS CBZ archive download streams valid zip with ComicInfo.xml + 2 pages
+    let dl_res = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/opds/comic/v1.2/chapters/{ch1_id}/download"))
+                .header(header::AUTHORIZATION, &basic_auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dl_res.status(), StatusCode::OK);
+    let dl_bytes = to_bytes(dl_res.into_body(), 4 * 1024 * 1024).await.unwrap();
+    let archive = zip::ZipArchive::new(Cursor::new(dl_bytes)).unwrap();
+    assert_eq!(archive.len(), 3); // ComicInfo.xml + 0001.png + 0002.png
+
+    // 5. Upstream releases chapter 2 -> refresh appends it, batch cache downloads only ch2
+    release_ch2.store(true, Ordering::Relaxed);
+    let (st_ref, b_ref) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/series/{series_id}/online/refresh"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_ref, StatusCode::OK);
+    let ref_val: serde_json::Value = serde_json::from_slice(&b_ref).unwrap();
+    assert_eq!(ref_val["chapters"].as_array().unwrap().len(), 2);
+    assert_eq!(ref_val["chapters"][0]["online_tracking"]["cached"], true);
+    assert_eq!(ref_val["chapters"][1]["online_tracking"]["cached"], false);
+
+    let (st_cache, b_cache) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/series/{series_id}/online/cache"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_cache, StatusCode::OK);
+    let cache_val: serde_json::Value = serde_json::from_slice(&b_cache).unwrap();
+    assert_eq!(cache_val["already_cached"], 1);
+    assert_eq!(cache_val["cached_now"], 1);
+    assert!(cache_val["failed"].as_array().unwrap().is_empty());
 }

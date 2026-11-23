@@ -340,6 +340,9 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
         let mut missing_count = 0u64;
         for (path, mut leftover) in existing_by_path {
+            if leftover.is_online_tracked() {
+                continue;
+            }
             if !seen_paths.contains(&path) && !leftover.is_missing {
                 leftover.is_missing = true;
                 leftover.updated_at = now;
@@ -381,7 +384,9 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         for s in lib_series {
             if is_managed {
                 for ch in self.chapters.list_by_series(s.id).await? {
-                    let _ = self.storage.delete_managed_file(&ch.source_path).await;
+                    if let Some(path) = ch.managed_file_path() {
+                        let _ = self.storage.delete_managed_file(&path).await;
+                    }
                 }
             }
             self.reading.delete_by_series(s.id).await?;

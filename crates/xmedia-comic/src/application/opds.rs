@@ -618,6 +618,12 @@ fn to_opds_chapter(
         format!("#{num_label} - {}", ch.title)
     };
 
+    let effective_page_count = if ch.source_kind == ChapterSourceKind::OnlineTracked {
+        ch.page_count.max(1)
+    } else {
+        ch.page_count
+    };
+
     OpdsChapterEntry {
         id: ch.id,
         series_title: series_title.to_owned(),
@@ -625,10 +631,13 @@ fn to_opds_chapter(
         summary: ch.summary,
         authors,
         cover_url,
-        page_count: ch.page_count,
+        page_count: effective_page_count,
         last_read_page,
         last_read_at,
-        can_download_archive: ch.source_kind == ChapterSourceKind::ArchiveFile,
+        can_download_archive: matches!(
+            ch.source_kind,
+            ChapterSourceKind::ArchiveFile | ChapterSourceKind::OnlineTracked
+        ),
         archive_mime,
         updated_at: ch.updated_at,
     }

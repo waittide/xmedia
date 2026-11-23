@@ -93,9 +93,9 @@ pub fn init_comic_module_with_allow_private_ips(
         chapters.clone(),
         reading_repo.clone(),
         archives,
-        thumbnails,
-        storage,
-        events,
+        thumbnails.clone(),
+        storage.clone(),
+        events.clone(),
     ));
     let reading = Arc::new(ComicReadingService::new(
         series.clone(),
@@ -103,10 +103,10 @@ pub fn init_comic_module_with_allow_private_ips(
         reading_repo.clone(),
     ));
     let opds = Arc::new(ComicOpdsService::new(
-        libraries_repo,
-        series,
-        chapters,
-        reading_repo,
+        libraries_repo.clone(),
+        series.clone(),
+        chapters.clone(),
+        reading_repo.clone(),
     ));
     let engine = ComicSourceEngine::new(
         source::http::HttpClientConfig {
@@ -118,6 +118,14 @@ pub fn init_comic_module_with_allow_private_ips(
     );
     let online = Arc::new(ComicOnlineService::with_engine(
         sources.clone(),
+        libraries_repo,
+        series,
+        chapters,
+        reading_repo,
+        catalog.clone(),
+        thumbnails,
+        storage,
+        events,
         engine,
         allow_private_ips,
     ));

@@ -30,6 +30,20 @@ pub struct SeriesQueryFilter {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct OnlineTrackedSeriesDto {
+    pub source_id: uuid::Uuid,
+    pub comic_url: String,
+    pub toc_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OnlineTrackedChapterDto {
+    pub source_id: uuid::Uuid,
+    pub chapter_url: String,
+    pub cached: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SeriesSummaryDto {
     pub id: SeriesId,
     pub library_id: LibraryId,
@@ -46,6 +60,8 @@ pub struct SeriesSummaryDto {
     pub completed_chapters: u32,
     pub is_favorite: bool,
     pub continue_reading: Option<ContinueReadingPointer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_tracking: Option<OnlineTrackedSeriesDto>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -96,6 +112,8 @@ pub struct ChapterItemDto {
     pub is_missing: bool,
     pub current_page: u32,
     pub is_completed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_tracking: Option<OnlineTrackedChapterDto>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -107,6 +125,11 @@ impl ChapterItemDto {
             .as_ref()
             .map(|key| format!("/api/v1/comic/covers/{key}"));
         let number_label = format_chapter_number(ch.number);
+        let online_tracking = ch.online_tracking().map(|info| OnlineTrackedChapterDto {
+            source_id: info.source_id,
+            chapter_url: info.chapter_url,
+            cached: info.cached && info.storage_key.is_some(),
+        });
         Self {
             id: ch.id,
             series_id: ch.series_id,
@@ -125,6 +148,7 @@ impl ChapterItemDto {
             is_missing: ch.is_missing,
             current_page,
             is_completed,
+            online_tracking,
             created_at: ch.created_at,
             updated_at: ch.updated_at,
         }
@@ -140,6 +164,8 @@ pub struct SeriesDetailDto {
     pub completed_chapters: u32,
     pub continue_reading: Option<ContinueReadingPointer>,
     pub reader_pref: Option<SeriesReaderPref>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_tracking: Option<OnlineTrackedSeriesDto>,
     pub chapters: Vec<ChapterItemDto>,
 }
 

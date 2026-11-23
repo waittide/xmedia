@@ -50,6 +50,7 @@ pub enum ChapterSourceKind {
     #[default]
     ArchiveFile,
     ImageDirectory,
+    OnlineTracked,
 }
 
 impl ChapterSourceKind {
@@ -57,15 +58,30 @@ impl ChapterSourceKind {
         match self {
             Self::ArchiveFile => "archive_file",
             Self::ImageDirectory => "image_directory",
+            Self::OnlineTracked => "online_tracked",
         }
     }
 
     pub fn parse(value: &str) -> Self {
         match value {
             "image_directory" => Self::ImageDirectory,
+            "online_tracked" => Self::OnlineTracked,
             _ => Self::ArchiveFile,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnlineTrackedChapterRef {
+    pub source_id: uuid::Uuid,
+    pub comic_url: String,
+    #[serde(default)]
+    pub toc_url: String,
+    pub chapter_url: String,
+    #[serde(default)]
+    pub storage_key: Option<String>,
+    #[serde(default)]
+    pub cached: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +173,56 @@ impl Chapter {
             created_at: now,
             updated_at: now,
         })
+    }
+
+    pub fn is_online_tracked(&self) -> bool {
+        self.source_kind == ChapterSourceKind::OnlineTracked
+    }
+
+    pub fn online_tracking(&self) -> Option<OnlineTrackedChapterRef> {
+        if self.source_kind != ChapterSourceKind::OnlineTracked {
+            return None;
+        }
+        serde_json::from_str::<OnlineTrackedChapterRef>(&self.source_path).ok()
+    }
+
+    pub fn set_online_tracking(&mut self, info: &OnlineTrackedChapterRef) -> DomainResult<()> {
+        self.source_kind = ChapterSourceKind::OnlineTracked;
+        self.source_path = serde_json::to_string(info)
+            .map_err(|e| DomainError::Validation(format!("serialize tracked chapter ref: {e}")))?;
+        Ok(())
+    }
+
+    /// Returns the managed archive path on disk if this chapter owns a local archive file.
+    pub fn managed_file_path(&self) -> Option<String> {
+        match self.source_kind {
+            ChapterSourceKind::ArchiveFile => Some(self.source_path.clone()),
+            ChapterSourceKind::ImageDirectory => None,
+            ChapterSourceKind::OnlineTracked => {
+                self.online_tracking().and_then(|info| info.storage_key)
+            }
+        }
+    }
+
+    /// Returns `(effective_kind, fs_path)` for reading pages/archives when backed by local disk.
+    pub fn resolved_local_source(&self) -> Option<(ChapterSourceKind, String)> {
+        match self.source_kind {
+            ChapterSourceKind::ArchiveFile => {
+                Some((ChapterSourceKind::ArchiveFile, self.source_path.clone()))
+            }
+            ChapterSourceKind::ImageDirectory => {
+                Some((ChapterSourceKind::ImageDirectory, self.source_path.clone()))
+            }
+            ChapterSourceKind::OnlineTracked => {
+                let info = self.online_tracking()?;
+                if info.cached
+                    && let Some(key) = info.storage_key
+                {
+                    return Some((ChapterSourceKind::ArchiveFile, key));
+                }
+                None
+            }
+        }
     }
 
     pub fn apply_patch(&mut self, patch: ChapterMetadataPatch) -> DomainResult<()> {

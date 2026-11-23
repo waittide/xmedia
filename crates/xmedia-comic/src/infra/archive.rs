@@ -92,6 +92,18 @@ impl ArchiveReaderPort for PureRustArchiveReader {
             tokio::task::spawn_blocking(move || match source_kind {
                 ChapterSourceKind::ArchiveFile => inspect_archive_file(Path::new(&path)),
                 ChapterSourceKind::ImageDirectory => inspect_image_directory(Path::new(&path)),
+                ChapterSourceKind::OnlineTracked => {
+                    let info: crate::domain::chapter::OnlineTrackedChapterRef =
+                        serde_json::from_str(&path).map_err(|e| {
+                            DomainError::Validation(format!("invalid online tracked chapter: {e}"))
+                        })?;
+                    let Some(storage_key) = info.storage_key.filter(|_| info.cached) else {
+                        return Err(DomainError::NotFound(
+                            "online tracked chapter is not cached yet".into(),
+                        ));
+                    };
+                    inspect_archive_file(Path::new(&storage_key))
+                }
             })
             .await
             .map_err(|e| DomainError::Storage(format!("archive task join failed: {e}")))?;
@@ -159,22 +171,35 @@ impl ArchiveReaderPort for PureRustArchiveReader {
         tokio::task::spawn_blocking(move || {
             const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
             let bytes = match source_kind {
-                ChapterSourceKind::ArchiveFile => {
-                    let file = File::open(&path_owned).map_err(|e| {
+                ChapterSourceKind::ArchiveFile | ChapterSourceKind::OnlineTracked => {
+                    let archive_path = if source_kind == ChapterSourceKind::OnlineTracked {
+                        let info: crate::domain::chapter::OnlineTrackedChapterRef =
+                            serde_json::from_str(&path_owned).map_err(|e| {
+                                DomainError::Validation(format!(
+                                    "invalid online tracked chapter: {e}"
+                                ))
+                            })?;
+                        info.storage_key.filter(|_| info.cached).ok_or_else(|| {
+                            DomainError::NotFound("online tracked chapter is not cached yet".into())
+                        })?
+                    } else {
+                        path_owned.clone()
+                    };
+                    let file = File::open(&archive_path).map_err(|e| {
                         if e.kind() == std::io::ErrorKind::NotFound {
-                            DomainError::NotFound(format!("archive '{path_owned}' not found"))
+                            DomainError::NotFound(format!("archive '{archive_path}' not found"))
                         } else {
                             DomainError::Storage(format!(
-                                "failed to open archive '{path_owned}': {e}"
+                                "failed to open archive '{archive_path}': {e}"
                             ))
                         }
                     })?;
                     let mut zip = ZipArchive::new(file).map_err(|e| {
-                        DomainError::Storage(format!("invalid zip archive '{path_owned}': {e}"))
+                        DomainError::Storage(format!("invalid zip archive '{archive_path}': {e}"))
                     })?;
                     let entry = zip.by_name(&entry_name).map_err(|e| {
                         DomainError::NotFound(format!(
-                            "page entry '{entry_name}' not found in '{path_owned}': {e}"
+                            "page entry '{entry_name}' not found in '{archive_path}': {e}"
                         ))
                     })?;
                     let prealloc = entry.size().min(1024 * 1024) as usize;

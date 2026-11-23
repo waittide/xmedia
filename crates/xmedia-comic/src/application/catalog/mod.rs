@@ -10,7 +10,7 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
 
-use crate::application::dto::{SeriesSummaryDto, TaxonomyCountDto};
+use crate::application::dto::{OnlineTrackedSeriesDto, SeriesSummaryDto, TaxonomyCountDto};
 use crate::application::ports::{ArchiveReaderPort, ComicFileStoragePort, ThumbnailGeneratorPort};
 use crate::domain::chapter::Chapter;
 use crate::domain::id::{ChapterId, SeriesId};
@@ -98,6 +98,11 @@ impl ComicCatalogService {
             .cover_path
             .as_ref()
             .map(|key| format!("/api/v1/comic/covers/{key}"));
+        let online_tracking = series.online_tracking().map(|info| OnlineTrackedSeriesDto {
+            source_id: info.source_id,
+            comic_url: info.comic_url,
+            toc_url: info.toc_url,
+        });
 
         SeriesSummaryDto {
             id: series.id,
@@ -115,6 +120,7 @@ impl ComicCatalogService {
             completed_chapters,
             is_favorite,
             continue_reading,
+            online_tracking,
             created_at: series.created_at,
             updated_at: series.updated_at,
         }

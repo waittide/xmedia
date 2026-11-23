@@ -294,11 +294,17 @@ async fn opds_download_chapter(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
+    let chapter_id = ChapterId(id);
+    state
+        .services
+        .online
+        .ensure_tracked_chapter_cached(chapter_id)
+        .await?;
     let spec = parse_http_range_spec(&headers);
     let (stream, filename, mime) = state
         .services
         .catalog
-        .open_chapter_archive_stream(ChapterId(id), spec)
+        .open_chapter_archive_stream(chapter_id, spec)
         .await?;
     Ok(into_range_http_response(
         stream,
@@ -317,6 +323,11 @@ async fn opds_pse_stream_page(
     Path((id, page_index)): Path<(Uuid, u32)>,
 ) -> ApiResult<Response> {
     let chapter_id = ChapterId(id);
+    state
+        .services
+        .online
+        .ensure_tracked_chapter_cached(chapter_id)
+        .await?;
     let page_number = page_index.saturating_add(1);
     let page = state
         .services

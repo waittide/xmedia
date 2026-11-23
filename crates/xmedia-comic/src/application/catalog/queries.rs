@@ -4,8 +4,9 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 
 use crate::application::dto::{
-    ChapterItemDto, ComicLibraryStatsDto, ContinueReadingItemDto, HomeOverviewDto, SeriesDetailDto,
-    SeriesQueryFilter, SeriesSummaryDto, TaxonomyOverviewDto,
+    ChapterItemDto, ComicLibraryStatsDto, ContinueReadingItemDto, HomeOverviewDto,
+    OnlineTrackedSeriesDto, SeriesDetailDto, SeriesQueryFilter, SeriesSummaryDto,
+    TaxonomyOverviewDto,
 };
 use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
 use crate::domain::natural::natural_cmp;
@@ -326,6 +327,11 @@ impl ComicCatalogService {
             .cover_path
             .as_ref()
             .map(|key| format!("/api/v1/comic/covers/{key}"));
+        let online_tracking = series.online_tracking().map(|info| OnlineTrackedSeriesDto {
+            source_id: info.source_id,
+            comic_url: info.comic_url,
+            toc_url: info.toc_url,
+        });
 
         Ok(SeriesDetailDto {
             series,
@@ -335,6 +341,7 @@ impl ComicCatalogService {
             completed_chapters,
             continue_reading,
             reader_pref,
+            online_tracking,
             chapters: chapter_dtos,
         })
     }
