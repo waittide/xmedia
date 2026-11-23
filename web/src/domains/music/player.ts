@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { SubsonicSongDto } from '@/api/appHost'
 import {
@@ -914,62 +914,112 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
-  function playQueue(tracks: TrackDto[], startIndex = 0): void {
-    if (tracks.length === 0) return
-    queueEpoch += 1
+  function replaceQueue(
+    items: PlayerQueueItem[],
+    startIndex = 0,
+    startAtSecs = 0,
+    bumpEpoch = true,
+  ): void {
+    if (items.length === 0) return
+    if (bumpEpoch) queueEpoch += 1
     queueHadLocalOnClear = false
-    queue.value = tracks.map(makeLocalQueueItem)
-    currentIndex.value = Math.max(0, Math.min(tracks.length - 1, startIndex))
-    scrobbledCurrent = false
-    resetShuffleAndHistory()
-    void loadAndPlayCurrent(0, true)
-  }
-
-  function resumeQueue(tracks: TrackDto[], startIndex = 0, startAtSecs = 0): void {
-    if (tracks.length === 0) return
-    queueHadLocalOnClear = false
-    queue.value = tracks.map(makeLocalQueueItem)
-    currentIndex.value = Math.max(0, Math.min(tracks.length - 1, startIndex))
+    queue.value = items
+    currentIndex.value = Math.max(0, Math.min(items.length - 1, startIndex))
     scrobbledCurrent = false
     resetShuffleAndHistory()
     void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
   }
 
-  function shuffleAndPlay(tracks: TrackDto[]): void {
-    if (tracks.length === 0) return
-    const copy = [...tracks]
+  function shuffleCopy<T>(items: T[]): T[] {
+    const copy = [...items]
     for (let i = copy.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1))
       const tmp = copy[i]!
       copy[i] = copy[j]!
       copy[j] = tmp
     }
+    return copy
+  }
+
+  function shuffleAndReplaceQueue(items: PlayerQueueItem[]): void {
+    if (items.length === 0) return
     preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
-    playQueue(copy, 0)
+    replaceQueue(shuffleCopy(items), 0, 0, true)
+  }
+
+  function playOrInsertQueueItem(
+    item: PlayerQueueItem,
+    startAtSecs = 0,
+    bumpEpochOnEmpty = true,
+  ): void {
+    const resumeAt = Math.max(0, startAtSecs)
+    const existingIdx = queue.value.findIndex((existing) => existing.key === item.key)
+    if (existingIdx >= 0) {
+      if (currentIndex.value >= 0 && currentIndex.value !== existingIdx) {
+        playHistory.push(currentIndex.value)
+        if (playHistory.length > 200) playHistory.shift()
+      }
+      currentIndex.value = existingIdx
+      shufflePool = shufflePool.filter((i) => i !== existingIdx)
+      scrobbledCurrent = false
+      void loadAndPlayCurrent(resumeAt, true)
+    } else if (queue.value.length > 0) {
+      const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
+      if (currentIndex.value >= 0) {
+        playHistory.push(currentIndex.value)
+        if (playHistory.length > 200) playHistory.shift()
+      }
+      playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
+      shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
+      queue.value.splice(insertAt, 0, item)
+      currentIndex.value = insertAt
+      scrobbledCurrent = false
+      void loadAndPlayCurrent(resumeAt, true)
+    } else {
+      replaceQueue([item], 0, resumeAt, bumpEpochOnEmpty)
+    }
+  }
+
+  function enqueueQueueItemNext(item: PlayerQueueItem, syncLocal = false): void {
+    if (queue.value.length === 0) {
+      replaceQueue([item], 0, 0, true)
+      return
+    }
+    const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
+    playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
+    shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
+    shufflePool.push(insertAt)
+    queue.value.splice(insertAt, 0, item)
+    if (syncLocal) scheduleQueueSync()
+  }
+
+  function enqueueQueueItemIfAbsent(item: PlayerQueueItem): void {
+    if (queue.value.length === 0) {
+      replaceQueue([item], 0, 0, true)
+      return
+    }
+    if (queue.value.some((existing) => existing.key === item.key)) return
+    queue.value.push(item)
+  }
+
+  function playQueue(tracks: TrackDto[], startIndex = 0): void {
+    replaceQueue(tracks.map(makeLocalQueueItem), startIndex, 0, true)
+  }
+
+  function resumeQueue(tracks: TrackDto[], startIndex = 0, startAtSecs = 0): void {
+    replaceQueue(tracks.map(makeLocalQueueItem), startIndex, startAtSecs, false)
+  }
+
+  function shuffleAndPlay(tracks: TrackDto[]): void {
+    shuffleAndReplaceQueue(tracks.map(makeLocalQueueItem))
   }
 
   function playOnlineTracks(tracks: OnlineMusicTrackDto[], startIndex = 0): void {
-    if (tracks.length === 0) return
-    queueEpoch += 1
-    queueHadLocalOnClear = false
-    queue.value = tracks.map(makeOnlineQueueItem)
-    currentIndex.value = Math.max(0, Math.min(tracks.length - 1, startIndex))
-    scrobbledCurrent = false
-    resetShuffleAndHistory()
-    void loadAndPlayCurrent(0, true)
+    replaceQueue(tracks.map(makeOnlineQueueItem), startIndex, 0, true)
   }
 
   function shuffleAndPlayOnline(tracks: OnlineMusicTrackDto[]): void {
-    if (tracks.length === 0) return
-    const copy = [...tracks]
-    for (let i = copy.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      const tmp = copy[i]!
-      copy[i] = copy[j]!
-      copy[j] = tmp
-    }
-    preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
-    playOnlineTracks(copy, 0)
+    shuffleAndReplaceQueue(tracks.map(makeOnlineQueueItem))
   }
 
   function playAtIndex(index: number): void {
@@ -993,33 +1043,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function playTrackAt(track: TrackDto, startAtSecs = 0): void {
-    const existingIdx = queue.value.findIndex(
-      (item) => item.kind === 'local' && item.track.id === track.id,
-    )
-    if (existingIdx >= 0) {
-      if (currentIndex.value >= 0 && currentIndex.value !== existingIdx) {
-        playHistory.push(currentIndex.value)
-        if (playHistory.length > 200) playHistory.shift()
-      }
-      currentIndex.value = existingIdx
-      shufflePool = shufflePool.filter((i) => i !== existingIdx)
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
-    } else if (queue.value.length > 0) {
-      const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-      if (currentIndex.value >= 0) {
-        playHistory.push(currentIndex.value)
-        if (playHistory.length > 200) playHistory.shift()
-      }
-      playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
-      shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
-      queue.value.splice(insertAt, 0, makeLocalQueueItem(track))
-      currentIndex.value = insertAt
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
-    } else {
-      resumeQueue([track], 0, startAtSecs)
-    }
+    playOrInsertQueueItem(makeLocalQueueItem(track), startAtSecs, false)
   }
 
   function playOnlineTrackNow(track: OnlineMusicTrackDto): void {
@@ -1027,39 +1051,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function playOnlineTrackAt(track: OnlineMusicTrackDto, startAtSecs = 0): void {
-    const targetKey = buildOnlineTrackKey(track)
-    const resumeAt = Math.max(0, startAtSecs)
-    const existingIdx = queue.value.findIndex((item) => item.key === targetKey)
-    if (existingIdx >= 0) {
-      if (currentIndex.value >= 0 && currentIndex.value !== existingIdx) {
-        playHistory.push(currentIndex.value)
-        if (playHistory.length > 200) playHistory.shift()
-      }
-      currentIndex.value = existingIdx
-      shufflePool = shufflePool.filter((i) => i !== existingIdx)
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(resumeAt, true)
-    } else if (queue.value.length > 0) {
-      const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-      if (currentIndex.value >= 0) {
-        playHistory.push(currentIndex.value)
-        if (playHistory.length > 200) playHistory.shift()
-      }
-      playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
-      shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
-      queue.value.splice(insertAt, 0, makeOnlineQueueItem(track))
-      currentIndex.value = insertAt
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(resumeAt, true)
-    } else {
-      queueEpoch += 1
-      queueHadLocalOnClear = false
-      queue.value = [makeOnlineQueueItem(track)]
-      currentIndex.value = 0
-      scrobbledCurrent = false
-      resetShuffleAndHistory()
-      void loadAndPlayCurrent(resumeAt, true)
-    }
+    playOrInsertQueueItem(makeOnlineQueueItem(track), startAtSecs, true)
   }
 
   function playRemoteSongs(
@@ -1069,14 +1061,12 @@ export const usePlayerStore = defineStore('player', () => {
     startIndex = 0,
     startAtSecs = 0,
   ): void {
-    if (songs.length === 0) return
-    queueEpoch += 1
-    queueHadLocalOnClear = false
-    queue.value = songs.map((song) => makeRemoteQueueItem(sourceId, sourceName, song))
-    currentIndex.value = Math.max(0, Math.min(songs.length - 1, startIndex))
-    scrobbledCurrent = false
-    resetShuffleAndHistory()
-    void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
+    replaceQueue(
+      songs.map((song) => makeRemoteQueueItem(sourceId, sourceName, song)),
+      startIndex,
+      startAtSecs,
+      true,
+    )
   }
 
   function shuffleAndPlayRemoteSongs(
@@ -1084,16 +1074,7 @@ export const usePlayerStore = defineStore('player', () => {
     sourceName: string,
     songs: SubsonicSongDto[],
   ): void {
-    if (songs.length === 0) return
-    const copy = [...songs]
-    for (let i = copy.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      const tmp = copy[i]!
-      copy[i] = copy[j]!
-      copy[j] = tmp
-    }
-    preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
-    playRemoteSongs(sourceId, sourceName, copy, 0, 0)
+    shuffleAndReplaceQueue(songs.map((song) => makeRemoteQueueItem(sourceId, sourceName, song)))
   }
 
   function playRemoteSongAt(
@@ -1102,33 +1083,7 @@ export const usePlayerStore = defineStore('player', () => {
     song: SubsonicSongDto,
     startAtSecs = 0,
   ): void {
-    const targetKey = buildRemoteSongKey(sourceId, song.id)
-    const resumeAt = Math.max(0, startAtSecs)
-    const existingIdx = queue.value.findIndex((item) => item.key === targetKey)
-    if (existingIdx >= 0) {
-      if (currentIndex.value >= 0 && currentIndex.value !== existingIdx) {
-        playHistory.push(currentIndex.value)
-        if (playHistory.length > 200) playHistory.shift()
-      }
-      currentIndex.value = existingIdx
-      shufflePool = shufflePool.filter((i) => i !== existingIdx)
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(resumeAt, true)
-    } else if (queue.value.length > 0) {
-      const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-      if (currentIndex.value >= 0) {
-        playHistory.push(currentIndex.value)
-        if (playHistory.length > 200) playHistory.shift()
-      }
-      playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
-      shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
-      queue.value.splice(insertAt, 0, makeRemoteQueueItem(sourceId, sourceName, song))
-      currentIndex.value = insertAt
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(resumeAt, true)
-    } else {
-      playRemoteSongs(sourceId, sourceName, [song], 0, resumeAt)
-    }
+    playOrInsertQueueItem(makeRemoteQueueItem(sourceId, sourceName, song), startAtSecs, true)
   }
 
   function enqueueTracks(tracks: TrackDto[]): void {
@@ -1144,13 +1099,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function enqueueRemoteSong(sourceId: string, sourceName: string, song: SubsonicSongDto): void {
-    if (queue.value.length === 0) {
-      playRemoteSongs(sourceId, sourceName, [song], 0, 0)
-      return
-    }
-    const key = buildRemoteSongKey(sourceId, song.id)
-    if (queue.value.some((item) => item.key === key)) return
-    queue.value.push(makeRemoteQueueItem(sourceId, sourceName, song))
+    enqueueQueueItemIfAbsent(makeRemoteQueueItem(sourceId, sourceName, song))
   }
 
   function enqueueRemoteSongNext(
@@ -1158,15 +1107,7 @@ export const usePlayerStore = defineStore('player', () => {
     sourceName: string,
     song: SubsonicSongDto,
   ): void {
-    if (queue.value.length === 0) {
-      playRemoteSongs(sourceId, sourceName, [song], 0, 0)
-      return
-    }
-    const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-    playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
-    shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
-    shufflePool.push(insertAt)
-    queue.value.splice(insertAt, 0, makeRemoteQueueItem(sourceId, sourceName, song))
+    enqueueQueueItemNext(makeRemoteQueueItem(sourceId, sourceName, song))
   }
 
   function isRemoteSongInQueue(sourceId: string, songId: string): boolean {
@@ -1175,38 +1116,15 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function enqueueNext(track: TrackDto): void {
-    if (queue.value.length === 0) {
-      playQueue([track], 0)
-      return
-    }
-    const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-    playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
-    shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
-    shufflePool.push(insertAt)
-    queue.value.splice(insertAt, 0, makeLocalQueueItem(track))
-    scheduleQueueSync()
+    enqueueQueueItemNext(makeLocalQueueItem(track), true)
   }
 
   function enqueueOnlineTrackNext(track: OnlineMusicTrackDto): void {
-    if (queue.value.length === 0) {
-      playOnlineTracks([track], 0)
-      return
-    }
-    const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-    playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
-    shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
-    shufflePool.push(insertAt)
-    queue.value.splice(insertAt, 0, makeOnlineQueueItem(track))
+    enqueueQueueItemNext(makeOnlineQueueItem(track))
   }
 
   function enqueueOnlineTrack(track: OnlineMusicTrackDto): void {
-    if (queue.value.length === 0) {
-      playOnlineTracks([track], 0)
-      return
-    }
-    const key = buildOnlineTrackKey(track)
-    if (queue.value.some((item) => item.key === key)) return
-    queue.value.push(makeOnlineQueueItem(track))
+    enqueueQueueItemIfAbsent(makeOnlineQueueItem(track))
   }
 
   function isOnlineTrackInQueue(track: OnlineMusicTrackDto): boolean {
@@ -1541,23 +1459,14 @@ export const usePlayerStore = defineStore('player', () => {
     }
     const payload = buildLocalQueueSyncPayload()
     if (!payload) return
-    try {
-      void fetch('/api/v1/music/play-queue', {
-        method: 'PUT',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        keepalive: true,
-      })
-    } catch {
-      // ignore unload errors
-    }
+    api.savePlayQueueKeepalive(payload)
   }
 
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', flushQueueOnPageHide)
+    onScopeDispose(() => {
+      window.removeEventListener('pagehide', flushQueueOnPageHide)
+    })
   }
 
   async function restoreRemoteQueue(force = false): Promise<void> {

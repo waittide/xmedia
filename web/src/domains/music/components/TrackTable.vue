@@ -164,7 +164,7 @@ async function createPlaylistWithTrack(track: TrackDto): Promise<void> {
 async function addToExistingPlaylist(playlistId: string, track: TrackDto): Promise<void> {
   try {
     await musicStore.addTrackToPlaylist(playlistId, track.id)
-    snackbarStore.show(t('common.addedToQueue'))
+    snackbarStore.show(t('common.addedToPlaylist'))
   } catch (err) {
     snackbarStore.show({
       message: err instanceof Error ? err.message : String(err),

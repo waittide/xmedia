@@ -20,7 +20,7 @@ import {
   LuVolumeX,
   LuX,
 } from 'vue-icons-plus/lu'
-import { MdBadge, MdButton, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
+import { AppSlider, MdBadge, MdButton, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -30,7 +30,6 @@ import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { TranscodeProfile } from '../types'
-import MusicSeekSlider from './MusicSeekSlider.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -440,14 +439,16 @@ onBeforeUnmount(() => {
             {{ formatTime(displayTimeSecs) }}
           </span>
           <div class="min-w-0 flex-1">
-            <MusicSeekSlider
+            <AppSlider
               :model-value="playerStore.currentTimeSecs"
               :min="0"
               :max="Math.max(1, playerStore.durationSecs)"
               :step="0.2"
               :buffered="playerStore.bufferedPercent"
               :disabled="!playerStore.currentTrack"
-              aria-label="Playback progress"
+              commit-on-release
+              :always-show-thumb="false"
+              :aria-label="t('player.playbackProgress')"
               :aria-value-text="`${formatTime(displayTimeSecs)} / ${formatTime(playerStore.durationSecs)}`"
               @preview="scrubPreviewSecs = $event"
               @commit="playerStore.seekTo($event)"
@@ -501,12 +502,13 @@ onBeforeUnmount(() => {
             @click="playerStore.toggleMute()"
           />
           <div class="min-w-0 flex-1">
-            <MusicSeekSlider
+            <AppSlider
               :model-value="playerStore.muted ? 0 : playerStore.volume"
               :min="0"
               :max="1"
               :step="0.02"
               :commit-on-release="false"
+              :always-show-thumb="false"
               :aria-label="t('player.volume')"
               @update:model-value="playerStore.setVolume($event)"
             />

@@ -15,7 +15,7 @@ import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
 import { useOnlineSourceDebug } from '@/components/online-sources/useOnlineSourceDebug'
-import { MdButton, MdIconButton, type SegmentedOption } from '@/components/ui'
+import { AppSlider, MdButton, MdIconButton, type SegmentedOption } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime } from '@/utils/format'
@@ -31,7 +31,6 @@ import {
   type OnlineMusicTrackDto,
 } from '../onlineApi'
 import { usePlayerStore } from '../player'
-import MusicSeekSlider from './MusicSeekSlider.vue'
 
 const props = defineProps<{
   open: boolean
@@ -602,12 +601,14 @@ onBeforeUnmount(() => {
               </span>
 
               <div class="min-w-0 flex-1">
-                <MusicSeekSlider
+                <AppSlider
                   :model-value="previewCurrentSecs"
                   :min="0"
                   :max="Math.max(1, previewDurationSecs)"
                   :step="0.2"
                   :disabled="previewDurationSecs <= 0"
+                  commit-on-release
+                  :always-show-thumb="false"
                   :aria-label="tm('sourceEditor.debug.previewTitle')"
                   @preview="previewScrubSecs = $event"
                   @commit="seekPreview"

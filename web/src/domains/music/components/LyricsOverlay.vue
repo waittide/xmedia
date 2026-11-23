@@ -24,6 +24,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import {
+  AppSlider,
   MdButton,
   MdIconButton,
   MdMenu,
@@ -42,7 +43,6 @@ import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { TranscodeProfile } from '../types'
-import MusicSeekSlider from './MusicSeekSlider.vue'
 import QueueListContent from './QueueListContent.vue'
 
 type MobileStageTab = 'cover' | 'lyrics' | 'queue'
@@ -585,14 +585,15 @@ onBeforeUnmount(() => {
 
               <!-- Real-time Seek Slider -->
               <div class="mt-5">
-                <MusicSeekSlider
+                <AppSlider
                   :model-value="playerStore.currentTimeSecs"
                   :min="0"
                   :max="Math.max(1, playerStore.durationSecs)"
                   :step="0.2"
                   :buffered="playerStore.bufferedPercent"
+                  commit-on-release
                   always-show-thumb
-                  aria-label="Seek"
+                  :aria-label="t('player.playbackProgress')"
                   :aria-value-text="`${formatTime(displayTimeSecs)} / ${formatTime(playerStore.durationSecs)}`"
                   @preview="scrubPreviewSecs = $event"
                   @commit="playerStore.seekTo($event)"
@@ -635,7 +636,7 @@ onBeforeUnmount(() => {
                   type="button"
                   :disabled="!playerStore.currentTrack || playerStore.onlineResolving"
                   :aria-busy="playerStore.onlineResolving ? 'true' : undefined"
-                  class="md-state flex h-14 w-14 cursor-pointer items-center justify-center rounded-corner-full bg-primary text-on-primary shadow-elevation-2 transition-transform duration-150 ease-standard hover:scale-105 disabled:cursor-not-allowed disabled:opacity-55"
+                  class="md-state flex h-14 w-14 cursor-pointer items-center justify-center rounded-corner-full bg-primary text-on-primary shadow-elevation-2 transition-colors duration-150 ease-standard disabled:cursor-not-allowed disabled:bg-on-surface/12 disabled:text-on-surface/38 disabled:shadow-none"
                   :title="
                     playerStore.onlineResolving
                       ? t('player.resolvingStream')
@@ -684,12 +685,13 @@ onBeforeUnmount(() => {
                   @click="playerStore.toggleMute()"
                 />
                 <div class="min-w-0 flex-1">
-                  <MusicSeekSlider
+                  <AppSlider
                     :model-value="playerStore.muted ? 0 : playerStore.volume"
                     :min="0"
                     :max="1"
                     :step="0.02"
                     :commit-on-release="false"
+                    :always-show-thumb="false"
                     :aria-label="t('player.volume')"
                     @update:model-value="playerStore.setVolume($event)"
                   />
@@ -763,7 +765,7 @@ onBeforeUnmount(() => {
                     :class="
                       idx === playerStore.activeLyricIndex
                         ? 'scale-[1.03] text-headline-small text-on-surface sm:text-headline-medium'
-                        : 'text-title-medium text-on-surface-variant/60 hover:text-on-surface sm:text-title-large'
+                        : 'text-title-medium text-on-surface-variant/80 hover:text-on-surface sm:text-title-large'
                     "
                     @click="handleLyricLineClick(line.start_ms)"
                   >
@@ -774,7 +776,7 @@ onBeforeUnmount(() => {
                       :class="
                         idx === playerStore.activeLyricIndex
                           ? 'text-on-surface-variant'
-                          : 'text-on-surface-variant/55'
+                          : 'text-on-surface-variant/75'
                       "
                     >
                       {{ matchedTranslations[idx] }}
@@ -858,15 +860,15 @@ onBeforeUnmount(() => {
   mask-image: linear-gradient(
     to bottom,
     transparent 0%,
-    #000 10%,
-    #000 90%,
+    var(--md-sys-color-scrim) 10%,
+    var(--md-sys-color-scrim) 90%,
     transparent 100%
   );
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0%,
-    #000 10%,
-    #000 90%,
+    var(--md-sys-color-scrim) 10%,
+    var(--md-sys-color-scrim) 90%,
     transparent 100%
   );
 }

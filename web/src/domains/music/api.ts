@@ -233,6 +233,23 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
+  savePlayQueueKeepalive: (payload: {
+    track_ids: string[]
+    current_track_id: string | null
+    position_ms: number
+  }) => {
+    try {
+      void fetch('/api/v1/music/play-queue', {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      })
+    } catch {
+      // ignore unload errors
+    }
+  },
   listBookmarks: () => requestJson<BookmarkDto[]>('/music/bookmarks'),
   saveBookmark: (trackId: string, position_ms: number, comment?: string) =>
     requestJson<BookmarkDto>(`/music/bookmarks/${encodeURIComponent(trackId)}`, {

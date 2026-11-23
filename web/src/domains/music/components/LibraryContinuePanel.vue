@@ -332,14 +332,14 @@ defineExpose({ refresh })
       @retry="refresh"
     />
 
-    <div v-else-if="isLoading" class="space-y-4" aria-busy="true">
-      <template v-if="showSkeleton">
-        <MdSkeleton variant="rect" height="6.5rem" />
-        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <MdSkeleton v-for="i in 4" :key="`c-sk-${i}`" variant="rect" height="4.5rem" />
-        </div>
-      </template>
+    <div v-else-if="isLoading && showSkeleton" class="space-y-4" aria-busy="true">
+      <MdSkeleton variant="rect" height="6.5rem" />
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <MdSkeleton v-for="i in 4" :key="`c-sk-${i}`" variant="rect" height="4.5rem" />
+      </div>
     </div>
+
+    <div v-else-if="isLoading" class="min-h-24" aria-busy="true" />
 
     <MdEmptyState
       v-else-if="!hasAnyContent"

@@ -23,7 +23,6 @@ import {
 import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import { MdBadge, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
-import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useShowMusicBar } from '@/composables/useShowMusicBar'
 import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
 import PlayerBar from '@/domains/music/components/PlayerBar.vue'
@@ -62,7 +61,6 @@ const onlineDownloadsStore = useOnlineDownloadsStore()
 const playerStore = usePlayerStore()
 const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
-const escapeStack = useEscapeStack()
 
 const showMusicBar = useShowMusicBar()
 const tasksDrawerOpen = ref(false)
@@ -70,13 +68,6 @@ const searchOpen = ref(false)
 const dragDepth = ref(0)
 const mainScrollRef = ref<HTMLElement | null>(null)
 const isContentScrolled = ref(false)
-
-escapeStack.register(
-  () => playerStore.lyricsOpen,
-  () => {
-    playerStore.lyricsOpen = false
-  },
-)
 
 watch(
   () => [authStore.isAuthenticated, authStore.user?.id] as const,

@@ -109,7 +109,7 @@ const albumSpecs = computed<MediaDetailSpec[]>(() => {
     { label: t('catalog.colDuration'), value: t('common.minutesCount', { count: totalMins.value }) },
   ]
   if (al.disc_count > 1) {
-    list.push({ label: t('catalog.discHeader', { disc: al.disc_count }), value: String(al.disc_count) })
+    list.push({ label: t('catalog.discCountLabel'), value: String(al.disc_count) })
   }
   if (al.genre) {
     list.push({ label: t('nav.genres'), value: al.genre })
