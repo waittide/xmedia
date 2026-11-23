@@ -4,6 +4,8 @@ import { useSidebarStore as useComicSidebarStore } from '@/domains/comic/store'
 import { usePlayerStore } from '@/domains/music/player'
 import { useMusicStore } from '@/domains/music/store'
 import { useVideoStore } from '@/domains/video/store'
+import { clearOnlineItemStateCache } from '@/sources/useOnlineItemState'
+import { clearSourceFilterCache } from '@/sources/useSourceFilter'
 import { useDialogStore } from '@/stores/dialog'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
@@ -46,6 +48,8 @@ function clearScopedBrowserCaches(): void {
 
 export function resetAllSessionState(): void {
   clearHomeCache()
+  clearOnlineItemStateCache()
+  clearSourceFilterCache()
   clearScopedBrowserCaches()
   useDialogStore().resetState()
   useSnackbarStore().resetState()

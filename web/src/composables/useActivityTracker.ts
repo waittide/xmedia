@@ -196,8 +196,8 @@ export function useActivityTracker(): void {
 
   watch(
     () => authStore.user?.id,
-    (uid) => {
-      if (!uid) {
+    (uid, prevUid) => {
+      if (!uid || uid !== prevUid) {
         for (const d of DOMAINS) {
           livePendingSeconds[d] = 0
           sessionMarked[d] = false
