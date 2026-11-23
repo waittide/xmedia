@@ -8,6 +8,7 @@ import {
   type OnlineSourceManagerAdapter,
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
+import type { ChapterItemDto, SeriesDetailDto } from './types'
 
 export type ComicSourceSummaryDto = OnlineSourceSummaryDto
 export type ComicReadingDirection = 'rtl' | 'ltr' | 'webtoon'
@@ -139,6 +140,27 @@ export interface OnlineComicPagesResponseDto {
   reading_direction: ComicReadingDirection
   pages: OnlineComicPageDto[]
   diagnostics: ExecutionDiagnostics
+}
+
+export interface TrackOnlineComicInput {
+  source_id: string
+  comic_url: string
+  toc_url?: string | null
+  title?: string | null
+  author?: string | null
+  cover_url?: string | null
+  summary?: string | null
+  reading_direction?: ComicReadingDirection | null
+  genres?: string[] | null
+  status?: string | null
+}
+
+export interface ComicCacheReportDto {
+  series_id: string
+  total_requested: number
+  cached_now: number
+  already_cached: number
+  failed: string[]
 }
 
 export const ONLINE_COMIC_CTX_KEY = 'xmedia_online_comic_ctx'
@@ -334,6 +356,28 @@ export const onlineComicApi = {
         chapter: options?.chapter ?? undefined,
       }),
       signal: options?.signal,
+    }),
+
+  trackOnlineComic: (payload: TrackOnlineComicInput): Promise<SeriesDetailDto> =>
+    requestJson('/comic/online/track', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  refreshTrackedSeries: (seriesId: string): Promise<SeriesDetailDto> =>
+    requestJson(`/comic/series/${encodeURIComponent(seriesId)}/online/refresh`, {
+      method: 'POST',
+    }),
+
+  cacheTrackedSeries: (seriesId: string, chapterIds?: string[]): Promise<ComicCacheReportDto> =>
+    requestJson(`/comic/series/${encodeURIComponent(seriesId)}/online/cache`, {
+      method: 'POST',
+      body: JSON.stringify(chapterIds ? { chapter_ids: chapterIds } : {}),
+    }),
+
+  cacheTrackedChapter: (chapterId: string): Promise<ChapterItemDto> =>
+    requestJson(`/comic/chapters/${encodeURIComponent(chapterId)}/online/cache`, {
+      method: 'POST',
     }),
 }
 

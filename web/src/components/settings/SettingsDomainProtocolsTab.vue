@@ -63,6 +63,14 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       },
     )
   }
+  if (authStore.hasModule('video')) {
+    rows.push({
+      key: 'videoJellyfin',
+      domain: 'video',
+      label: t('settings.videoJellyfinUrl'),
+      url: `${originUrl.value}/jellyfin`,
+    })
+  }
   return rows
 })
 </script>
@@ -128,6 +136,18 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       </span>
       <span class="text-on-surface-variant">
         {{ t('settings.subsonicAuthModesVal') }}
+      </span>
+    </div>
+
+    <div
+      v-if="authStore.hasModule('video')"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
+    >
+      <span class="text-label-medium text-on-surface">
+        {{ t('settings.jellyfinAuthModes') }}:
+      </span>
+      <span class="text-on-surface-variant">
+        {{ t('settings.jellyfinAuthModesVal') }}
       </span>
     </div>
   </MdCard>

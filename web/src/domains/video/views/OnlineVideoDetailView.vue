@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   LuArrowUpDown,
   LuFilm,
+  LuLibrary,
   LuPlay,
   LuRefreshCw,
   LuSettings2,
@@ -28,6 +29,7 @@ import {
   type TrackedItemRef,
 } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime } from '@/utils/format'
 import {
   buildOnlineVideoPlayRoute,
@@ -45,13 +47,17 @@ import {
   type OnlineVideoEpisode,
   type OnlineVideoPlayGroup,
 } from '../onlineApi'
+import { useVideoStore } from '../store'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const videoStore = useVideoStore()
+const snackbar = useSnackbarStore()
 
 const loading = ref(true)
+const trackingBusy = ref(false)
 const errorMessage = ref<string | null>(null)
 const detail = ref<OnlineVideoDetailResponseDto | null>(null)
 const resolvedSourceId = ref('')
@@ -419,6 +425,44 @@ async function handleRemoveRecord(close?: () => void): Promise<void> {
   handleBack()
 }
 
+async function handleTrackToLibrary(): Promise<void> {
+  if (
+    !authStore.isAdmin ||
+    trackingBusy.value ||
+    !resolvedSourceId.value ||
+    (!resolvedVideoId.value && !resolvedDetailUrl.value)
+  ) {
+    return
+  }
+  trackingBusy.value = true
+  try {
+    const res = await onlineVideoApi.trackOnlineVideo({
+      source_id: resolvedSourceId.value,
+      video_id: resolvedVideoId.value || null,
+      detail_url: resolvedDetailUrl.value || null,
+      group_name: activeGroup.value?.name || null,
+    })
+    videoStore.bumpCatalogVersion()
+    void videoStore.refreshSidebar(true)
+    snackbar.show({ message: t('online.trackedToLibraryToast') })
+    if (res.kind === 'show' && res.show) {
+      await router.push(`/video/item/${encodeURIComponent(res.show.show.id)}`)
+    } else if (res.video) {
+      await router.push({
+        path: `/video/item/${encodeURIComponent(res.video.id)}`,
+        query: { kind: 'movie' },
+      })
+    }
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    trackingBusy.value = false
+  }
+}
+
 onMounted(() => {
   unmounted = false
   void loadDetail()
@@ -463,6 +507,15 @@ watch(
       :primary-action-label="primaryActionLabel"
       :primary-action-icon="LuPlay"
       :primary-action-disabled="!primaryPlayTarget || itemState.blocked.value"
+      :secondary-action-label="
+        authStore.isAdmin && detail && !itemState.blocked.value
+          ? trackingBusy
+            ? t('online.trackingBtn')
+            : t('online.trackToLibraryBtn')
+          : ''
+      "
+      :secondary-action-icon="LuLibrary"
+      :secondary-action-disabled="trackingBusy"
       :show-favorite="Boolean(trackedRef)"
       :favorite="itemState.favorite.value"
       :favorite-loading="itemState.loading.value"
@@ -476,6 +529,7 @@ watch(
       :availability-warning="availabilityWarning"
       @back="handleBack"
       @primary-action="handlePrimaryPlay"
+      @secondary-action="handleTrackToLibrary"
       @toggle-favorite="itemState.toggleFavorite()"
       @update:active-tab="selectedGroupName = $event"
       @retry="loadDetail"

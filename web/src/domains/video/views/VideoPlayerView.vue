@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import Hls from 'hls.js'
 import type { SelectOption } from '@/components/ui'
 import { usePlayerStore } from '@/domains/music/player'
 import { useThemeStore } from '@/stores/theme'
@@ -22,8 +23,19 @@ import {
   updateVideoMediaSession,
 } from '../composables/useVideoPlayerCore'
 import { useVideoI18n as useI18n } from '../i18n'
+import {
+  onlineVideoApi,
+  resolveOnlineVideoStreamUrl,
+  resolveOnlineVideoSubtitleUrl,
+  type OnlineVideoSubtitle,
+  type TrackedVideoPlayResponseDto,
+} from '../onlineApi'
 import { useVideoStore } from '../store'
 import type { VideoDetailDto, VideoQualityProfile, VideoSummaryDto } from '../types'
+
+interface ResolvedTrackedSubtitle extends OnlineVideoSubtitle {
+  resolvedUrl: string
+}
 
 const { t } = useI18n()
 const route = useRoute()
@@ -36,6 +48,8 @@ const shellRef = ref<InstanceType<typeof VideoPlayerShell> | null>(null)
 const videoEl = ref<HTMLVideoElement | null>(null)
 
 const detail = ref<VideoDetailDto | null>(null)
+const trackedPlayResult = ref<TrackedVideoPlayResponseDto | null>(null)
+const trackedStreamType = ref<'hls' | 'mp4'>('mp4')
 const siblingVideos = ref<VideoSummaryDto[]>([])
 const quality = ref<VideoQualityProfile>(themeStore.video.default_quality || 'auto')
 const selectedAudioStream = ref<number | null>(null)
@@ -53,6 +67,8 @@ const streamOffsetSecs = ref(0)
 const currentTimeSecs = ref(0)
 const rawDurationSecs = ref(0)
 
+let hlsInstance: Hls | null = null
+let activeAbort: AbortController | null = null
 let progressSaveTimer: ReturnType<typeof setInterval> | null = null
 let pendingLoadedMetadataHandler: (() => void) | null = null
 let exitPersisted = false
@@ -63,8 +79,12 @@ const activeShelfId = computed(() => {
   return typeof raw === 'string' && raw.trim() ? raw.trim() : null
 })
 
+const isUncachedTracked = computed(() =>
+  Boolean(detail.value?.video.online_tracking && !detail.value.video.online_tracking.cached),
+)
+
 const isTranscodedStream = computed(() => {
-  if (!detail.value) return false
+  if (!detail.value || isUncachedTracked.value) return false
   if (quality.value === 'direct') return false
   if (quality.value !== 'auto') return true
   const defaultAudioIdx = detail.value.audio_streams[0]?.stream_index ?? null
@@ -72,6 +92,17 @@ const isTranscodedStream = computed(() => {
     return true
   }
   return !detail.value.video.can_direct_play
+})
+
+const resolvedTrackedSubtitles = computed<ResolvedTrackedSubtitle[]>(() => {
+  const srcId =
+    trackedPlayResult.value?.source_id ?? detail.value?.video.online_tracking?.source_id ?? null
+  return (trackedPlayResult.value?.subtitles ?? [])
+    .map((s) => ({
+      ...s,
+      resolvedUrl: resolveOnlineVideoSubtitleUrl(s.proxy_url, s.url, srcId),
+    }))
+    .filter((s) => Boolean(s.resolvedUrl))
 })
 
 const totalDurationSecs = computed(() => {
@@ -86,6 +117,12 @@ const totalDurationSecs = computed(() => {
 const activeSubtitleUrl = computed(() => {
   if (!detail.value || !selectedSubtitleId.value || selectedSubtitleId.value === 'off') {
     return null
+  }
+  if (isUncachedTracked.value) {
+    const match = /^online-(\d+)$/.exec(selectedSubtitleId.value)
+    if (!match) return null
+    const idx = Number.parseInt(match[1]!, 10)
+    return resolvedTrackedSubtitles.value[idx]?.resolvedUrl ?? null
   }
   return buildSubtitleVttUrl(
     detail.value.video.id,
@@ -104,6 +141,11 @@ const headerSubtitle = computed(() => {
   if (v.season_number != null && v.episode_number != null) {
     parts.push(
       `S${String(v.season_number).padStart(2, '0')}E${String(v.episode_number).padStart(2, '0')}`,
+    )
+  }
+  if (isUncachedTracked.value && trackedPlayResult.value) {
+    parts.push(
+      trackedStreamType.value === 'hls' ? t('online.streamTypeHls') : t('online.streamTypeMp4'),
     )
   }
   return parts.join(' · ')
@@ -132,13 +174,24 @@ const audioOptions = computed<SelectOption[]>(() => {
   })
 })
 
-const subtitleOptions = computed<SelectOption[]>(() => [
-  { value: 'off', label: t('player.subtitleOff') },
-  ...(detail.value?.subtitles ?? []).map((sub) => ({
-    value: sub.id,
-    label: sub.label,
-  })),
-])
+const subtitleOptions = computed<SelectOption[]>(() => {
+  if (isUncachedTracked.value) {
+    return [
+      { value: 'off', label: t('player.subtitleOff') },
+      ...resolvedTrackedSubtitles.value.map((sub, idx) => ({
+        value: `online-${idx}`,
+        label: sub.label || sub.lang || `Sub #${idx + 1}`,
+      })),
+    ]
+  }
+  return [
+    { value: 'off', label: t('player.subtitleOff') },
+    ...(detail.value?.subtitles ?? []).map((sub) => ({
+      value: sub.id,
+      label: sub.label,
+    })),
+  ]
+})
 
 const currentSiblingIndex = computed(() => {
   const curId = detail.value?.video.id
@@ -183,7 +236,7 @@ const episodeDrawerItems = computed<VideoPlayerEpisodeItem[]>(() => {
 })
 
 const downloadUrl = computed(() =>
-  detail.value ? buildVideoDownloadUrl(detail.value.video.id) : null,
+  detail.value && !isUncachedTracked.value ? buildVideoDownloadUrl(detail.value.video.id) : null,
 )
 
 function clearPendingSeekHandler(): void {
@@ -193,17 +246,30 @@ function clearPendingSeekHandler(): void {
   pendingLoadedMetadataHandler = null
 }
 
+function destroyHls(): void {
+  if (hlsInstance) {
+    try {
+      hlsInstance.destroy()
+    } catch {
+      // ignore destroy errors
+    }
+    hlsInstance = null
+  }
+}
+
 function stopAndClearVideoElement(): void {
   clearPendingSeekHandler()
   const el = videoEl.value
-  if (!el) return
-  try {
-    el.pause()
-    el.removeAttribute('src')
-    el.load()
-  } catch {
-    // ignore cleanup errors
+  if (el) {
+    try {
+      el.pause()
+      el.removeAttribute('src')
+      el.load()
+    } catch {
+      // ignore cleanup errors
+    }
   }
+  destroyHls()
 }
 
 function syncMediaSession(d: VideoDetailDto): void {
@@ -300,14 +366,175 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
   }
 }
 
+async function loadTrackedOnlineStream(
+  videoId: string,
+  startSecs: number,
+  reqSeq: number,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await onlineVideoApi.resolveTrackedPlay(videoId, { signal })
+  if (reqSeq !== initRequestSeq) return
+
+  if (res.cached) {
+    if (detail.value?.video.online_tracking) {
+      detail.value = {
+        ...detail.value,
+        video: {
+          ...detail.value.video,
+          online_tracking: { ...detail.value.video.online_tracking, cached: true },
+        },
+      }
+    }
+    loadStreamAt(startSecs, true)
+    return
+  }
+
+  trackedPlayResult.value = res
+  const rawStream = res.stream_url || ''
+  const isHls = res.stream_type === 'hls' || /\.m3u8(\?|$)/i.test(rawStream)
+  trackedStreamType.value = isHls ? 'hls' : 'mp4'
+  const proxyHint = isHls
+    ? res.stream_type === 'hls' && res.proxy_stream_url?.includes('hls-proxy')
+      ? res.proxy_stream_url
+      : ''
+    : res.proxy_stream_url
+  const srcId = res.source_id ?? detail.value?.video.online_tracking?.source_id ?? null
+  const playableUrl = resolveOnlineVideoStreamUrl(
+    proxyHint,
+    rawStream,
+    isHls ? 'hls' : 'mp4',
+    srcId,
+  )
+
+  if (!playableUrl) {
+    loadError.value = t('online.streamLoadFailed')
+    return
+  }
+
+  const el = videoEl.value
+  if (!el) return
+
+  clearPendingSeekHandler()
+  destroyHls()
+  streamOffsetSecs.value = 0
+  currentTimeSecs.value = startSecs
+  el.volume = volume.value
+  el.muted = muted.value
+  el.playbackRate = playbackRate.value
+  isBuffering.value = true
+
+  const attachMetadataSeek = (): void => {
+    const targetRate = playbackRate.value
+    const handler = (): void => {
+      clearPendingSeekHandler()
+      el.playbackRate = targetRate
+      if (startSecs > 0) {
+        const maxDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : startSecs
+        const target = Math.min(startSecs, Math.max(0, maxDur - 1))
+        if (target > 0) {
+          el.currentTime = target
+          currentTimeSecs.value = target
+        }
+      }
+    }
+    pendingLoadedMetadataHandler = handler
+    el.addEventListener('loadedmetadata', handler, { once: true })
+  }
+
+  if (isHls) {
+    if (Hls.isSupported()) {
+      let networkRetries = 0
+      let mediaRetries = 0
+      const unrecoverableManifestErrors = new Set<string>([
+        Hls.ErrorDetails.MANIFEST_PARSING_ERROR,
+        Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR,
+        Hls.ErrorDetails.LEVEL_EMPTY_ERROR,
+      ])
+      const manifestLoadErrors = new Set<string>([
+        Hls.ErrorDetails.MANIFEST_LOAD_ERROR,
+        Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT,
+      ])
+      const hls = new Hls({
+        startPosition: startSecs > 0 ? startSecs : -1,
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = true
+        },
+      })
+      hlsInstance = hls
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (reqSeq !== initRequestSeq) return
+        el.playbackRate = playbackRate.value
+        if (startSecs > 0 && Math.abs((el.currentTime || 0) - startSecs) > 1.5) {
+          el.currentTime = startSecs
+        }
+        isBuffering.value = false
+        void el.play().catch(() => {
+          isPlaying.value = false
+          isBuffering.value = false
+        })
+      })
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (reqSeq !== initRequestSeq || !data.fatal) return
+        if (!unrecoverableManifestErrors.has(data.details)) {
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
+            networkRetries += 1
+            if (manifestLoadErrors.has(data.details) || hls.levels.length === 0) {
+              hls.loadSource(playableUrl)
+            } else {
+              hls.startLoad()
+            }
+            return
+          }
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 1) {
+            mediaRetries += 1
+            hls.recoverMediaError()
+            return
+          }
+        }
+        stopAndClearVideoElement()
+        isPlaying.value = false
+        isBuffering.value = false
+        loadError.value = data.reason || t('online.streamLoadFailed')
+      })
+      hls.loadSource(playableUrl)
+      hls.attachMedia(el)
+    } else if (el.canPlayType('application/vnd.apple.mpegurl') !== '') {
+      attachMetadataSeek()
+      el.src = playableUrl
+      el.load()
+      void el.play().catch(() => {
+        isPlaying.value = false
+        isBuffering.value = false
+      })
+    } else {
+      isBuffering.value = false
+      loadError.value = t('player.unsupportedHls')
+    }
+  } else {
+    attachMetadataSeek()
+    el.src = playableUrl
+    el.load()
+    void el.play().catch(() => {
+      isPlaying.value = false
+      isBuffering.value = false
+    })
+  }
+}
+
 async function initVideo(): Promise<void> {
   const reqSeq = ++initRequestSeq
+  activeAbort?.abort()
+  const controller = new AbortController()
+  activeAbort = controller
   exitPersisted = false
   stopAndClearVideoElement()
+  trackedPlayResult.value = null
   isPlaying.value = false
   loadingVideo.value = true
   isBuffering.value = false
   loadError.value = null
+  rawDurationSecs.value = 0
+  streamOffsetSecs.value = 0
   musicPlayerStore.pause()
 
   const id = String(route.params.id || '').trim()
@@ -332,7 +559,9 @@ async function initVideo(): Promise<void> {
       selectedAudioStream.value = defAudio ? defAudio.stream_index : null
     }
 
-    if (savedProg?.selected_subtitle) {
+    if (d.video.online_tracking && !d.video.online_tracking.cached) {
+      selectedSubtitleId.value = 'off'
+    } else if (savedProg?.selected_subtitle) {
       selectedSubtitleId.value = savedProg.selected_subtitle
     } else {
       const defSub = d.subtitles.find((s) => s.is_default)
@@ -347,11 +576,15 @@ async function initVideo(): Promise<void> {
           ? savedProg.position_secs
           : 0
 
-    loadStreamAt(resumePos, true)
+    if (d.video.online_tracking && !d.video.online_tracking.cached) {
+      await loadTrackedOnlineStream(d.video.id, resumePos, reqSeq, controller.signal)
+    } else {
+      loadStreamAt(resumePos, true)
+    }
     shellRef.value?.showHud()
   } catch (err) {
     if (reqSeq !== initRequestSeq) return
-    detail.value = null
+    if (err instanceof Error && err.name === 'AbortError') return
     isPlaying.value = false
     isBuffering.value = false
     loadError.value = err instanceof Error && err.message ? err.message : t('player.loadErrorDesc')
@@ -498,7 +731,7 @@ function onTimeUpdate(): void {
 
 function onDurationChange(): void {
   if (videoEl.value) {
-    rawDurationSecs.value = videoEl.value.duration || 0
+    rawDurationSecs.value = Number.isFinite(videoEl.value.duration) ? videoEl.value.duration : 0
   }
 }
 
@@ -527,10 +760,14 @@ function onVideoEnded(): void {
 }
 
 function onVideoError(): void {
-  if (!detail.value || !videoEl.value?.error) return
+  const el = videoEl.value
+  if (!detail.value || !el || (!el.getAttribute('src') && !hlsInstance) || !el.error) return
+  stopAndClearVideoElement()
   isPlaying.value = false
   isBuffering.value = false
-  loadError.value = t('player.loadErrorDesc')
+  loadError.value = isUncachedTracked.value
+    ? t('online.streamLoadFailed')
+    : t('player.loadErrorDesc')
 }
 
 function goBack(): void {
@@ -592,6 +829,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   initRequestSeq += 1
+  activeAbort?.abort()
+  activeAbort = null
   if (!exitPersisted) {
     exitPersisted = true
     void persistProgress(undefined, { bumpCatalog: true })
@@ -631,13 +870,13 @@ watch(
     :has-prev="Boolean(prevEpisodeId)"
     :has-next="Boolean(nextEpisodeId)"
     :show-footer="Boolean(detail)"
-    :header-select-value="quality"
-    :header-select-options="detail ? qualityOptions : []"
+    :header-select-value="isUncachedTracked ? '' : quality"
+    :header-select-options="detail && !isUncachedTracked ? qualityOptions : []"
     :header-select-aria-label="t('player.quality')"
-    :quality-value="quality"
-    :quality-options="detail ? qualityOptions : []"
+    :quality-value="isUncachedTracked ? '' : quality"
+    :quality-options="detail && !isUncachedTracked ? qualityOptions : []"
     :audio-value="String(selectedAudioStream ?? detail?.audio_streams[0]?.stream_index ?? 0)"
-    :audio-options="audioOptions"
+    :audio-options="isUncachedTracked ? [] : audioOptions"
     :subtitle-value="selectedSubtitleId"
     :subtitle-options="subtitleOptions"
     :download-url="downloadUrl"

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
+  LuCloud,
   LuDisc3,
   LuDownload,
   LuHeart,
@@ -22,6 +23,7 @@ import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime as formatDuration } from '@/utils/format'
 import { api, buildCoverUrl, buildDownloadUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
+import { onlineMusicApi } from '../onlineApi'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { TrackDto } from '../types'
@@ -58,6 +60,12 @@ const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
+const cachingTrackIds = ref<Set<string>>(new Set())
+const cachedTrackOverrides = ref<Record<string, boolean>>({})
+
+function isTrackedCached(tr: TrackDto): boolean {
+  return Boolean(cachedTrackOverrides.value[tr.id] || tr.online_tracking?.cached)
+}
 
 type TableEntry =
   | { kind: 'disc'; disc: number }
@@ -219,6 +227,30 @@ function triggerDownload(trackId: string): void {
   link.click()
   document.body.removeChild(link)
 }
+
+async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
+  if (!authStore.isAdmin || cachingTrackIds.value.has(track.id)) return
+  const next = new Set(cachingTrackIds.value)
+  next.add(track.id)
+  cachingTrackIds.value = next
+  snackbarStore.show(t('online.cachingTrackToast', { title: track.title }))
+  try {
+    await onlineMusicApi.cacheTrackedTrack(track.id)
+    cachedTrackOverrides.value = { ...cachedTrackOverrides.value, [track.id]: true }
+    musicStore.bumpCatalogVersion()
+    void musicStore.refreshSidebar()
+    snackbarStore.show(t('online.trackCachedToast', { title: track.title }))
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    const done = new Set(cachingTrackIds.value)
+    done.delete(track.id)
+    cachingTrackIds.value = done
+  }
+}
 </script>
 
 <template>
@@ -318,6 +350,21 @@ function triggerDownload(trackId: string): void {
                       class="text-label-small shrink-0 rounded-corner-xs bg-primary-container px-1.5 py-0.5 text-on-primary-container"
                     >
                       LRC
+                    </span>
+                    <span
+                      v-if="entry.track.online_tracking"
+                      class="text-label-small shrink-0 rounded-corner-xs px-1.5 py-0.5"
+                      :class="
+                        isTrackedCached(entry.track)
+                          ? 'bg-secondary-container text-on-secondary-container'
+                          : 'bg-tertiary-container text-on-tertiary-container'
+                      "
+                    >
+                      {{
+                        isTrackedCached(entry.track)
+                          ? t('online.badgeTrackedCached')
+                          : t('online.badgeTrackedOnline')
+                      }}
                     </span>
                   </div>
                   <div class="text-body-small mt-0.5 flex min-w-0 items-center gap-1.5 text-on-surface-variant">
@@ -442,6 +489,18 @@ function triggerDownload(trackId: string): void {
                       @select="addToExistingPlaylist(pl.id, entry.track)"
                     />
                   </div>
+
+                  <MdMenuItem
+                    v-if="
+                      authStore.isAdmin &&
+                      entry.track.online_tracking &&
+                      !isTrackedCached(entry.track)
+                    "
+                    :icon="LuCloud"
+                    :label="t('online.cacheTrackBtn')"
+                    :disabled="cachingTrackIds.has(entry.track.id)"
+                    @select="handleCacheTrackedTrack(entry.track)"
+                  />
 
                   <MdMenuItem
                     :icon="LuDownload"

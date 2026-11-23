@@ -55,6 +55,21 @@ export interface WatchProgressDto {
   updated_at: string
 }
 
+export interface OnlineTrackedVideoDto {
+  source_id: string
+  video_id: string
+  detail_url: string
+  play_url: string
+  group_name: string | null
+  episode_name: string | null
+  cached: boolean
+}
+
+export interface OnlineTrackedShowDto {
+  source_id: string
+  item_key: string
+}
+
 export interface VideoSummaryDto {
   id: string
   library_id: string
@@ -80,6 +95,7 @@ export interface VideoSummaryDto {
   is_favorite: boolean
   progress: WatchProgressDto | null
   created_at: string
+  online_tracking?: OnlineTrackedVideoDto | null
 }
 
 export interface VideoDetailDto {
@@ -106,6 +122,7 @@ export interface ShowSummaryDto {
   watched_episode_count: number
   is_favorite: boolean
   created_at: string
+  online_tracking?: OnlineTrackedShowDto | null
 }
 
 export interface SeasonGroupDto {

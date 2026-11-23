@@ -10,6 +10,8 @@ import {
   LuCheckCheck,
   LuChevronDown,
   LuChevronRight,
+  LuCloud,
+  LuDownload,
   LuImage,
   LuPencil,
   LuPlay,
@@ -36,6 +38,7 @@ import ChapterMetadataModal from '@/domains/comic/components/ChapterMetadataModa
 import ComicChapterRow from '@/domains/comic/components/ComicChapterRow.vue'
 import SeriesMetadataModal from '@/domains/comic/components/SeriesMetadataModal.vue'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
+import { onlineComicApi } from '@/domains/comic/onlineApi'
 import { useSidebarStore } from '@/domains/comic/store'
 import type { ChapterItemDto, SeriesDetailDto, ShelfDetailDto } from '@/domains/comic/types'
 import { libraryRoute, parseItemRef, playRoute } from '@/sources'
@@ -68,6 +71,9 @@ const shelfModalOpen = ref(false)
 const allShelves = ref<ShelfDetailDto[]>([])
 const selectedShelfIds = ref<string[]>([])
 const savingShelves = ref(false)
+const refreshingTrackedToc = ref(false)
+const cachingSeries = ref(false)
+const cachingChapterIds = ref<Set<string>>(new Set())
 
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const chapterUploadRef = ref<HTMLInputElement | null>(null)
@@ -89,6 +95,21 @@ const isManagedSeries = computed(() =>
     (l) => l.id === detail.value?.series.library_id && l.kind === 'managed_upload',
   ),
 )
+
+const isTrackedSeries = computed(() =>
+  Boolean(detail.value?.online_tracking || detail.value?.series.source_dir.startsWith('online_tracked:')),
+)
+
+const trackedCacheStats = computed(() => {
+  const chapters = detail.value?.chapters ?? []
+  const tracked = chapters.filter((ch) => Boolean(ch.online_tracking))
+  const cached = tracked.filter((ch) => Boolean(ch.online_tracking?.cached)).length
+  return {
+    cached,
+    total: tracked.length || chapters.length,
+    uncached: Math.max(0, tracked.length - cached),
+  }
+})
 
 const statusLabel = computed(() => {
   const s = detail.value?.series.status
@@ -292,6 +313,16 @@ function chapterKindBadge(ch: ChapterItemDto): string {
   return t('series.kindChapter', { num: ch.number_label })
 }
 
+function chapterMetaText(ch: ChapterItemDto): string {
+  if (ch.online_tracking) {
+    if (ch.online_tracking.cached) {
+      return `${t('series.pagesCount', { count: ch.page_count })} · ${t('online.trackedCached')}`
+    }
+    return t('online.trackedUncached')
+  }
+  return t('series.pagesCount', { count: ch.page_count })
+}
+
 function chapterProgressPercent(ch: ChapterItemDto): number | null {
   if (ch.is_completed) return 100
   if (ch.current_page <= 0 || ch.page_count <= 0) return null
@@ -489,6 +520,84 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
     showError(err)
   }
 }
+
+async function handleRefreshTrackedToc(): Promise<void> {
+  if (!detail.value || !isTrackedSeries.value || refreshingTrackedToc.value) return
+  refreshingTrackedToc.value = true
+  try {
+    const updated = await onlineComicApi.refreshTrackedSeries(detail.value.series.id)
+    detail.value = updated
+    upload.notifyCatalogChanged()
+    void sidebarStore.refresh()
+    snackbar.show({
+      message: t('online.trackedTocRefreshed', { count: updated.series.chapter_count }),
+    })
+  } catch (err) {
+    showError(err)
+  } finally {
+    refreshingTrackedToc.value = false
+  }
+}
+
+async function handleCacheAllChapters(): Promise<void> {
+  if (!detail.value || !isTrackedSeries.value || cachingSeries.value) return
+  cachingSeries.value = true
+  try {
+    const report = await onlineComicApi.cacheTrackedSeries(detail.value.series.id)
+    await loadDetail()
+    upload.notifyCatalogChanged()
+    if (report.failed.length > 0) {
+      snackbar.show({
+        message: t('online.cacheSeriesPartialToast', {
+          cached: report.cached_now,
+          failed: report.failed.length,
+        }),
+        tone: 'error',
+      })
+    } else {
+      snackbar.show({
+        message: t('online.cacheSeriesReportToast', {
+          cached: report.cached_now,
+          skipped: report.already_cached,
+        }),
+      })
+    }
+  } catch (err) {
+    showError(err)
+  } finally {
+    cachingSeries.value = false
+  }
+}
+
+async function handleCacheChapter(ch: ChapterItemDto): Promise<void> {
+  if (!auth.isAdmin || cachingChapterIds.value.has(ch.id)) return
+  const next = new Set(cachingChapterIds.value)
+  next.add(ch.id)
+  cachingChapterIds.value = next
+  const label = ch.title || chapterKindBadge(ch)
+  snackbar.show({ message: t('online.cachingChapterToast', { title: label }) })
+  try {
+    const updated = await onlineComicApi.cacheTrackedChapter(ch.id)
+    if (detail.value) {
+      detail.value = {
+        ...detail.value,
+        chapters: detail.value.chapters.map((item) => (item.id === updated.id ? updated : item)),
+      }
+    }
+    snackbar.show({
+      message: t('online.chapterCachedToast', {
+        title: updated.title || label,
+        pages: updated.page_count,
+      }),
+    })
+  } catch (err) {
+    showError(err)
+  } finally {
+    const done = new Set(cachingChapterIds.value)
+    done.delete(ch.id)
+    cachingChapterIds.value = done
+  }
+}
 </script>
 
 <template>
@@ -548,7 +657,50 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
       @toggle-favorite="toggleFavorite"
       @retry="loadDetail"
     >
+      <template v-if="detail && isTrackedSeries" #hero-meta>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          <span
+            class="text-label-medium inline-flex items-center gap-1.5 rounded-corner-full bg-secondary-container px-2.5 py-0.5 text-on-secondary-container"
+          >
+            <LuCloud class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {{
+                t('online.trackedBadgeStatus', {
+                  cached: trackedCacheStats.cached,
+                  total: trackedCacheStats.total,
+                })
+              }}
+            </span>
+          </span>
+        </div>
+      </template>
+
       <template v-if="detail" #overflow-menu="{ close }">
+        <template v-if="auth.isAdmin && isTrackedSeries">
+          <MdMenuItem
+            :label="
+              refreshingTrackedToc ? t('online.refreshingTrackedToc') : t('online.refreshTrackedToc')
+            "
+            :icon="LuRefreshCw"
+            :disabled="refreshingTrackedToc"
+            @select="
+              close();
+              handleRefreshTrackedToc()
+            "
+          />
+          <MdMenuItem
+            v-if="trackedCacheStats.uncached > 0"
+            :label="
+              cachingSeries ? t('online.cachingAllChapters') : t('online.cacheAllChapters')
+            "
+            :icon="LuCloud"
+            :disabled="cachingSeries"
+            @select="
+              close();
+              handleCacheAllChapters()
+            "
+          />
+        </template>
         <MdMenuItem
           v-if="auth.isAdmin && isManagedSeries"
           :label="t('series.uploadToSeries')"
@@ -696,7 +848,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
                 :key="ch.id"
                 :badge="chapterKindBadge(ch)"
                 :title="ch.title || chapterKindBadge(ch)"
-                :meta-text="t('series.pagesCount', { count: ch.page_count })"
+                :meta-text="chapterMetaText(ch)"
                 :progress-text="
                   ch.current_page > 0 && !ch.is_completed
                     ? t('series.readProgress', { page: ch.current_page, total: ch.page_count })
@@ -712,6 +864,16 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
                 @open="openChapter(ch)"
               >
                 <template #menu="{ close }">
+                  <MdMenuItem
+                    v-if="auth.isAdmin && ch.online_tracking && !ch.online_tracking.cached"
+                    :label="t('online.cacheChapterBtn')"
+                    :icon="LuDownload"
+                    :disabled="cachingChapterIds.has(ch.id)"
+                    @select="
+                      close();
+                      handleCacheChapter(ch)
+                    "
+                  />
                   <MdMenuItem
                     :label="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
                     :icon="LuCheck"
@@ -761,7 +923,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               :key="ch.id"
               :badge="chapterKindBadge(ch)"
               :title="ch.title || chapterKindBadge(ch)"
-              :meta-text="t('series.pagesCount', { count: ch.page_count })"
+              :meta-text="chapterMetaText(ch)"
               :progress-text="
                 ch.current_page > 0 && !ch.is_completed
                   ? t('series.readProgress', { page: ch.current_page, total: ch.page_count })
@@ -777,6 +939,16 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               @open="openChapter(ch)"
             >
               <template #menu="{ close }">
+                <MdMenuItem
+                  v-if="auth.isAdmin && ch.online_tracking && !ch.online_tracking.cached"
+                  :label="t('online.cacheChapterBtn')"
+                  :icon="LuDownload"
+                  :disabled="cachingChapterIds.has(ch.id)"
+                  @select="
+                    close();
+                    handleCacheChapter(ch)
+                  "
+                />
                 <MdMenuItem
                   :label="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
                   :icon="LuCheck"

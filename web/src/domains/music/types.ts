@@ -67,6 +67,12 @@ export interface ReplayGain {
   album_peak: number | null
 }
 
+export interface OnlineTrackedTrackDto {
+  source_id: string
+  item_id: string
+  cached: boolean
+}
+
 export interface TrackDto {
   id: string
   library_id: string
@@ -103,6 +109,7 @@ export interface TrackDto {
   play_count: number
   last_played_at: string | null
   created_at: string
+  online_tracking?: OnlineTrackedTrackDto | null
 }
 
 export interface AlbumDto {

@@ -8,6 +8,7 @@ import {
   type OnlineSourceManagerAdapter,
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
+import type { ShowDetailDto, VideoSummaryDto } from './types'
 
 export type VideoSourceSummaryDto = OnlineSourceSummaryDto
 export type VideoSourceTestMode = 'full' | 'categories' | 'search' | 'browse' | 'detail' | 'play'
@@ -136,6 +137,37 @@ export interface OnlineVideoPlayResponseDto extends OnlineVideoPlayResult {
   source_id: string
   source_name: string
   diagnostics: ExecutionDiagnostics
+}
+
+export interface TrackOnlineVideoInput {
+  source_id: string
+  video_id?: string | null
+  detail_url?: string | null
+  group_name?: string | null
+}
+
+export interface TrackOnlineVideoResultDto {
+  kind: 'movie' | 'show' | string
+  video?: VideoSummaryDto | null
+  show?: ShowDetailDto | null
+  added_episodes: number
+}
+
+export interface TrackedVideoPlayResponseDto {
+  video_id: string
+  cached: boolean
+  source_id?: string | null
+  stream_url?: string | null
+  proxy_stream_url?: string | null
+  stream_type?: 'hls' | 'mp4' | 'auto' | string | null
+  subtitles: OnlineVideoSubtitle[]
+}
+
+export interface VideoCacheReportDto {
+  cached_count: number
+  skipped_count: number
+  failed_count: number
+  errors: string[]
 }
 
 export const ONLINE_VIDEO_CTX_KEY = 'xmedia_online_video_ctx'
@@ -400,6 +432,41 @@ export const onlineVideoApi = {
         play_url: playUrl,
         group_name: groupName ?? null,
       }),
+      signal: options?.signal,
+    }),
+
+  trackOnlineVideo: (payload: TrackOnlineVideoInput): Promise<TrackOnlineVideoResultDto> =>
+    requestJson('/video/online/track', {
+      method: 'POST',
+      body: JSON.stringify({
+        source_id: payload.source_id,
+        video_id: payload.video_id ?? null,
+        detail_url: payload.detail_url ?? null,
+        group_name: payload.group_name ?? null,
+      }),
+    }),
+
+  refreshTrackedShow: (showId: string): Promise<ShowDetailDto> =>
+    requestJson(`/video/shows/${encodeURIComponent(showId)}/online/refresh`, {
+      method: 'POST',
+    }),
+
+  cacheTrackedShow: (showId: string, videoIds?: string[]): Promise<VideoCacheReportDto> =>
+    requestJson(`/video/shows/${encodeURIComponent(showId)}/online/cache`, {
+      method: 'POST',
+      body: JSON.stringify(videoIds ? { video_ids: videoIds } : {}),
+    }),
+
+  cacheTrackedVideo: (videoId: string): Promise<VideoSummaryDto> =>
+    requestJson(`/video/videos/${encodeURIComponent(videoId)}/online/cache`, {
+      method: 'POST',
+    }),
+
+  resolveTrackedPlay: (
+    videoId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<TrackedVideoPlayResponseDto> =>
+    requestJson(`/video/videos/${encodeURIComponent(videoId)}/online/play`, {
       signal: options?.signal,
     }),
 }

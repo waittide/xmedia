@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import {
   LuCheck,
+  LuCloud,
   LuDownload,
   LuFilm,
   LuFolderPlus,
@@ -37,6 +38,7 @@ import ShowMetadataModal from '../components/ShowMetadataModal.vue'
 import VideoMetadataModal from '../components/VideoMetadataModal.vue'
 import VideoShelfPickerDialog from '../components/VideoShelfPickerDialog.vue'
 import { useVideoI18n as useI18n } from '../i18n'
+import { onlineVideoApi } from '../onlineApi'
 import { useVideoStore } from '../store'
 import type { ShowDetailDto, VideoDetailDto, VideoSummaryDto } from '../types'
 
@@ -59,6 +61,9 @@ const favoriteBusy = ref(false)
 const editShowOpen = ref(false)
 const editingVideo = ref<VideoSummaryDto | null>(null)
 const shelfPickerTarget = ref<{ id: string; title: string } | null>(null)
+const refreshingTrackedShow = ref(false)
+const cachingShow = ref(false)
+const cachingVideoIds = ref<Set<string>>(new Set())
 
 let loadSeq = 0
 
@@ -168,6 +173,27 @@ const primaryPlayEpisode = computed<VideoSummaryDto | null>(() => {
   if (showDetail.value.continue_episode) return showDetail.value.continue_episode
   return showDetail.value.seasons[0]?.episodes[0] ?? null
 })
+
+const showTrackedStats = computed(() => {
+  if (mode.value !== 'show' || !showDetail.value) {
+    return { isTracked: false, cached: 0, total: 0, uncached: 0 }
+  }
+  const allEps = showDetail.value.seasons.flatMap((sg) => sg.episodes)
+  const trackedEps = allEps.filter((ep) => Boolean(ep.online_tracking))
+  const isTracked = Boolean(showDetail.value.show.online_tracking || trackedEps.length > 0)
+  const cached = trackedEps.filter((ep) => Boolean(ep.online_tracking?.cached)).length
+  const total = trackedEps.length || allEps.length
+  return {
+    isTracked,
+    cached,
+    total,
+    uncached: Math.max(0, trackedEps.length - cached),
+  }
+})
+
+const movieTracking = computed(() =>
+  mode.value === 'movie' ? (movieDetail.value?.video.online_tracking ?? null) : null,
+)
 
 // Unified template bindings
 const displayTitle = computed(() => {
@@ -436,6 +462,92 @@ function episodeProgressPercent(ep: VideoSummaryDto): number {
   return Math.min(100, Math.round((p.position_secs / dur) * 100))
 }
 
+async function handleRefreshTrackedShow(close?: () => void): Promise<void> {
+  close?.()
+  if (!authStore.isAdmin || !showDetail.value || refreshingTrackedShow.value) return
+  refreshingTrackedShow.value = true
+  try {
+    const updated = await onlineVideoApi.refreshTrackedShow(showDetail.value.show.id)
+    showDetail.value = updated
+    if (
+      updated.seasons.length > 0 &&
+      !updated.seasons.some((s) => String(s.season_number) === selectedSeason.value)
+    ) {
+      selectedSeason.value = String(updated.seasons[0]!.season_number)
+    }
+    videoStore.bumpCatalogVersion()
+    void videoStore.refreshSidebar(true)
+    snackbar.show({
+      message: t('online.trackedShowRefreshed', { count: updated.show.episode_count }),
+    })
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    refreshingTrackedShow.value = false
+  }
+}
+
+async function handleCacheTrackedShow(close?: () => void): Promise<void> {
+  close?.()
+  if (!authStore.isAdmin || !showDetail.value || cachingShow.value) return
+  cachingShow.value = true
+  try {
+    const report = await onlineVideoApi.cacheTrackedShow(showDetail.value.show.id)
+    await loadItem()
+    videoStore.bumpCatalogVersion()
+    if (report.failed_count > 0) {
+      snackbar.show({
+        message: t('online.cacheShowPartialToast', {
+          cached: report.cached_count,
+          failed: report.failed_count,
+        }),
+        tone: 'error',
+      })
+    } else {
+      snackbar.show({
+        message: t('online.cacheShowReportToast', {
+          cached: report.cached_count,
+          skipped: report.skipped_count,
+        }),
+      })
+    }
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    cachingShow.value = false
+  }
+}
+
+async function handleCacheTrackedVideo(video: VideoSummaryDto, close?: () => void): Promise<void> {
+  close?.()
+  if (!authStore.isAdmin || cachingVideoIds.value.has(video.id)) return
+  const next = new Set(cachingVideoIds.value)
+  next.add(video.id)
+  cachingVideoIds.value = next
+  snackbar.show({ message: t('online.cachingVideoToast', { title: video.title }) })
+  try {
+    await onlineVideoApi.cacheTrackedVideo(video.id)
+    await loadItem()
+    videoStore.bumpCatalogVersion()
+    snackbar.show({ message: t('online.videoCachedToast', { title: video.title }) })
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    const done = new Set(cachingVideoIds.value)
+    done.delete(video.id)
+    cachingVideoIds.value = done
+  }
+}
+
 onMounted(loadItem)
 watch([itemId, isMovieQuery], () => {
   void loadItem()
@@ -479,8 +591,52 @@ watch([itemId, isMovieQuery], () => {
       @update:active-tab="selectedSeason = $event"
       @retry="loadItem"
     >
+      <template v-if="showTrackedStats.isTracked || movieTracking" #hero-meta>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          <span
+            v-if="showTrackedStats.isTracked"
+            class="text-label-medium inline-flex items-center gap-1.5 rounded-corner-full bg-secondary-container px-2.5 py-0.5 text-on-secondary-container"
+          >
+            <LuCloud class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {{
+                t('online.trackedShowBadgeStatus', {
+                  cached: showTrackedStats.cached,
+                  total: showTrackedStats.total,
+                })
+              }}
+            </span>
+          </span>
+          <span
+            v-else-if="movieTracking"
+            class="text-label-medium inline-flex items-center gap-1.5 rounded-corner-full px-2.5 py-0.5"
+            :class="
+              movieTracking.cached
+                ? 'bg-secondary-container text-on-secondary-container'
+                : 'bg-tertiary-container text-on-tertiary-container'
+            "
+          >
+            <LuCloud class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {{
+                movieTracking.cached
+                  ? t('online.trackedVideoCachedBadge')
+                  : t('online.trackedVideoOnlineBadge')
+              }}
+            </span>
+          </span>
+        </div>
+      </template>
+
       <template #overflow-menu="{ close }">
         <template v-if="mode === 'movie' && movieDetail">
+          <MdMenuItem
+            v-if="authStore.isAdmin && movieTracking && !movieTracking.cached"
+            :icon="LuCloud"
+            :label="t('online.cacheVideoBtn')"
+            :disabled="cachingVideoIds.has(movieDetail.video.id)"
+            @select="handleCacheTrackedVideo(movieDetail.video, close)"
+          />
           <MdMenuItem
             :icon="LuCheck"
             :label="
@@ -491,6 +647,7 @@ watch([itemId, isMovieQuery], () => {
             @select="handleToggleVideoWatched(movieDetail.video, close)"
           />
           <MdMenuItem
+            v-if="!movieTracking || movieTracking.cached"
             :icon="LuDownload"
             :label="t('common.download')"
             @select="triggerVideoDownload(movieDetail.video.id, close)"
@@ -507,6 +664,27 @@ watch([itemId, isMovieQuery], () => {
         </template>
 
         <template v-else-if="mode === 'show' && showDetail">
+          <template v-if="authStore.isAdmin && showTrackedStats.isTracked">
+            <MdMenuItem
+              :icon="LuRefreshCw"
+              :label="
+                refreshingTrackedShow
+                  ? t('online.refreshingTrackedShow')
+                  : t('online.refreshTrackedShow')
+              "
+              :disabled="refreshingTrackedShow"
+              @select="handleRefreshTrackedShow(close)"
+            />
+            <MdMenuItem
+              v-if="showTrackedStats.uncached > 0"
+              :icon="LuCloud"
+              :label="
+                cachingShow ? t('online.cachingAllEpisodes') : t('online.cacheAllEpisodes')
+              "
+              :disabled="cachingShow"
+              @select="handleCacheTrackedShow(close)"
+            />
+          </template>
           <MdMenuItem
             v-if="authStore.isAdmin"
             :icon="LuPencil"
@@ -587,6 +765,21 @@ watch([itemId, isMovieQuery], () => {
                   <h3 class="text-title-small truncate text-on-surface">
                     {{ ep.title }}
                   </h3>
+                  <span
+                    v-if="ep.online_tracking"
+                    class="text-label-small shrink-0 rounded-corner-xs px-1.5 py-0.5"
+                    :class="
+                      ep.online_tracking.cached
+                        ? 'bg-secondary-container text-on-secondary-container'
+                        : 'bg-tertiary-container text-on-tertiary-container'
+                    "
+                  >
+                    {{
+                      ep.online_tracking.cached
+                        ? t('online.badgeCached')
+                        : t('online.badgeOnlineStream')
+                    }}
+                  </span>
                   <LuCheck
                     v-if="ep.progress?.completed"
                     class="h-4 w-4 shrink-0 text-success"
@@ -623,6 +816,13 @@ watch([itemId, isMovieQuery], () => {
                 </template>
                 <template #default="{ close }">
                   <MdMenuItem
+                    v-if="authStore.isAdmin && ep.online_tracking && !ep.online_tracking.cached"
+                    :icon="LuCloud"
+                    :label="t('online.cacheVideoBtn')"
+                    :disabled="cachingVideoIds.has(ep.id)"
+                    @select="handleCacheTrackedVideo(ep, close)"
+                  />
+                  <MdMenuItem
                     :icon="LuCheck"
                     :label="ep.progress?.completed ? t('common.markUnwatched') : t('common.markWatched')"
                     @select="handleToggleVideoWatched(ep, close)"
@@ -645,6 +845,7 @@ watch([itemId, isMovieQuery], () => {
                     "
                   />
                   <MdMenuItem
+                    v-if="!ep.online_tracking || ep.online_tracking.cached"
                     :icon="LuDownload"
                     :label="t('common.download')"
                     @select="triggerVideoDownload(ep.id, close)"

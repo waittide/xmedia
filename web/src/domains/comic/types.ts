@@ -41,6 +41,18 @@ export interface ContinueReadingPointer {
   last_read_at: number | string
 }
 
+export interface OnlineTrackedSeriesDto {
+  source_id: string
+  comic_url: string
+  toc_url: string
+}
+
+export interface OnlineTrackedChapterDto {
+  source_id: string
+  chapter_url: string
+  cached: boolean
+}
+
 export interface SeriesSummaryDto {
   id: string
   library_id: string
@@ -57,6 +69,7 @@ export interface SeriesSummaryDto {
   completed_chapters: number
   is_favorite: boolean
   continue_reading: ContinueReadingPointer | null
+  online_tracking?: OnlineTrackedSeriesDto | null
   created_at: number | string
   updated_at: number | string
 }
@@ -157,7 +170,7 @@ export interface ChapterItemDto {
   volume_number: number | null
   title: string
   page_count: number
-  source_kind: 'archive_file' | 'image_directory'
+  source_kind: 'archive_file' | 'image_directory' | 'online_tracked'
   file_size: number
   cover_url: string | null
   summary: string
@@ -166,6 +179,7 @@ export interface ChapterItemDto {
   is_missing: boolean
   current_page: number
   is_completed: boolean
+  online_tracking?: OnlineTrackedChapterDto | null
   created_at: number | string
   updated_at: number | string
 }
@@ -198,6 +212,7 @@ export interface SeriesDetailDto {
   completed_chapters: number
   continue_reading: ContinueReadingPointer | null
   reader_pref: SeriesReaderPref | null
+  online_tracking?: OnlineTrackedSeriesDto | null
   chapters: ChapterItemDto[]
 }
 

@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   LuArrowUpDown,
   LuBookOpen,
+  LuLibrary,
   LuPlay,
   LuRefreshCw,
   LuRotateCcw,
@@ -35,8 +36,10 @@ import {
   type OnlineComicDetailDto,
   type OnlineComicReaderContextStorage,
 } from '@/domains/comic/onlineApi'
+import { useSidebarStore } from '@/domains/comic/store'
 import { readOnlineComicContext, saveOnlineComicContext } from '@/domains/comic/utils/mappers'
 import {
+  itemRoute,
   libraryRoute,
   parseItemRef,
   playRoute,
@@ -46,6 +49,7 @@ import {
 } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
+import { useUploadStore } from '@/stores/uploads'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
@@ -53,8 +57,11 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const snackbar = useSnackbarStore()
+const sidebarStore = useSidebarStore()
+const uploadStore = useUploadStore()
 
 const loading = ref(true)
+const trackingBusy = ref(false)
 const errorMessage = ref<string | null>(null)
 const detail = ref<OnlineComicDetailDto | null>(null)
 const chapters = ref<OnlineComicChapter[]>([])
@@ -537,6 +544,39 @@ async function handleRemoveTracking(): Promise<void> {
     await router.replace(backRoute.value)
   }
 }
+
+async function handleTrackToLibrary(): Promise<void> {
+  if (!auth.isAdmin || trackingBusy.value || !resolvedSourceId.value || !resolvedComicUrl.value) {
+    return
+  }
+  trackingBusy.value = true
+  try {
+    const genres = kindTags.value.map((tg) => tg.label).filter(Boolean)
+    const created = await onlineComicApi.trackOnlineComic({
+      source_id: resolvedSourceId.value,
+      comic_url: detail.value?.comic_url || resolvedComicUrl.value,
+      toc_url: detail.value?.toc_url || fallbackCtx.value?.tocUrl || null,
+      title: displayTitle.value || null,
+      author: rawAuthor.value || null,
+      cover_url: detail.value?.cover_url ?? fallbackCtx.value?.coverUrl ?? null,
+      summary: displaySummary.value,
+      reading_direction: displayDirection.value,
+      genres: genres.length > 0 ? genres : null,
+      status: detail.value?.status ?? null,
+    })
+    uploadStore.notifyCatalogChanged()
+    void sidebarStore.refresh()
+    snackbar.show({ message: t('online.trackedToLibraryToast') })
+    await router.push(itemRoute({ scope: 'local', domain: 'comic', id: created.series.id }))
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    trackingBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -556,6 +596,15 @@ async function handleRemoveTracking(): Promise<void> {
       :primary-action-label="primaryActionLabel"
       :primary-action-icon="LuPlay"
       :primary-action-disabled="onlineState.blocked.value || readableChapters.length === 0"
+      :secondary-action-label="
+        auth.isAdmin && detail && !onlineState.blocked.value
+          ? trackingBusy
+            ? t('online.trackingBtn')
+            : t('online.trackToLibraryBtn')
+          : ''
+      "
+      :secondary-action-icon="LuLibrary"
+      :secondary-action-disabled="trackingBusy"
       :show-favorite="Boolean(trackedRef)"
       :favorite="onlineState.favorite.value"
       :favorite-loading="onlineState.loading.value"
@@ -567,6 +616,7 @@ async function handleRemoveTracking(): Promise<void> {
       :error="effectiveError"
       :availability-warning="availabilityWarning"
       @primary-action="handlePrimaryRead"
+      @secondary-action="handleTrackToLibrary"
       @toggle-favorite="onlineState.toggleFavorite()"
       @retry="loadDetail"
     >

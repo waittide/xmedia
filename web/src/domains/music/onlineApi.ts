@@ -8,6 +8,7 @@ import {
   type OnlineSourceManagerAdapter,
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
+import type { TrackDto } from './types'
 
 export type MusicSourceSummaryDto = OnlineSourceSummaryDto
 export type MusicSourceTestMode = 'full' | 'search' | 'explore' | 'detail' | 'stream' | 'lyric'
@@ -120,6 +121,23 @@ export interface OnlineMusicExploreResponseDto {
   results: OnlineMusicTrackDto[]
   categories: MusicExploreCategoryDto[]
   diagnostics: ExecutionDiagnostics
+}
+
+export interface TrackOnlineMusicInput {
+  source_id: string
+  track_id?: string
+  title: string
+  artist?: string
+  album?: string | null
+  duration_secs?: number | null
+  cover_url?: string | null
+  cover_id?: string | null
+  url_id?: string | null
+  lyric_id?: string | null
+  play_url?: string | null
+  detail_url?: string | null
+  format?: string | null
+  quality?: string | null
 }
 
 export function buildOnlineMusicCoverUrl(
@@ -322,6 +340,23 @@ export const onlineMusicApi = {
     requestJson('/music/online/lyrics', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+
+  trackOnlineTrack: (payload: TrackOnlineMusicInput): Promise<TrackDto> =>
+    requestJson('/music/online/track', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  trackOnlineTracksBatch: (tracks: TrackOnlineMusicInput[]): Promise<TrackDto[]> =>
+    requestJson('/music/online/track-batch', {
+      method: 'POST',
+      body: JSON.stringify({ tracks }),
+    }),
+
+  cacheTrackedTrack: (trackId: string): Promise<TrackDto> =>
+    requestJson(`/music/tracks/${encodeURIComponent(trackId)}/online/cache`, {
+      method: 'POST',
     }),
 }
 
