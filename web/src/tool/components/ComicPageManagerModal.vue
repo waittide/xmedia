@@ -19,7 +19,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 
-import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { useDialogStore } from '@/stores/dialog'
@@ -372,7 +372,7 @@ async function handleSave(): Promise<void> {
           <div class="flex items-center gap-1.5">
             <span class="text-[var(--md-sys-color-on-surface-variant)]">图像编码</span>
             <div class="w-56">
-              <AppSelect
+              <MdSelect
                 :model-value="reencode"
                 :options="reencodeOptions"
                 variant="compact"
@@ -389,7 +389,7 @@ async function handleSave(): Promise<void> {
           <div class="flex items-center gap-1.5">
             <span class="text-[var(--md-sys-color-on-surface-variant)]">最大宽度</span>
             <div class="w-40">
-              <AppSelect v-model="maxWidthStr" :options="maxWidthOptions" variant="compact" />
+              <MdSelect v-model="maxWidthStr" :options="maxWidthOptions" variant="compact" />
             </div>
           </div>
         </div>

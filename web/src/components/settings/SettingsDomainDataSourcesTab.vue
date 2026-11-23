@@ -10,8 +10,9 @@ import {
 } from '@/components/online-sources/types'
 import { MdCard, MdChip, MdSwitch } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
-import BookOnlineSourceManagerPanel from '@/domains/book/components/OnlineSourceManagerPanel.vue'
-import { onlineBookApi, type BookSourceSummaryDto } from '@/domains/book/onlineApi'
+import OnlineSourceDebugSheet from '@/domains/book/components/OnlineSourceDebugSheet.vue'
+import OnlineSourceEditSheet from '@/domains/book/components/OnlineSourceEditSheet.vue'
+import { bookSourceAdapter, type BookSourceSummaryDto } from '@/domains/book/onlineApi'
 import ComicSourceDebugSheet from '@/domains/comic/components/ComicSourceDebugSheet.vue'
 import ComicSourceEditSheet from '@/domains/comic/components/ComicSourceEditSheet.vue'
 import { comicSourceAdapter, type ComicSourceSummaryDto } from '@/domains/comic/onlineApi'
@@ -56,23 +57,6 @@ const appClientStore = useAppClientStore()
 
 const remoteSectionRef = ref<HTMLElement | null>(null)
 
-const bookSourceAdapter: OnlineSourceManagerAdapter<BookSourceSummaryDto> = {
-  domain: 'book',
-  exportFilePrefix: 'xmedia-book-sources',
-  searchRoutePath: '/book/catalog',
-  listSources: onlineBookApi.listSources,
-  importSources: onlineBookApi.importSources,
-  reorderSources: onlineBookApi.reorderSources,
-  batchSources: onlineBookApi.batchSources,
-  exportSourcesBatch: onlineBookApi.exportSourcesBatch,
-  updateSource: onlineBookApi.updateSource,
-  deleteSource: onlineBookApi.deleteSource,
-  exportSourceUrl: onlineBookApi.exportSourceUrl,
-  fetchSourceJson: onlineBookApi.fetchSourceJson,
-  getSourceVariable: onlineBookApi.getSourceVariable,
-  runLoginAction: onlineBookApi.runLoginAction,
-}
-
 const sourcesByDomain = reactive<Record<MediaKind, OnlineSourceSummaryDto[]>>({
   book: [],
   comic: [],
@@ -111,7 +95,7 @@ const remoteProtocol = computed<RemoteProtocol | null>(() => {
 })
 
 async function fetchDomainSources(targetDomain: MediaKind): Promise<OnlineSourceSummaryDto[]> {
-  if (targetDomain === 'book') return onlineBookApi.listSources()
+  if (targetDomain === 'book') return bookSourceAdapter.listSources()
   if (targetDomain === 'comic') return comicSourceAdapter.listSources()
   if (targetDomain === 'music') return musicSourceAdapter.listSources()
   return videoSourceAdapter.listSources()
@@ -251,11 +235,30 @@ watch(
 
     <!-- Advanced Mode: Full Rule Authoring / Debug / Paste JSON / Batch / Login Variables -->
     <template v-else>
-      <BookOnlineSourceManagerPanel
+      <OnlineSourceManagerPanel
         v-if="domain === 'book'"
         :sources="sourcesByDomain.book as BookSourceSummaryDto[]"
+        :adapter="bookSourceAdapter"
         @refresh="refreshDomainSources('book')"
-      />
+      >
+        <template #edit-sheet="{ open, source, close, saved, savedAndDebug }">
+          <OnlineSourceEditSheet
+            :open="open"
+            :source="source"
+            @close="close"
+            @saved="saved"
+            @saved-and-debug="savedAndDebug"
+          />
+        </template>
+        <template #debug-sheet="{ open, source, close, tested }">
+          <OnlineSourceDebugSheet
+            :open="open"
+            :source="source"
+            @close="close"
+            @tested="tested"
+          />
+        </template>
+      </OnlineSourceManagerPanel>
 
       <OnlineSourceManagerPanel
         v-else-if="domain === 'comic'"

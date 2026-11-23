@@ -146,8 +146,8 @@ function resolveRoute(target: RouteLocationRaw): RouteLocationRaw {
   if (itemMatch) {
     const d = itemMatch[1] as MediaKind
     const id = itemMatch[2]!
-    if (d === 'book') return { path: `/book/items/${id}`, query: queryObj }
-    if (d === 'comic') return { path: `/comic/series/${id}`, query: queryObj }
+    if (d === 'book') return { path: `/book/item/${id}`, query: queryObj }
+    if (d === 'comic') return { path: `/comic/item/${id}`, query: queryObj }
     if (d === 'music') return { path: `/music/albums/${id}`, query: queryObj }
     return { path: `/video/shows/${id}`, query: queryObj }
   }

@@ -2,7 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { LuGripVertical, LuMoreVertical, LuPencil } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import type { OnlineSourceSummaryDto } from './types'
 
 defineProps<{
@@ -161,7 +161,7 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
     </div>
 
     <div v-else class="flex shrink-0 items-center justify-end gap-1.5 pl-7 sm:pl-0" @mousedown.stop>
-      <AppSwitch
+      <MdSwitch
         :model-value="source.enabled"
         :disabled="busy"
         :title="

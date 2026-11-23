@@ -4,7 +4,7 @@ import { libraryRoute, type LibraryRouteParams } from '@/sources'
 import type { MediaKind } from '@/types/api'
 
 const LEGACY_DOMAIN_CATALOG_PATHS: Record<MediaKind, string> = {
-  book: '/book/catalog',
+  book: '/book/library',
   comic: '/comic/series',
   music: '/music/songs',
   video: '/video/catalog',

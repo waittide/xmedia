@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import type { ComicInspectorForm } from './types'
 
 defineProps<{
@@ -68,7 +68,7 @@ const inputCls =
       </label>
       <div class="block sm:col-span-2">
         <span class="mb-1 block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">阅读方向</span>
-        <AppSelect v-model="form.direction" :options="directionOptions" />
+        <MdSelect v-model="form.direction" :options="directionOptions" />
       </div>
       <label class="block">
         <span class="mb-1 block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">分类 (Genre)</span>

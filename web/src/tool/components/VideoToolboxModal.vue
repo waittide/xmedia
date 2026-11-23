@@ -10,7 +10,7 @@ import {
 } from 'vue-icons-plus/lu'
 
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdRadio from '@/components/ui/MdRadio.vue'
 import MdTabs from '@/components/ui/MdTabs.vue'
@@ -300,7 +300,7 @@ async function handleBatchRemap(): Promise<void> {
                 <div class="inline-flex items-center gap-2">
                   <span class="text-[var(--md-sys-color-on-surface-variant)]">简繁转换</span>
                   <div class="w-48">
-                    <AppSelect
+                    <MdSelect
                       :model-value="subZhDir"
                       :options="zhSubOptions"
                       variant="compact"
@@ -334,7 +334,7 @@ async function handleBatchRemap(): Promise<void> {
                 <div class="flex flex-wrap items-center gap-2 sm:col-span-2">
                   <span class="text-[var(--md-sys-color-on-surface-variant)]">规范重命名语言后缀：</span>
                   <div class="w-44">
-                    <AppSelect v-model="renameLang" :options="renameLangOptions" variant="compact" />
+                    <MdSelect v-model="renameLang" :options="renameLangOptions" variant="compact" />
                   </div>
                   <AppCheckbox v-if="renameLang" v-model="subForced" label=".forced 强制字幕" />
                 </div>
@@ -359,7 +359,7 @@ async function handleBatchRemap(): Promise<void> {
             <div class="mb-2 flex items-center justify-between gap-2">
               <span class="font-semibold">内封字幕流抽取（共 {{ embeddedStreams.length }} 轨）</span>
               <div class="w-32">
-                <AppSelect
+                <MdSelect
                   :model-value="extractExt"
                   :options="extractExtOptions"
                   variant="compact"
@@ -414,7 +414,7 @@ async function handleBatchRemap(): Promise<void> {
           <div class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">集数映射策略</div>
           <div class="flex flex-wrap items-center gap-3">
             <div class="w-72">
-              <AppSelect
+              <MdSelect
                 :model-value="remapMode"
                 :options="remapModeOptions"
                 variant="compact"

@@ -5,9 +5,6 @@ export type { MdButtonSize, MdButtonTone, MdButtonVariant } from './MdButton.vue
 export { default as MdIconButton } from './MdIconButton.vue'
 export type { MdIconButtonSize, MdIconButtonVariant } from './MdIconButton.vue'
 
-export { default as MdFab } from './MdFab.vue'
-export type { MdFabSize, MdFabTone } from './MdFab.vue'
-
 export { default as MdTextField } from './MdTextField.vue'
 export type { MdTextFieldSize, MdTextFieldVariant } from './MdTextField.vue'
 
@@ -38,10 +35,7 @@ export { default as MdSearchView } from './MdSearchView.vue'
 export { default as MdDialog } from './MdDialog.vue'
 export type { MdDialogSize } from './MdDialog.vue'
 
-export { default as MdSideSheet } from './MdSideSheet.vue'
-export { default as MdBottomSheet } from './MdBottomSheet.vue'
 export { default as MdSnackbarHost } from './MdSnackbarHost.vue'
-export { default as MdTooltip } from './MdTooltip.vue'
 
 // Selection, navigation & progress primitives
 export { default as MdSelect } from './MdSelect.vue'
@@ -57,8 +51,6 @@ export { default as MdCircularProgress } from './MdCircularProgress.vue'
 export { default as MdLinearProgress } from './MdLinearProgress.vue'
 
 // Legacy / App* compatibility exports
-export { default as AppSelect } from './AppSelect.vue'
-export { default as AppSwitch } from './AppSwitch.vue'
 export { default as AppCheckbox } from './AppCheckbox.vue'
 export { default as AppMultiSelect } from './AppMultiSelect.vue'
 export type { MultiSelectOption } from './AppMultiSelect.vue'

@@ -9,9 +9,9 @@ import {
   LuPackageCheck,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { toolApi } from '../api'
 import { formatBytes } from '../i18n'
@@ -251,7 +251,7 @@ const dialogSubtitle = computed(() => {
               </template>
             </p>
           </div>
-          <AppSwitch v-model="form.keep_source" :disabled="running" />
+          <MdSwitch v-model="form.keep_source" :disabled="running" />
         </div>
       </div>
 
@@ -266,7 +266,7 @@ const dialogSubtitle = computed(() => {
               仅在图片超限或体积缩小时替换
             </div>
           </div>
-          <AppSwitch v-model="form.compress_images" :disabled="running" />
+          <MdSwitch v-model="form.compress_images" :disabled="running" />
         </div>
 
         <div v-if="form.compress_images" class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-3">
@@ -274,7 +274,7 @@ const dialogSubtitle = computed(() => {
             <label class="block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
               目标图片格式
             </label>
-            <AppSelect
+            <MdSelect
               :model-value="form.image_format"
               :options="imageFormatOptions"
               size="sm"
@@ -287,7 +287,7 @@ const dialogSubtitle = computed(() => {
             <label class="block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
               最大边长限制
             </label>
-            <AppSelect
+            <MdSelect
               v-model="maxDimModel"
               :options="maxDimOptions"
               size="sm"

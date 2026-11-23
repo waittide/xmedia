@@ -20,7 +20,7 @@ import {
 } from 'vue-icons-plus/lu'
 import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
-import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import MdSheet from '@/components/ui/MdSheet.vue'
 import type { MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem, type ToolTaskEntry } from '../tasks'
@@ -336,11 +336,11 @@ function formatElapsed(task: ToolTaskEntry): string {
 </script>
 
 <template>
-  <MdSideSheet
+  <MdSheet
     :open="open"
     :title="txt.tasks.title"
     :subtitle="txt.tasks.subtitle"
-    width-class="w-full max-w-2xl"
+    size="lg"
     @close="emit('close')"
   >
     <template #subheader>
@@ -793,5 +793,5 @@ function formatElapsed(task: ToolTaskEntry): string {
       </div>
       </div>
     </div>
-  </MdSideSheet>
+  </MdSheet>
 </template>

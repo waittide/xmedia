@@ -17,7 +17,7 @@ import {
   LuUndo2,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { MediaKind } from '@/types/api'
@@ -375,7 +375,7 @@ function relativeDirBadge(relPath: string): string | null {
 
           <div v-if="snapshot" class="flex items-center gap-1">
             <div class="w-28">
-              <AppSelect
+              <MdSelect
                 :model-value="effectiveSortField"
                 :options="effectiveSortOptions"
                 size="sm"

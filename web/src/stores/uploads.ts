@@ -559,7 +559,7 @@ export const useUploadStore = defineStore('uploads', () => {
         task.canRetry = false
         taskPayloads.delete(task.id)
         if (res.uploaded[0]?.id) {
-          task.targetRoute = `/book/items/${res.uploaded[0].id}`
+          task.targetRoute = `/book/item/${res.uploaded[0].id}`
         }
         notifyCatalogChanged('book')
       } else if (payload.kind === 'comic') {
@@ -584,7 +584,7 @@ export const useUploadStore = defineStore('uploads', () => {
         task.progress = 100
         task.canRetry = false
         taskPayloads.delete(task.id)
-        task.targetRoute = `/comic/series/${resolvedSeriesId}`
+        task.targetRoute = `/comic/item/${resolvedSeriesId}`
         notifyCatalogChanged('comic')
       } else if (payload.kind === 'music') {
         const fd = new FormData()

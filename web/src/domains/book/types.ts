@@ -1,6 +1,7 @@
 import type { ThemeMode } from '@/theme/md3'
+import type { UserRole } from '@/types/api'
 
-export type UserRole = 'admin' | 'reader'
+export type { UserRole }
 export type LocaleCode = 'zh-CN' | 'en-US'
 export type BookFormat = 'epub' | 'txt' | 'pdf'
 export type ReadingFlow = 'paginated' | 'scrolled'

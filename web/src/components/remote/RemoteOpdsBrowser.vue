@@ -24,8 +24,8 @@ import {
   type OpdsEntryDto,
   type OpdsFeedDto,
 } from '@/api/appHost'
-import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
-import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import MdSelect, { type SelectOption } from '@/components/ui/MdSelect.vue'
+import MdSheet from '@/components/ui/MdSheet.vue'
 import { useAppClientStore } from '@/stores/appServers'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
@@ -234,8 +234,8 @@ async function handleImportOpds(entry: OpdsEntryDto, dl: OpdsDownloadLinkDto): P
     uploadStore.notifyCatalogChanged(res.media_kind)
     const targetRoute =
       res.media_kind === 'comic'
-        ? `/comic/series/${encodeURIComponent(res.imported_id)}`
-        : `/book/items/${encodeURIComponent(res.imported_id)}`
+        ? `/comic/item/${encodeURIComponent(res.imported_id)}`
+        : `/book/item/${encodeURIComponent(res.imported_id)}`
     snackbarStore.show({
       message: t('remote.importSuccess', { title: res.title || entry.title }),
       actionLabel: t('remote.viewInLibrary'),
@@ -311,7 +311,7 @@ defineExpose({
       <!-- OPDS Toolbar -->
       <div class="flex flex-wrap items-center gap-2.5 lg:flex-nowrap">
         <div class="w-44 shrink-0 sm:w-52">
-          <AppSelect
+          <MdSelect
             :model-value="selectedSourceId"
             :options="opdsSourceOptions"
             :placeholder="t('remote.opdsSelectSource')"
@@ -606,11 +606,11 @@ defineExpose({
     </div>
 
     <!-- OPDS Entry Detail Side Sheet -->
-    <MdSideSheet
+    <MdSheet
       :open="opdsDetailEntry !== null"
       :title="opdsDetailEntry?.title || t('remote.opdsDetailTitle')"
       :subtitle="opdsDetailEntry?.authors.join(', ') || t('remote.opdsUnknownAuthor')"
-      width-class="w-full max-w-md"
+      size="md"
       @close="opdsDetailEntry = null"
     >
       <template v-if="opdsDetailEntry">
@@ -710,6 +710,6 @@ defineExpose({
           </div>
         </div>
       </template>
-    </MdSideSheet>
+    </MdSheet>
   </div>
 </template>

@@ -14,7 +14,7 @@ import type {
   RemoteSourceSummaryDto,
   TestRemoteSourceResponse,
 } from '@/api/appHost'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import { useAppClientStore } from '@/stores/appServers'
@@ -355,7 +355,7 @@ async function handleSubmit(): Promise<void> {
       <div
         class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-4 py-3"
       >
-        <AppSwitch
+        <MdSwitch
           v-model="allowInsecureTls"
           :disabled="isBusy"
           :label="t('remote.allowInsecureTls')"

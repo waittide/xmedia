@@ -9,8 +9,8 @@ import {
   LuSettings,
   LuTrash2,
 } from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
 import { toolApi } from '../../api'
@@ -354,7 +354,7 @@ async function handleSaveGlobalSettings(): Promise<void> {
 
         <!-- Per-provider Controls: [Switch] [Settings] [Up] [Down] -->
         <div class="flex shrink-0 items-center gap-1.5">
-          <AppSwitch
+          <MdSwitch
             :model-value="prov.enabled"
             :disabled="busyProviderId === prov.id"
             :title="prov.enabled ? '禁用此刮削源' : '启用此刮削源'"
@@ -514,7 +514,7 @@ async function handleSaveGlobalSettings(): Promise<void> {
         <label class="mb-1.5 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
           默认元数据抓取语言
         </label>
-        <AppSelect v-model="scrapeLocale" :options="scrapeLocaleOptions" />
+        <MdSelect v-model="scrapeLocale" :options="scrapeLocaleOptions" />
       </div>
 
       <div>

@@ -1,4 +1,6 @@
-export type UserRole = 'admin' | 'reader'
+import type { UserRole } from '@/types/api'
+
+export type { UserRole }
 export type ReaderMode = 'rtl_double' | 'ltr_single' | 'ltr_double' | 'webtoon'
 export type ReaderFitMode = 'fit_height' | 'fit_width' | 'original'
 export type SeriesStatus = 'ongoing' | 'completed' | 'hiatus'

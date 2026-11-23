@@ -2,8 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { LuCheckCircle2, LuFolderPlus, LuRotateCw, LuSave, LuTrash2 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import { useDialogStore } from '@/stores/dialog'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../../api'
@@ -356,7 +356,7 @@ async function handleTestWebhook(): Promise<void> {
       </label>
       <div class="block">
         <span class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">目标导入挂载目录</span>
-        <AppSelect v-model="inboxTargetRootId" :options="inboxRootOptions" />
+        <MdSelect v-model="inboxTargetRootId" :options="inboxRootOptions" />
       </div>
     </div>
     <div class="flex flex-wrap items-center gap-5">
@@ -404,7 +404,7 @@ async function handleTestWebhook(): Promise<void> {
           整理工具完成重命名、刮削或收件箱导入后，自动通知 xmedia 主站对匹配的挂载媒体库执行增量扫描。
         </p>
       </div>
-      <AppSwitch v-model="webhookEnabled" label="启用联动" />
+      <MdSwitch v-model="webhookEnabled" label="启用联动" />
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <label class="block">

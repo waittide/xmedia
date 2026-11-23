@@ -9,8 +9,8 @@ import {
   LuSettings,
   LuShieldAlert,
 } from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { toolApi } from '../../api'
 import type {
@@ -212,7 +212,7 @@ async function handleSave(): Promise<void> {
             <LuExternalLink class="h-3 w-3 shrink-0" />
           </a>
         </div>
-        <AppSwitch v-model="enabled" />
+        <MdSwitch v-model="enabled" />
       </div>
 
       <!-- Adult / R18 Provider Advisory -->
@@ -289,7 +289,7 @@ async function handleSave(): Promise<void> {
             <label class="mb-1.5 block text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
               独立抓取语言
             </label>
-            <AppSelect v-model="locale" :options="localeOptions" size="sm" />
+            <MdSelect v-model="locale" :options="localeOptions" size="sm" />
           </div>
 
           <div>

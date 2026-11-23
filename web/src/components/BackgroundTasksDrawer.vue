@@ -268,7 +268,7 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
       progress,
       targetRoute:
         job.status === 'completed' && job.imported_book_id
-          ? `/book/items/${job.imported_book_id}`
+          ? `/book/item/${job.imported_book_id}`
           : undefined,
       downloadJobId: job.id,
       downloadFileUrl:

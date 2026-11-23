@@ -9,7 +9,7 @@ import {
   LuSave,
   LuXCircle,
 } from 'vue-icons-plus/lu'
-import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import MdSheet from '@/components/ui/MdSheet.vue'
 import type { EditTabItem } from './useOnlineSourceEdit'
 
 const props = defineProps<{
@@ -41,11 +41,11 @@ const { t } = useI18n()
 </script>
 
 <template>
-  <MdSideSheet
+  <MdSheet
     :open="open"
     :title="title"
     :subtitle="subtitle"
-    width-class="w-full max-w-[42rem]"
+    size="lg"
     @close="emit('close')"
   >
     <template #subheader>
@@ -186,5 +186,5 @@ const { t } = useI18n()
         </span>
       </button>
     </template>
-  </MdSideSheet>
+  </MdSheet>
 </template>

@@ -12,7 +12,7 @@ import {
 } from 'vue-icons-plus/lu'
 
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { toolApi } from '../api'
@@ -317,7 +317,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
           <div class="inline-flex items-center gap-1.5">
             <span class="text-[var(--md-sys-color-on-surface-variant)]">简繁转换</span>
             <div class="w-28">
-              <AppSelect
+              <MdSelect
                 :model-value="zhDirection"
                 :options="zhOptions"
                 variant="compact"
@@ -328,7 +328,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
           <div class="inline-flex items-center gap-1.5">
             <span class="text-[var(--md-sys-color-on-surface-variant)]">写入目标</span>
             <div class="w-48">
-              <AppSelect
+              <MdSelect
                 :model-value="syncMode"
                 :options="syncModeOptions"
                 variant="compact"
@@ -394,7 +394,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
             <div class="inline-flex items-center gap-1.5">
               <span>最大边长</span>
               <div class="w-36">
-                <AppSelect v-model="coverMaxDimStr" :options="coverDimOptions" variant="compact" />
+                <MdSelect v-model="coverMaxDimStr" :options="coverDimOptions" variant="compact" />
               </div>
             </div>
             <button

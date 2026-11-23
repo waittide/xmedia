@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { LuCheck, LuCombine, LuLayers, LuLoader2 } from 'vue-icons-plus/lu'
 
-import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { toolApi } from '../api'
@@ -197,7 +197,7 @@ async function handleMerge(): Promise<void> {
         </label>
         <div class="block">
           <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">阅读方向</span>
-          <AppSelect v-model="readingDirection" :options="directionOptions" size="sm" />
+          <MdSelect v-model="readingDirection" :options="directionOptions" size="sm" />
         </div>
         <label class="block">
           <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">分类 (Genre)</span>
@@ -214,7 +214,7 @@ async function handleMerge(): Promise<void> {
           </div>
           <div class="flex flex-wrap items-center gap-3">
             <div class="w-60">
-              <AppSelect
+              <MdSelect
                 :model-value="numberingMode"
                 :options="numberingOptions"
                 variant="compact"

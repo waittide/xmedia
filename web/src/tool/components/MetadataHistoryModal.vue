@@ -13,7 +13,7 @@ import {
 
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
-import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import MdSheet from '@/components/ui/MdSheet.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { toolApi } from '../api'
 import type { MetadataHistoryBatchDto, RenameHistoryBatchDto } from '../types'
@@ -154,11 +154,11 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
 </script>
 
 <template>
-  <MdSideSheet
+  <MdSheet
     :open="open"
     title="变更历史与撤销"
     subtitle="最近会话内的元数据编辑与重命名批次均支持一键无损回滚"
-    width-class="w-full max-w-lg"
+    size="md"
     @close="emit('close')"
   >
     <template #subheader>
@@ -336,5 +336,5 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
         </div>
       </template>
     </div>
-  </MdSideSheet>
+  </MdSheet>
 </template>
