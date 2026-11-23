@@ -6,42 +6,6 @@ export type ReadingDirection = 'rtl' | 'ltr' | 'webtoon'
 export type ChapterKind = 'volume' | 'chapter' | 'special'
 export type LibraryKind = 'local_mount' | 'managed_upload'
 
-export interface UserPreferences {
-  locale: string
-  theme_mode: 'system' | 'light' | 'dark'
-  light_palette: string
-  dark_palette: string
-  custom_light_colors: [string, string, string, string, string] | null
-  custom_dark_colors: [string, string, string, string, string] | null
-  accent_mode: 'palette' | 'preset' | 'custom'
-  accent_value: string
-  default_reader_mode: ReaderMode
-  default_fit_mode: ReaderFitMode
-  offset_cover_page: boolean
-  dim_images_in_dark: boolean
-  preload_pages: number
-  webtoon_width: number
-}
-
-export interface UserDto {
-  id: string
-  username: string
-  display_name: string
-  role: UserRole
-  preferences: UserPreferences
-  created_at: number | string
-}
-
-export interface AuthResponseDto {
-  token: string
-  user: UserDto
-}
-
-export interface SystemStatusDto {
-  initialized: boolean
-  version: string
-}
-
 export type ScanState =
   | { state: 'idle' }
   | { state: 'scanning'; started_at: number }

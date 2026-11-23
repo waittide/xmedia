@@ -22,7 +22,7 @@ function loadInitialVisualPrefs(): VisualPreferencesSnapshot {
   const parsed = readStoredPreferencesRaw()
   return {
     theme_mode: normalizeThemeMode(parsed.theme_mode),
-    seed_color: resolveSeedColor(parsed),
+    seed_color: resolveSeedColor(parsed.seed_color),
     locale: parsed.locale ?? ((i18n.global.locale.value as LocaleCode) || 'zh-CN'),
   }
 }
@@ -82,7 +82,7 @@ export const useThemeStore = defineStore('theme', () => {
 
   function hydrateFromUser(prefs: UserPreferences): void {
     themeMode.value = normalizeThemeMode(prefs.theme_mode)
-    seedColor.value = resolveSeedColor(prefs)
+    seedColor.value = resolveSeedColor(prefs.seed_color)
     locale.value = prefs.locale
 
     preferencesStore.hydrateDomainPreferences(prefs)

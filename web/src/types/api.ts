@@ -43,35 +43,14 @@ export interface VideoPlaybackPreferences {
   playback_rate: number
 }
 
-export interface DomainLayoutConfig {
-  home_cards: string[]
-  sidebar_groups: string[]
-}
-
-export interface WorkspaceLayoutPreferences {
-  book: DomainLayoutConfig
-  comic: DomainLayoutConfig
-  music: DomainLayoutConfig
-  video: DomainLayoutConfig
-}
-
 export interface UserPreferences {
   theme_mode: ThemeMode
   seed_color?: string | null
-  /** @deprecated Normalized by server to `material-you-light`. */
-  light_preset?: string
-  /** @deprecated Normalized by server to `material-you-dark`. */
-  dark_preset?: string
-  /** @deprecated Normalized by server to `seed`. */
-  accent_mode?: string
-  /** @deprecated Retained for reading legacy payloads before migration. */
-  custom_accent?: string | null
   locale: LocaleCode
   book: ReaderPreferences
   comic: ComicReaderPreferences
   music: PlaybackPreferences
   video: VideoPlaybackPreferences
-  workspace_layout?: WorkspaceLayoutPreferences
 }
 
 export interface UserDto {

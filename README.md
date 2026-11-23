@@ -13,7 +13,7 @@ xmedia/
 │   ├── xmedia-music/   # Lofty tags/ReplayGain, SYLT/LRC multi-encoding lyrics, FFmpeg audio pipe, OpenSubsonic 1.16.1
 │   ├── xmedia-video/   # FFprobe multi-audio/subtitle probing, fMP4 smart remux/transcode, SRT/ASS→WebVTT, show/season scanner
 │   └── xmedia/         # Feature-gated unified HTTP/WebSocket gateway, rust-embed SPA host, CLI server binary
-└── web/                # Unified Vue 3 + TypeScript + Tailwind v4 SPA (Catppuccin palettes, EPUB/PDF/TXT/Manga/Music/Video players)
+└── web/                # Unified Vue 3 + TypeScript + Tailwind v4 SPA (Material Design 3 dynamic color, EPUB/PDF/TXT/Manga/Music/Video players)
 ```
 
 ## Build & Run

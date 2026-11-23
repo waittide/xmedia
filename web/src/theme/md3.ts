@@ -425,27 +425,14 @@ export function buildSchemeCss(pair: Md3SchemePair): string {
 }
 
 /**
- * Normalizes a persisted preference payload into a canonical lowercase `#rrggbb` seed, or `null`
- * to mean the app default seed. Migrates legacy `accent_mode === 'custom'` + `custom_accent`
- * payloads and smoothly falls back to `null` for removed Catppuccin / third-party presets.
+ * Normalizes a persisted seed color into a canonical lowercase `#rrggbb` hex, or `null`
+ * to mean the app default seed.
  */
-export function resolveSeedColor(raw: {
-  seed_color?: string | null
-  accent_mode?: string | null
-  custom_accent?: string | null
-}): string | null {
-  if (typeof raw.seed_color === 'string') {
-    const normalized = normalizeHex(raw.seed_color, '')
-    if (!normalized || normalized === DEFAULT_SEED_COLOR) return null
-    return normalized
-  }
-  if (raw.seed_color === null) return null
-  if (raw.accent_mode === 'custom' && typeof raw.custom_accent === 'string') {
-    const normalized = normalizeHex(raw.custom_accent, '')
-    if (!normalized || normalized === DEFAULT_SEED_COLOR) return null
-    return normalized
-  }
-  return null
+export function resolveSeedColor(seedColor?: string | null): string | null {
+  if (typeof seedColor !== 'string') return null
+  const normalized = normalizeHex(seedColor, '')
+  if (!normalized || normalized === DEFAULT_SEED_COLOR) return null
+  return normalized
 }
 
 export function normalizeThemeMode(raw: unknown): ThemeMode {

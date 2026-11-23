@@ -56,93 +56,12 @@ pub enum ThemeMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum CatppuccinFlavor {
-    Latte,
-    Frappe,
-    Macchiato,
-    #[default]
-    Mocha,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum CatppuccinAccent {
-    Rosewater,
-    Flamingo,
-    Pink,
-    Mauve,
-    Red,
-    Maroon,
-    Peach,
-    Yellow,
-    Green,
-    Teal,
-    Sky,
-    Sapphire,
-    #[default]
-    Blue,
-    Lavender,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Locale {
     #[serde(rename = "zh-CN")]
     #[default]
     ZhCn,
     #[serde(rename = "en-US")]
     EnUs,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CustomPaletteTokens {
-    pub canvas: String,
-    pub shell: String,
-    pub surface: String,
-    pub text: String,
-    pub subtext: String,
-}
-
-fn is_valid_hex_color(raw: &str) -> bool {
-    let Some(hex) = raw.strip_prefix('#') else {
-        return false;
-    };
-    matches!(hex.len(), 3 | 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-fn sanitize_hex_color(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if is_valid_hex_color(trimmed) {
-        Some(trimmed.to_ascii_lowercase())
-    } else {
-        None
-    }
-}
-
-impl CustomPaletteTokens {
-    pub fn normalize(&mut self) -> bool {
-        let Some(canvas) = sanitize_hex_color(&self.canvas) else {
-            return false;
-        };
-        let Some(shell) = sanitize_hex_color(&self.shell) else {
-            return false;
-        };
-        let Some(surface) = sanitize_hex_color(&self.surface) else {
-            return false;
-        };
-        let Some(text) = sanitize_hex_color(&self.text) else {
-            return false;
-        };
-        let Some(subtext) = sanitize_hex_color(&self.subtext) else {
-            return false;
-        };
-        self.canvas = canvas;
-        self.shell = shell;
-        self.surface = surface;
-        self.text = text;
-        self.subtext = subtext;
-        true
-    }
 }
 
 // --- Book Reader Preferences ---
@@ -176,23 +95,6 @@ const DEFAULT_VOLUME: f32 = 0.85;
 const DEFAULT_PLAYBACK_RATE: f32 = 1.0;
 const MIN_PLAYBACK_RATE: f32 = 0.25;
 const MAX_PLAYBACK_RATE: f32 = 4.0;
-pub const DEFAULT_LIGHT_PRESET: &str = "material-you-light";
-pub const DEFAULT_DARK_PRESET: &str = "material-you-dark";
-pub const DEFAULT_ACCENT_MODE: &str = "seed";
-const MATERIAL_YOU_PRESET_PREFIX: &str = "material-you";
-const LEGACY_CUSTOM_ACCENT_MODE: &str = "custom";
-
-/// Keeps `material-you*` presets and replaces every legacy palette preset
-/// (catppuccin-*, nord, tokyo-night, ...) with the Material You default.
-fn normalize_theme_preset(value: &mut String, fallback: &str) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    let valid = trimmed.starts_with(MATERIAL_YOU_PRESET_PREFIX)
-        && trimmed.len() <= 64
-        && trimmed
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    *value = if valid { trimmed } else { fallback.to_string() };
-}
 
 /// Normalizes an MD3 seed color to lowercase `#rrggbb` (expanding `#rgb`).
 fn sanitize_seed_color(raw: &str) -> Option<String> {
@@ -493,272 +395,13 @@ impl Default for VideoPlaybackPreferences {
     }
 }
 
-fn default_light_preset() -> String {
-    DEFAULT_LIGHT_PRESET.to_string()
-}
-
-fn default_dark_preset() -> String {
-    DEFAULT_DARK_PRESET.to_string()
-}
-
-fn default_accent_mode() -> String {
-    DEFAULT_ACCENT_MODE.to_string()
-}
-
-// --- Customizable Workspace Layout Preferences (<= 4 items per slot) ---
-
-pub const MAX_LAYOUT_ITEMS: usize = 4;
-
-const BOOK_DEFAULT_HOME_CARDS: &[&str] = &["all", "reading", "bookmarks", "favorites"];
-const BOOK_ALLOWED_HOME_CARDS: &[&str] = &[
-    "all",
-    "reading",
-    "bookmarks",
-    "favorites",
-    "shelves",
-    "tags",
-    "authors",
-    "libraries",
-];
-const BOOK_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["authors", "tags", "shelves", "libraries"];
-const BOOK_ALLOWED_SIDEBAR_GROUPS: &[&str] =
-    &["authors", "tags", "shelves", "libraries", "bookmarks"];
-
-const COMIC_DEFAULT_HOME_CARDS: &[&str] = &["all", "reading", "bookmarks", "favorites"];
-const COMIC_ALLOWED_HOME_CARDS: &[&str] = &[
-    "all",
-    "reading",
-    "bookmarks",
-    "favorites",
-    "chapters",
-    "shelves",
-    "tags",
-    "libraries",
-];
-const COMIC_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["writers", "tags", "shelves", "libraries"];
-const COMIC_ALLOWED_SIDEBAR_GROUPS: &[&str] = &[
-    "writers",
-    "pencillers",
-    "genres",
-    "tags",
-    "shelves",
-    "libraries",
-    "bookmarks",
-];
-
-const MUSIC_DEFAULT_HOME_CARDS: &[&str] = &["all", "playlists", "listening", "favorites"];
-const MUSIC_ALLOWED_HOME_CARDS: &[&str] = &[
-    "all",
-    "playlists",
-    "listening",
-    "favorites",
-    "bookmarks",
-    "albums",
-    "artists",
-    "genres",
-    "tags",
-    "libraries",
-];
-const MUSIC_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["artists", "tags", "albums", "genres"];
-const MUSIC_ALLOWED_SIDEBAR_GROUPS: &[&str] = &[
-    "artists",
-    "tags",
-    "albums",
-    "genres",
-    "playlists",
-    "libraries",
-];
-
-const VIDEO_DEFAULT_HOME_CARDS: &[&str] = &["all", "movies", "shows", "favorites"];
-const VIDEO_ALLOWED_HOME_CARDS: &[&str] = &[
-    "all",
-    "movies",
-    "shows",
-    "favorites",
-    "watching",
-    "shelves",
-    "genres",
-    "tags",
-    "libraries",
-];
-const VIDEO_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["shows", "genres", "tags", "shelves"];
-const VIDEO_ALLOWED_SIDEBAR_GROUPS: &[&str] = &["shows", "genres", "tags", "shelves", "libraries"];
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DomainLayoutConfig {
-    #[serde(default)]
-    pub home_cards: Vec<String>,
-    #[serde(default)]
-    pub sidebar_groups: Vec<String>,
-}
-
-fn to_owned_slot(items: &[&str]) -> Vec<String> {
-    items.iter().map(|s| (*s).to_string()).collect()
-}
-
-fn sanitize_slot(
-    raw: &[String],
-    allowed: &[&str],
-    fallback: &[&str],
-    allow_empty: bool,
-) -> Vec<String> {
-    let mut out = Vec::with_capacity(MAX_LAYOUT_ITEMS);
-    for item in raw {
-        let trimmed = item.trim();
-        if allowed.contains(&trimmed) && !out.iter().any(|existing| existing == trimmed) {
-            out.push(trimmed.to_string());
-            if out.len() >= MAX_LAYOUT_ITEMS {
-                break;
-            }
-        }
-    }
-    if out.is_empty() && !allow_empty {
-        fallback
-            .iter()
-            .take(MAX_LAYOUT_ITEMS)
-            .map(|s| (*s).to_string())
-            .collect()
-    } else {
-        out
-    }
-}
-
-fn default_book_layout() -> DomainLayoutConfig {
-    DomainLayoutConfig {
-        home_cards: to_owned_slot(BOOK_DEFAULT_HOME_CARDS),
-        sidebar_groups: to_owned_slot(BOOK_DEFAULT_SIDEBAR_GROUPS),
-    }
-}
-
-fn default_comic_layout() -> DomainLayoutConfig {
-    DomainLayoutConfig {
-        home_cards: to_owned_slot(COMIC_DEFAULT_HOME_CARDS),
-        sidebar_groups: to_owned_slot(COMIC_DEFAULT_SIDEBAR_GROUPS),
-    }
-}
-
-fn default_music_layout() -> DomainLayoutConfig {
-    DomainLayoutConfig {
-        home_cards: to_owned_slot(MUSIC_DEFAULT_HOME_CARDS),
-        sidebar_groups: to_owned_slot(MUSIC_DEFAULT_SIDEBAR_GROUPS),
-    }
-}
-
-fn default_video_layout() -> DomainLayoutConfig {
-    DomainLayoutConfig {
-        home_cards: to_owned_slot(VIDEO_DEFAULT_HOME_CARDS),
-        sidebar_groups: to_owned_slot(VIDEO_DEFAULT_SIDEBAR_GROUPS),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceLayoutPreferences {
-    #[serde(default = "default_book_layout")]
-    pub book: DomainLayoutConfig,
-    #[serde(default = "default_comic_layout")]
-    pub comic: DomainLayoutConfig,
-    #[serde(default = "default_music_layout")]
-    pub music: DomainLayoutConfig,
-    #[serde(default = "default_video_layout")]
-    pub video: DomainLayoutConfig,
-}
-
-impl Default for WorkspaceLayoutPreferences {
-    fn default() -> Self {
-        Self {
-            book: default_book_layout(),
-            comic: default_comic_layout(),
-            music: default_music_layout(),
-            video: default_video_layout(),
-        }
-    }
-}
-
-impl WorkspaceLayoutPreferences {
-    pub fn sanitize(&mut self) {
-        self.book.home_cards = sanitize_slot(
-            &self.book.home_cards,
-            BOOK_ALLOWED_HOME_CARDS,
-            BOOK_DEFAULT_HOME_CARDS,
-            false,
-        );
-        self.book.sidebar_groups = sanitize_slot(
-            &self.book.sidebar_groups,
-            BOOK_ALLOWED_SIDEBAR_GROUPS,
-            BOOK_DEFAULT_SIDEBAR_GROUPS,
-            true,
-        );
-        self.comic.home_cards = sanitize_slot(
-            &self.comic.home_cards,
-            COMIC_ALLOWED_HOME_CARDS,
-            COMIC_DEFAULT_HOME_CARDS,
-            false,
-        );
-        self.comic.sidebar_groups = sanitize_slot(
-            &self.comic.sidebar_groups,
-            COMIC_ALLOWED_SIDEBAR_GROUPS,
-            COMIC_DEFAULT_SIDEBAR_GROUPS,
-            true,
-        );
-        self.music.home_cards = sanitize_slot(
-            &self.music.home_cards,
-            MUSIC_ALLOWED_HOME_CARDS,
-            MUSIC_DEFAULT_HOME_CARDS,
-            false,
-        );
-        self.music.sidebar_groups = sanitize_slot(
-            &self.music.sidebar_groups,
-            MUSIC_ALLOWED_SIDEBAR_GROUPS,
-            MUSIC_DEFAULT_SIDEBAR_GROUPS,
-            true,
-        );
-        self.video.home_cards = sanitize_slot(
-            &self.video.home_cards,
-            VIDEO_ALLOWED_HOME_CARDS,
-            VIDEO_DEFAULT_HOME_CARDS,
-            false,
-        );
-        self.video.sidebar_groups = sanitize_slot(
-            &self.video.sidebar_groups,
-            VIDEO_ALLOWED_SIDEBAR_GROUPS,
-            VIDEO_DEFAULT_SIDEBAR_GROUPS,
-            true,
-        );
-    }
-
-    pub fn sanitized(mut self) -> Self {
-        self.sanitize();
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UserPreferences {
     #[serde(default)]
     pub theme_mode: ThemeMode,
-    #[serde(default = "default_light_preset")]
-    pub light_preset: String,
-    #[serde(default = "default_dark_preset")]
-    pub dark_preset: String,
-    #[serde(default)]
-    pub dark_flavor: CatppuccinFlavor,
-    #[serde(default = "default_accent_mode")]
-    pub accent_mode: String,
     /// Single MD3 seed color (`#rrggbb`); `None` means the client default seed.
     #[serde(default)]
     pub seed_color: Option<String>,
-    /// Deprecated: legacy Catppuccin accent, kept only for schema compatibility.
-    #[serde(default)]
-    pub accent: CatppuccinAccent,
-    /// Deprecated: legacy custom accent hex, migrated into `seed_color`.
-    #[serde(default)]
-    pub custom_accent: Option<String>,
-    /// Deprecated: legacy custom light palette, kept only for schema compatibility.
-    #[serde(default)]
-    pub custom_light: Option<CustomPaletteTokens>,
-    /// Deprecated: legacy custom dark palette, kept only for schema compatibility.
-    #[serde(default)]
-    pub custom_dark: Option<CustomPaletteTokens>,
     #[serde(default)]
     pub locale: Locale,
     #[serde(default)]
@@ -769,67 +412,21 @@ pub struct UserPreferences {
     pub music: MusicPlaybackPreferences,
     #[serde(default)]
     pub video: VideoPlaybackPreferences,
-    #[serde(default)]
-    pub workspace_layout: WorkspaceLayoutPreferences,
 }
 
 impl UserPreferences {
-    /// Clamps and sanitizes all preference values into safe bounds while preserving JSON schema compatibility.
+    /// Clamps and sanitizes all preference values into safe bounds.
     pub fn normalize(&mut self) {
-        normalize_theme_preset(&mut self.light_preset, DEFAULT_LIGHT_PRESET);
-        normalize_theme_preset(&mut self.dark_preset, DEFAULT_DARK_PRESET);
-        self.custom_accent = self.custom_accent.as_deref().and_then(sanitize_hex_color);
         self.seed_color = self.seed_color.as_deref().and_then(sanitize_seed_color);
-        if self.seed_color.is_none()
-            && self.accent_mode.trim() == LEGACY_CUSTOM_ACCENT_MODE
-            && let Some(legacy) = self.custom_accent.as_deref()
-        {
-            self.seed_color = sanitize_seed_color(legacy);
-        }
-        self.accent_mode = DEFAULT_ACCENT_MODE.to_string();
-        if let Some(ref mut light) = self.custom_light
-            && !light.normalize()
-        {
-            self.custom_light = None;
-        }
-        if let Some(ref mut dark) = self.custom_dark
-            && !dark.normalize()
-        {
-            self.custom_dark = None;
-        }
         self.book.normalize();
         self.comic.normalize();
         self.music.normalize();
         self.video.normalize();
-        self.workspace_layout.sanitize();
     }
 
     pub fn normalized(mut self) -> Self {
         self.normalize();
         self
-    }
-}
-
-impl Default for UserPreferences {
-    fn default() -> Self {
-        Self {
-            theme_mode: ThemeMode::default(),
-            light_preset: default_light_preset(),
-            dark_preset: default_dark_preset(),
-            dark_flavor: CatppuccinFlavor::default(),
-            accent_mode: default_accent_mode(),
-            seed_color: None,
-            accent: CatppuccinAccent::default(),
-            custom_accent: None,
-            custom_light: None,
-            custom_dark: None,
-            locale: Locale::default(),
-            book: BookReaderPreferences::default(),
-            comic: ComicReaderPreferences::default(),
-            music: MusicPlaybackPreferences::default(),
-            video: VideoPlaybackPreferences::default(),
-            workspace_layout: WorkspaceLayoutPreferences::default(),
-        }
     }
 }
 
@@ -979,32 +576,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_layout_clamps_to_four_and_deduplicates() {
-        let mut prefs = WorkspaceLayoutPreferences::default();
-        prefs.book.home_cards = vec![
-            "shelves".into(),
-            "shelves".into(),
-            "tags".into(),
-            "all".into(),
-            "reading".into(),
-            "bookmarks".into(),
-            "invalid".into(),
-        ];
-        prefs.book.sidebar_groups = vec![];
-        let clean = prefs.sanitized();
-        assert_eq!(
-            clean.book.home_cards,
-            vec!["shelves", "tags", "all", "reading"]
-        );
-        assert!(clean.book.sidebar_groups.is_empty());
-    }
-
-    #[test]
-    fn user_preferences_normalize_clamps_numeric_and_layout_bounds() {
-        let mut prefs = UserPreferences {
-            light_preset: "   ".into(),
-            ..Default::default()
-        };
+    fn user_preferences_normalize_clamps_numeric_bounds() {
+        let mut prefs = UserPreferences::default();
         prefs.book.font_family = " ".into();
         prefs.book.font_size = 200;
         prefs.book.line_height = f32::NAN;
@@ -1016,11 +589,9 @@ mod tests {
         prefs.video.playback_rate = 10.0;
         prefs.video.preferred_audio_lang = Some("  ja  ".into());
         prefs.video.preferred_subtitle_lang = Some("   ".into());
-        prefs.workspace_layout.music.home_cards = vec!["invalid".into()];
 
         prefs.normalize();
 
-        assert_eq!(prefs.light_preset, DEFAULT_LIGHT_PRESET);
         assert_eq!(prefs.book.font_family, DEFAULT_FONT_FAMILY);
         assert_eq!(prefs.book.font_size, MAX_FONT_SIZE);
         assert_eq!(prefs.book.line_height, DEFAULT_LINE_HEIGHT);
@@ -1032,67 +603,27 @@ mod tests {
         assert_eq!(prefs.video.playback_rate, MAX_PLAYBACK_RATE);
         assert_eq!(prefs.video.preferred_audio_lang.as_deref(), Some("ja"));
         assert_eq!(prefs.video.preferred_subtitle_lang, None);
-        assert_eq!(
-            prefs.workspace_layout.music.home_cards,
-            vec!["all", "playlists", "listening", "favorites"]
-        );
     }
 
     #[test]
-    fn default_preferences_use_material_you_seed_mode() {
+    fn default_preferences_use_system_mode_and_default_seed() {
         let prefs = UserPreferences::default();
-        assert_eq!(prefs.light_preset, "material-you-light");
-        assert_eq!(prefs.dark_preset, "material-you-dark");
-        assert_eq!(prefs.accent_mode, "seed");
-        assert_eq!(prefs.seed_color, None);
         assert_eq!(prefs.theme_mode, ThemeMode::System);
-    }
-
-    #[test]
-    fn legacy_catppuccin_preferences_deserialize_and_migrate_to_seed_mode() {
-        let raw = r##"{
-            "theme_mode": "dark",
-            "light_preset": "catppuccin-latte",
-            "dark_preset": "tokyo-night",
-            "dark_flavor": "macchiato",
-            "accent_mode": "custom",
-            "accent": "mauve",
-            "custom_accent": "#ABC",
-            "custom_light": {"canvas":"#fff","shell":"#eee","surface":"#ddd","text":"#000","subtext":"#111"}
-        }"##;
-        let prefs: UserPreferences = serde_json::from_str(raw).expect("legacy prefs parse");
-        let prefs = prefs.normalized();
-        assert_eq!(prefs.theme_mode, ThemeMode::Dark);
-        assert_eq!(prefs.light_preset, DEFAULT_LIGHT_PRESET);
-        assert_eq!(prefs.dark_preset, DEFAULT_DARK_PRESET);
-        assert_eq!(prefs.accent_mode, DEFAULT_ACCENT_MODE);
-        assert_eq!(prefs.seed_color.as_deref(), Some("#aabbcc"));
-    }
-
-    #[test]
-    fn legacy_catppuccin_accent_mode_does_not_become_seed_color() {
-        let mut prefs = UserPreferences {
-            accent_mode: "catppuccin".into(),
-            custom_accent: Some("#123456".into()),
-            ..Default::default()
-        };
-        prefs.normalize();
-        assert_eq!(prefs.accent_mode, "seed");
         assert_eq!(prefs.seed_color, None);
     }
 
     #[test]
-    fn seed_color_is_sanitized_and_material_you_presets_are_kept() {
+    fn seed_color_is_sanitized() {
         let mut prefs = UserPreferences {
-            light_preset: " Material-You-Light ".into(),
-            dark_preset: "material-you-dark-contrast".into(),
             seed_color: Some(" #6750A4 ".into()),
             ..Default::default()
         };
         prefs.normalize();
-        assert_eq!(prefs.light_preset, "material-you-light");
-        assert_eq!(prefs.dark_preset, "material-you-dark-contrast");
         assert_eq!(prefs.seed_color.as_deref(), Some("#6750a4"));
+
+        prefs.seed_color = Some("#ABC".into());
+        prefs.normalize();
+        assert_eq!(prefs.seed_color.as_deref(), Some("#aabbcc"));
 
         for invalid in ["6750a4", "#6750a4ff", "#zzzzzz", ""] {
             prefs.seed_color = Some(invalid.into());

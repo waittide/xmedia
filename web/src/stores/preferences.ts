@@ -68,7 +68,7 @@ function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
   const parsed = readStoredPreferencesRaw()
   return {
     theme_mode: normalizeThemeMode(parsed.theme_mode),
-    seed_color: resolveSeedColor(parsed),
+    seed_color: resolveSeedColor(parsed.seed_color),
     locale: (parsed.locale ?? (localStorage.getItem('xmedia.locale') as LocaleCode | null)) || 'zh-CN',
   }
 }

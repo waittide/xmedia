@@ -1733,7 +1733,7 @@ mod gateway_seed_tests {
         let (admin_token, member_token) = setup_admin_and_member(&app_instance).await;
         let router = app_instance.router;
 
-        // 1. New user receives Material You seed defaults via /auth/me
+        // 1. New user receives clean Material You defaults via /auth/me
         let (st_me, me) = send_req(
             &router,
             "GET",
@@ -1746,44 +1746,12 @@ mod gateway_seed_tests {
         assert_eq!(st_me, StatusCode::OK);
         let member_id = me["id"].as_str().unwrap().to_string();
         assert_eq!(me["preferences"]["theme_mode"], "system");
-        assert_eq!(me["preferences"]["light_preset"], "material-you-light");
-        assert_eq!(me["preferences"]["dark_preset"], "material-you-dark");
-        assert_eq!(me["preferences"]["accent_mode"], "seed");
         assert!(me["preferences"]["seed_color"].is_null());
+        assert!(me["preferences"].get("light_preset").is_none());
+        assert!(me["preferences"].get("dark_preset").is_none());
+        assert!(me["preferences"].get("accent_mode").is_none());
 
-        // 2. Legacy Catppuccin preferences with custom accent migrate cleanly to seed_color
-        let (st_legacy, legacy_res) = send_req(
-            &router,
-            "PUT",
-            "/api/v1/auth/preferences",
-            Some(&member_token),
-            Body::from(
-                serde_json::json!({
-                    "theme_mode": "light",
-                    "light_preset": "catppuccin-latte",
-                    "dark_preset": "catppuccin-mocha",
-                    "accent_mode": "custom",
-                    "accent": "mauve",
-                    "custom_accent": "#1A2B3C"
-                })
-                .to_string(),
-            ),
-            Some("application/json"),
-        )
-        .await;
-        assert_eq!(st_legacy, StatusCode::OK);
-        assert_eq!(
-            legacy_res["preferences"]["light_preset"],
-            "material-you-light"
-        );
-        assert_eq!(
-            legacy_res["preferences"]["dark_preset"],
-            "material-you-dark"
-        );
-        assert_eq!(legacy_res["preferences"]["accent_mode"], "seed");
-        assert_eq!(legacy_res["preferences"]["seed_color"], "#1a2b3c");
-
-        // 3. Minimal payload (omitting deprecated fields) persists cleanly
+        // 2. Theme mode and seed color persist cleanly
         let (st_min, min_res) = send_req(
             &router,
             "PUT",
@@ -1802,7 +1770,6 @@ mod gateway_seed_tests {
         assert_eq!(st_min, StatusCode::OK);
         assert_eq!(min_res["preferences"]["theme_mode"], "dark");
         assert_eq!(min_res["preferences"]["seed_color"], "#006a6a");
-        assert_eq!(min_res["preferences"]["accent_mode"], "seed");
 
         // 4. Online items are mounted on comic/music/video and strictly isolated per domain
         for domain in ["comic", "music", "video"] {
