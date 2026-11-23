@@ -43,6 +43,7 @@ const props = withDefaults(
     sheetTitle?: string
     sheetSubtitle?: string
     sheetSize?: MdSheetSize
+    sheetTeleportTo?: string | HTMLElement | null
     /** Controlled transient centered OSD message. */
     osdText?: string | null
     osdIcon?: Component
@@ -66,6 +67,7 @@ const props = withDefaults(
     sheetTitle: '',
     sheetSubtitle: '',
     sheetSize: 'md',
+    sheetTeleportTo: undefined,
     osdText: null,
     osdIcon: undefined,
     escapeToExit: true,
@@ -343,6 +345,7 @@ defineExpose({
     <header
       ref="headerRef"
       :aria-hidden="!isHudVisible"
+      :inert="!isHudVisible"
       class="safe-pt safe-px fixed top-0 right-0 left-0 z-[var(--z-base-overlay)] transition-[opacity,transform] duration-200 ease-standard"
       :class="[
         hudBarClass,
@@ -397,6 +400,7 @@ defineExpose({
       v-if="$slots.footer"
       ref="footerRef"
       :aria-hidden="!isHudVisible"
+      :inert="!isHudVisible"
       class="safe-pb safe-px fixed right-0 bottom-0 left-0 z-[var(--z-base-overlay)] transition-[opacity,transform] duration-200 ease-standard"
       :class="[
         hudBarClass,
@@ -437,6 +441,8 @@ defineExpose({
       :title="sheetTitle"
       :subtitle="sheetSubtitle"
       :size="sheetSize"
+      :dark-scheme="darkScheme"
+      :teleport-to="sheetTeleportTo"
       @close="closeSheet"
     >
       <template v-if="$slots['sheet-header-actions']" #headerActions>
@@ -446,9 +452,7 @@ defineExpose({
         <slot name="sheet-subheader" :active-sheet="activeSheet" :close="closeSheet" />
       </template>
 
-      <div :class="darkScheme ? 'md-scheme-dark text-on-surface' : ''">
-        <slot name="sheet" :active-sheet="activeSheet" :close="closeSheet" />
-      </div>
+      <slot name="sheet" :active-sheet="activeSheet" :close="closeSheet" />
 
       <template v-if="$slots['sheet-footer']" #footer>
         <slot name="sheet-footer" :active-sheet="activeSheet" :close="closeSheet" />

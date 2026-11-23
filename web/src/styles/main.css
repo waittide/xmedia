@@ -909,12 +909,14 @@ a,
   transform: scale(0.96) translateY(4px);
 }
 
-.md-sheet-right-enter-active {
+.md-sheet-right-enter-active,
+.md-sheet-adaptive-enter-active {
   transition:
     transform var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized-decel),
     opacity var(--md-sys-motion-duration-short) ease;
 }
-.md-sheet-right-leave-active {
+.md-sheet-right-leave-active,
+.md-sheet-adaptive-leave-active {
   transition:
     transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized-accel),
     opacity var(--md-sys-motion-duration-short) ease;
@@ -923,6 +925,17 @@ a,
 .md-sheet-right-leave-to {
   transform: translateX(100%);
   opacity: 0.6;
+}
+.md-sheet-adaptive-enter-from,
+.md-sheet-adaptive-leave-to {
+  transform: translateY(100%);
+  opacity: 0.6;
+}
+@media (min-width: 600px) {
+  .md-sheet-adaptive-enter-from,
+  .md-sheet-adaptive-leave-to {
+    transform: translateX(100%);
+  }
 }
 
 .md-bar-up-enter-active {

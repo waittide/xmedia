@@ -197,9 +197,6 @@ watch(activeSheet, (sheet) => {
   if (sheet !== 'episodes') {
     episodeFilter.value = ''
   }
-  if (sheet !== null && document.fullscreenElement) {
-    void document.exitFullscreen().catch(() => {})
-  }
 })
 
 function showOsd(text: string, icon?: Component): void {
@@ -405,6 +402,7 @@ defineExpose({
       :sheet-title="sheetTitle"
       :sheet-subtitle="sheetSubtitle"
       sheet-size="sm"
+      :sheet-teleport-to="shellRootRef"
       @update:active-sheet="activeSheet = ($event as 'settings' | 'episodes' | null)"
       @back="handleBack"
     >
@@ -546,6 +544,7 @@ defineExpose({
                 variant="text"
                 size="sm"
                 :icon="LuListVideo"
+                :aria-label="t('player.episodes')"
                 @click="activeSheet = activeSheet === 'episodes' ? null : 'episodes'"
               >
                 <span class="hidden sm:inline">{{ t('player.episodes') }}</span>
@@ -637,6 +636,7 @@ defineExpose({
               :model-value="episodeGroupValue"
               :options="episodeGroupOptions"
               size="sm"
+              :teleport-to="shellRootRef"
               @change="emit('update:line', $event)"
             />
           </div>
@@ -705,6 +705,7 @@ defineExpose({
               :model-value="qualityValue"
               :options="qualityOptions"
               size="sm"
+              :teleport-to="shellRootRef"
               @change="emit('update:quality', $event)"
             />
           </div>
@@ -717,6 +718,7 @@ defineExpose({
               :model-value="lineValue"
               :options="lineOptions"
               size="sm"
+              :teleport-to="shellRootRef"
               @change="emit('update:line', $event)"
             />
           </div>
@@ -729,6 +731,7 @@ defineExpose({
               :model-value="audioValue"
               :options="audioOptions"
               size="sm"
+              :teleport-to="shellRootRef"
               @change="emit('update:audio', $event)"
             />
           </div>
@@ -741,6 +744,7 @@ defineExpose({
               :model-value="subtitleValue"
               :options="subtitleOptions"
               size="sm"
+              :teleport-to="shellRootRef"
               @change="emit('update:subtitle', $event)"
             />
           </div>

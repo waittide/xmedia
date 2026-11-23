@@ -17,6 +17,8 @@ const props = withDefaults(
     size?: MdSheetSize
     closeOnBackdrop?: boolean
     hideClose?: boolean
+    darkScheme?: boolean
+    teleportTo?: string | HTMLElement | null
   }>(),
   {
     title: '',
@@ -24,6 +26,8 @@ const props = withDefaults(
     size: 'md',
     closeOnBackdrop: true,
     hideClose: false,
+    darkScheme: false,
+    teleportTo: 'body',
   },
 )
 
@@ -55,17 +59,22 @@ const sizeClass = computed(() => {
       return 'sm:w-[440px]'
   }
 })
+const resolvedTeleportTo = computed<string | HTMLElement>(() => props.teleportTo || 'body')
+
+defineExpose({
+  sheetRef,
+})
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport :to="resolvedTeleportTo">
     <Transition name="md-fade" @before-leave="stripAriaModalOnLeave">
       <div
         v-if="open"
         class="fixed inset-0 z-[var(--z-sheet)] flex items-end justify-center bg-scrim/32 sm:items-stretch sm:justify-end"
         @mousedown.self="closeOnBackdrop && emit('close')"
       >
-        <Transition name="md-sheet-right" appear @before-leave="stripAriaModalOnLeave">
+        <Transition name="md-sheet-adaptive" appear @before-leave="stripAriaModalOnLeave">
           <aside
             ref="sheetRef"
             role="dialog"
@@ -74,7 +83,7 @@ const sizeClass = computed(() => {
             :aria-labelledby="title ? titleId : undefined"
             :aria-describedby="subtitle ? subtitleId : undefined"
             class="safe-pb flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-corner-xl bg-surface-container-low text-on-surface shadow-elevation-1 outline-none sm:h-full sm:max-h-none sm:max-w-[calc(100vw-3rem)] sm:rounded-t-corner-none sm:rounded-l-corner-lg sm:pb-0"
-            :class="sizeClass"
+            :class="[sizeClass, darkScheme ? 'md-scheme-dark' : '']"
           >
             <!-- Compact (<600px) bottom sheet drag handle -->
             <div class="flex justify-center pt-3 pb-1 sm:hidden" aria-hidden="true">
@@ -117,7 +126,7 @@ const sizeClass = computed(() => {
 
             <div
               v-if="$slots.footer"
-              class="flex items-center justify-end gap-2 border-t border-outline-variant bg-surface-container px-6 py-4"
+              class="flex items-center justify-end gap-2 bg-surface-container px-6 py-4"
             >
               <slot name="footer" />
             </div>
