@@ -186,16 +186,8 @@ impl ComicCatalogService {
 
         let comic_prefs = &user.preferences.comic;
         let series_pref = self.reading.get_series_pref(user.id, series.id).await?;
-        let default_mode_from_series = match series.reading_direction {
-            ReadingDirection::Rtl => ComicReaderMode::RtlDouble,
-            ReadingDirection::Ltr => match comic_prefs.default_reader_mode {
-                ComicReaderMode::LtrSingle | ComicReaderMode::LtrDouble => {
-                    comic_prefs.default_reader_mode
-                }
-                _ => ComicReaderMode::LtrSingle,
-            },
-            ReadingDirection::Webtoon => ComicReaderMode::Webtoon,
-        };
+        let default_mode_from_prefs =
+            resolve_default_reader_mode(series.reading_direction, comic_prefs.default_reader_mode);
 
         let effective_pref = if let Some(sp) = series_pref {
             EffectiveReaderPrefDto {
@@ -208,7 +200,7 @@ impl ComicCatalogService {
             }
         } else {
             EffectiveReaderPrefDto {
-                reader_mode: default_mode_from_series,
+                reader_mode: default_mode_from_prefs,
                 fit_mode: comic_prefs.default_fit_mode,
                 offset_cover_page: comic_prefs.offset_cover_page,
                 dim_images_in_dark: comic_prefs.dim_images_in_dark,
@@ -352,5 +344,56 @@ impl ComicCatalogService {
             }
             None => self.thumbnails.read_thumbnail(cover_key).await,
         }
+    }
+}
+
+fn resolve_default_reader_mode(
+    series_direction: ReadingDirection,
+    user_default: ComicReaderMode,
+) -> ComicReaderMode {
+    if series_direction == ReadingDirection::Webtoon && user_default == ComicReaderMode::RtlDouble {
+        ComicReaderMode::Webtoon
+    } else {
+        user_default
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_reader_mode_honors_user_preference_for_standard_series() {
+        for mode in [
+            ComicReaderMode::RtlDouble,
+            ComicReaderMode::LtrSingle,
+            ComicReaderMode::LtrDouble,
+            ComicReaderMode::Webtoon,
+        ] {
+            assert_eq!(
+                resolve_default_reader_mode(ReadingDirection::Rtl, mode),
+                mode
+            );
+            assert_eq!(
+                resolve_default_reader_mode(ReadingDirection::Ltr, mode),
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn webtoon_series_auto_uses_webtoon_only_when_user_keeps_default_rtl_double() {
+        assert_eq!(
+            resolve_default_reader_mode(ReadingDirection::Webtoon, ComicReaderMode::RtlDouble),
+            ComicReaderMode::Webtoon
+        );
+        assert_eq!(
+            resolve_default_reader_mode(ReadingDirection::Webtoon, ComicReaderMode::LtrSingle),
+            ComicReaderMode::LtrSingle
+        );
+        assert_eq!(
+            resolve_default_reader_mode(ReadingDirection::Webtoon, ComicReaderMode::LtrDouble),
+            ComicReaderMode::LtrDouble
+        );
     }
 }

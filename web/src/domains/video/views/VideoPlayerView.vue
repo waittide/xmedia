@@ -56,6 +56,28 @@ const selectedAudioStream = ref<number | null>(null)
 const selectedSubtitleId = ref<string>('off')
 const playbackRate = ref<number>(preferencesStore.video.playback_rate || 1.0)
 
+watch(
+  () => preferencesStore.video.default_quality,
+  (next) => {
+    const resolved = next || 'auto'
+    if (resolved === quality.value) return
+    quality.value = resolved
+    if (detail.value && !isUncachedTracked.value) {
+      loadStreamAt(currentTimeSecs.value, isPlaying.value)
+    }
+  },
+)
+
+watch(
+  () => preferencesStore.video.playback_rate,
+  (next) => {
+    const resolved = next || 1.0
+    if (resolved === playbackRate.value) return
+    playbackRate.value = resolved
+    if (videoEl.value) videoEl.value.playbackRate = resolved
+  },
+)
+
 const loadingVideo = ref(true)
 const isBuffering = ref(false)
 const loadError = ref<string | null>(null)

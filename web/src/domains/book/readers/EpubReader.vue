@@ -147,14 +147,24 @@ function applyRenditionTheme(): void {
   const scheme = themeStore.activeScheme
   const r = preferencesStore.reader
   const verticalPad = r.flow === 'scrolled' ? 64 : 16
+  const fontStack = resolveFontStack(r.font_family)
   rendition.themes.default({
     body: {
       background: `${scheme.surface} !important`,
       color: `${scheme['on-surface']} !important`,
-      'font-family': `${resolveFontStack(r.font_family)} !important`,
+      'font-family': `${fontStack} !important`,
       'font-size': `${r.font_size}px !important`,
       'line-height': `${r.line_height} !important`,
       padding: `${verticalPad}px ${r.margin_px}px !important`,
+    },
+    'p, li, blockquote, dd, dt': {
+      'font-family': `${fontStack} !important`,
+      'font-size': `${r.font_size}px !important`,
+      'line-height': `${r.line_height} !important`,
+    },
+    'div, span, section, article': {
+      'font-family': `${fontStack} !important`,
+      'line-height': `${r.line_height} !important`,
     },
     a: {
       color: `${scheme.primary} !important`,

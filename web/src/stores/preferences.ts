@@ -2,6 +2,7 @@ import { onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { normalizeThemeMode, resolveSeedColor } from '@/theme/md3'
 import type {
   ComicReaderPreferences,
@@ -83,8 +84,10 @@ export const usePreferencesStore = defineStore('preferences', () => {
 
   let visualProvider: (() => VisualPreferencesSnapshot) | null = null
   let syncTimer: ReturnType<typeof setTimeout> | null = null
+  let inflightSync: Promise<void> | null = null
   let sessionEpoch = 0
   let dirtyPendingSync = false
+  let syncSeq = 0
 
   function registerVisualProvider(fn: () => VisualPreferencesSnapshot): void {
     visualProvider = fn
@@ -117,20 +120,65 @@ export const usePreferencesStore = defineStore('preferences', () => {
     dirtyPendingSync = false
   }
 
-  function scheduleServerSync(): void {
+  async function syncToServerNow(notifyOnError = false): Promise<void> {
+    const authStore = useAuthStore()
+    if (!authStore.isAuthenticated) return
+    clearPendingSync()
+    const epoch = sessionEpoch
+    const seq = ++syncSeq
+    const snapshot = toUserPreferences()
+    const req = api
+      .updatePreferences(snapshot)
+      .then((updatedUser) => {
+        if (epoch !== sessionEpoch || seq !== syncSeq) return
+        if (authStore.user && authStore.user.id === updatedUser.id) {
+          authStore.user = updatedUser
+        }
+      })
+      .catch((err: unknown) => {
+        if (epoch !== sessionEpoch) return
+        if (notifyOnError) {
+          const msg = err instanceof Error ? err.message : String(err)
+          useSnackbarStore().show({ message: msg, tone: 'error' })
+        }
+      })
+      .finally(() => {
+        if (inflightSync === req) {
+          inflightSync = null
+        }
+      })
+    inflightSync = req
+    await req
+  }
+
+  function scheduleServerSync(options?: { immediate?: boolean; notifyOnError?: boolean }): void {
     if (!useAuthStore().isAuthenticated) return
+    if (options?.immediate) {
+      void syncToServerNow(options.notifyOnError ?? false)
+      return
+    }
     if (syncTimer) clearTimeout(syncTimer)
     dirtyPendingSync = true
     const epoch = sessionEpoch
+    const notify = options?.notifyOnError ?? false
     syncTimer = setTimeout(() => {
       syncTimer = null
       if (epoch !== sessionEpoch || !useAuthStore().isAuthenticated) {
         dirtyPendingSync = false
         return
       }
-      dirtyPendingSync = false
-      void api.updatePreferences(toUserPreferences()).catch(() => {})
+      void syncToServerNow(notify)
     }, 450)
+  }
+
+  async function flushPendingSync(): Promise<void> {
+    if (dirtyPendingSync || syncTimer) {
+      await syncToServerNow(false)
+      return
+    }
+    if (inflightSync) {
+      await inflightSync
+    }
   }
 
   function flushSyncOnPageHide(): void {
@@ -156,9 +204,9 @@ export const usePreferencesStore = defineStore('preferences', () => {
     })
   }
 
-  function persistAndSync(): void {
+  function persistAndSync(options?: { immediate?: boolean; notifyOnError?: boolean }): void {
     persistLocal()
-    scheduleServerSync()
+    scheduleServerSync(options)
   }
 
   function hydrateDomainPreferences(prefs: UserPreferences): void {
@@ -178,24 +226,36 @@ export const usePreferencesStore = defineStore('preferences', () => {
     video.value = { ...DEFAULT_VIDEO_PREFS }
   }
 
-  function updateReaderPreferences(patch: Partial<ReaderPreferences>): void {
+  function updateReaderPreferences(
+    patch: Partial<ReaderPreferences>,
+    options?: { immediate?: boolean; notifyOnError?: boolean },
+  ): void {
     reader.value = { ...reader.value, ...patch }
-    persistAndSync()
+    persistAndSync(options)
   }
 
-  function updateComicPreferences(patch: Partial<ComicReaderPreferences>): void {
+  function updateComicPreferences(
+    patch: Partial<ComicReaderPreferences>,
+    options?: { immediate?: boolean; notifyOnError?: boolean },
+  ): void {
     comic.value = { ...comic.value, ...patch }
-    persistAndSync()
+    persistAndSync(options)
   }
 
-  function updatePlaybackPreferences(patch: Partial<PlaybackPreferences>): void {
+  function updatePlaybackPreferences(
+    patch: Partial<PlaybackPreferences>,
+    options?: { immediate?: boolean; notifyOnError?: boolean },
+  ): void {
     playback.value = { ...playback.value, ...patch }
-    persistAndSync()
+    persistAndSync(options)
   }
 
-  function updateVideoPreferences(patch: Partial<VideoPlaybackPreferences>): void {
+  function updateVideoPreferences(
+    patch: Partial<VideoPlaybackPreferences>,
+    options?: { immediate?: boolean; notifyOnError?: boolean },
+  ): void {
     video.value = { ...video.value, ...patch }
-    persistAndSync()
+    persistAndSync(options)
   }
 
   return {
@@ -207,6 +267,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
     toUserPreferences,
     persistLocal,
     scheduleServerSync,
+    flushPendingSync,
     persistAndSync,
     hydrateDomainPreferences,
     updateReaderPreferences,

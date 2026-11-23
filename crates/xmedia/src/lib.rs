@@ -1160,7 +1160,7 @@ mod gateway_integration_tests {
         assert!(me["preferences"].get("dark_preset").is_none());
         assert!(me["preferences"].get("accent_mode").is_none());
 
-        // 2. Theme mode and seed color persist cleanly
+        // 2. Theme mode, seed color, and all four domain preferences persist cleanly across GET /auth/me
         let (st_min, min_res) = send_req(
             &router,
             "PUT",
@@ -1169,7 +1169,27 @@ mod gateway_integration_tests {
             Body::from(
                 serde_json::json!({
                     "theme_mode": "dark",
-                    "seed_color": "#006A6A"
+                    "seed_color": "#006A6A",
+                    "book": {
+                        "font_family": "serif",
+                        "font_size": 21,
+                        "line_height": 2.0,
+                        "margin_px": 48,
+                        "flow": "scrolled"
+                    },
+                    "comic": {
+                        "default_reader_mode": "webtoon",
+                        "default_fit_mode": "fit_width",
+                        "offset_cover_page": false,
+                        "dim_images_in_dark": true
+                    },
+                    "music": {
+                        "transcode_profile": "mp3320"
+                    },
+                    "video": {
+                        "default_quality": "p720",
+                        "autoplay_next": false
+                    }
                 })
                 .to_string(),
             ),
@@ -1179,6 +1199,36 @@ mod gateway_integration_tests {
         assert_eq!(st_min, StatusCode::OK);
         assert_eq!(min_res["preferences"]["theme_mode"], "dark");
         assert_eq!(min_res["preferences"]["seed_color"], "#006a6a");
+
+        let (st_me_after, me_after) = send_req(
+            &router,
+            "GET",
+            "/api/v1/auth/me",
+            Some(&member_token),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_me_after, StatusCode::OK);
+        assert_eq!(me_after["preferences"]["book"]["font_family"], "serif");
+        assert_eq!(me_after["preferences"]["book"]["font_size"], 21);
+        assert_eq!(me_after["preferences"]["book"]["flow"], "scrolled");
+        assert_eq!(
+            me_after["preferences"]["comic"]["default_reader_mode"],
+            "webtoon"
+        );
+        assert_eq!(
+            me_after["preferences"]["comic"]["default_fit_mode"],
+            "fit_width"
+        );
+        assert_eq!(me_after["preferences"]["comic"]["offset_cover_page"], false);
+        assert_eq!(me_after["preferences"]["comic"]["dim_images_in_dark"], true);
+        assert_eq!(
+            me_after["preferences"]["music"]["transcode_profile"],
+            "mp3320"
+        );
+        assert_eq!(me_after["preferences"]["video"]["default_quality"], "p720");
+        assert_eq!(me_after["preferences"]["video"]["autoplay_next"], false);
 
         // 4. Online items are mounted on comic/music/video and strictly isolated per domain
         for domain in ["comic", "music", "video"] {

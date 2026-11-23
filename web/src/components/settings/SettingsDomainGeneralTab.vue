@@ -165,7 +165,12 @@ watch(
           <MdSelect
             :model-value="prefsStore.reader.font_family"
             :options="bookFontOptions"
-            @update:model-value="prefsStore.updateReaderPreferences({ font_family: $event })"
+            @update:model-value="
+              prefsStore.updateReaderPreferences(
+                { font_family: $event },
+                { immediate: true, notifyOnError: true },
+              )
+            "
           />
         </div>
 
@@ -176,7 +181,12 @@ watch(
           <MdSelect
             :model-value="prefsStore.reader.flow"
             :options="bookFlowOptions"
-            @update:model-value="prefsStore.updateReaderPreferences({ flow: $event as ReadingFlow })"
+            @update:model-value="
+              prefsStore.updateReaderPreferences(
+                { flow: $event as ReadingFlow },
+                { immediate: true, notifyOnError: true },
+              )
+            "
           />
         </div>
 
@@ -185,18 +195,19 @@ watch(
             <span class="text-label-medium text-on-surface-variant">
               {{ t('settings.bookFontSize') }}
             </span>
-            <span class="text-label-medium font-mono text-on-surface">
+            <span class="text-label-medium font-mono tabular-nums text-on-surface">
               {{ prefsStore.reader.font_size }} px
             </span>
           </div>
           <AppSlider
             :model-value="prefsStore.reader.font_size"
-            :min="13"
-            :max="28"
+            :min="14"
+            :max="30"
             :step="1"
             :aria-label="t('settings.bookFontSize')"
             always-show-thumb
             @update:model-value="prefsStore.updateReaderPreferences({ font_size: $event })"
+            @commit="void prefsStore.flushPendingSync()"
           />
         </div>
 
@@ -205,18 +216,40 @@ watch(
             <span class="text-label-medium text-on-surface-variant">
               {{ bookT('reader.lineHeight') }}
             </span>
-            <span class="text-label-medium font-mono text-on-surface">
-              {{ prefsStore.reader.line_height }}
+            <span class="text-label-medium font-mono tabular-nums text-on-surface">
+              {{ prefsStore.reader.line_height.toFixed(2) }}
             </span>
           </div>
           <AppSlider
             :model-value="prefsStore.reader.line_height"
             :min="1.3"
             :max="2.4"
-            :step="0.1"
+            :step="0.05"
             :aria-label="bookT('reader.lineHeight')"
             always-show-thumb
             @update:model-value="prefsStore.updateReaderPreferences({ line_height: $event })"
+            @commit="void prefsStore.flushPendingSync()"
+          />
+        </div>
+
+        <div class="sm:col-span-2 sm:max-w-sm">
+          <div class="mb-1.5 flex items-center justify-between">
+            <span class="text-label-medium text-on-surface-variant">
+              {{ bookT('reader.margin') }}
+            </span>
+            <span class="text-label-medium font-mono tabular-nums text-on-surface">
+              {{ prefsStore.reader.margin_px }} px
+            </span>
+          </div>
+          <AppSlider
+            :model-value="prefsStore.reader.margin_px"
+            :min="16"
+            :max="120"
+            :step="8"
+            :aria-label="bookT('reader.margin')"
+            always-show-thumb
+            @update:model-value="prefsStore.updateReaderPreferences({ margin_px: $event })"
+            @commit="void prefsStore.flushPendingSync()"
           />
         </div>
       </div>
@@ -256,7 +289,10 @@ watch(
             :model-value="prefsStore.comic.default_reader_mode"
             :options="comicModeOptions"
             @update:model-value="
-              prefsStore.updateComicPreferences({ default_reader_mode: $event as ComicReaderMode })
+              prefsStore.updateComicPreferences(
+                { default_reader_mode: $event as ComicReaderMode },
+                { immediate: true, notifyOnError: true },
+              )
             "
           />
         </div>
@@ -269,7 +305,10 @@ watch(
             :model-value="prefsStore.comic.default_fit_mode"
             :options="comicFitOptions"
             @update:model-value="
-              prefsStore.updateComicPreferences({ default_fit_mode: $event as ComicFitMode })
+              prefsStore.updateComicPreferences(
+                { default_fit_mode: $event as ComicFitMode },
+                { immediate: true, notifyOnError: true },
+              )
             "
           />
         </div>
@@ -279,12 +318,22 @@ watch(
         <MdSwitch
           :model-value="prefsStore.comic.offset_cover_page"
           :label="t('settings.comicOffsetCover')"
-          @update:model-value="prefsStore.updateComicPreferences({ offset_cover_page: $event })"
+          @update:model-value="
+            prefsStore.updateComicPreferences(
+              { offset_cover_page: $event },
+              { immediate: true, notifyOnError: true },
+            )
+          "
         />
         <MdSwitch
           :model-value="prefsStore.comic.dim_images_in_dark"
           :label="comicT('reader.eyeCareDim')"
-          @update:model-value="prefsStore.updateComicPreferences({ dim_images_in_dark: $event })"
+          @update:model-value="
+            prefsStore.updateComicPreferences(
+              { dim_images_in_dark: $event },
+              { immediate: true, notifyOnError: true },
+            )
+          "
         />
       </div>
     </MdCard>
@@ -319,7 +368,10 @@ watch(
           :model-value="prefsStore.playback.transcode_profile"
           :options="musicQualityOptions"
           @update:model-value="
-            prefsStore.updatePlaybackPreferences({ transcode_profile: $event as TranscodeProfile })
+            prefsStore.updatePlaybackPreferences(
+              { transcode_profile: $event as TranscodeProfile },
+              { immediate: true, notifyOnError: true },
+            )
           "
         />
       </div>
@@ -355,7 +407,10 @@ watch(
           :model-value="prefsStore.video.default_quality"
           :options="videoQualityOptions"
           @update:model-value="
-            prefsStore.updateVideoPreferences({ default_quality: $event as VideoQualityProfile })
+            prefsStore.updateVideoPreferences(
+              { default_quality: $event as VideoQualityProfile },
+              { immediate: true, notifyOnError: true },
+            )
           "
         />
       </div>
@@ -364,7 +419,12 @@ watch(
         <MdSwitch
           :model-value="prefsStore.video.autoplay_next"
           :label="t('settings.videoAutoplayNext')"
-          @update:model-value="prefsStore.updateVideoPreferences({ autoplay_next: $event })"
+          @update:model-value="
+            prefsStore.updateVideoPreferences(
+              { autoplay_next: $event },
+              { immediate: true, notifyOnError: true },
+            )
+          "
         />
       </div>
     </MdCard>

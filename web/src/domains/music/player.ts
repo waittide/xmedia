@@ -432,6 +432,13 @@ export const usePlayerStore = defineStore('player', () => {
 
   watch([volume, muted], syncAudioGain, { immediate: true })
 
+  watch(transcodeProfile, (next, prev) => {
+    if (!prev || next === prev) return
+    if (currentItem.value?.kind === 'local' && activeEffectiveProfile.value !== next) {
+      void loadAndPlayCurrent(currentTimeSecs.value, isPlaying.value)
+    }
+  })
+
   audio.addEventListener('timeupdate', () => {
     const t = streamOffsetSecs.value + (audio.currentTime || 0)
     currentTimeSecs.value = t
@@ -1237,12 +1244,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function setTranscodeProfile(next: TranscodeProfile): void {
     if (next === transcodeProfile.value) return
-    const resumeSecs = currentTimeSecs.value
-    const wasPlaying = isPlaying.value
-    preferencesStore.updatePlaybackPreferences({ transcode_profile: next })
-    if (currentItem.value?.kind === 'local') {
-      void loadAndPlayCurrent(resumeSecs, wasPlaying)
-    }
+    preferencesStore.updatePlaybackPreferences({ transcode_profile: next }, { immediate: true })
   }
 
   function setOnlineQuality(quality: string): void {

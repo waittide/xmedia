@@ -36,11 +36,18 @@ const loadError = ref<string | null>(null)
 
 const currentPage = ref(1)
 const initialPage = ref(1)
-const readerMode = ref<ReaderMode>('rtl_double')
-const fitMode = ref<ReaderFitMode>('fit_height')
-const offsetCoverPage = ref(true)
-const dimImages = ref(false)
-const webtoonWidth = ref(860)
+const readerMode = ref<ReaderMode>(preferences.comic.default_reader_mode)
+const fitMode = ref<ReaderFitMode>(preferences.comic.default_fit_mode)
+const offsetCoverPage = ref(preferences.comic.offset_cover_page)
+const dimImages = ref(preferences.comic.dim_images_in_dark)
+const webtoonWidth = ref(preferences.comic.webtoon_width)
+
+watch(
+  () => preferences.comic.dim_images_in_dark,
+  (val) => {
+    dimImages.value = val
+  },
+)
 
 let progressTimer: ReturnType<typeof setTimeout> | null = null
 let pendingProgress: { chapterId: string; page: number; completed?: boolean } | null = null
@@ -100,6 +107,8 @@ async function loadChapter(
   loadError.value = null
 
   try {
+    await preferences.flushPendingSync()
+    if (seq !== chapterLoadSeq) return
     const [data, bms] = await Promise.all([
       api.getReaderContext(chapterId),
       api.listChapterBookmarks(chapterId).catch(() => []),

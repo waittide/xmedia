@@ -71,6 +71,16 @@ const activeStreamType = ref<'hls' | 'mp4'>('mp4')
 const selectedSubtitleIdx = ref<string>('off')
 const playbackRate = ref<number>(preferencesStore.video.playback_rate || 1.0)
 
+watch(
+  () => preferencesStore.video.playback_rate,
+  (next) => {
+    const resolved = next || 1.0
+    if (resolved === playbackRate.value) return
+    playbackRate.value = resolved
+    if (videoEl.value) videoEl.value.playbackRate = resolved
+  },
+)
+
 const loadingStream = ref(true)
 const isBuffering = ref(false)
 const loadError = ref<string | null>(null)

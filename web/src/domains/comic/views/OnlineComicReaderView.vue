@@ -99,11 +99,9 @@ function saveReaderCtxToStorage(next: OnlineComicReaderContextStorage): void {
 }
 
 function mapDirectionToReaderMode(dir: ComicReadingDirection | null | undefined): ReaderMode {
-  if (dir === 'webtoon') return 'webtoon'
-  if (dir === 'ltr') {
-    return preferences.comic.default_reader_mode === 'ltr_double' ? 'ltr_double' : 'ltr_single'
+  if (dir === 'webtoon' && preferences.comic.default_reader_mode === 'rtl_double') {
+    return 'webtoon'
   }
-  if (dir === 'rtl') return 'rtl_double'
   return preferences.comic.default_reader_mode
 }
 
