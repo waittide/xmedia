@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuAward, LuCalendar, LuSparkles } from 'vue-icons-plus/lu'
 import { formatActivityDuration, type ActivityDayDto } from '@/api/activity'
@@ -44,10 +44,16 @@ const isZh = computed(() => String(locale.value).startsWith('zh'))
 const scrollWrapRef = ref<HTMLDivElement | null>(null)
 const hoveredCell = ref<HeatmapCell | null>(null)
 const selectedDate = ref<string>('')
-const tooltipPos = ref<{ x: number; y: number; align: 'left' | 'center' | 'right' }>({
+const tooltipPos = ref<{
+  x: number
+  y: number
+  align: 'left' | 'center' | 'right'
+  placement: 'top' | 'bottom'
+}>({
   x: 0,
   y: 0,
   align: 'center',
+  placement: 'top',
 })
 
 const WEEKDAY_LABELS_ZH = ['一', '二', '三', '四', '五', '六', '日']
@@ -303,19 +309,27 @@ function handleCellEnter(cell: HeatmapCell, ev: Event): void {
   if (!cell.inRange) return
   hoveredCell.value = cell
   const target = ev.currentTarget as HTMLElement | null
-  const container = scrollWrapRef.value
-  if (!target || !container) return
+  if (!target || typeof window === 'undefined') return
 
   const cellRect = target.getBoundingClientRect()
-  const wrapRect = container.getBoundingClientRect()
-  const relX = cellRect.left - wrapRect.left + cellRect.width / 2
-  const relY = cellRect.top - wrapRect.top
+  const vw = window.innerWidth
+  const margin = 12
+  const centerX = cellRect.left + cellRect.width / 2
 
   let align: 'left' | 'center' | 'right' = 'center'
-  if (relX < 104) align = 'left'
-  else if (wrapRect.width - relX < 104) align = 'right'
+  let x = centerX
+  if (centerX < 130) {
+    align = 'left'
+    x = Math.max(margin, cellRect.left)
+  } else if (vw - centerX < 130) {
+    align = 'right'
+    x = Math.min(vw - margin, cellRect.right)
+  }
 
-  tooltipPos.value = { x: relX, y: relY, align }
+  const placement: 'top' | 'bottom' = cellRect.top < 88 ? 'bottom' : 'top'
+  const y = placement === 'top' ? cellRect.top - 10 : cellRect.bottom + 10
+
+  tooltipPos.value = { x, y, align, placement }
 }
 
 function handleCellLeave(): void {
@@ -328,9 +342,14 @@ function handleCellSelect(cell: HeatmapCell): void {
 }
 
 const tooltipTransformClass = computed(() => {
-  if (tooltipPos.value.align === 'left') return '-translate-y-full'
-  if (tooltipPos.value.align === 'right') return '-translate-x-full -translate-y-full'
-  return '-translate-x-1/2 -translate-y-full'
+  const tx =
+    tooltipPos.value.align === 'left'
+      ? ''
+      : tooltipPos.value.align === 'right'
+        ? '-translate-x-full'
+        : '-translate-x-1/2'
+  const ty = tooltipPos.value.placement === 'top' ? '-translate-y-full' : ''
+  return `${tx} ${ty}`.trim()
 })
 
 async function scrollToLatest(): Promise<void> {
@@ -343,6 +362,13 @@ async function scrollToLatest(): Promise<void> {
 
 onMounted(() => {
   void scrollToLatest()
+  window.addEventListener('scroll', handleCellLeave, true)
+  window.addEventListener('resize', handleCellLeave)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', handleCellLeave, true)
+  window.removeEventListener('resize', handleCellLeave)
 })
 
 watch(
@@ -429,36 +455,12 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
       </div>
     </div>
 
-    <!-- Scrollable Heatmap Viewport + Anchored Floating Tooltip -->
-    <div ref="scrollWrapRef" class="relative overflow-x-auto pb-2">
-      <!-- Floating MD3 Inverse Surface Tooltip -->
-      <div
-        v-if="hoveredCell"
-        role="tooltip"
-        class="pointer-events-none absolute z-30 w-max max-w-60 rounded-corner-md bg-inverse-surface px-3 py-2 text-inverse-on-surface shadow-elevation-2 transition-opacity duration-100"
-        :class="tooltipTransformClass"
-        :style="{
-          left: `${Math.round(tooltipPos.x)}px`,
-          top: `${Math.max(0, Math.round(tooltipPos.y - 10))}px`,
-        }"
-      >
-        <p class="text-label-small opacity-80">
-          {{ formatDateHeading(hoveredCell.date, hoveredCell.weekdayIndex) }}
-        </p>
-        <p class="text-label-large mt-0.5 tabular-nums">
-          {{ formatCellDuration(hoveredCell.durationSecs) }}
-          <span v-if="hoveredCell.sessions > 0" class="text-label-small ml-1 opacity-75">
-            · {{ t('history.sessionsCount', { count: hoveredCell.sessions }) }}
-          </span>
-        </p>
-        <p
-          v-if="hoveredCell.lastItemTitle"
-          class="text-label-small mt-0.5 truncate opacity-80"
-        >
-          {{ hoveredCell.lastItemTitle }}
-        </p>
-      </div>
-
+    <!-- Scrollable Heatmap Viewport -->
+    <div
+      ref="scrollWrapRef"
+      class="relative overflow-x-auto pb-2"
+      @scroll.passive="handleCellLeave"
+    >
       <div class="inline-flex min-w-full items-start gap-2.5 pt-1">
         <!-- Left Weekday Labels Rail -->
         <div
@@ -581,5 +583,35 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
         <span class="text-label-small text-on-surface-variant">{{ t('history.legendMore') }}</span>
       </div>
     </div>
+
+    <!-- Floating MD3 Inverse Surface Tooltip (teleported to avoid overflow clipping) -->
+    <Teleport to="body">
+      <div
+        v-if="hoveredCell"
+        role="tooltip"
+        class="pointer-events-none fixed z-[var(--z-tooltip)] w-max max-w-60 rounded-corner-md bg-inverse-surface px-3 py-2 text-inverse-on-surface shadow-elevation-2"
+        :class="tooltipTransformClass"
+        :style="{
+          left: `${Math.round(tooltipPos.x)}px`,
+          top: `${Math.round(tooltipPos.y)}px`,
+        }"
+      >
+        <p class="text-label-small opacity-80">
+          {{ formatDateHeading(hoveredCell.date, hoveredCell.weekdayIndex) }}
+        </p>
+        <p class="text-label-large mt-0.5 tabular-nums">
+          {{ formatCellDuration(hoveredCell.durationSecs) }}
+          <span v-if="hoveredCell.sessions > 0" class="text-label-small ml-1 opacity-75">
+            · {{ t('history.sessionsCount', { count: hoveredCell.sessions }) }}
+          </span>
+        </p>
+        <p
+          v-if="hoveredCell.lastItemTitle"
+          class="text-label-small mt-0.5 truncate opacity-80"
+        >
+          {{ hoveredCell.lastItemTitle }}
+        </p>
+      </div>
+    </Teleport>
   </section>
 </template>
