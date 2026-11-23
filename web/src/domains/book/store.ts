@@ -2,6 +2,7 @@ import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from './api'
 import { useAuthStore } from '@/stores/auth'
+import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
 import type {
   BookBookmarkItemDto,
@@ -215,12 +216,31 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
     }
   }
 
+  const domainStore = useDomainStore()
+  let sseDirty = false
+
   watch(scanRefreshVersion, () => {
     if (!useAuthStore().isAuthenticated) return
+    if (domainStore.activeDomain !== 'book') {
+      sseDirty = true
+      return
+    }
+    sseDirty = false
     void Promise.all([refreshSidebarData(), fetchBooks()]).catch(() => {})
   })
 
+  watch(
+    () => domainStore.activeDomain,
+    (next) => {
+      if (next === 'book' && sseDirty && useAuthStore().isAuthenticated) {
+        sseDirty = false
+        void Promise.all([refreshSidebarData(), fetchBooks()]).catch(() => {})
+      }
+    },
+  )
+
   function resetState(): void {
+    sseDirty = false
     fetchSeq += 1
     sidebarSeq += 1
     loading.value = false

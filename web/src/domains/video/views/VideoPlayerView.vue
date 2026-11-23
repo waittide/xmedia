@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import Hls from 'hls.js'
 import type { SelectOption } from '@/components/ui'
 import { usePlayerStore } from '@/domains/music/player'
 import { usePreferencesStore } from '@/stores/preferences'
@@ -16,6 +15,7 @@ import {
 import VideoPlayerShell, { type VideoPlayerEpisodeItem } from '../components/VideoPlayerShell.vue'
 import {
   clearVideoMediaSession,
+  createVideoMediaController,
   loadStoredVideoMuted,
   loadStoredVideoVolume,
   persistVideoAudioPrefs,
@@ -67,10 +67,9 @@ const streamOffsetSecs = ref(0)
 const currentTimeSecs = ref(0)
 const rawDurationSecs = ref(0)
 
-let hlsInstance: Hls | null = null
+const mediaController = createVideoMediaController(videoEl)
 let activeAbort: AbortController | null = null
 let progressSaveTimer: ReturnType<typeof setInterval> | null = null
-let pendingLoadedMetadataHandler: (() => void) | null = null
 let exitPersisted = false
 let initRequestSeq = 0
 
@@ -239,37 +238,8 @@ const downloadUrl = computed(() =>
   detail.value && !isUncachedTracked.value ? buildVideoDownloadUrl(detail.value.video.id) : null,
 )
 
-function clearPendingSeekHandler(): void {
-  if (pendingLoadedMetadataHandler && videoEl.value) {
-    videoEl.value.removeEventListener('loadedmetadata', pendingLoadedMetadataHandler)
-  }
-  pendingLoadedMetadataHandler = null
-}
-
-function destroyHls(): void {
-  if (hlsInstance) {
-    try {
-      hlsInstance.destroy()
-    } catch {
-      // ignore destroy errors
-    }
-    hlsInstance = null
-  }
-}
-
 function stopAndClearVideoElement(): void {
-  clearPendingSeekHandler()
-  const el = videoEl.value
-  if (el) {
-    try {
-      el.pause()
-      el.removeAttribute('src')
-      el.load()
-    } catch {
-      // ignore cleanup errors
-    }
-  }
-  destroyHls()
+  mediaController.stopAndClear()
 }
 
 function syncMediaSession(d: VideoDetailDto): void {
@@ -327,7 +297,6 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
   const d = detail.value
   if (!el || !d) return
 
-  clearPendingSeekHandler()
   musicPlayerStore.pause()
   loadError.value = null
   isBuffering.value = true
@@ -336,34 +305,27 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
   streamOffsetSecs.value = useServerOffset ? Math.floor(startSecs) : 0
   currentTimeSecs.value = startSecs
 
-  el.src = buildVideoStreamUrl(
-    d.video.id,
-    quality.value,
-    selectedAudioStream.value,
-    streamOffsetSecs.value,
-  )
-  el.load()
   el.volume = volume.value
   el.muted = muted.value
 
-  const targetRate = playbackRate.value
-  const handler = (): void => {
-    clearPendingSeekHandler()
-    el.playbackRate = targetRate
-    if (!useServerOffset && startSecs > 0) {
-      el.currentTime = startSecs
-    }
-  }
-  pendingLoadedMetadataHandler = handler
-  el.addEventListener('loadedmetadata', handler, { once: true })
-  el.playbackRate = targetRate
-
-  if (autoPlay) {
-    void el.play().catch(() => {
-      isPlaying.value = false
-      isBuffering.value = false
-    })
-  }
+  mediaController.attachDirectWithSeek(
+    buildVideoStreamUrl(
+      d.video.id,
+      quality.value,
+      selectedAudioStream.value,
+      streamOffsetSecs.value,
+    ),
+    {
+      startSecs,
+      playbackRate: playbackRate.value,
+      applySeekOnMetadata: !useServerOffset,
+      autoPlay,
+      onPlayRejected: () => {
+        isPlaying.value = false
+        isBuffering.value = false
+      },
+    },
+  )
 }
 
 async function loadTrackedOnlineStream(
@@ -414,8 +376,6 @@ async function loadTrackedOnlineStream(
   const el = videoEl.value
   if (!el) return
 
-  clearPendingSeekHandler()
-  destroyHls()
   streamOffsetSecs.value = 0
   currentTimeSecs.value = startSecs
   el.volume = volume.value
@@ -423,102 +383,30 @@ async function loadTrackedOnlineStream(
   el.playbackRate = playbackRate.value
   isBuffering.value = true
 
-  const attachMetadataSeek = (): void => {
-    const targetRate = playbackRate.value
-    const handler = (): void => {
-      clearPendingSeekHandler()
-      el.playbackRate = targetRate
-      if (startSecs > 0) {
-        const maxDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : startSecs
-        const target = Math.min(startSecs, Math.max(0, maxDur - 1))
-        if (target > 0) {
-          el.currentTime = target
-          currentTimeSecs.value = target
-        }
-      }
-    }
-    pendingLoadedMetadataHandler = handler
-    el.addEventListener('loadedmetadata', handler, { once: true })
-  }
-
-  if (isHls) {
-    if (Hls.isSupported()) {
-      let networkRetries = 0
-      let mediaRetries = 0
-      const unrecoverableManifestErrors = new Set<string>([
-        Hls.ErrorDetails.MANIFEST_PARSING_ERROR,
-        Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR,
-        Hls.ErrorDetails.LEVEL_EMPTY_ERROR,
-      ])
-      const manifestLoadErrors = new Set<string>([
-        Hls.ErrorDetails.MANIFEST_LOAD_ERROR,
-        Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT,
-      ])
-      const hls = new Hls({
-        startPosition: startSecs > 0 ? startSecs : -1,
-        xhrSetup: (xhr) => {
-          xhr.withCredentials = true
-        },
-      })
-      hlsInstance = hls
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (reqSeq !== initRequestSeq) return
-        el.playbackRate = playbackRate.value
-        if (startSecs > 0 && Math.abs((el.currentTime || 0) - startSecs) > 1.5) {
-          el.currentTime = startSecs
-        }
-        isBuffering.value = false
-        void el.play().catch(() => {
-          isPlaying.value = false
-          isBuffering.value = false
-        })
-      })
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (reqSeq !== initRequestSeq || !data.fatal) return
-        if (!unrecoverableManifestErrors.has(data.details)) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
-            networkRetries += 1
-            if (manifestLoadErrors.has(data.details) || hls.levels.length === 0) {
-              hls.loadSource(playableUrl)
-            } else {
-              hls.startLoad()
-            }
-            return
-          }
-          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 1) {
-            mediaRetries += 1
-            hls.recoverMediaError()
-            return
-          }
-        }
-        stopAndClearVideoElement()
-        isPlaying.value = false
-        isBuffering.value = false
-        loadError.value = data.reason || t('online.streamLoadFailed')
-      })
-      hls.loadSource(playableUrl)
-      hls.attachMedia(el)
-    } else if (el.canPlayType('application/vnd.apple.mpegurl') !== '') {
-      attachMetadataSeek()
-      el.src = playableUrl
-      el.load()
-      void el.play().catch(() => {
-        isPlaying.value = false
-        isBuffering.value = false
-      })
-    } else {
+  await mediaController.attachStream({
+    url: playableUrl,
+    isHls,
+    startSecs,
+    playbackRate: playbackRate.value,
+    isStale: () => reqSeq !== initRequestSeq,
+    onSeekApplied: (target) => {
+      currentTimeSecs.value = target
+    },
+    onManifestReady: () => {
       isBuffering.value = false
-      loadError.value = t('player.unsupportedHls')
-    }
-  } else {
-    attachMetadataSeek()
-    el.src = playableUrl
-    el.load()
-    void el.play().catch(() => {
+    },
+    onPlayRejected: () => {
       isPlaying.value = false
       isBuffering.value = false
-    })
-  }
+    },
+    onFatalError: (msg) => {
+      isPlaying.value = false
+      isBuffering.value = false
+      loadError.value = msg
+    },
+    unsupportedHlsMessage: t('player.unsupportedHls'),
+    defaultErrorMessage: t('online.streamLoadFailed'),
+  })
 }
 
 async function initVideo(): Promise<void> {
@@ -761,7 +649,7 @@ function onVideoEnded(): void {
 
 function onVideoError(): void {
   const el = videoEl.value
-  if (!detail.value || !el || (!el.getAttribute('src') && !hlsInstance) || !el.error) return
+  if (!detail.value || !el || (!el.getAttribute('src') && !mediaController.hasHls()) || !el.error) return
   stopAndClearVideoElement()
   isPlaying.value = false
   isBuffering.value = false
@@ -794,22 +682,12 @@ function flushVideoProgressOnPageHide(): void {
   if (!d || exitPersisted) return
   exitPersisted = true
   const roundedDur = Math.round(totalDurationSecs.value)
-  try {
-    void fetch(`/api/v1/video/videos/${encodeURIComponent(d.video.id)}/progress`, {
-      method: 'PUT',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        position_secs: currentTimeSecs.value,
-        duration_secs: roundedDur > 0 ? roundedDur : undefined,
-        selected_audio_stream: selectedAudioStream.value,
-        selected_subtitle: selectedSubtitleId.value === 'off' ? null : selectedSubtitleId.value,
-      }),
-      keepalive: true,
-    })
-  } catch {
-    // ignore unload errors
-  }
+  api.saveProgressKeepalive(d.video.id, {
+    position_secs: currentTimeSecs.value,
+    duration_secs: roundedDur > 0 ? roundedDur : undefined,
+    selected_audio_stream: selectedAudioStream.value,
+    selected_subtitle: selectedSubtitleId.value === 'off' ? null : selectedSubtitleId.value,
+  })
 }
 
 onMounted(() => {

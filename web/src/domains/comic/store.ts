@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { api } from './api'
 import { useAuthStore } from '@/stores/auth'
+import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
 import { useUploadStore } from '@/stores/uploads'
 import type {
@@ -60,15 +61,34 @@ export const useSidebarStore = defineStore('comicSidebar', () => {
     }
   }
 
+  const domainStore = useDomainStore()
+  let sseDirty = false
+
   watch(
     () => [uploadStore.catalogVersion, eventsStore.domainRefreshTick.comic],
     () => {
       if (!useAuthStore().isAuthenticated) return
+      if (domainStore.activeDomain !== 'comic') {
+        sseDirty = true
+        return
+      }
+      sseDirty = false
       void refresh().catch(() => {})
     },
   )
 
+  watch(
+    () => domainStore.activeDomain,
+    (next) => {
+      if (next === 'comic' && sseDirty && useAuthStore().isAuthenticated) {
+        sseDirty = false
+        void refresh().catch(() => {})
+      }
+    },
+  )
+
   function resetState(): void {
+    sseDirty = false
     fetchSeq += 1
     libraries.value = []
     shelves.value = []

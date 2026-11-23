@@ -306,28 +306,50 @@ function getPageSrc(pageNum: number): string {
   return resolveOnlineComicCoverUrl(page.proxy_url, page.image_url, ctx.value?.sourceId)
 }
 
+let lastReportedPage: { page: number; reachedEnd: boolean } | null = null
+
+function buildCurrentComicProgress(): {
+  unitIndex: number
+  unitKey: string
+  unitTitle: string
+  position: number
+  duration: number
+  totalUnits?: number
+  completed: boolean
+} | null {
+  if (!trackedRef.value || !activeChapterUrl.value || pages.value.length === 0 || !lastReportedPage) {
+    return null
+  }
+  const unitTitle =
+    currentChapterObj.value?.title ||
+    ctx.value?.chapterTitle ||
+    `#${activeChapterIndex.value + 1}`
+  const isFinalChapter = chapters.value.length > 0 && nextChapterIndex.value === null
+  return {
+    unitIndex: activeChapterIndex.value,
+    unitKey: activeChapterUrl.value,
+    unitTitle,
+    position: lastReportedPage.page,
+    duration: pages.value.length,
+    totalUnits: chapters.value.length > 0 ? chapters.value.length : undefined,
+    completed: lastReportedPage.reachedEnd && isFinalChapter,
+  }
+}
+
 function handlePageChange(payload: {
   page: number
   highestInSpread: number
   reachedEnd: boolean
 }): void {
-  if (!trackedRef.value || !activeChapterUrl.value || pages.value.length === 0) return
-  const unitTitle =
-    currentChapterObj.value?.title ||
-    ctx.value?.chapterTitle ||
-    `#${activeChapterIndex.value + 1}`
-  const isFinalChapter =
-    chapters.value.length > 0 && nextChapterIndex.value === null
+  lastReportedPage = { page: payload.page, reachedEnd: payload.reachedEnd }
+  const pos = buildCurrentComicProgress()
+  if (!pos) return
+  onlineState.saveProgress(pos)
+}
 
-  onlineState.saveProgress({
-    unitIndex: activeChapterIndex.value,
-    unitKey: activeChapterUrl.value,
-    unitTitle,
-    position: payload.page,
-    duration: pages.value.length,
-    totalUnits: chapters.value.length > 0 ? chapters.value.length : undefined,
-    completed: payload.reachedEnd && isFinalChapter,
-  })
+function flushComicProgressOnPageHide(): void {
+  const pos = buildCurrentComicProgress()
+  onlineState.flushProgressKeepalive(pos ?? undefined)
 }
 
 async function hydrateChaptersInBackground(
@@ -743,11 +765,13 @@ function handleBack(): void {
 
 onMounted(() => {
   unmounted = false
+  window.addEventListener('pagehide', flushComicProgressOnPageHide)
   void initReader()
 })
 
 onBeforeUnmount(() => {
   unmounted = true
+  window.removeEventListener('pagehide', flushComicProgressOnPageHide)
   initSeq += 1
   loadSeq += 1
   detailSeq += 1

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import Hls from 'hls.js'
 import type { SelectOption } from '@/components/ui'
 import { usePlayerStore } from '@/domains/music/player'
 import {
@@ -22,6 +21,7 @@ import {
 } from '../composables/useOnlineVideoContext'
 import {
   clearVideoMediaSession,
+  createVideoMediaController,
   loadStoredVideoMuted,
   loadStoredVideoVolume,
   persistVideoAudioPrefs,
@@ -81,8 +81,7 @@ const volume = ref(loadStoredVideoVolume())
 const currentTimeSecs = ref(0)
 const durationSecs = ref(0)
 
-let hlsInstance: Hls | null = null
-let pendingLoadedMetadataHandler: (() => void) | null = null
+const mediaController = createVideoMediaController(videoEl)
 let playSeq = 0
 let detailSeq = 0
 let syncUrlSeq = 0
@@ -249,28 +248,38 @@ function applyHydratedContext(): void {
   currentPlayUrl.value = ctx.currentPlayUrl
 }
 
-function reportOnlineProgress(opts?: { immediate?: boolean; completed?: boolean }): void {
-  if (!trackedRef.value || !currentPlayUrl.value) return
+function buildOnlineProgressPayload(opts?: { completed?: boolean }) {
+  if (!trackedRef.value || !currentPlayUrl.value) return null
   const pos = Math.max(0, currentTimeSecs.value)
   const dur = Number.isFinite(durationSecs.value) && durationSecs.value > 0 ? durationSecs.value : undefined
-  if (!opts?.immediate && !opts?.completed && pos < 1) return
-
   const completed =
     opts?.completed ?? (dur !== undefined && dur > 30 && pos / dur >= 0.95 ? true : false)
+  return {
+    unitIndex: currentEpisodeIndex.value,
+    unitKey: currentPlayUrl.value,
+    unitTitle: currentEpisode.value?.name,
+    unitGroup: activeGroupName.value || undefined,
+    position: pos,
+    duration: dur,
+    totalUnits: activeEpisodes.value.length > 0 ? activeEpisodes.value.length : undefined,
+    completed,
+  }
+}
 
-  itemState.saveProgress(
-    {
-      unitIndex: currentEpisodeIndex.value,
-      unitKey: currentPlayUrl.value,
-      unitTitle: currentEpisode.value?.name,
-      unitGroup: activeGroupName.value || undefined,
-      position: pos,
-      duration: dur,
-      totalUnits: activeEpisodes.value.length > 0 ? activeEpisodes.value.length : undefined,
-      completed,
-    },
-    { immediate: opts?.immediate },
-  )
+function reportOnlineProgress(opts?: { immediate?: boolean; completed?: boolean }): void {
+  const payload = buildOnlineProgressPayload({ completed: opts?.completed })
+  if (!payload) return
+  if (!opts?.immediate && !opts?.completed && payload.position < 1) return
+  itemState.saveProgress(payload, { immediate: opts?.immediate })
+}
+
+function flushOnlineVideoProgressOnPageHide(): void {
+  const payload = buildOnlineProgressPayload()
+  if (payload && payload.position > 1) {
+    itemState.flushProgressKeepalive(payload)
+  } else {
+    itemState.flushProgressKeepalive()
+  }
 }
 
 function resolveSavedResumeSeconds(): number {
@@ -326,37 +335,8 @@ async function fetchDetailFallbackIfNeeded(): Promise<boolean> {
   }
 }
 
-function clearPendingSeekHandler(): void {
-  if (pendingLoadedMetadataHandler && videoEl.value) {
-    videoEl.value.removeEventListener('loadedmetadata', pendingLoadedMetadataHandler)
-  }
-  pendingLoadedMetadataHandler = null
-}
-
-function destroyHls(): void {
-  if (hlsInstance) {
-    try {
-      hlsInstance.destroy()
-    } catch {
-      // ignore destroy errors
-    }
-    hlsInstance = null
-  }
-}
-
 function stopAndClearVideoElement(): void {
-  clearPendingSeekHandler()
-  const el = videoEl.value
-  if (el) {
-    try {
-      el.pause()
-      el.removeAttribute('src')
-      el.load()
-    } catch {
-      // ignore cleanup errors
-    }
-  }
-  destroyHls()
+  mediaController.stopAndClear()
 }
 
 function syncMediaSession(): void {
@@ -384,24 +364,6 @@ function syncMediaSession(): void {
     onPrev: hasPrevEpisode.value ? () => goToPrevEpisode() : null,
     onNext: hasNextEpisode.value ? () => goToNextEpisode() : null,
   })
-}
-
-function attachSeekOnMetadata(el: HTMLVideoElement, seekSecs: number): void {
-  clearPendingSeekHandler()
-  const handler = (): void => {
-    clearPendingSeekHandler()
-    el.playbackRate = playbackRate.value
-    if (seekSecs > 0) {
-      const maxDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : seekSecs
-      const target = Math.min(seekSecs, Math.max(0, maxDur - 1))
-      if (target > 0) {
-        el.currentTime = target
-        currentTimeSecs.value = target
-      }
-    }
-  }
-  pendingLoadedMetadataHandler = handler
-  el.addEventListener('loadedmetadata', handler, { once: true })
 }
 
 async function loadPlay(options?: { preserveTimeSecs?: number; checkSavedResume?: boolean }): Promise<void> {
@@ -490,84 +452,30 @@ async function loadPlay(options?: { preserveTimeSecs?: number; checkSavedResume?
     el.playbackRate = playbackRate.value
     isBuffering.value = true
 
-    if (isHls) {
-      if (Hls.isSupported()) {
-        let networkRetries = 0
-        let mediaRetries = 0
-        const unrecoverableManifestErrors = new Set<string>([
-          Hls.ErrorDetails.MANIFEST_PARSING_ERROR,
-          Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR,
-          Hls.ErrorDetails.LEVEL_EMPTY_ERROR,
-        ])
-        const manifestLoadErrors = new Set<string>([
-          Hls.ErrorDetails.MANIFEST_LOAD_ERROR,
-          Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT,
-        ])
-        const hls = new Hls({
-          startPosition: targetStartSecs > 0 ? targetStartSecs : -1,
-          xhrSetup: (xhr) => {
-            xhr.withCredentials = true
-          },
-        })
-        hlsInstance = hls
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (unmounted || seq !== playSeq) return
-          el.playbackRate = playbackRate.value
-          if (targetStartSecs > 0 && Math.abs((el.currentTime || 0) - targetStartSecs) > 1.5) {
-            el.currentTime = targetStartSecs
-          }
-          isBuffering.value = false
-          void el.play().catch(() => {
-            isPlaying.value = false
-            isBuffering.value = false
-          })
-        })
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (unmounted || seq !== playSeq || !data.fatal) return
-          if (!unrecoverableManifestErrors.has(data.details)) {
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
-              networkRetries += 1
-              if (manifestLoadErrors.has(data.details) || hls.levels.length === 0) {
-                hls.loadSource(playableUrl)
-              } else {
-                hls.startLoad()
-              }
-              return
-            }
-            if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 1) {
-              mediaRetries += 1
-              hls.recoverMediaError()
-              return
-            }
-          }
-          stopAndClearVideoElement()
-          isPlaying.value = false
-          isBuffering.value = false
-          loadError.value = data.reason || t('online.streamLoadFailed')
-        })
-        hls.loadSource(playableUrl)
-        hls.attachMedia(el)
-      } else if (el.canPlayType('application/vnd.apple.mpegurl') !== '') {
-        attachSeekOnMetadata(el, targetStartSecs)
-        el.src = playableUrl
-        el.load()
-        void el.play().catch(() => {
-          isPlaying.value = false
-          isBuffering.value = false
-        })
-      } else {
+    await mediaController.attachStream({
+      url: playableUrl,
+      isHls,
+      startSecs: targetStartSecs,
+      playbackRate: playbackRate.value,
+      isStale: () => unmounted || seq !== playSeq,
+      onSeekApplied: (target) => {
+        currentTimeSecs.value = target
+      },
+      onManifestReady: () => {
         isBuffering.value = false
-        loadError.value = t('player.unsupportedHls')
-      }
-    } else {
-      attachSeekOnMetadata(el, targetStartSecs)
-      el.src = playableUrl
-      el.load()
-      void el.play().catch(() => {
+      },
+      onPlayRejected: () => {
         isPlaying.value = false
         isBuffering.value = false
-      })
-    }
+      },
+      onFatalError: (msg) => {
+        isPlaying.value = false
+        isBuffering.value = false
+        loadError.value = msg
+      },
+      unsupportedHlsMessage: t('player.unsupportedHls'),
+      defaultErrorMessage: t('online.streamLoadFailed'),
+    })
 
     shellRef.value?.showHud()
   } catch (err) {
@@ -764,7 +672,7 @@ function onVideoEnded(): void {
 
 function onVideoError(): void {
   const el = videoEl.value
-  if (!el || (!el.getAttribute('src') && !hlsInstance) || !el.error) return
+  if (!el || (!el.getAttribute('src') && !mediaController.hasHls()) || !el.error) return
   stopAndClearVideoElement()
   isPlaying.value = false
   isBuffering.value = false
@@ -803,6 +711,7 @@ function goBack(): void {
 onMounted(() => {
   unmounted = false
   musicPlayerStore.pause()
+  window.addEventListener('pagehide', flushOnlineVideoProgressOnPageHide)
   if (videoEl.value) {
     videoEl.value.volume = volume.value
     videoEl.value.muted = muted.value
@@ -816,6 +725,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unmounted = true
+  window.removeEventListener('pagehide', flushOnlineVideoProgressOnPageHide)
   playSeq += 1
   detailSeq += 1
   if (currentTimeSecs.value > 1) {

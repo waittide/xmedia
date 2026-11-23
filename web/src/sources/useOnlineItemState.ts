@@ -233,6 +233,7 @@ export interface UseOnlineItemStateReturn {
   clearProgress: () => Promise<void>
   remove: () => Promise<void>
   flushPendingProgress: () => Promise<void>
+  flushProgressKeepalive: (pos?: PlayPosition) => void
 }
 
 export function useOnlineItemState(
@@ -446,11 +447,17 @@ export function useOnlineItemState(
     await commitPendingProgress(item)
   }
 
-  function flushPendingProgressKeepalive(): void {
+  function flushProgressKeepalive(overridePos?: PlayPosition): void {
     clearProgressTimer()
-    const item = pendingProgress
-    if (!item) return
+    let item = pendingProgress
     pendingProgress = null
+    if (overridePos) {
+      const target = currentRef.value
+      if (target && !blocked.value) {
+        item = { ref: target, meta: toValue(meta), pos: overridePos }
+      }
+    }
+    if (!item) return
     if (!isOnlineItemDomain(item.ref.domain)) return
 
     const key = buildRefNaturalKey(item.ref)
@@ -468,6 +475,10 @@ export function useOnlineItemState(
         upsert: buildUpsertPayload(item.ref, item.meta, existing, { progress: item.pos }),
       })
     }
+  }
+
+  function onPageHide(): void {
+    flushProgressKeepalive()
   }
 
   function saveProgress(pos: PlayPosition, opts?: { immediate?: boolean }): void {
@@ -551,12 +562,12 @@ export function useOnlineItemState(
   }
 
   if (typeof window !== 'undefined') {
-    window.addEventListener('pagehide', flushPendingProgressKeepalive)
+    window.addEventListener('pagehide', onPageHide)
   }
 
   onScopeDispose(() => {
     if (typeof window !== 'undefined') {
-      window.removeEventListener('pagehide', flushPendingProgressKeepalive)
+      window.removeEventListener('pagehide', onPageHide)
     }
     if (pendingProgress) {
       void flushPendingProgress()
@@ -595,6 +606,7 @@ export function useOnlineItemState(
     clearProgress,
     remove,
     flushPendingProgress,
+    flushProgressKeepalive,
   }
 }
 

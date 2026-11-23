@@ -64,7 +64,7 @@ export function buildVideoStreamUrl(
   if (startSecs && startSecs > 0) {
     sp.set('start_secs', String(Math.floor(startSecs)))
   }
-  return `/api/v1/video/videos/${encodeURIComponent(videoId)}/stream?${sp.toString()}`
+  return withAuthToken(`/api/v1/video/videos/${encodeURIComponent(videoId)}/stream?${sp.toString()}`)
 }
 
 export function buildVideoDownloadUrl(videoId: string): string {
@@ -141,6 +141,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ watched }),
     }),
+  saveProgressKeepalive: (
+    videoId: string,
+    payload: {
+      position_secs: number
+      duration_secs?: number
+      selected_audio_stream?: number | null
+      selected_subtitle?: string | null
+    },
+  ) => {
+    try {
+      void fetch(`/api/v1/video/videos/${encodeURIComponent(videoId)}/progress`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      })
+    } catch {
+      // ignore unload errors
+    }
+  },
 
   listShows: (
     params: { library_id?: string; genre?: string; tag?: string; search?: string } = {},

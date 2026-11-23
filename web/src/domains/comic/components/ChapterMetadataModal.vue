@@ -121,20 +121,12 @@ async function onSave(): Promise<void> {
 
       <MdTextField v-model="title" :label="t('metadata.title')" />
 
-      <div class="space-y-1.5">
-        <label
-          for="comic-chapter-summary"
-          class="text-label-medium block text-on-surface-variant"
-        >
-          {{ t('metadata.summary') }}
-        </label>
-        <textarea
-          id="comic-chapter-summary"
-          v-model="summary"
-          rows="3"
-          class="md-input text-body-medium w-full py-2.5"
-        />
-      </div>
+      <MdTextField
+        v-model="summary"
+        multiline
+        :rows="3"
+        :label="t('metadata.summary')"
+      />
     </form>
 
     <template #footer>

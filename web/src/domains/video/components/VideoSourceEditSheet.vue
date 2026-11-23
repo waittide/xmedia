@@ -312,22 +312,19 @@ watch(isApplecms, (applecms) => {
         </div>
 
         <div class="flex flex-wrap items-center gap-x-6 gap-y-2.5 border-t border-outline-variant/50 pt-3">
-          <label class="text-body-small inline-flex items-center gap-2 text-on-surface">
-            <MdSwitch v-model="form.enabled" />
-            <span>{{ t('onlineSources.edit.enabledSwitch') }}</span>
-          </label>
-          <label class="text-body-small inline-flex items-center gap-2 text-on-surface">
-            <MdSwitch v-model="form.enabledExplore" />
-            <span>{{ t('onlineSources.edit.enabledExploreSwitch') }}</span>
-          </label>
-          <label class="text-body-small inline-flex items-center gap-2 text-on-surface">
-            <MdSwitch v-model="form.searchable" />
-            <span>{{ t('onlineSources.edit.searchableSwitch') }}</span>
-          </label>
-          <label class="text-body-small inline-flex items-center gap-2 text-on-surface">
-            <MdSwitch v-model="form.enabledCookieJar" />
-            <span>{{ t('onlineSources.edit.enabledCookieJarSwitch') }}</span>
-          </label>
+          <MdSwitch v-model="form.enabled" :label="t('onlineSources.edit.enabledSwitch')" />
+          <MdSwitch
+            v-model="form.enabledExplore"
+            :label="t('onlineSources.edit.enabledExploreSwitch')"
+          />
+          <MdSwitch
+            v-model="form.searchable"
+            :label="t('onlineSources.edit.searchableSwitch')"
+          />
+          <MdSwitch
+            v-model="form.enabledCookieJar"
+            :label="t('onlineSources.edit.enabledCookieJarSwitch')"
+          />
         </div>
       </section>
 
@@ -392,9 +389,11 @@ watch(isApplecms, (applecms) => {
             </span>
             <span
               v-if="hasAdvancedNetworkValues"
-              class="h-1.5 w-1.5 rounded-corner-full bg-primary"
-              aria-hidden="true"
-            />
+              class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-primary-container px-2 py-0.5 text-on-primary-container"
+            >
+              <span class="h-1.5 w-1.5 rounded-corner-full bg-primary" aria-hidden="true" />
+              {{ t('common.configured') }}
+            </span>
           </span>
           <LuChevronUp
             v-if="advancedNetworkOpen"

@@ -17,6 +17,7 @@ import {
 } from '@/components/domain'
 import {
   MdButton,
+  MdChip,
   MdEmptyState,
   MdMenuItem,
   MdTextField,
@@ -166,11 +167,40 @@ const activeGroup = computed<OnlineVideoPlayGroup | null>(() => {
 
 const activeEpisodes = computed<OnlineVideoEpisode[]>(() => activeGroup.value?.episodes ?? [])
 
+const EPISODE_CHUNK_SIZE = 50
+const selectedEpisodeChunk = ref(0)
+
 const displayedEpisodes = computed<OnlineVideoEpisode[]>(() => {
   const q = episodeQuery.value.trim().toLowerCase()
   const base = orderAsc.value ? [...activeEpisodes.value] : [...activeEpisodes.value].reverse()
   if (!q) return base
   return base.filter((ep) => ep.name.toLowerCase().includes(q))
+})
+
+const episodeChunks = computed<Array<{ index: number; label: string; items: OnlineVideoEpisode[] }>>(() => {
+  const list = displayedEpisodes.value
+  if (list.length <= EPISODE_CHUNK_SIZE) {
+    return [{ index: 0, label: '', items: list }]
+  }
+  const chunks: Array<{ index: number; label: string; items: OnlineVideoEpisode[] }> = []
+  for (let start = 0; start < list.length; start += EPISODE_CHUNK_SIZE) {
+    const end = Math.min(list.length, start + EPISODE_CHUNK_SIZE)
+    chunks.push({
+      index: chunks.length,
+      label: `${start + 1}–${end}`,
+      items: list.slice(start, end),
+    })
+  }
+  return chunks
+})
+
+const visibleEpisodes = computed<OnlineVideoEpisode[]>(() => {
+  const chunk = episodeChunks.value[selectedEpisodeChunk.value] ?? episodeChunks.value[0]
+  return chunk?.items ?? []
+})
+
+watch([selectedGroupName, orderAsc, episodeQuery], () => {
+  selectedEpisodeChunk.value = 0
 })
 
 const savedProgress = computed(() => itemState.progress.value)
@@ -626,26 +656,39 @@ watch(
           :title="t('online.emptyPlayGroups')"
         />
 
-        <div
-          v-else
-          class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
-        >
-          <button
-            v-for="ep in displayedEpisodes"
-            :key="`${selectedGroupName}-${ep.index}-${ep.play_url}`"
-            type="button"
-            :disabled="!ep.play_url || itemState.blocked.value"
-            class="md-state text-label-large flex h-10 cursor-pointer items-center justify-center truncate rounded-corner-md border px-3 transition-colors duration-150 ease-standard disabled:cursor-not-allowed disabled:opacity-38"
-            :class="
-              isResumedEpisode(ep)
-                ? 'border-primary/40 bg-primary-container text-on-primary-container'
-                : 'border-outline-variant bg-surface-container-low text-on-surface hover:bg-surface-container'
-            "
-            @click="openEpisode(ep)"
+        <template v-else>
+          <div v-if="episodeChunks.length > 1" class="flex flex-wrap items-center gap-2">
+            <MdChip
+              v-for="chunk in episodeChunks"
+              :key="chunk.index"
+              variant="filter"
+              :label="chunk.label"
+              :selected="selectedEpisodeChunk === chunk.index"
+              hide-check
+              @click="selectedEpisodeChunk = chunk.index"
+            />
+          </div>
+
+          <div
+            class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
           >
-            <span class="truncate">{{ ep.name }}</span>
-          </button>
-        </div>
+            <button
+              v-for="ep in visibleEpisodes"
+              :key="`${selectedGroupName}-${ep.index}-${ep.play_url}`"
+              type="button"
+              :disabled="!ep.play_url || itemState.blocked.value"
+              class="md-state text-label-large flex min-h-12 cursor-pointer items-center justify-center truncate rounded-corner-md border px-3 transition-colors duration-150 ease-standard disabled:cursor-not-allowed disabled:opacity-38"
+              :class="
+                isResumedEpisode(ep)
+                  ? 'border-primary/40 bg-primary-container text-on-primary-container'
+                  : 'border-outline-variant bg-surface-container-low text-on-surface hover:bg-surface-container'
+              "
+              @click="openEpisode(ep)"
+            >
+              <span class="truncate">{{ ep.name }}</span>
+            </button>
+          </div>
+        </template>
       </section>
     </MediaDetailTemplate>
   </div>

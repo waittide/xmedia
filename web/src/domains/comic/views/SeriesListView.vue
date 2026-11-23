@@ -870,7 +870,6 @@ onMounted(async () => {
           removable
           hide-check
           @remove="removeFilterChip(chip.key)"
-          @click="removeFilterChip(chip.key)"
         />
 
         <MdButton

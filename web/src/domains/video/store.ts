@@ -1,6 +1,7 @@
 import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
 import { api } from './api'
 import type {
@@ -108,16 +109,36 @@ export const useVideoStore = defineStore('video', () => {
     }
   }
 
+  const domainStore = useDomainStore()
+  let sseDirty = false
+
   watch(
     () => eventsStore.domainRefreshTick.video,
     () => {
       if (!useAuthStore().isAuthenticated) return
       bumpCatalogVersion()
+      if (domainStore.activeDomain !== 'video') {
+        sseDirty = true
+        lastSidebarLoadedAt = 0
+        return
+      }
+      sseDirty = false
       scheduleRefreshSidebar()
     },
   )
 
+  watch(
+    () => domainStore.activeDomain,
+    (next) => {
+      if (next === 'video' && sseDirty && useAuthStore().isAuthenticated) {
+        sseDirty = false
+        scheduleRefreshSidebar()
+      }
+    },
+  )
+
   function resetState(): void {
+    sseDirty = false
     sidebarEpoch += 1
     sidebarInFlight = null
     if (sidebarDebounceTimer) {

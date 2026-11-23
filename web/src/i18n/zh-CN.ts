@@ -31,6 +31,8 @@ export default {
     viewAll: '查看全部',
     selectedCount: '{label} · 已选 {count}',
     showingTop: '显示前 {shown} / {total} 项，输入关键字可精确检索',
+    configured: '已配置',
+    slider: '滑块',
   },
   globalSearch: {
     quickNavigation: '快捷导航',

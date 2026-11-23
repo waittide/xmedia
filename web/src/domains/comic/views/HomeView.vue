@@ -157,7 +157,7 @@ function itemKey(item: MediaItemVM, idx: number): string {
       :loading="combinedLoading"
       :refreshing="refreshing"
       :error="combinedError"
-      :has-online-sources="sourceFilter.hasOnlineSources.value || true"
+      :has-online-sources="sourceFilter.hasOnlineSources.value"
       :empty-title="t('home.emptyTitle')"
       :empty-description="t('home.emptyDesc')"
       @refresh="handleRefresh"

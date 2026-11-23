@@ -260,6 +260,21 @@ const volumeGroups = computed<VolumeGroup[]>(() => {
   return Array.from(groups.values())
 })
 
+const displayChapterGroups = computed<Array<VolumeGroup & { showHeader: boolean }>>(() => {
+  if (hasAnyVolumes.value && groupByVolume.value) {
+    return volumeGroups.value.map((g) => ({ ...g, showHeader: true }))
+  }
+  return [
+    {
+      key: '__flat__',
+      volumeNumber: null,
+      title: '',
+      chapters: filteredSortedChapters.value,
+      showHeader: false,
+    },
+  ]
+})
+
 function showError(err: unknown): void {
   snackbar.show({
     message: err instanceof Error ? err.message : String(err),
@@ -807,40 +822,45 @@ async function handleCacheChapter(ch: ChapterItemDto): Promise<void> {
           :title="t('series.noMatchingChapters')"
         />
 
-        <!-- Volume Grouped Mode -->
-        <div v-else-if="hasAnyVolumes && groupByVolume" class="space-y-3">
+        <!-- Unified Volume Grouped / Flat Chapter List -->
+        <div v-else class="space-y-3">
           <MdCard
-            v-for="group in volumeGroups"
+            v-for="group in displayChapterGroups"
             :key="group.key"
             variant="filled"
             padding="none"
             class="overflow-hidden"
           >
             <div
-              class="flex cursor-pointer items-center justify-between gap-2 bg-surface-container-high/60 px-4 py-2.5"
-              @click="toggleVolumeCollapse(group.key)"
+              v-if="group.showHeader"
+              class="flex items-center justify-between gap-2 bg-surface-container-high/60 px-4 py-2"
             >
-              <div class="flex items-center gap-2 text-title-small text-on-surface">
-                <LuChevronRight v-if="collapsedVolumes[group.key]" class="h-4 w-4" aria-hidden="true" />
-                <LuChevronDown v-else class="h-4 w-4" aria-hidden="true" />
-                <span>{{ group.title }}</span>
-                <span class="text-body-small tabular-nums text-on-surface-variant">
+              <button
+                type="button"
+                :aria-expanded="!collapsedVolumes[group.key]"
+                class="md-state text-title-small flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-corner-sm px-1.5 py-1.5 text-left text-on-surface"
+                @click="toggleVolumeCollapse(group.key)"
+              >
+                <LuChevronRight v-if="collapsedVolumes[group.key]" class="h-4 w-4 shrink-0" aria-hidden="true" />
+                <LuChevronDown v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span class="truncate">{{ group.title }}</span>
+                <span class="text-body-small shrink-0 tabular-nums text-on-surface-variant">
                   ({{ group.chapters.length }})
                 </span>
-              </div>
+              </button>
 
               <MdButton
                 v-if="group.volumeNumber !== null"
                 variant="text"
                 size="sm"
-                @click.stop="handleMarkVolumeRead(group.volumeNumber)"
+                @click="handleMarkVolumeRead(group.volumeNumber)"
               >
                 {{ t('series.markVolumeRead') }}
               </MdButton>
             </div>
 
             <div
-              v-if="!collapsedVolumes[group.key]"
+              v-if="!group.showHeader || !collapsedVolumes[group.key]"
               class="divide-y divide-outline-variant/50"
             >
               <ComicChapterRow
@@ -914,80 +934,6 @@ async function handleCacheChapter(ch: ChapterItemDto): Promise<void> {
             </div>
           </MdCard>
         </div>
-
-        <!-- Flat Chapter List Mode (reusing exact same ComicChapterRow) -->
-        <MdCard v-else variant="filled" padding="none" class="overflow-hidden">
-          <div class="divide-y divide-outline-variant/50">
-            <ComicChapterRow
-              v-for="ch in filteredSortedChapters"
-              :key="ch.id"
-              :badge="chapterKindBadge(ch)"
-              :title="ch.title || chapterKindBadge(ch)"
-              :meta-text="chapterMetaText(ch)"
-              :progress-text="
-                ch.current_page > 0 && !ch.is_completed
-                  ? t('series.readProgress', { page: ch.current_page, total: ch.page_count })
-                  : ''
-              "
-              :progress-percent="chapterProgressPercent(ch)"
-              :completed="ch.is_completed"
-              :completed-label="t('series.completedBadge')"
-              :missing="ch.is_missing"
-              :missing-label="t('series.missingBadge')"
-              :active="detail.continue_reading?.chapter_id === ch.id"
-              :menu-aria-label="t('series.chapterActions')"
-              @open="openChapter(ch)"
-            >
-              <template #menu="{ close }">
-                <MdMenuItem
-                  v-if="auth.isAdmin && ch.online_tracking && !ch.online_tracking.cached"
-                  :label="t('online.cacheChapterBtn')"
-                  :icon="LuDownload"
-                  :disabled="cachingChapterIds.has(ch.id)"
-                  @select="
-                    close();
-                    handleCacheChapter(ch)
-                  "
-                />
-                <MdMenuItem
-                  :label="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
-                  :icon="LuCheck"
-                  @select="
-                    close();
-                    toggleChapterRead(ch)
-                  "
-                />
-                <MdMenuItem
-                  :label="t('series.markPrevRead')"
-                  :icon="LuCheckCheck"
-                  @select="
-                    close();
-                    handleMarkPreviousRead(ch)
-                  "
-                />
-                <MdMenuItem
-                  v-if="auth.isAdmin"
-                  :label="t('series.editChapter')"
-                  :icon="LuPencil"
-                  @select="
-                    close();
-                    editingChapter = ch
-                  "
-                />
-                <MdMenuItem
-                  v-if="auth.isAdmin"
-                  :label="t('series.deleteChapter')"
-                  :icon="LuTrash2"
-                  destructive
-                  @select="
-                    close();
-                    handleDeleteChapter(ch)
-                  "
-                />
-              </template>
-            </ComicChapterRow>
-          </div>
-        </MdCard>
       </section>
     </MediaDetailTemplate>
 

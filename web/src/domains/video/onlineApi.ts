@@ -204,6 +204,29 @@ export interface OnlineVideoPlayerContextStorage {
   playGroups?: OnlineVideoPlayGroup[]
 }
 
+function resolveSameOriginProxyUrl(
+  proxy: string,
+  allowedPathnames: readonly string[],
+  allowDirectHttp = true,
+): string {
+  if (proxy.startsWith('/') && !proxy.startsWith('//')) {
+    try {
+      const parsed = new URL(proxy, 'http://localhost')
+      if (parsed.origin !== 'http://localhost') return ''
+      if (!allowedPathnames.includes(parsed.pathname)) return ''
+      const innerUrl = parsed.searchParams.get('url')?.trim()
+      if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+      return withAuthToken(proxy)
+    } catch {
+      return ''
+    }
+  }
+  if (allowDirectHttp && isSafeHttpUrl(proxy)) {
+    return withAuthToken(proxy)
+  }
+  return ''
+}
+
 export function buildOnlineVideoPosterUrl(
   rawUrl: string | null | undefined,
   sourceId?: string | null,
@@ -229,22 +252,7 @@ export function resolveOnlineVideoPosterUrl(
     if (proxy.toLowerCase().startsWith('data:')) {
       return isSafeDataImageUrl(proxy) ? proxy : ''
     }
-    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
-      try {
-        const parsed = new URL(proxy, 'http://localhost')
-        if (parsed.origin !== 'http://localhost') return ''
-        if (parsed.pathname !== '/api/v1/video/online/poster-proxy') return ''
-        const innerUrl = parsed.searchParams.get('url')?.trim()
-        if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
-        return withAuthToken(proxy)
-      } catch {
-        return ''
-      }
-    }
-    if (isSafeHttpUrl(proxy)) {
-      return withAuthToken(proxy)
-    }
-    return ''
+    return resolveSameOriginProxyUrl(proxy, ['/api/v1/video/online/poster-proxy'], true)
   }
   return buildOnlineVideoPosterUrl(rawCoverUrl, sourceId)
 }
@@ -272,27 +280,11 @@ export function resolveOnlineVideoStreamUrl(
 ): string {
   const proxy = proxyStreamUrl?.trim()
   if (proxy) {
-    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
-      try {
-        const parsed = new URL(proxy, 'http://localhost')
-        if (parsed.origin !== 'http://localhost') return ''
-        if (
-          parsed.pathname !== '/api/v1/video/online/hls-proxy' &&
-          parsed.pathname !== '/api/v1/video/online/stream-proxy'
-        ) {
-          return ''
-        }
-        const innerUrl = parsed.searchParams.get('url')?.trim()
-        if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
-        return withAuthToken(proxy)
-      } catch {
-        return ''
-      }
-    }
-    if (isSafeHttpUrl(proxy)) {
-      return withAuthToken(proxy)
-    }
-    return ''
+    return resolveSameOriginProxyUrl(
+      proxy,
+      ['/api/v1/video/online/hls-proxy', '/api/v1/video/online/stream-proxy'],
+      true,
+    )
   }
   return buildOnlineVideoStreamUrl(rawStreamUrl, streamType, sourceId)
 }
@@ -314,19 +306,7 @@ export function resolveOnlineVideoSubtitleUrl(
 ): string {
   const proxy = proxyUrl?.trim()
   if (proxy) {
-    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
-      try {
-        const parsed = new URL(proxy, 'http://localhost')
-        if (parsed.origin !== 'http://localhost') return ''
-        if (parsed.pathname !== '/api/v1/video/online/subtitle-proxy') return ''
-        const innerUrl = parsed.searchParams.get('url')?.trim()
-        if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
-        return withAuthToken(proxy)
-      } catch {
-        return ''
-      }
-    }
-    return ''
+    return resolveSameOriginProxyUrl(proxy, ['/api/v1/video/online/subtitle-proxy'], false)
   }
   return buildOnlineVideoSubtitleUrl(rawUrl, sourceId)
 }

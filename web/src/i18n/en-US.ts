@@ -31,6 +31,8 @@ export default {
     viewAll: 'View all',
     selectedCount: '{label} · {count} selected',
     showingTop: 'Showing top {shown} of {total} — type to refine',
+    configured: 'Configured',
+    slider: 'Slider',
   },
   globalSearch: {
     quickNavigation: 'Quick navigation',

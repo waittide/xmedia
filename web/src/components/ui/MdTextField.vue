@@ -29,6 +29,8 @@ const props = withDefaults(
     inputmode?: 'none' | 'text' | 'tel' | 'url' | 'email' | 'numeric' | 'decimal' | 'search'
     ariaLabel?: string
     autofocus?: boolean
+    multiline?: boolean
+    rows?: number | string
   }>(),
   {
     modelValue: '',
@@ -52,6 +54,8 @@ const props = withDefaults(
     inputmode: undefined,
     ariaLabel: undefined,
     autofocus: false,
+    multiline: false,
+    rows: 3,
   },
 )
 
@@ -66,7 +70,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const inputId = useId()
 const helperId = useId()
-const inputRef = ref<HTMLInputElement | null>(null)
+const inputRef = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 const focused = ref(false)
 
 const stringValue = computed(() => (props.modelValue == null ? '' : String(props.modelValue)))
@@ -74,15 +78,20 @@ const hasError = computed(() => Boolean(props.error))
 const errorMessage = computed(() => (typeof props.error === 'string' ? props.error : ''))
 const helperText = computed(() => errorMessage.value || props.supportingText)
 const showClear = computed(
-  () => props.clearable && !props.disabled && !props.readonly && stringValue.value.length > 0,
+  () =>
+    !props.multiline &&
+    props.clearable &&
+    !props.disabled &&
+    !props.readonly &&
+    stringValue.value.length > 0,
 )
 
 const containerClass = computed(() => {
-  const height = props.size === 'sm' ? 'h-9' : 'h-11'
+  const height = props.multiline ? 'min-h-16 py-2' : props.size === 'sm' ? 'h-9' : 'h-11'
   if (props.disabled) {
     return props.variant === 'filled'
-      ? `${height} rounded-t-corner-md rounded-b-corner-none border-b border-on-surface/12 bg-on-surface/4 text-on-surface/38 cursor-not-allowed`
-      : `${height} rounded-corner-md border border-on-surface/12 bg-transparent text-on-surface/38 cursor-not-allowed`
+      ? `${height} rounded-t-corner-xs rounded-b-corner-none border-b border-on-surface/12 bg-on-surface/4 text-on-surface/38 cursor-not-allowed`
+      : `${height} rounded-corner-xs border border-on-surface/12 bg-transparent text-on-surface/38 cursor-not-allowed`
   }
 
   if (props.variant === 'filled') {
@@ -91,7 +100,7 @@ const containerClass = computed(() => {
       : focused.value
         ? 'border-b-2 border-primary'
         : 'border-b border-outline-variant hover:border-outline'
-    return `${height} rounded-t-corner-md rounded-b-corner-none bg-surface-container-highest ${border}`
+    return `${height} rounded-t-corner-xs rounded-b-corner-none bg-surface-container-highest ${border}`
   }
 
   const border = hasError.value
@@ -101,11 +110,11 @@ const containerClass = computed(() => {
     : focused.value
       ? 'border-primary ring-1 ring-primary'
       : 'border-outline-variant hover:border-outline'
-  return `${height} rounded-corner-md border bg-surface-container-lowest ${border}`
+  return `${height} rounded-corner-xs border bg-surface-container-lowest ${border}`
 })
 
 function onInput(ev: Event): void {
-  const val = (ev.target as HTMLInputElement).value
+  const val = (ev.target as HTMLInputElement | HTMLTextAreaElement).value
   emit('update:modelValue', val)
 }
 
@@ -152,11 +161,11 @@ defineExpose({
     </label>
 
     <div
-      class="relative flex items-center gap-2 px-3 transition-colors duration-150 ease-standard"
-      :class="containerClass"
+      class="relative flex gap-2 px-3 transition-colors duration-150 ease-standard"
+      :class="[multiline ? 'items-start' : 'items-center', containerClass]"
     >
       <span
-        v-if="$slots.leading || type === 'search'"
+        v-if="!multiline && ($slots.leading || type === 'search')"
         class="flex shrink-0 items-center text-on-surface-variant"
         :class="disabled ? 'opacity-38' : ''"
       >
@@ -165,7 +174,30 @@ defineExpose({
         </slot>
       </span>
 
+      <textarea
+        v-if="multiline"
+        :id="inputId"
+        ref="inputRef"
+        :value="stringValue"
+        :rows="rows"
+        :name="name"
+        :placeholder="placeholder"
+        :disabled="disabled"
+        :readonly="readonly"
+        :required="required"
+        :maxlength="maxlength"
+        :autofocus="autofocus"
+        :aria-label="ariaLabel || (!label ? placeholder || undefined : undefined)"
+        :aria-invalid="hasError ? 'true' : undefined"
+        :aria-describedby="helperText ? helperId : undefined"
+        class="text-body-medium min-w-0 flex-1 resize-y bg-transparent text-on-surface placeholder:text-on-surface-variant caret-primary outline-none disabled:cursor-not-allowed disabled:text-on-surface/38"
+        @input="onInput"
+        @focus="onFocus"
+        @blur="onBlur"
+      />
+
       <input
+        v-else
         :id="inputId"
         ref="inputRef"
         :value="stringValue"
@@ -195,7 +227,7 @@ defineExpose({
       <button
         v-if="showClear"
         type="button"
-        class="md-state md-touch-target inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-corner-full text-on-surface-variant hover:text-on-surface"
+        class="md-state -mr-1 inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-corner-full text-on-surface-variant hover:text-on-surface"
         :aria-label="t('common.clear') || t('common.cancel')"
         @click="onClear"
       >

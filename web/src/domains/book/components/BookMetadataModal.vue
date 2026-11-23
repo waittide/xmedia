@@ -124,16 +124,12 @@ async function handleSave(): Promise<void> {
         />
       </div>
 
-      <label class="flex flex-col gap-1">
-        <span class="text-label-medium text-on-surface-variant">
-          {{ t('detail.description') }}
-        </span>
-        <textarea
-          v-model="formDescription"
-          rows="5"
-          class="text-body-medium w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 text-on-surface outline-none transition-colors duration-150 ease-standard focus:border-primary focus:ring-1 focus:ring-primary"
-        />
-      </label>
+      <MdTextField
+        v-model="formDescription"
+        multiline
+        :rows="5"
+        :label="t('detail.description')"
+      />
     </form>
 
     <template #footer>

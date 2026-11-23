@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { LuFilm, LuUpload } from 'vue-icons-plus/lu'
 import { MdButton, MdDialog, MdTextField, MediaCoverImage } from '@/components/ui'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -21,7 +21,6 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const videoStore = useVideoStore()
 const snackbar = useSnackbarStore()
-const summaryFieldId = useId()
 
 const title = ref('')
 const summary = ref('')
@@ -206,17 +205,12 @@ async function handleSave(): Promise<void> {
         :label="t('metadata.fieldTags')"
       />
 
-      <div class="space-y-1.5">
-        <label :for="summaryFieldId" class="text-label-medium block text-on-surface-variant">
-          {{ t('metadata.fieldSummary') }}
-        </label>
-        <textarea
-          :id="summaryFieldId"
-          v-model="summary"
-          rows="3"
-          class="text-body-medium w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-        />
-      </div>
+      <MdTextField
+        v-model="summary"
+        multiline
+        :rows="3"
+        :label="t('metadata.fieldSummary')"
+      />
     </form>
 
     <template #footer>
