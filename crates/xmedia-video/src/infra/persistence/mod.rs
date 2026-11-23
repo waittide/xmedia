@@ -4,7 +4,8 @@ pub mod repositories;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::error::DomainResult;
+use xmedia_core::infra::persistence::push_model_set;
 
 use models::{
     VideoFavoriteModel, VideoItemModel, VideoProgressModel, VideoShelfModel, VideoShowModel,
@@ -20,51 +21,31 @@ pub fn register_video_models(set: &mut ModelSet) {
     <VideoSourceRecordModel as Model>::register(set);
 }
 
-async fn push_single_video_model<M: Model>(
-    database_url: &str,
-    table_label: &str,
-) -> DomainResult<()> {
-    info!("migrating {table_label} table via toasty");
-    let mut set = ModelSet::new();
-    M::register(&mut set);
-    let bootstrap = Db::builder()
-        .models(set)
-        .connect(database_url)
-        .await
-        .map_err(|e| DomainError::Persistence(format!("failed to connect video db: {e}")))?;
-    bootstrap.push_schema().await.map_err(|e| {
-        DomainError::Persistence(format!("failed to push {table_label} schema: {e}"))
-    })?;
-    Ok(())
-}
-
 pub async fn ensure_video_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
     if VideoItemModel::all().limit(1).exec(db).await.is_err() {
         info!("initializing video database schema via toasty");
         let mut set = ModelSet::new();
         register_video_models(&mut set);
-        let bootstrap = Db::builder()
-            .models(set)
-            .connect(database_url)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to connect video db: {e}")))?;
-        bootstrap.push_schema().await.map_err(|e| {
-            DomainError::Persistence(format!("failed to push video database schema: {e}"))
-        })?;
-        return Ok(());
+        return push_model_set(database_url, "video database", set).await;
     }
 
+    let mut missing = ModelSet::new();
+    let mut labels = Vec::new();
     if VideoShowModel::all().limit(1).exec(db).await.is_err() {
-        push_single_video_model::<VideoShowModel>(database_url, "video_shows").await?;
+        <VideoShowModel as Model>::register(&mut missing);
+        labels.push("video_shows");
     }
     if VideoProgressModel::all().limit(1).exec(db).await.is_err() {
-        push_single_video_model::<VideoProgressModel>(database_url, "video_progress").await?;
+        <VideoProgressModel as Model>::register(&mut missing);
+        labels.push("video_progress");
     }
     if VideoFavoriteModel::all().limit(1).exec(db).await.is_err() {
-        push_single_video_model::<VideoFavoriteModel>(database_url, "video_favorites").await?;
+        <VideoFavoriteModel as Model>::register(&mut missing);
+        labels.push("video_favorites");
     }
     if VideoShelfModel::all().limit(1).exec(db).await.is_err() {
-        push_single_video_model::<VideoShelfModel>(database_url, "video_shelves").await?;
+        <VideoShelfModel as Model>::register(&mut missing);
+        labels.push("video_shelves");
     }
     if VideoSourceRecordModel::all()
         .limit(1)
@@ -72,7 +53,13 @@ pub async fn ensure_video_schema(db: &mut Db, database_url: &str) -> DomainResul
         .await
         .is_err()
     {
-        push_single_video_model::<VideoSourceRecordModel>(database_url, "video_sources").await?;
+        <VideoSourceRecordModel as Model>::register(&mut missing);
+        labels.push("video_sources");
+    }
+    if !labels.is_empty() {
+        let joined = labels.join(", ");
+        info!("migrating video tables ({joined}) via toasty");
+        push_model_set(database_url, &joined, missing).await?;
     }
     Ok(())
 }

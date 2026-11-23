@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 use image::{DynamicImage, ImageBuffer, ImageFormat};
 use lopdf::{Document, Object, ObjectId, decode_text_string};
@@ -19,15 +19,14 @@ use crate::infra::inspectors::book_content::{
 };
 
 fn try_extract_pdf_pages_with_pdftotext(pdf_path: &Path) -> Option<Vec<String>> {
-    let output = Command::new("pdftotext")
-        .stdin(std::process::Stdio::null())
-        .arg("-enc")
-        .arg("UTF-8")
-        .arg("--")
-        .arg(pdf_path)
-        .arg("-")
-        .output()
-        .ok()?;
+    let path_str = pdf_path.to_str()?;
+    let output = crate::infra::inspectors::process::run_command_bounded(
+        "pdftotext",
+        &["-enc", "UTF-8", "--", path_str, "-"],
+        Duration::from_secs(60),
+        32 * 1024 * 1024,
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }

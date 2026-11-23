@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::LazyLock;
 
 use image::codecs::jpeg::JpegEncoder;
@@ -354,20 +353,23 @@ pub fn optimize_music_cover(
 }
 
 fn measure_track_ebur128(path: &Path, ffmpeg_bin: &str) -> DomainResult<(f64, f64)> {
-    let out = Command::new(ffmpeg_bin)
-        .args([
+    let path_str = path.to_string_lossy();
+    let out = crate::infra::inspectors::process::run_command_bounded(
+        ffmpeg_bin,
+        &[
             "-hide_banner",
             "-nostats",
             "-i",
-            &path.to_string_lossy(),
+            &path_str,
             "-filter_complex",
             "ebur128=peak=true",
             "-f",
             "null",
             "-",
-        ])
-        .output()
-        .map_err(|e| DomainError::Storage(format!("spawn ffmpeg ebur128 failed: {e}")))?;
+        ],
+        std::time::Duration::from_secs(120),
+        4 * 1024 * 1024,
+    )?;
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     // Find the final Summary section's Integrated loudness & True Peak
@@ -720,11 +722,14 @@ pub fn split_cue_album(
             out_path.to_string_lossy().into_owned(),
         ]);
 
-        let status = Command::new(ffmpeg_bin)
-            .args(&args)
-            .status()
-            .map_err(|e| DomainError::Storage(format!("spawn ffmpeg cue split failed: {e}")))?;
-        if !status.success() {
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = crate::infra::inspectors::process::run_command_bounded(
+            ffmpeg_bin,
+            &arg_refs,
+            std::time::Duration::from_secs(300),
+            2 * 1024 * 1024,
+        )?;
+        if !out.status.success() {
             return Err(DomainError::Storage(format!(
                 "ffmpeg failed splitting track {:02}",
                 tr.number

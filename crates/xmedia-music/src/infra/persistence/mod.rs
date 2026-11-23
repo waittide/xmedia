@@ -4,7 +4,8 @@ pub mod repositories;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::error::DomainResult;
+use xmedia_core::infra::persistence::push_model_set;
 
 use models::{
     MusicAlbumModel, MusicArtistModel, MusicBookmarkModel, MusicPlayQueueModel, MusicPlayStatModel,
@@ -27,69 +28,55 @@ pub fn register_music_models(set: &mut ModelSet) {
     <MusicSourceRecordModel as Model>::register(set);
 }
 
-async fn push_single_music_model<M: Model>(
-    database_url: &str,
-    table_label: &str,
-) -> DomainResult<()> {
-    info!("migrating {table_label} table via toasty");
-    let mut set = ModelSet::new();
-    M::register(&mut set);
-    let bootstrap = Db::builder()
-        .models(set)
-        .connect(database_url)
-        .await
-        .map_err(|e| DomainError::Persistence(format!("failed to connect music db: {e}")))?;
-    bootstrap.push_schema().await.map_err(|e| {
-        DomainError::Persistence(format!("failed to push {table_label} schema: {e}"))
-    })?;
-    Ok(())
-}
-
 pub async fn ensure_music_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
     if MusicTrackModel::all().limit(1).exec(db).await.is_err() {
         info!("initializing music database schema via toasty");
         let mut set = ModelSet::new();
         register_music_models(&mut set);
-        let bootstrap = Db::builder()
-            .models(set)
-            .connect(database_url)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to connect music db: {e}")))?;
-        bootstrap.push_schema().await.map_err(|e| {
-            DomainError::Persistence(format!("failed to push music database schema: {e}"))
-        })?;
-        return Ok(());
+        return push_model_set(database_url, "music database", set).await;
     }
 
+    let mut missing = ModelSet::new();
+    let mut labels = Vec::new();
     if MusicArtistModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicArtistModel>(database_url, "music_artists").await?;
+        <MusicArtistModel as Model>::register(&mut missing);
+        labels.push("music_artists");
     }
     if MusicAlbumModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicAlbumModel>(database_url, "music_albums").await?;
+        <MusicAlbumModel as Model>::register(&mut missing);
+        labels.push("music_albums");
     }
     if MusicPlaylistModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicPlaylistModel>(database_url, "music_playlists").await?;
+        <MusicPlaylistModel as Model>::register(&mut missing);
+        labels.push("music_playlists");
     }
     if MusicStarredModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicStarredModel>(database_url, "music_starred").await?;
+        <MusicStarredModel as Model>::register(&mut missing);
+        labels.push("music_starred");
     }
     if MusicRatingModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicRatingModel>(database_url, "music_ratings").await?;
+        <MusicRatingModel as Model>::register(&mut missing);
+        labels.push("music_ratings");
     }
     if MusicPlayStatModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicPlayStatModel>(database_url, "music_play_stats").await?;
+        <MusicPlayStatModel as Model>::register(&mut missing);
+        labels.push("music_play_stats");
     }
     if MusicScrobbleModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicScrobbleModel>(database_url, "music_scrobbles").await?;
+        <MusicScrobbleModel as Model>::register(&mut missing);
+        labels.push("music_scrobbles");
     }
     if MusicPlayQueueModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicPlayQueueModel>(database_url, "music_play_queues").await?;
+        <MusicPlayQueueModel as Model>::register(&mut missing);
+        labels.push("music_play_queues");
     }
     if MusicBookmarkModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicBookmarkModel>(database_url, "music_bookmarks").await?;
+        <MusicBookmarkModel as Model>::register(&mut missing);
+        labels.push("music_bookmarks");
     }
     if MusicTrackTagModel::all().limit(1).exec(db).await.is_err() {
-        push_single_music_model::<MusicTrackTagModel>(database_url, "music_track_tags").await?;
+        <MusicTrackTagModel as Model>::register(&mut missing);
+        labels.push("music_track_tags");
     }
     if MusicSourceRecordModel::all()
         .limit(1)
@@ -97,7 +84,13 @@ pub async fn ensure_music_schema(db: &mut Db, database_url: &str) -> DomainResul
         .await
         .is_err()
     {
-        push_single_music_model::<MusicSourceRecordModel>(database_url, "music_sources").await?;
+        <MusicSourceRecordModel as Model>::register(&mut missing);
+        labels.push("music_sources");
+    }
+    if !labels.is_empty() {
+        let joined = labels.join(", ");
+        info!("migrating music tables ({joined}) via toasty");
+        push_model_set(database_url, &joined, missing).await?;
     }
     Ok(())
 }

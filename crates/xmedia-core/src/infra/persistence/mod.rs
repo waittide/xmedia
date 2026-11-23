@@ -23,12 +23,18 @@ pub async fn is_core_schema_initialized(db: &mut Db) -> bool {
         && LibraryModel::all().limit(1).exec(db).await.is_ok()
 }
 
-async fn connect_bootstrap(set: ModelSet, database_url: &str) -> DomainResult<Db> {
-    Db::builder()
+/// Connects once with the supplied `ModelSet` and pushes all missing tables in a single pass.
+pub async fn push_model_set(database_url: &str, label: &str, set: ModelSet) -> DomainResult<()> {
+    let bootstrap = Db::builder()
         .models(set)
         .connect(database_url)
         .await
-        .map_err(|e| DomainError::Persistence(format!("failed to connect core db: {e}")))
+        .map_err(|e| DomainError::Persistence(format!("failed to connect {label} db: {e}")))?;
+    bootstrap
+        .push_schema()
+        .await
+        .map_err(|e| DomainError::Persistence(format!("failed to push {label} schema: {e}")))?;
+    Ok(())
 }
 
 pub async fn ensure_core_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
@@ -36,25 +42,19 @@ pub async fn ensure_core_schema(db: &mut Db, database_url: &str) -> DomainResult
         info!("initializing core database schema via toasty");
         let mut set = ModelSet::new();
         register_core_models(&mut set);
-        let bootstrap = connect_bootstrap(set, database_url).await?;
-        bootstrap.push_schema().await.map_err(|e| {
-            DomainError::Persistence(format!("failed to push core database schema: {e}"))
-        })?;
-        return Ok(());
+        return push_model_set(database_url, "core database", set).await;
     }
+
+    let mut missing = ModelSet::new();
+    let mut labels = Vec::new();
     if OnlineLibraryItemModel::all()
         .limit(1)
         .exec(db)
         .await
         .is_err()
     {
-        info!("migrating online_library_items table via toasty");
-        let mut set = ModelSet::new();
-        <OnlineLibraryItemModel as Model>::register(&mut set);
-        let bootstrap = connect_bootstrap(set, database_url).await?;
-        bootstrap.push_schema().await.map_err(|e| {
-            DomainError::Persistence(format!("failed to push online_library_items schema: {e}"))
-        })?;
+        <OnlineLibraryItemModel as Model>::register(&mut missing);
+        labels.push("online_library_items");
     }
     if UserActivityDailyModel::all()
         .limit(1)
@@ -62,13 +62,13 @@ pub async fn ensure_core_schema(db: &mut Db, database_url: &str) -> DomainResult
         .await
         .is_err()
     {
-        info!("migrating user_activity_daily table via toasty");
-        let mut set = ModelSet::new();
-        <UserActivityDailyModel as Model>::register(&mut set);
-        let bootstrap = connect_bootstrap(set, database_url).await?;
-        bootstrap.push_schema().await.map_err(|e| {
-            DomainError::Persistence(format!("failed to push user_activity_daily schema: {e}"))
-        })?;
+        <UserActivityDailyModel as Model>::register(&mut missing);
+        labels.push("user_activity_daily");
+    }
+    if !labels.is_empty() {
+        let joined = labels.join(", ");
+        info!("migrating core tables ({joined}) via toasty");
+        push_model_set(database_url, &joined, missing).await?;
     }
     Ok(())
 }

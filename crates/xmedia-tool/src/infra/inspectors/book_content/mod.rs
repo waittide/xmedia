@@ -19,13 +19,11 @@ use crate::infra::inspectors::zh_text::{
 };
 
 pub use epub_io::read_epub_internal_asset;
-#[allow(unused_imports)]
 pub(crate) use epub_io::{
-    EpubStructureInfo, ManifestNode, epub_deflated_zip_options, epub_entry_zip_options,
-    epub_stored_zip_options, ext_for_image_mime, find_cover_manifest_node, is_nav_manifest_node,
-    parse_epub_structure, parse_nav_toc_map, parse_ncx_toc_map, percent_decode_path,
-    read_epub_toc_map, read_zip_bytes, rebuild_opf_manifest_and_spine, relative_href_from_dir,
-    render_nav_xhtml, render_toc_ncx, write_zip_entry,
+    ManifestNode, epub_entry_zip_options, epub_stored_zip_options, ext_for_image_mime,
+    find_cover_manifest_node, is_nav_manifest_node, parse_epub_structure, percent_decode_path,
+    read_epub_toc_map, rebuild_opf_manifest_and_spine, relative_href_from_dir, render_nav_xhtml,
+    render_toc_ncx, write_zip_entry,
 };
 pub(crate) use epub_ops::{
     FreshEpubBuildOptions, FreshEpubChapter, FreshEpubImage, write_fresh_epub_package,

@@ -32,7 +32,7 @@ use uuid::Uuid;
 #[cfg(feature = "server")]
 use crate::application::auth::AuthService;
 use crate::application::ports::{BinaryPayload, ByteChunkStream, ByteRangeSpec, ByteRangeStream};
-use crate::domain::error::DomainError;
+use crate::domain::error::{DomainError, DomainResult};
 #[cfg(feature = "server")]
 use crate::domain::user::User;
 
@@ -340,9 +340,6 @@ pub async fn authenticate_opds_parts(
 pub struct WebAuth(pub User);
 
 #[cfg(feature = "server")]
-pub use self::WebAuth as CoreWebAuth;
-
-#[cfg(feature = "server")]
 impl<S> FromRequestParts<S> for WebAuth
 where
     S: Send + Sync,
@@ -615,6 +612,18 @@ impl TempUploadFile {
 
     pub fn is_empty(&self) -> bool {
         self.size == 0
+    }
+
+    pub async fn from_bytes(bytes: &[u8]) -> DomainResult<Self> {
+        let dir = resolve_temp_dir();
+        let path = dir.join(format!("xmedia-upload-{}.tmp", Uuid::new_v4()));
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|e| DomainError::Storage(format!("failed to write temp upload file: {e}")))?;
+        Ok(Self {
+            path,
+            size: bytes.len() as u64,
+        })
     }
 }
 

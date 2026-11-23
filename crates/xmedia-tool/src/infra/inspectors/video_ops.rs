@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -488,22 +487,26 @@ pub fn extract_embedded_subtitle(
     }
 
     let map_arg = format!("0:{stream_index}");
-    let status = Command::new(ffmpeg_bin)
-        .args([
+    let video_str = video_path.to_string_lossy();
+    let out_str = out_path.to_string_lossy();
+    let out = crate::infra::inspectors::process::run_command_bounded(
+        ffmpeg_bin,
+        &[
             "-y",
             "-hide_banner",
             "-loglevel",
             "error",
             "-i",
-            &video_path.to_string_lossy(),
+            &video_str,
             "-map",
             &map_arg,
-            &out_path.to_string_lossy(),
-        ])
-        .status()
-        .map_err(|e| DomainError::Storage(format!("spawn ffmpeg subtitle extract failed: {e}")))?;
+            &out_str,
+        ],
+        std::time::Duration::from_secs(180),
+        2 * 1024 * 1024,
+    )?;
 
-    if !status.success() || !out_path.is_file() {
+    if !out.status.success() || !out_path.is_file() {
         return Err(DomainError::Storage(format!(
             "ffmpeg failed extracting subtitle stream 0:{stream_index}"
         )));

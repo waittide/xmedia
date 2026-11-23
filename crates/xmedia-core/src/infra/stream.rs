@@ -66,20 +66,6 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-pub async fn open_file_range_stream(
-    path: &Path,
-    range: Option<(u64, Option<u64>)>,
-) -> DomainResult<ByteRangeStream> {
-    let spec = match range {
-        None => ByteRangeSpec::Full,
-        Some((start, end_inclusive)) => ByteRangeSpec::FromTo {
-            start,
-            end_inclusive,
-        },
-    };
-    open_file_range_stream_spec(path, spec).await
-}
-
 pub async fn open_file_range_stream_spec(
     path: &Path,
     spec: ByteRangeSpec,

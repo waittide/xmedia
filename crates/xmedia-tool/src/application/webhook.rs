@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -32,14 +33,18 @@ pub struct WebhookTestReportDto {
 }
 
 fn build_webhook_client() -> DomainResult<reqwest::Client> {
-    // Disable redirects so the admin `x-api-key` header can never be forwarded to a third-party host.
-    reqwest::Client::builder()
-        .user_agent(DEFAULT_TOOL_USER_AGENT)
-        .timeout(Duration::from_secs(10))
-        .connect_timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| DomainError::Storage(format!("failed building webhook client: {e}")))
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    let cached = CLIENT.get_or_init(|| {
+        // Disable redirects so the admin `x-api-key` header can never be forwarded to a third-party host.
+        reqwest::Client::builder()
+            .user_agent(DEFAULT_TOOL_USER_AGENT)
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| format!("failed building webhook client: {e}"))
+    });
+    cached.clone().map_err(DomainError::Storage)
 }
 
 fn paths_overlap_str(a: &Path, b: &Path) -> bool {

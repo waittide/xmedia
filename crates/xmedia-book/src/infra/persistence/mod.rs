@@ -4,7 +4,8 @@ pub mod repositories;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::error::DomainResult;
+use xmedia_core::infra::persistence::push_model_set;
 
 use models::{
     BookBookmarkModel, BookFavoriteModel, BookModel, BookOnlineShelfModel,
@@ -21,54 +22,36 @@ pub fn register_book_models(set: &mut ModelSet) {
     <BookOnlineShelfModel as Model>::register(set);
 }
 
-async fn push_single_model<M: Model>(database_url: &str, table_label: &str) -> DomainResult<()> {
-    info!("migrating {table_label} table via toasty");
-    let mut set = ModelSet::new();
-    M::register(&mut set);
-    let bootstrap = Db::builder()
-        .models(set)
-        .connect(database_url)
-        .await
-        .map_err(|e| DomainError::Persistence(format!("failed to connect book db: {e}")))?;
-    bootstrap.push_schema().await.map_err(|e| {
-        DomainError::Persistence(format!("failed to push {table_label} schema: {e}"))
-    })?;
-    Ok(())
-}
-
 pub async fn ensure_book_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
     if BookModel::all().limit(1).exec(db).await.is_err() {
         info!("initializing book database schema via toasty");
         let mut set = ModelSet::new();
         register_book_models(&mut set);
-        let bootstrap = Db::builder()
-            .models(set)
-            .connect(database_url)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to connect book db: {e}")))?;
-        bootstrap.push_schema().await.map_err(|e| {
-            DomainError::Persistence(format!("failed to push book database schema: {e}"))
-        })?;
-        return Ok(());
+        return push_model_set(database_url, "book database", set).await;
     }
 
+    let mut missing = ModelSet::new();
+    let mut labels = Vec::new();
     if BookReadingProgressModel::all()
         .limit(1)
         .exec(db)
         .await
         .is_err()
     {
-        push_single_model::<BookReadingProgressModel>(database_url, "book_reading_progress")
-            .await?;
+        <BookReadingProgressModel as Model>::register(&mut missing);
+        labels.push("book_reading_progress");
     }
     if BookBookmarkModel::all().limit(1).exec(db).await.is_err() {
-        push_single_model::<BookBookmarkModel>(database_url, "book_bookmarks").await?;
+        <BookBookmarkModel as Model>::register(&mut missing);
+        labels.push("book_bookmarks");
     }
     if BookFavoriteModel::all().limit(1).exec(db).await.is_err() {
-        push_single_model::<BookFavoriteModel>(database_url, "book_favorites").await?;
+        <BookFavoriteModel as Model>::register(&mut missing);
+        labels.push("book_favorites");
     }
     if BookShelfModel::all().limit(1).exec(db).await.is_err() {
-        push_single_model::<BookShelfModel>(database_url, "book_shelves").await?;
+        <BookShelfModel as Model>::register(&mut missing);
+        labels.push("book_shelves");
     }
     if BookSourceRecordModel::all()
         .limit(1)
@@ -76,10 +59,17 @@ pub async fn ensure_book_schema(db: &mut Db, database_url: &str) -> DomainResult
         .await
         .is_err()
     {
-        push_single_model::<BookSourceRecordModel>(database_url, "book_sources").await?;
+        <BookSourceRecordModel as Model>::register(&mut missing);
+        labels.push("book_sources");
     }
     if BookOnlineShelfModel::all().limit(1).exec(db).await.is_err() {
-        push_single_model::<BookOnlineShelfModel>(database_url, "book_online_books").await?;
+        <BookOnlineShelfModel as Model>::register(&mut missing);
+        labels.push("book_online_books");
+    }
+    if !labels.is_empty() {
+        let joined = labels.join(", ");
+        info!("migrating book tables ({joined}) via toasty");
+        push_model_set(database_url, &joined, missing).await?;
     }
     Ok(())
 }

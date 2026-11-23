@@ -5,7 +5,8 @@ mod source_repository;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::error::DomainResult;
+use xmedia_core::infra::persistence::push_model_set;
 
 use models::{
     ComicBookmarkModel, ComicChapterModel, ComicChapterProgressModel, ComicFavoriteSeriesModel,
@@ -23,42 +24,19 @@ pub fn register_comic_models(set: &mut ModelSet) {
     <ComicSourceRecordModel as Model>::register(set);
 }
 
-async fn push_single_comic_model<M: Model>(
-    database_url: &str,
-    table_label: &str,
-) -> DomainResult<()> {
-    info!("migrating {table_label} table via toasty");
-    let mut set = ModelSet::new();
-    M::register(&mut set);
-    let bootstrap = Db::builder()
-        .models(set)
-        .connect(database_url)
-        .await
-        .map_err(|e| DomainError::Persistence(format!("failed to connect comic db: {e}")))?;
-    bootstrap.push_schema().await.map_err(|e| {
-        DomainError::Persistence(format!("failed to push {table_label} schema: {e}"))
-    })?;
-    Ok(())
-}
-
 pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
     if ComicSeriesModel::all().limit(1).exec(db).await.is_err() {
         info!("initializing comic database schema via toasty");
         let mut set = ModelSet::new();
         register_comic_models(&mut set);
-        let bootstrap = Db::builder()
-            .models(set)
-            .connect(database_url)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to connect comic db: {e}")))?;
-        bootstrap.push_schema().await.map_err(|e| {
-            DomainError::Persistence(format!("failed to push comic database schema: {e}"))
-        })?;
-        return Ok(());
+        return push_model_set(database_url, "comic database", set).await;
     }
 
+    let mut missing = ModelSet::new();
+    let mut labels = Vec::new();
     if ComicChapterModel::all().limit(1).exec(db).await.is_err() {
-        push_single_comic_model::<ComicChapterModel>(database_url, "comic_chapters").await?;
+        <ComicChapterModel as Model>::register(&mut missing);
+        labels.push("comic_chapters");
     }
     if ComicChapterProgressModel::all()
         .limit(1)
@@ -66,11 +44,8 @@ pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResul
         .await
         .is_err()
     {
-        push_single_comic_model::<ComicChapterProgressModel>(
-            database_url,
-            "comic_chapter_progresses",
-        )
-        .await?;
+        <ComicChapterProgressModel as Model>::register(&mut missing);
+        labels.push("comic_chapter_progresses");
     }
     if ComicSeriesReaderPrefModel::all()
         .limit(1)
@@ -78,11 +53,8 @@ pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResul
         .await
         .is_err()
     {
-        push_single_comic_model::<ComicSeriesReaderPrefModel>(
-            database_url,
-            "comic_series_reader_prefs",
-        )
-        .await?;
+        <ComicSeriesReaderPrefModel as Model>::register(&mut missing);
+        labels.push("comic_series_reader_prefs");
     }
     if ComicFavoriteSeriesModel::all()
         .limit(1)
@@ -90,14 +62,16 @@ pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResul
         .await
         .is_err()
     {
-        push_single_comic_model::<ComicFavoriteSeriesModel>(database_url, "comic_favorite_series")
-            .await?;
+        <ComicFavoriteSeriesModel as Model>::register(&mut missing);
+        labels.push("comic_favorite_series");
     }
     if ComicShelfModel::all().limit(1).exec(db).await.is_err() {
-        push_single_comic_model::<ComicShelfModel>(database_url, "comic_shelves").await?;
+        <ComicShelfModel as Model>::register(&mut missing);
+        labels.push("comic_shelves");
     }
     if ComicBookmarkModel::all().limit(1).exec(db).await.is_err() {
-        push_single_comic_model::<ComicBookmarkModel>(database_url, "comic_bookmarks").await?;
+        <ComicBookmarkModel as Model>::register(&mut missing);
+        labels.push("comic_bookmarks");
     }
     if ComicSourceRecordModel::all()
         .limit(1)
@@ -105,7 +79,13 @@ pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResul
         .await
         .is_err()
     {
-        push_single_comic_model::<ComicSourceRecordModel>(database_url, "comic_sources").await?;
+        <ComicSourceRecordModel as Model>::register(&mut missing);
+        labels.push("comic_sources");
+    }
+    if !labels.is_empty() {
+        let joined = labels.join(", ");
+        info!("migrating comic tables ({joined}) via toasty");
+        push_model_set(database_url, &joined, missing).await?;
     }
     Ok(())
 }

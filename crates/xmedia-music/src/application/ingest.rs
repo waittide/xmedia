@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use jiff::Timestamp;
 use xmedia_core::application::library::ScanProgressReporter;
 use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemEvent};
@@ -11,6 +10,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{User, UserId, require_admin};
+use xmedia_core::http::TempUploadFile;
 
 use crate::application::catalog::MusicCatalogService;
 use crate::application::dto::{
@@ -77,144 +77,20 @@ impl MusicIngestService {
             return Err(DomainError::Validation("no files uploaded".into()));
         }
 
-        let managed_lib = self.ensure_default_managed_library().await?;
-
-        let mut audio_items: Vec<(String, String, Bytes)> = Vec::new();
-        let mut lrc_by_stem: HashMap<String, Bytes> = HashMap::new();
-
+        let mut temp_guards = Vec::with_capacity(files.len());
+        let mut path_items = Vec::with_capacity(files.len());
         for item in files {
-            let (stem, ext) = split_filename_stem_and_ext(&item.filename);
-            if ext.eq_ignore_ascii_case("lrc") {
-                lrc_by_stem.insert(stem.to_lowercase(), item.bytes);
-            } else if AudioFormat::from_extension(&ext).is_some() {
-                audio_items.push((stem, ext, item.bytes));
-            } else {
-                return Err(DomainError::UnsupportedFormat(format!(
-                    "unsupported file extension '.{ext}' for '{}'",
-                    item.filename
-                )));
-            }
+            let tmp = TempUploadFile::from_bytes(&item.bytes).await?;
+            path_items.push(UploadFilePathItem {
+                filename: item.filename,
+                temp_path: tmp.path().to_path_buf(),
+            });
+            temp_guards.push(tmp);
         }
 
-        let mut created_tracks: Vec<Track> = Vec::new();
-        let mut attached_lyrics_count = 0usize;
-        let mut consumed_lrc_stems: HashSet<String> = HashSet::new();
-
-        for (stem, ext, audio_bytes) in audio_items {
-            let probe = self.probe.clone();
-            let probe_bytes = audio_bytes.clone();
-            let probe_ext = ext.clone();
-            let probe_stem = stem.clone();
-            let probed = tokio::task::spawn_blocking(move || {
-                probe.probe_audio_bytes(&probe_bytes, &probe_ext, &probe_stem)
-            })
-            .await
-            .map_err(|e| DomainError::Storage(format!("audio probe task failed: {e}")))??;
-            let track_id = TrackId::new();
-            let stored = self
-                .storage
-                .save_managed_audio(track_id, probed.format, audio_bytes)
-                .await?;
-
-            let stem_lower = stem.to_lowercase();
-            let sidecar_lrc_key = if let Some(lrc_bytes) = lrc_by_stem.get(&stem_lower) {
-                consumed_lrc_stems.insert(stem_lower);
-                attached_lyrics_count += 1;
-                Some(
-                    self.storage
-                        .save_managed_sidecar_lrc(track_id, lrc_bytes.clone())
-                        .await?,
-                )
-            } else {
-                None
-            };
-
-            let cover_key = if let Some(ref embedded_cover) = probed.cover {
-                Some(
-                    self.storage
-                        .save_cover(&track_id.0.to_string(), embedded_cover)
-                        .await?,
-                )
-            } else {
-                None
-            };
-
-            let has_sidecar = sidecar_lrc_key.is_some();
-            let source = TrackSource::Managed {
-                storage_key: stored.storage_key,
-                sidecar_lrc_key,
-            };
-
-            let track = self
-                .upsert_probed_track(
-                    managed_lib.id,
-                    track_id,
-                    None,
-                    probed,
-                    stored.file_size,
-                    stored.file_hash,
-                    has_sidecar,
-                    cover_key,
-                    source,
-                )
-                .await?;
-
-            self.catalog_repo.save_track(&track).await?;
-            created_tracks.push(track);
-        }
-
-        if lrc_by_stem.len() > consumed_lrc_stems.len() {
-            let existing_managed = self
-                .catalog_repo
-                .list_tracks_by_library(managed_lib.id)
-                .await?;
-            for (stem_lower, lrc_bytes) in lrc_by_stem {
-                if consumed_lrc_stems.contains(&stem_lower) {
-                    continue;
-                }
-                if let Some(mut matched) = existing_managed
-                    .iter()
-                    .find(|t| t.title.trim().to_lowercase() == stem_lower)
-                    .cloned()
-                    && let TrackSource::Managed {
-                        ref storage_key, ..
-                    } = matched.source
-                {
-                    let key = self
-                        .storage
-                        .save_managed_sidecar_lrc(matched.id, lrc_bytes)
-                        .await?;
-                    matched.source = TrackSource::Managed {
-                        storage_key: storage_key.clone(),
-                        sidecar_lrc_key: Some(key),
-                    };
-                    matched.has_sidecar_lyrics = true;
-                    matched.updated_at = Timestamp::now();
-                    self.catalog_repo.save_track(&matched).await?;
-                    attached_lyrics_count += 1;
-                }
-            }
-        }
-
-        if created_tracks.is_empty() && attached_lyrics_count == 0 {
-            return Err(DomainError::Validation(
-                "no audio tracks or matching lyrics were imported".into(),
-            ));
-        }
-
-        self.catalog_repo.recompute_catalog_aggregates().await?;
-        self.events.publish(SystemEvent::MediaChanged {
-            media_kind: MediaKind::Music,
-        });
-        let uploaded_dtos = self
-            .catalog_service
-            .enrich_tracks(actor.id, created_tracks)
-            .await?;
-
-        Ok(UploadBatchResultDto {
-            uploaded_tracks: uploaded_dtos,
-            attached_lyrics_count,
-        })
+        let result = self.upload_files_from_paths(actor, path_items).await;
+        drop(temp_guards);
+        result
     }
 
     pub async fn upload_files_from_paths(

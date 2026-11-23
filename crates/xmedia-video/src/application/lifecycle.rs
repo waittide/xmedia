@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use jiff::Timestamp;
 use xmedia_core::application::library::ScanProgressReporter;
 use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemEvent};
@@ -11,6 +10,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{User, UserId, require_admin};
+use xmedia_core::http::TempUploadFile;
 
 use crate::application::catalog::VideoCatalogService;
 use crate::application::dto::{VideoUploadItem, VideoUploadPathItem, VideoUploadResultDto};
@@ -71,128 +71,20 @@ impl VideoDomainLifecycle {
             return Err(DomainError::Validation("no files uploaded".into()));
         }
 
-        let managed_lib = self.ensure_managed_library().await?;
-
-        let mut video_items: Vec<(String, VideoContainer, Bytes)> = Vec::new();
-        let mut sub_items: Vec<(String, String, Bytes)> = Vec::new();
-
+        let mut temp_guards = Vec::with_capacity(files.len());
+        let mut path_items = Vec::with_capacity(files.len());
         for f in files {
-            let (stem, ext) = split_filename_stem_and_ext(&f.filename);
-            if let Some(container) = VideoContainer::from_extension(&ext) {
-                video_items.push((f.filename, container, f.bytes));
-            } else if is_subtitle_extension(&ext) {
-                sub_items.push((f.filename, ext.to_ascii_lowercase(), f.bytes));
-            } else {
-                return Err(DomainError::UnsupportedFormat(format!(
-                    "unsupported file extension '.{ext}' (stem '{stem}')"
-                )));
-            }
+            let tmp = TempUploadFile::from_bytes(&f.bytes).await?;
+            path_items.push(VideoUploadPathItem {
+                filename: f.filename,
+                temp_path: tmp.path().to_path_buf(),
+            });
+            temp_guards.push(tmp);
         }
 
-        if video_items.is_empty() {
-            return Err(DomainError::Validation(
-                "at least one video file is required (subtitle-only uploads are not supported)"
-                    .into(),
-            ));
-        }
-
-        let mut created_videos = Vec::new();
-        let mut attached_subtitles_count = 0usize;
-        let video_count = video_items.len();
-
-        for (idx, (filename, container, bytes)) in video_items.into_iter().enumerate() {
-            let video_id = VideoId::new();
-            let stored = self
-                .storage
-                .save_managed_video(video_id, container, bytes)
-                .await?;
-            let (video_stem, _) = split_filename_stem_and_ext(&filename);
-
-            let mut sidecar_subtitles = Vec::new();
-            for (s_idx, (sub_name, sub_ext, sub_bytes)) in sub_items.iter().enumerate() {
-                let (sub_stem, _) = split_filename_stem_and_ext(sub_name);
-                let matches_this_video = video_count == 1
-                    || sub_stem.eq_ignore_ascii_case(&video_stem)
-                    || sub_stem
-                        .to_lowercase()
-                        .starts_with(&format!("{}.", video_stem.to_lowercase()))
-                    || (idx == 0 && s_idx == 0 && video_count == 0);
-
-                if matches_this_video {
-                    let sub_id = format!("s{s_idx}");
-                    let key = self
-                        .storage
-                        .save_managed_subtitle(video_id, &sub_id, sub_ext, sub_bytes.clone())
-                        .await?;
-                    let (lang, label) =
-                        parse_sidecar_subtitle_lang_and_label(&video_stem, sub_name);
-                    sidecar_subtitles.push(SidecarSubtitle {
-                        id: sub_id,
-                        format: sub_ext.clone(),
-                        language: lang,
-                        label,
-                        path_or_key: key,
-                    });
-                    attached_subtitles_count += 1;
-                }
-            }
-
-            let probed = self
-                .engine
-                .probe_video(Path::new(&stored.absolute_path))
-                .await;
-            let parsed = parse_video_path(&filename);
-            let poster_bytes = self
-                .engine
-                .generate_poster_bytes(
-                    Path::new(&stored.absolute_path),
-                    probed.duration_secs,
-                    &parsed.title,
-                )
-                .await
-                .ok();
-            let poster_key = match poster_bytes {
-                Some(ref b) => self.storage.save_generated_poster_bytes(b).await.ok(),
-                None => None,
-            };
-
-            let item = self
-                .build_and_upsert_video(
-                    managed_lib.id,
-                    video_id,
-                    None,
-                    &filename,
-                    container,
-                    stored.file_size,
-                    stored.file_hash,
-                    probed,
-                    None,
-                    poster_key,
-                    VideoSource::Managed {
-                        storage_key: stored.storage_key,
-                        sidecar_subtitles,
-                    },
-                )
-                .await?;
-
-            self.catalog_repo.save_video(&item).await?;
-            created_videos.push(item);
-        }
-
-        self.catalog_repo.recompute_show_aggregates().await?;
-        self.events.publish(SystemEvent::MediaChanged {
-            media_kind: MediaKind::Video,
-        });
-
-        let uploaded_videos = self
-            .catalog_service
-            .enrich_videos(actor.id, created_videos)
-            .await?;
-
-        Ok(VideoUploadResultDto {
-            uploaded_videos,
-            attached_subtitles_count,
-        })
+        let result = self.upload_files_from_paths(actor, path_items).await;
+        drop(temp_guards);
+        result
     }
 
     pub async fn upload_files_from_paths(

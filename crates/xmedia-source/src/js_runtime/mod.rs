@@ -141,8 +141,6 @@ pub struct JsExecutionContext {
     bridge: SharedBridgeState,
 }
 
-pub type LegadoJsSession = JsExecutionContext;
-
 impl JsExecutionContext {
     pub fn new(
         source: &SourceMetadata,
