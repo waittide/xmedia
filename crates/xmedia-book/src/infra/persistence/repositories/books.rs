@@ -66,6 +66,12 @@ impl BookRepository for ToastyBookRepository {
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
+    async fn list_all_ids(&self) -> DomainResult<Vec<BookId>> {
+        let mut db = self.db.clone();
+        let rows = BookModel::all().exec(&mut db).await.map_err(db_err)?;
+        Ok(rows.into_iter().map(|m| BookId(m.id)).collect())
+    }
+
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Book>> {
         let mut db = self.db.clone();
         let rows = BookModel::filter_by_library_id(library_id.0)
@@ -93,12 +99,20 @@ impl BookRepository for ToastyBookRepository {
             .as_ref()
             .map(|ids| ids.iter().copied().collect());
 
-        let mut restricted_ids: Option<Vec<Uuid>> = match (&fav_filter, &shelf_filter) {
-            (Some(favs), Some(shelf)) => Some(favs.intersection(shelf).map(|id| id.0).collect()),
-            (Some(favs), None) => Some(favs.iter().map(|id| id.0).collect()),
-            (None, Some(shelf)) => Some(shelf.iter().map(|id| id.0).collect()),
-            (None, None) => None,
-        };
+        let allowed_filter = query.allowed_book_ids.as_ref();
+
+        let mut intersected: Option<HashSet<BookId>> = None;
+        for set in [fav_filter.as_ref(), shelf_filter.as_ref(), allowed_filter]
+            .into_iter()
+            .flatten()
+        {
+            intersected = Some(match intersected {
+                Some(prev) => prev.intersection(set).copied().collect(),
+                None => set.clone(),
+            });
+        }
+        let mut restricted_ids: Option<Vec<Uuid>> =
+            intersected.map(|set| set.into_iter().map(|id| id.0).collect());
         if let Some(ref mut ids) = restricted_ids {
             if ids.is_empty() {
                 return Ok(PagedResult {
@@ -156,6 +170,14 @@ impl BookRepository for ToastyBookRepository {
         for row in rows {
             let book = Self::to_domain(row);
 
+            if query.exclude_online_tracked && book.source.is_online_tracked() {
+                continue;
+            }
+            if let Some(allowed) = allowed_filter
+                && !allowed.contains(&book.id)
+            {
+                continue;
+            }
             if let Some(favs) = &fav_filter
                 && !favs.contains(&book.id)
             {

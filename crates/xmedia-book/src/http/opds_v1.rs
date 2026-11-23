@@ -337,9 +337,9 @@ async fn feed_search(
 
 async fn nav_libraries(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
 ) -> ApiResult<Response> {
-    let entries = query_nav_libraries(&state).await?;
+    let entries = query_nav_libraries(&state, &actor).await?;
     Ok(render_navigation_feed(
         &state.opds_prefix,
         "urn:xmedia:book:opds:v1:libraries",
@@ -361,9 +361,9 @@ async fn feed_by_library(
 
 async fn nav_authors(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
 ) -> ApiResult<Response> {
-    let entries = query_nav_authors(&state).await?;
+    let entries = query_nav_authors(&state, &actor).await?;
     Ok(render_navigation_feed(
         &state.opds_prefix,
         "urn:xmedia:book:opds:v1:authors",
@@ -384,9 +384,9 @@ async fn feed_by_author(
 
 async fn nav_tags(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
 ) -> ApiResult<Response> {
-    let entries = query_nav_tags(&state).await?;
+    let entries = query_nav_tags(&state, &actor).await?;
     Ok(render_navigation_feed(
         &state.opds_prefix,
         "urn:xmedia:book:opds:v1:tags",
@@ -431,10 +431,20 @@ async fn feed_by_shelf(
 
 async fn opds_cover(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
-    let cover = state.services.catalog.get_cover(BookId(id)).await?;
+    let book_id = BookId(id);
+    state
+        .services
+        .catalog
+        .require_book_bound(&actor, book_id)
+        .await?;
+    let cover = state
+        .services
+        .catalog
+        .get_cover(Some(&actor), book_id)
+        .await?;
     let mut res = (StatusCode::OK, Body::from(cover.bytes)).into_response();
     if let Ok(ct) = HeaderValue::from_str(&cover.mime_type) {
         res.headers_mut().insert(CONTENT_TYPE, ct);
@@ -454,9 +464,9 @@ async fn opds_cover(
 
 async fn opds_download(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    serve_book_file_http(&state, BookId(id), &headers, true).await
+    serve_book_file_http(&state, &actor, BookId(id), &headers, true).await
 }

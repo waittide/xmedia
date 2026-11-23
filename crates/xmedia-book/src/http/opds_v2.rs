@@ -309,9 +309,9 @@ async fn feed_search(
 
 async fn nav_libraries(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
 ) -> ApiResult<Response> {
-    let items = query_nav_libraries(&state).await?;
+    let items = query_nav_libraries(&state, &actor).await?;
     Ok(render_navigation_feed(
         &state.opds_prefix,
         "Libraries",
@@ -332,9 +332,9 @@ async fn feed_by_library(
 
 async fn nav_authors(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
 ) -> ApiResult<Response> {
-    let items = query_nav_authors(&state).await?;
+    let items = query_nav_authors(&state, &actor).await?;
     Ok(render_navigation_feed(
         &state.opds_prefix,
         "Authors",
@@ -354,9 +354,9 @@ async fn feed_by_author(
 
 async fn nav_tags(
     State(state): State<BookHttpState>,
-    OpdsAuth(_actor): OpdsAuth,
+    OpdsAuth(actor): OpdsAuth,
 ) -> ApiResult<Response> {
-    let items = query_nav_tags(&state).await?;
+    let items = query_nav_tags(&state, &actor).await?;
     Ok(render_navigation_feed(
         &state.opds_prefix,
         "Tags",

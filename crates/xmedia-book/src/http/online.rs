@@ -10,7 +10,6 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
-use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename};
 use xmedia_source::crud::{
     ExportSourcesBatchRequest, ImportSourcesRequest, LoginActionRequest, ReorderSourcesRequest,
@@ -526,11 +525,16 @@ async fn sync_tracked_epub(
     Path(id): Path<Uuid>,
     Query(q): Query<SyncEpubQuery>,
 ) -> ApiResult<Json<BookSummaryDto>> {
-    require_admin(&user)?;
+    let book_id = BookId(id);
+    state
+        .services
+        .catalog
+        .require_book_bound(&user, book_id)
+        .await?;
     let book = state
         .services
         .online
-        .sync_tracked_epub(BookId(id), q.force)
+        .sync_tracked_epub(book_id, q.force)
         .await?;
     Ok(Json(book))
 }

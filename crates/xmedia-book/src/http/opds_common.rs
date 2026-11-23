@@ -260,20 +260,34 @@ pub(crate) async fn query_feed_search(
     })
 }
 
-pub(crate) async fn query_nav_libraries(state: &BookHttpState) -> ApiResult<Vec<OpdsNavItem>> {
+pub(crate) async fn query_nav_libraries(
+    state: &BookHttpState,
+    actor: &User,
+) -> ApiResult<Vec<OpdsNavItem>> {
     let libs = state
         .libraries
         .list_libraries(Some(MediaKind::Book))
         .await?;
+    let counts = state
+        .services
+        .catalog
+        .count_bound_books_by_library(actor)
+        .await?;
     Ok(libs
         .into_iter()
-        .map(|l| OpdsNavItem {
-            id: format!("urn:xmedia:book:library:{}", l.id),
-            v2_title: format!("{} ({})", l.name, l.item_count),
-            title: l.name,
-            rel_path: format!("libraries/{}", l.id),
-            content: format!("{} books", l.item_count),
-            is_acquisition: true,
+        .filter_map(|l| {
+            let count = counts.get(&l.id).copied().unwrap_or(0);
+            if count == 0 {
+                return None;
+            }
+            Some(OpdsNavItem {
+                id: format!("urn:xmedia:book:library:{}", l.id),
+                v2_title: format!("{} ({count})", l.name),
+                title: l.name,
+                rel_path: format!("libraries/{}", l.id),
+                content: format!("{count} books"),
+                is_acquisition: true,
+            })
         })
         .collect())
 }
@@ -307,8 +321,11 @@ pub(crate) async fn query_feed_by_library(
     })
 }
 
-pub(crate) async fn query_nav_authors(state: &BookHttpState) -> ApiResult<Vec<OpdsNavItem>> {
-    let authors = state.services.catalog.list_authors().await?;
+pub(crate) async fn query_nav_authors(
+    state: &BookHttpState,
+    actor: &User,
+) -> ApiResult<Vec<OpdsNavItem>> {
+    let authors = state.services.catalog.list_authors(actor).await?;
     Ok(authors
         .into_iter()
         .map(|a| {
@@ -354,8 +371,11 @@ pub(crate) async fn query_feed_by_author(
     })
 }
 
-pub(crate) async fn query_nav_tags(state: &BookHttpState) -> ApiResult<Vec<OpdsNavItem>> {
-    let tags = state.services.catalog.list_tags().await?;
+pub(crate) async fn query_nav_tags(
+    state: &BookHttpState,
+    actor: &User,
+) -> ApiResult<Vec<OpdsNavItem>> {
+    let tags = state.services.catalog.list_tags(actor).await?;
     Ok(tags
         .into_iter()
         .map(|t| {

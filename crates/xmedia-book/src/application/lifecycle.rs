@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::ScanProgressReporter;
 use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort};
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -10,7 +11,7 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::UserId;
 
 use crate::application::ports::{BookParserPort, BookScannerPort, BookStoragePort};
-use crate::domain::book::{Book, BookSource};
+use crate::domain::book::{Book, BookId, BookSource};
 use crate::domain::repository::{BookReadingRepository, BookRepository, OnlineShelfRepository};
 
 pub struct BookDomainLifecycle {
@@ -18,6 +19,7 @@ pub struct BookDomainLifecycle {
     books: Arc<dyn BookRepository>,
     readings: Arc<dyn BookReadingRepository>,
     online_shelves: Arc<dyn OnlineShelfRepository>,
+    bindings: Arc<MediaBindingService>,
     scanner: Arc<dyn BookScannerPort>,
     parser: Arc<dyn BookParserPort>,
     storage: Arc<dyn BookStoragePort>,
@@ -31,6 +33,7 @@ impl BookDomainLifecycle {
         books: Arc<dyn BookRepository>,
         readings: Arc<dyn BookReadingRepository>,
         online_shelves: Arc<dyn OnlineShelfRepository>,
+        bindings: Arc<MediaBindingService>,
         scanner: Arc<dyn BookScannerPort>,
         parser: Arc<dyn BookParserPort>,
         storage: Arc<dyn BookStoragePort>,
@@ -41,6 +44,7 @@ impl BookDomainLifecycle {
             books,
             readings,
             online_shelves,
+            bindings,
             scanner,
             parser,
             storage,
@@ -329,6 +333,9 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
         let books = self.books.list_by_library(library_id).await?;
         let mut book_ids = Vec::with_capacity(books.len());
         for book in &books {
+            self.bindings
+                .delete_item_bindings(MediaKind::Book, book.id.0)
+                .await?;
             if let Some(storage_key) = book.source.storage_key() {
                 let _ = self.storage.delete_managed_book(storage_key).await;
             }
@@ -343,6 +350,30 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {
         self.readings.delete_by_user(user_id).await?;
-        self.online_shelves.delete_by_user(user_id).await
+        self.online_shelves.delete_by_user(user_id).await?;
+        let unbound_ids = self
+            .bindings
+            .delete_user_bindings_for_media(user_id, MediaKind::Book)
+            .await?;
+        for raw_id in unbound_ids {
+            let remaining = self
+                .bindings
+                .count_bindings_for_item(MediaKind::Book, raw_id)
+                .await?;
+            if remaining == 0
+                && let Some(book) = self.books.find_by_id(BookId(raw_id)).await?
+                && book.source.is_online_tracked()
+            {
+                self.readings.delete_by_book(book.id).await?;
+                self.books.delete(book.id).await?;
+                if let Some(storage_key) = book.source.storage_key() {
+                    let _ = self.storage.delete_managed_book(storage_key).await;
+                }
+                if let Some(cover_key) = &book.cover_key {
+                    let _ = self.storage.delete_cover(cover_key).await;
+                }
+            }
+        }
+        Ok(())
     }
 }

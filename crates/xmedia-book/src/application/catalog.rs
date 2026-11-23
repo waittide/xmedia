@@ -1,17 +1,21 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use uuid::Uuid;
+use xmedia_core::application::bindings::{
+    BindMediaItemsInput, BindMediaItemsResultDto, MediaBindingService, UnbindMediaItemResultDto,
+};
 use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::library::{Library, MediaKind};
+use xmedia_core::domain::library::{Library, LibraryId, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::dto::{
     BookHomeOverviewDto, BookLibraryStatsDto, BookSummaryDto, CatalogSearchFilter,
-    UpdateMetadataPatch,
+    PoolBookSummaryDto, UpdateMetadataPatch,
 };
 use crate::application::online::validate_safe_cover_image;
 use crate::application::ports::{
@@ -31,6 +35,7 @@ pub struct BookCatalogService {
     books: Arc<dyn BookRepository>,
     libraries: Arc<dyn LibraryRepository>,
     readings: Arc<dyn BookReadingRepository>,
+    bindings: Arc<MediaBindingService>,
     parser: Arc<dyn BookParserPort>,
     storage: Arc<dyn BookStoragePort>,
     on_book_deleted: std::sync::RwLock<Option<BookDeletedHook>>,
@@ -41,6 +46,7 @@ impl BookCatalogService {
         books: Arc<dyn BookRepository>,
         libraries: Arc<dyn LibraryRepository>,
         readings: Arc<dyn BookReadingRepository>,
+        bindings: Arc<MediaBindingService>,
         parser: Arc<dyn BookParserPort>,
         storage: Arc<dyn BookStoragePort>,
     ) -> Self {
@@ -48,10 +54,46 @@ impl BookCatalogService {
             books,
             libraries,
             readings,
+            bindings,
             parser,
             storage,
             on_book_deleted: std::sync::RwLock::new(None),
         }
+    }
+
+    pub fn bindings(&self) -> &Arc<MediaBindingService> {
+        &self.bindings
+    }
+
+    pub async fn list_all_book_ids_for_backfill(&self) -> DomainResult<Vec<Uuid>> {
+        Ok(self
+            .books
+            .list_all_ids()
+            .await?
+            .into_iter()
+            .map(|id| id.0)
+            .collect())
+    }
+
+    pub(crate) async fn bind_book_for_user(
+        &self,
+        user_id: UserId,
+        book_id: BookId,
+    ) -> DomainResult<bool> {
+        self.bindings
+            .bind(user_id, MediaKind::Book, book_id.0)
+            .await
+    }
+
+    pub async fn require_book_bound(&self, actor: &User, book_id: BookId) -> DomainResult<()> {
+        self.bindings
+            .require_bound(
+                actor.id,
+                MediaKind::Book,
+                book_id.0,
+                &format!("book {book_id} not found"),
+            )
+            .await
     }
 
     pub(crate) fn set_on_book_deleted_hook(&self, hook: Arc<dyn Fn(BookId) + Send + Sync>) {
@@ -134,6 +176,9 @@ impl BookCatalogService {
         book.id = book_id;
 
         self.books.save(&book).await?;
+        self.bindings
+            .bind(actor.id, MediaKind::Book, book.id.0)
+            .await?;
         Ok(BookSummaryDto::from_domain(
             &book,
             Some(managed_lib.name),
@@ -241,6 +286,16 @@ impl BookCatalogService {
             library_ids.push(single);
         }
 
+        let allowed_book_ids = if let Some(user) = actor {
+            let bound = self
+                .bindings
+                .list_bound_ids(user.id, MediaKind::Book)
+                .await?;
+            Some(bound.into_iter().map(BookId).collect())
+        } else {
+            None
+        };
+
         let query = BookQuery {
             keyword: filter.keyword.and_then(|s| {
                 let t = s.trim().to_string();
@@ -253,6 +308,8 @@ impl BookCatalogService {
             library_ids,
             favorite_for_user,
             shelf_book_ids,
+            allowed_book_ids,
+            exclude_online_tracked: false,
             include_missing: filter.include_missing,
             sort_by: filter.sort_by.unwrap_or_default(),
             sort_order: filter.sort_order.unwrap_or_default(),
@@ -272,11 +329,153 @@ impl BookCatalogService {
         })
     }
 
+    pub async fn search_pool_books(
+        &self,
+        actor: &User,
+        filter: CatalogSearchFilter,
+    ) -> DomainResult<PagedResult<PoolBookSummaryDto>> {
+        let mut formats = filter.formats;
+        if let Some(single) = filter.format
+            && !formats.contains(&single)
+        {
+            formats.push(single);
+        }
+        let mut library_ids = filter.library_ids;
+        if let Some(single) = filter.library_id
+            && !library_ids.contains(&single)
+        {
+            library_ids.push(single);
+        }
+
+        let query = BookQuery {
+            keyword: filter.keyword.and_then(|s| {
+                let t = s.trim().to_string();
+                (!t.is_empty()).then_some(t)
+            }),
+            authors: filter.authors,
+            tags: filter.tags,
+            tag_mode: filter.tag_mode,
+            formats,
+            library_ids,
+            favorite_for_user: None,
+            shelf_book_ids: None,
+            allowed_book_ids: None,
+            exclude_online_tracked: true,
+            include_missing: false,
+            sort_by: filter.sort_by.unwrap_or_default(),
+            sort_order: filter.sort_order.unwrap_or_default(),
+            page: filter.page.unwrap_or(1).max(1),
+            page_size: filter.page_size.unwrap_or(24).clamp(1, 200),
+        };
+
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
+        let page = self.books.search(&query).await?;
+        let summaries = self.enrich_books(None, &page.items).await?;
+        let items = summaries
+            .into_iter()
+            .map(|book| {
+                let bound = bound_ids.contains(&book.id.0);
+                PoolBookSummaryDto { book, bound }
+            })
+            .collect();
+
+        Ok(PagedResult {
+            items,
+            total: page.total,
+            page: page.page,
+            page_size: page.page_size,
+        })
+    }
+
+    pub async fn bind_books(
+        &self,
+        actor: &User,
+        input: BindMediaItemsInput,
+    ) -> DomainResult<BindMediaItemsResultDto> {
+        let target_user_id = MediaBindingService::resolve_target_user_id(actor, input.user_id)?;
+        let mut candidate_ids: Vec<Uuid> = Vec::new();
+
+        if let Some(lib_id) = input.library_id {
+            let lib_books = self.books.list_by_library(LibraryId(lib_id)).await?;
+            for b in lib_books {
+                if !b.is_missing && !b.source.is_online_tracked() {
+                    candidate_ids.push(b.id.0);
+                }
+            }
+        }
+
+        if !input.item_ids.is_empty() {
+            let requested: Vec<BookId> = input.item_ids.iter().copied().map(BookId).collect();
+            let found = self.books.find_by_ids(&requested).await?;
+            for b in found {
+                if b.is_missing {
+                    continue;
+                }
+                if !b.source.is_online_tracked()
+                    || actor.role.is_admin()
+                    || self
+                        .bindings
+                        .is_bound(actor.id, MediaKind::Book, b.id.0)
+                        .await?
+                {
+                    candidate_ids.push(b.id.0);
+                }
+            }
+        }
+
+        let total_requested = candidate_ids.len();
+        let bound_count = self
+            .bindings
+            .bind_batch(target_user_id, MediaKind::Book, &candidate_ids)
+            .await?;
+        Ok(BindMediaItemsResultDto {
+            bound_count,
+            total_requested,
+        })
+    }
+
+    pub async fn unbind_book(
+        &self,
+        actor: &User,
+        book_id: BookId,
+        requested_user_id: Option<Uuid>,
+    ) -> DomainResult<UnbindMediaItemResultDto> {
+        let target_user_id = MediaBindingService::resolve_target_user_id(actor, requested_user_id)?;
+        self.readings
+            .delete_by_user_and_book(target_user_id, book_id)
+            .await?;
+        let (unbound, remaining_bindings) = self
+            .bindings
+            .unbind(target_user_id, MediaKind::Book, book_id.0)
+            .await?;
+
+        let mut deleted_from_pool = false;
+        if remaining_bindings == 0
+            && let Some(book) = self.books.find_by_id(book_id).await?
+            && book.source.is_online_tracked()
+        {
+            self.delete_book_internal(book).await?;
+            deleted_from_pool = true;
+        }
+
+        Ok(UnbindMediaItemResultDto {
+            unbound,
+            remaining_bindings,
+            deleted_from_pool,
+        })
+    }
+
     pub async fn get_book(
         &self,
         actor: Option<&User>,
         book_id: BookId,
     ) -> DomainResult<BookSummaryDto> {
+        if let Some(user) = actor {
+            self.require_book_bound(user, book_id).await?;
+        }
         let book = self.find_book(book_id).await?;
         let mut enriched = self.enrich_books(actor, &[book]).await?;
         enriched
@@ -392,6 +591,14 @@ impl BookCatalogService {
     pub async fn delete_book(&self, actor: &User, book_id: BookId) -> DomainResult<()> {
         require_admin(actor)?;
         let book = self.find_book(book_id).await?;
+        self.delete_book_internal(book).await
+    }
+
+    pub(crate) async fn delete_book_internal(&self, book: Book) -> DomainResult<()> {
+        let book_id = book.id;
+        self.bindings
+            .delete_item_bindings(MediaKind::Book, book_id.0)
+            .await?;
         self.readings.delete_by_book(book_id).await?;
         self.books.delete(book_id).await?;
         if let Some(storage_key) = book.source.storage_key()
@@ -502,23 +709,86 @@ impl BookCatalogService {
             .map(|c| (c.bytes.to_vec(), c.mime_type))
     }
 
-    pub async fn list_authors(&self) -> DomainResult<Vec<FacetCount>> {
-        self.books.list_authors().await
+    async fn load_bound_active_books(&self, user_id: UserId) -> DomainResult<Vec<Book>> {
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user_id, MediaKind::Book)
+            .await?;
+        if bound_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<BookId> = bound_ids.into_iter().map(BookId).collect();
+        let found = self.books.find_by_ids(&ids).await?;
+        Ok(found.into_iter().filter(|b| !b.is_missing).collect())
     }
 
-    pub async fn list_tags(&self) -> DomainResult<Vec<FacetCount>> {
-        self.books.list_tags().await
+    pub async fn count_bound_books_by_library(
+        &self,
+        actor: &User,
+    ) -> DomainResult<HashMap<LibraryId, u64>> {
+        let books = self.load_bound_active_books(actor.id).await?;
+        let mut counts: HashMap<LibraryId, u64> = HashMap::new();
+        for b in books {
+            *counts.entry(b.library_id).or_insert(0) += 1;
+        }
+        Ok(counts)
     }
 
-    pub async fn get_cover(&self, book_id: BookId) -> DomainResult<CoverPayload> {
+    pub async fn list_authors(&self, actor: &User) -> DomainResult<Vec<FacetCount>> {
+        let books = self.load_bound_active_books(actor.id).await?;
+        let mut counts: BTreeMap<String, (String, u64)> = BTreeMap::new();
+        for book in books {
+            for author in &book.metadata.authors {
+                let key = author.to_lowercase();
+                let entry = counts.entry(key).or_insert_with(|| (author.clone(), 0));
+                entry.1 += 1;
+            }
+        }
+        let mut out: Vec<FacetCount> = counts
+            .into_values()
+            .map(|(name, count)| FacetCount { name, count })
+            .collect();
+        out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+        Ok(out)
+    }
+
+    pub async fn list_tags(&self, actor: &User) -> DomainResult<Vec<FacetCount>> {
+        let books = self.load_bound_active_books(actor.id).await?;
+        let mut counts: BTreeMap<String, (String, u64)> = BTreeMap::new();
+        for book in books {
+            for tag in &book.metadata.tags {
+                let key = tag.to_lowercase();
+                let entry = counts.entry(key).or_insert_with(|| (tag.clone(), 0));
+                entry.1 += 1;
+            }
+        }
+        let mut out: Vec<FacetCount> = counts
+            .into_values()
+            .map(|(name, count)| FacetCount { name, count })
+            .collect();
+        out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+        Ok(out)
+    }
+
+    pub async fn get_cover(
+        &self,
+        actor: Option<&User>,
+        book_id: BookId,
+    ) -> DomainResult<CoverPayload> {
         let book = self.find_book(book_id).await?;
+        if book.source.is_online_tracked()
+            && let Some(user) = actor
+        {
+            self.require_book_bound(user, book_id).await?;
+        }
         let key = book
             .cover_key
             .ok_or_else(|| DomainError::NotFound(format!("cover for book {book_id} not found")))?;
         self.storage.read_cover(&key).await
     }
 
-    pub async fn get_toc(&self, book_id: BookId) -> DomainResult<Vec<TocItem>> {
+    pub async fn get_toc(&self, actor: &User, book_id: BookId) -> DomainResult<Vec<TocItem>> {
+        self.require_book_bound(actor, book_id).await?;
         let (library, book) = self.find_book_with_library(book_id).await?;
         let bytes = self.storage.read_book_bytes(&library, &book).await?;
         let parser = self.parser.clone();
@@ -530,9 +800,11 @@ impl BookCatalogService {
 
     pub async fn get_txt_chapter(
         &self,
+        actor: &User,
         book_id: BookId,
         chapter_index: u32,
     ) -> DomainResult<TxtChapterContent> {
+        self.require_book_bound(actor, book_id).await?;
         let (library, book) = self.find_book_with_library(book_id).await?;
         if book.format != BookFormat::Txt {
             return Err(DomainError::Validation(
@@ -548,9 +820,11 @@ impl BookCatalogService {
 
     pub async fn get_epub_resource(
         &self,
+        actor: &User,
         book_id: BookId,
         resource_path: &str,
     ) -> DomainResult<BookAsset> {
+        self.require_book_bound(actor, book_id).await?;
         let (library, book) = self.find_book_with_library(book_id).await?;
         if book.format != BookFormat::Epub {
             return Err(DomainError::Validation(
@@ -567,9 +841,28 @@ impl BookCatalogService {
 
     pub async fn open_book_file_stream(
         &self,
+        actor: &User,
         book_id: BookId,
         spec: ByteRangeSpec,
     ) -> DomainResult<(Book, ByteRangeStream)> {
+        self.open_book_file_stream_for_user(actor.id, book_id, spec)
+            .await
+    }
+
+    pub(crate) async fn open_book_file_stream_for_user(
+        &self,
+        user_id: UserId,
+        book_id: BookId,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<(Book, ByteRangeStream)> {
+        self.bindings
+            .require_bound(
+                user_id,
+                MediaKind::Book,
+                book_id.0,
+                &format!("book {book_id} not found"),
+            )
+            .await?;
         let (library, book) = self.find_book_with_library(book_id).await?;
         let stream = self.storage.open_book_stream(&library, &book, spec).await?;
         Ok((book, stream))
@@ -634,20 +927,56 @@ impl BookCatalogService {
         actor: &User,
         reading_service: &BookReadingService,
     ) -> DomainResult<BookHomeOverviewDto> {
-        let (latest_raw, total_books, authors_count, tags_count) =
-            self.books.home_catalog_snapshot(12).await?;
+        let mut bound_books = self.load_bound_active_books(actor.id).await?;
+        let total_books = bound_books.len() as u64;
+        let bound_id_set: HashSet<BookId> = bound_books.iter().map(|b| b.id).collect();
+        let mut author_keys = HashSet::new();
+        let mut tag_keys = HashSet::new();
+        let mut lib_id_set = HashSet::new();
+        for book in &bound_books {
+            lib_id_set.insert(book.library_id);
+            for author in &book.metadata.authors {
+                let clean = author.trim().to_lowercase();
+                if !clean.is_empty() {
+                    author_keys.insert(clean);
+                }
+            }
+            for tag in &book.metadata.tags {
+                let clean = tag.trim().to_lowercase();
+                if !clean.is_empty() {
+                    tag_keys.insert(clean);
+                }
+            }
+        }
+        let authors_count = author_keys.len() as u64;
+        let tags_count = tag_keys.len() as u64;
+        let libraries_count = lib_id_set.len() as u64;
+
+        let by_id: HashMap<BookId, Book> = bound_books.iter().map(|b| (b.id, b.clone())).collect();
+        bound_books.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+        bound_books.truncate(12);
+        let latest_raw = bound_books;
+
         let libs = self.libraries.list_by_media(MediaKind::Book).await?;
-        let libraries_count = libs.len() as u64;
         let lib_names: HashMap<_, _> = libs.into_iter().map(|l| (l.id, l.name)).collect();
 
-        let fav_ids = self.readings.list_favorite_book_ids(actor.id).await?;
+        let fav_ids: Vec<BookId> = self
+            .readings
+            .list_favorite_book_ids(actor.id)
+            .await?
+            .into_iter()
+            .filter(|id| bound_id_set.contains(id))
+            .collect();
         let favorites_count = fav_ids.len() as u64;
         let fav_set: HashSet<BookId> = fav_ids.into_iter().collect();
 
-        let all_progress = self
+        let all_progress: Vec<ReadingProgress> = self
             .readings
             .list_recent_progress(actor.id, u32::MAX)
-            .await?;
+            .await?
+            .into_iter()
+            .filter(|p| bound_id_set.contains(&p.book_id))
+            .collect();
         let reading_count = all_progress.len() as u64;
         let recent_ids: Vec<BookId> = all_progress.iter().take(6).map(|r| r.book_id).collect();
         let progress_map: HashMap<BookId, ReadingProgress> =
@@ -659,8 +988,6 @@ impl BookCatalogService {
         let continue_reading = if recent_ids.is_empty() {
             Vec::new()
         } else {
-            let found = self.books.find_by_ids(&recent_ids).await?;
-            let by_id: HashMap<BookId, Book> = found.into_iter().map(|b| (b.id, b)).collect();
             let ordered: Vec<Book> = recent_ids
                 .into_iter()
                 .filter_map(|id| by_id.get(&id).cloned())

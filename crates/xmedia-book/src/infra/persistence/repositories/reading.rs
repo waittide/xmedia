@@ -426,4 +426,58 @@ impl BookReadingRepository for ToastyBookReadingRepository {
             .map_err(db_err)?;
         Ok(())
     }
+
+    async fn delete_by_user_and_book(&self, user_id: UserId, book_id: BookId) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        for row in BookReadingProgressModel::filter_by_book_id(book_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            if row.user_id == user_id.0 {
+                row.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+        for row in BookBookmarkModel::filter_by_book_id(book_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            if row.user_id == user_id.0 {
+                row.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+        for row in BookFavoriteModel::filter_by_book_id(book_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            if row.user_id == user_id.0 {
+                row.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+        for mut shelf in BookShelfModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            if shelf.book_ids.0.contains(&book_id.0) {
+                let filtered: Vec<Uuid> = shelf
+                    .book_ids
+                    .0
+                    .iter()
+                    .copied()
+                    .filter(|id| *id != book_id.0)
+                    .collect();
+                shelf
+                    .update()
+                    .book_ids(toasty::Json(filtered))
+                    .updated_at(Timestamp::now())
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+        }
+        Ok(())
+    }
 }

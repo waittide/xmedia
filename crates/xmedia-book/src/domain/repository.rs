@@ -14,6 +14,7 @@ use crate::source::model::SourceRuntimeState;
 pub trait BookRepository: Send + Sync {
     async fn find_by_id(&self, id: BookId) -> DomainResult<Option<Book>>;
     async fn find_by_ids(&self, ids: &[BookId]) -> DomainResult<Vec<Book>>;
+    async fn list_all_ids(&self) -> DomainResult<Vec<BookId>>;
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Book>>;
     async fn search(&self, query: &BookQuery) -> DomainResult<PagedResult<Book>>;
     async fn count_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
@@ -71,6 +72,7 @@ pub trait BookReadingRepository: Send + Sync {
         Ok(())
     }
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
+    async fn delete_by_user_and_book(&self, user_id: UserId, book_id: BookId) -> DomainResult<()>;
 }
 
 #[async_trait]

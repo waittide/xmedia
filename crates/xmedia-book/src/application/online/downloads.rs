@@ -977,7 +977,7 @@ impl BookOnlineService {
         if let Some(book_id) = imported_book_id {
             let (_book, stream) = self
                 .catalog
-                .open_book_file_stream(BookId(book_id), ByteRangeSpec::Full)
+                .open_book_file_stream_for_user(user_id, BookId(book_id), ByteRangeSpec::Full)
                 .await?;
             return Ok((file_name, mime, stream));
         }

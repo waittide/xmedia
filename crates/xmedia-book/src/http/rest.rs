@@ -10,17 +10,20 @@ use axum::{Json, Router};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xmedia_core::application::bindings::{
+    BindMediaItemsInput, BindMediaItemsResultDto, UnbindMediaItemResultDto,
+};
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::domain::user::require_admin;
+use xmedia_core::domain::user::{User, require_admin};
 use xmedia_core::http::{
     ApiError, ApiResult, WebAuth, into_range_http_response, parse_http_range_spec,
     sanitize_download_filename, stream_multipart_field_to_temp_file,
 };
 
 use crate::application::dto::{
-    BookBookmarkItemDto, BookHomeOverviewDto, BookSummaryDto, CatalogSearchFilter, ShelfDto,
-    UpdateMetadataPatch,
+    BookBookmarkItemDto, BookHomeOverviewDto, BookSummaryDto, CatalogSearchFilter,
+    PoolBookSummaryDto, ShelfDto, UpdateMetadataPatch,
 };
 use crate::application::ports::{TocItem, TxtChapterContent};
 use crate::application::reading::{CreateBookmarkCommand, SaveProgressCommand};
@@ -34,6 +37,9 @@ pub fn router() -> Router<BookHttpState> {
     Router::new()
         .route("/home", get(home_overview))
         .route("/books", get(search_books))
+        .route("/pool", get(search_pool_books))
+        .route("/bindings", post(bind_books))
+        .route("/bindings/{id}", delete(unbind_book))
         .route(
             "/books/upload",
             post(upload_books).layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
@@ -154,6 +160,78 @@ async fn search_books(
         .search_books(Some(&actor), filter)
         .await?;
     Ok(Json(page))
+}
+
+async fn search_pool_books(
+    State(state): State<BookHttpState>,
+    WebAuth(actor): WebAuth,
+    Query(q): Query<SearchBooksQuery>,
+) -> ApiResult<Json<PagedResult<PoolBookSummaryDto>>> {
+    let parsed_formats: Vec<BookFormat> = split_multi_param(q.formats)
+        .into_iter()
+        .filter_map(|f| BookFormat::from_extension(&f))
+        .collect();
+    let parsed_lib_ids: Vec<LibraryId> = split_multi_param(q.library_ids)
+        .into_iter()
+        .filter_map(|id| id.parse::<Uuid>().ok().map(LibraryId))
+        .collect();
+
+    let filter = CatalogSearchFilter {
+        keyword: q.keyword,
+        author: q.author,
+        authors: split_multi_param(q.authors),
+        tag: q.tag,
+        tags: split_multi_param(q.tags),
+        tag_mode: q.tag_mode.unwrap_or_default(),
+        format: q.format,
+        formats: parsed_formats,
+        library_id: q.library_id.map(LibraryId),
+        library_ids: parsed_lib_ids,
+        favorites_only: false,
+        shelf_id: None,
+        include_missing: false,
+        sort_by: q.sort_by,
+        sort_order: q.sort_order,
+        page: q.page,
+        page_size: q.page_size,
+    };
+    let page = state
+        .services
+        .catalog
+        .search_pool_books(&actor, filter)
+        .await?;
+    Ok(Json(page))
+}
+
+async fn bind_books(
+    State(state): State<BookHttpState>,
+    WebAuth(actor): WebAuth,
+    Json(req): Json<BindMediaItemsInput>,
+) -> ApiResult<Json<BindMediaItemsResultDto>> {
+    Ok(Json(state.services.catalog.bind_books(&actor, req).await?))
+}
+
+#[derive(Default, Deserialize)]
+struct UnbindQuery {
+    user_id: Option<Uuid>,
+}
+
+async fn unbind_book(
+    State(state): State<BookHttpState>,
+    WebAuth(actor): WebAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<UnbindQuery>,
+) -> ApiResult<Json<UnbindMediaItemResultDto>> {
+    let book_id = BookId(id);
+    let res = state
+        .services
+        .catalog
+        .unbind_book(&actor, book_id, q.user_id)
+        .await?;
+    if res.deleted_from_pool {
+        state.services.online.cleanup_book_state(book_id);
+    }
+    Ok(Json(res))
 }
 
 #[derive(Serialize)]
@@ -293,10 +371,14 @@ async fn delete_book(
 
 async fn get_book_cover(
     State(state): State<BookHttpState>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
-    let cover = state.services.catalog.get_cover(BookId(id)).await?;
+    let cover = state
+        .services
+        .catalog
+        .get_cover(Some(&actor), BookId(id))
+        .await?;
     let mut res = (StatusCode::OK, Body::from(cover.bytes)).into_response();
     if let Ok(ct) = HeaderValue::from_str(&cover.mime_type) {
         res.headers_mut().insert(CONTENT_TYPE, ct);
@@ -352,10 +434,16 @@ struct DownloadQuery {
 
 pub(crate) async fn serve_book_file_http(
     state: &BookHttpState,
+    actor: &User,
     book_id: BookId,
     headers: &HeaderMap,
     as_attachment: bool,
 ) -> ApiResult<Response> {
+    state
+        .services
+        .catalog
+        .require_book_bound(actor, book_id)
+        .await?;
     // If this is an online-tracked book with newly cached chapters, atomically flush
     // its standard EPUB 3.0 archive before streaming (transparent for both Web and OPDS).
     state
@@ -368,7 +456,7 @@ pub(crate) async fn serve_book_file_http(
     let (book, range_stream) = state
         .services
         .catalog
-        .open_book_file_stream(book_id, spec)
+        .open_book_file_stream(actor, book_id, spec)
         .await?;
     let filename = sanitize_download_filename(&book.metadata.title, book.format.as_str());
     Ok(into_range_http_response(
@@ -383,45 +471,54 @@ pub(crate) async fn serve_book_file_http(
 
 async fn stream_book_file(
     State(state): State<BookHttpState>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<DownloadQuery>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    serve_book_file_http(&state, BookId(id), &headers, q.download.unwrap_or(false)).await
+    serve_book_file_http(
+        &state,
+        &actor,
+        BookId(id),
+        &headers,
+        q.download.unwrap_or(false),
+    )
+    .await
 }
 
 async fn get_book_toc(
     State(state): State<BookHttpState>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<TocItem>>> {
-    Ok(Json(state.services.catalog.get_toc(BookId(id)).await?))
+    Ok(Json(
+        state.services.catalog.get_toc(&actor, BookId(id)).await?,
+    ))
 }
 
 async fn get_txt_chapter(
     State(state): State<BookHttpState>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
     Path((id, index)): Path<(Uuid, u32)>,
 ) -> ApiResult<Json<TxtChapterContent>> {
     Ok(Json(
         state
             .services
             .catalog
-            .get_txt_chapter(BookId(id), index)
+            .get_txt_chapter(&actor, BookId(id), index)
             .await?,
     ))
 }
 
 async fn get_epub_resource(
     State(state): State<BookHttpState>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
     Path((id, path)): Path<(Uuid, String)>,
 ) -> ApiResult<Response> {
     let asset = state
         .services
         .catalog
-        .get_epub_resource(BookId(id), &path)
+        .get_epub_resource(&actor, BookId(id), &path)
         .await?;
     let mut res = (StatusCode::OK, Body::from(asset.bytes)).into_response();
     if let Ok(ct) = HeaderValue::from_str(&asset.mime_type) {
@@ -444,16 +541,16 @@ async fn get_epub_resource(
 
 async fn list_authors(
     State(state): State<BookHttpState>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
 ) -> ApiResult<Json<Vec<FacetCount>>> {
-    Ok(Json(state.services.catalog.list_authors().await?))
+    Ok(Json(state.services.catalog.list_authors(&actor).await?))
 }
 
 async fn list_tags(
     State(state): State<BookHttpState>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
 ) -> ApiResult<Json<Vec<FacetCount>>> {
-    Ok(Json(state.services.catalog.list_tags().await?))
+    Ok(Json(state.services.catalog.list_tags(&actor).await?))
 }
 
 #[derive(Default, Deserialize)]

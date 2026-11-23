@@ -489,7 +489,7 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         .unwrap();
     let member_session = auth.login("member", "password123").await.unwrap();
 
-    let state = BookHttpState::new(auth, lib_svc.clone(), book_services.clone());
+    let state = BookHttpState::new(auth.clone(), lib_svc.clone(), book_services.clone());
     let app = Router::new().nest("/api/v1/book", rest_router(state));
 
     // 1. Import source & set long variable (> 240 chars)
@@ -627,7 +627,7 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         xmedia_core::domain::error::DomainError::Validation(_)
     ));
 
-    // 4. POST /books/{id}/online/sync-epub: admin-only for both ?force=true and default (M2-MED-05)
+    // 4. POST /books/{id}/online/sync-epub: unbound member gets 404 (strict per-user binding isolation)
     let force_member_res = app
         .clone()
         .oneshot(
@@ -643,7 +643,7 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         )
         .await
         .unwrap();
-    assert_eq!(force_member_res.status(), StatusCode::FORBIDDEN);
+    assert_eq!(force_member_res.status(), StatusCode::NOT_FOUND);
 
     let default_member_res = app
         .clone()
@@ -660,7 +660,39 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         )
         .await
         .unwrap();
-    assert_eq!(default_member_res.status(), StatusCode::FORBIDDEN);
+    assert_eq!(default_member_res.status(), StatusCode::NOT_FOUND);
+
+    // Non-admin member can manually track the same online book -> reuses deduplicated pool entry
+    let member_user = auth.authenticate_jwt(&member_session.token).await.unwrap();
+    let tracked_by_member = book_services
+        .online
+        .track_online_book(
+            &member_user,
+            TrackOnlineBookInput {
+                source_id,
+                book_url: "https://contract.example/b/1".into(),
+                toc_url: String::new(),
+                name: "清理验证书".into(),
+                author: "作者".into(),
+                cover_url: None,
+                intro: None,
+                kind: None,
+                last_chapter: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(tracked_by_member.id, tracked.id);
+
+    // Unbinding one user preserves the pooled book for the other; unbinding the last user GCs it
+    let unbind_member = book_services
+        .catalog
+        .unbind_book(&member_user, tracked.id, None)
+        .await
+        .unwrap();
+    assert!(unbind_member.unbound);
+    assert_eq!(unbind_member.remaining_bindings, 1);
+    assert!(!unbind_member.deleted_from_pool);
 
     let default_admin_res = app
         .clone()

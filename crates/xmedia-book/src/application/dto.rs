@@ -107,6 +107,13 @@ impl BookSummaryDto {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolBookSummaryDto {
+    #[serde(flatten)]
+    pub book: BookSummaryDto,
+    pub bound: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CatalogSearchFilter {
     pub keyword: Option<String>,

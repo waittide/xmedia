@@ -76,8 +76,7 @@ impl BookOnlineService {
         actor: &User,
         mut input: TrackOnlineBookInput,
     ) -> DomainResult<BookSummaryDto> {
-        require_admin(actor)?;
-        let src = self.load_source(input.source_id).await?;
+        let src = self.load_source_for_actor(actor, input.source_id).await?;
         input.book_url = Self::validate_caller_source_url(&input.book_url, &src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
             input.toc_url = Self::validate_caller_source_url(&input.toc_url, &src.raw_json)?;
@@ -97,6 +96,9 @@ impl BookOnlineService {
             .find_online_tracked_book(input.source_id, &input.book_url)
             .await?
         {
+            self.catalog
+                .bind_book_for_user(actor.id, existing.id)
+                .await?;
             return self.catalog.get_book(Some(actor), existing.id).await;
         }
 
@@ -244,6 +246,7 @@ impl BookOnlineService {
         book.id = book_id;
 
         self.catalog.save_book_raw(&book).await?;
+        self.catalog.bind_book_for_user(actor.id, book_id).await?;
         self.catalog.get_book(Some(actor), book_id).await
     }
 
@@ -255,9 +258,7 @@ impl BookOnlineService {
         book_id: BookId,
         force_refresh: bool,
     ) -> DomainResult<TrackedTocResponseDto> {
-        if force_refresh {
-            require_admin(actor)?;
-        }
+        self.catalog.require_book_bound(actor, book_id).await?;
         let book = self.catalog.find_book_raw(book_id).await?;
         let (
             source_id,
@@ -436,9 +437,7 @@ impl BookOnlineService {
         chapter_index: usize,
         force_refresh: bool,
     ) -> DomainResult<TrackedChapterResponseDto> {
-        if force_refresh {
-            require_admin(actor)?;
-        }
+        self.catalog.require_book_bound(actor, book_id).await?;
         let book = self.catalog.find_book_raw(book_id).await?;
         let (source_id, book_url, toc_url, cached_chapters, total_chapters, epub_dirty) =
             match &book.source {

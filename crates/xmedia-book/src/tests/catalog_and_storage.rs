@@ -303,6 +303,42 @@ async fn book_upload_scan_range_and_opds_roundtrip() {
         library_id: Some(created_lib.id),
         ..Default::default()
     };
+    // Scanned local files land in the shared resource pool unbound by default
+    let unbound_page = book_services
+        .catalog
+        .search_books(Some(&admin_user), search_filter.clone())
+        .await
+        .unwrap();
+    assert_eq!(unbound_page.items.len(), 0);
+
+    let pool_before = book_services
+        .catalog
+        .search_pool_books(&admin_user, search_filter.clone())
+        .await
+        .unwrap();
+    assert_eq!(pool_before.items.len(), 1);
+    assert!(!pool_before.items[0].bound);
+
+    let bind_res = book_services
+        .catalog
+        .bind_books(
+            &admin_user,
+            xmedia_core::application::bindings::BindMediaItemsInput {
+                library_id: Some(created_lib.id.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(bind_res.bound_count, 1);
+
+    let pool_after = book_services
+        .catalog
+        .search_pool_books(&admin_user, search_filter.clone())
+        .await
+        .unwrap();
+    assert!(pool_after.items[0].bound);
+
     let page1 = book_services
         .catalog
         .search_books(Some(&admin_user), search_filter.clone())
@@ -314,7 +350,7 @@ async fn book_upload_scan_range_and_opds_roundtrip() {
     assert_eq!(original_book.metadata.authors, vec!["刘慈欣"]);
     let cover_payload = book_services
         .catalog
-        .get_cover(original_book.id)
+        .get_cover(Some(&admin_user), original_book.id)
         .await
         .unwrap();
     assert_eq!(cover_payload.mime_type, "image/png");
@@ -529,10 +565,19 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
         fail_save: AtomicBool::new(false),
         ops: Mutex::new(Vec::new()),
     });
+    let bindings = Arc::new(xmedia_core::application::bindings::MediaBindingService::new(
+        Arc::new(
+            xmedia_core::infra::persistence::repositories::ToastyUserMediaBindingRepository::new(
+                db.clone(),
+            ),
+        ),
+        None,
+    ));
     let catalog = BookCatalogService::new(
         Arc::new(ToastyBookRepository::new(db.clone())),
         libs_repo,
         Arc::new(ToastyBookReadingRepository::new(db)),
+        bindings,
         Arc::new(CompositeBookParser),
         storage.clone(),
     );
@@ -545,7 +590,7 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
         )
         .await
         .unwrap();
-    let initial_cover = catalog.get_cover(uploaded.id).await.unwrap();
+    let initial_cover = catalog.get_cover(Some(&admin), uploaded.id).await.unwrap();
 
     // 1. Failing save must NOT delete old cover
     storage.ops.lock().unwrap().clear();
@@ -561,7 +606,11 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
     assert!(err.is_err());
     assert_eq!(*storage.ops.lock().unwrap(), vec!["save".to_string()]);
     assert_eq!(
-        catalog.get_cover(uploaded.id).await.unwrap().bytes,
+        catalog
+            .get_cover(Some(&admin), uploaded.id)
+            .await
+            .unwrap()
+            .bytes,
         initial_cover.bytes
     );
 
@@ -589,7 +638,12 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
     assert_eq!(ops[0], "save");
     assert!(ops[1].starts_with("delete:"));
     assert_eq!(
-        catalog.get_cover(uploaded.id).await.unwrap().bytes.as_ref(),
+        catalog
+            .get_cover(Some(&admin), uploaded.id)
+            .await
+            .unwrap()
+            .bytes
+            .as_ref(),
         new_png
     );
 }

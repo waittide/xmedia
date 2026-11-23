@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::User;
 
 use crate::application::catalog::BookCatalogService;
@@ -36,11 +38,20 @@ pub struct CreateBookmarkCommand {
 pub struct BookReadingService {
     readings: Arc<dyn BookReadingRepository>,
     books: Arc<dyn BookRepository>,
+    bindings: Arc<MediaBindingService>,
 }
 
 impl BookReadingService {
-    pub fn new(readings: Arc<dyn BookReadingRepository>, books: Arc<dyn BookRepository>) -> Self {
-        Self { readings, books }
+    pub fn new(
+        readings: Arc<dyn BookReadingRepository>,
+        books: Arc<dyn BookRepository>,
+        bindings: Arc<MediaBindingService>,
+    ) -> Self {
+        Self {
+            readings,
+            books,
+            bindings,
+        }
     }
 
     pub async fn get_progress(
@@ -48,6 +59,7 @@ impl BookReadingService {
         actor: &User,
         book_id: BookId,
     ) -> DomainResult<Option<ReadingProgress>> {
+        self.ensure_book_bound(actor, book_id).await?;
         self.readings.get_progress(actor.id, book_id).await
     }
 
@@ -57,7 +69,7 @@ impl BookReadingService {
         book_id: BookId,
         cmd: SaveProgressCommand,
     ) -> DomainResult<ReadingProgress> {
-        self.ensure_book_exists(book_id).await?;
+        self.ensure_book_bound(actor, book_id).await?;
         let location = ReadingLocation::new(
             cmd.progress_percent,
             cmd.locator,
@@ -84,15 +96,27 @@ impl BookReadingService {
         limit: u32,
         catalog: &BookCatalogService,
     ) -> DomainResult<Vec<BookSummaryDto>> {
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
+        if bound_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let recent = self
             .readings
-            .list_recent_progress(actor.id, limit.clamp(1, 100))
+            .list_recent_progress(actor.id, u32::MAX)
             .await?;
-        if recent.is_empty() {
+        let ids: Vec<BookId> = recent
+            .iter()
+            .filter(|r| bound_ids.contains(&r.book_id.0))
+            .take(limit.clamp(1, 100) as usize)
+            .map(|r| r.book_id)
+            .collect();
+        if ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let ids: Vec<BookId> = recent.iter().map(|r| r.book_id).collect();
         let found = self.books.find_by_ids(&ids).await?;
         let by_id: HashMap<BookId, Book> = found.into_iter().map(|b| (b.id, b)).collect();
 
@@ -109,11 +133,25 @@ impl BookReadingService {
         actor: &User,
         book_id: BookId,
     ) -> DomainResult<Vec<Bookmark>> {
+        self.ensure_book_bound(actor, book_id).await?;
         self.readings.list_bookmarks(actor.id, book_id).await
     }
 
     pub async fn list_all_bookmarks(&self, actor: &User) -> DomainResult<Vec<BookBookmarkItemDto>> {
-        let bookmarks = self.readings.list_user_bookmarks(actor.id).await?;
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
+        if bound_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let bookmarks: Vec<Bookmark> = self
+            .readings
+            .list_user_bookmarks(actor.id)
+            .await?
+            .into_iter()
+            .filter(|bm| bound_ids.contains(&bm.book_id.0))
+            .collect();
         if bookmarks.is_empty() {
             return Ok(Vec::new());
         }
@@ -143,15 +181,46 @@ impl BookReadingService {
     }
 
     pub async fn count_user_progress(&self, actor: &User) -> DomainResult<u64> {
-        self.readings.count_user_progress(actor.id).await
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
+        let list = self
+            .readings
+            .list_recent_progress(actor.id, u32::MAX)
+            .await?;
+        Ok(list
+            .into_iter()
+            .filter(|p| bound_ids.contains(&p.book_id.0))
+            .count() as u64)
     }
 
     pub async fn count_user_bookmarks(&self, actor: &User) -> DomainResult<u64> {
-        Ok(self.readings.list_user_bookmarks(actor.id).await?.len() as u64)
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
+        Ok(self
+            .readings
+            .list_user_bookmarks(actor.id)
+            .await?
+            .into_iter()
+            .filter(|bm| bound_ids.contains(&bm.book_id.0))
+            .count() as u64)
     }
 
     pub async fn count_user_favorites(&self, actor: &User) -> DomainResult<u64> {
-        Ok(self.readings.list_favorite_book_ids(actor.id).await?.len() as u64)
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
+        Ok(self
+            .readings
+            .list_favorite_book_ids(actor.id)
+            .await?
+            .into_iter()
+            .filter(|id| bound_ids.contains(&id.0))
+            .count() as u64)
     }
 
     pub async fn create_bookmark(
@@ -160,7 +229,7 @@ impl BookReadingService {
         book_id: BookId,
         cmd: CreateBookmarkCommand,
     ) -> DomainResult<Bookmark> {
-        self.ensure_book_exists(book_id).await?;
+        self.ensure_book_bound(actor, book_id).await?;
         let location = ReadingLocation::new(
             cmd.progress_percent,
             cmd.locator,
@@ -183,7 +252,7 @@ impl BookReadingService {
         book_id: BookId,
         favorite: bool,
     ) -> DomainResult<()> {
-        self.ensure_book_exists(book_id).await?;
+        self.ensure_book_bound(actor, book_id).await?;
         self.readings
             .set_favorite(actor.id, book_id, favorite)
             .await
@@ -195,9 +264,13 @@ impl BookReadingService {
         book_ids: Vec<BookId>,
         favorite: bool,
     ) -> DomainResult<usize> {
+        let bound_ids: HashSet<uuid::Uuid> = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
         let mut count = 0;
         for book_id in book_ids {
-            if self.books.find_by_id(book_id).await?.is_some() {
+            if bound_ids.contains(&book_id.0) && self.books.find_by_id(book_id).await?.is_some() {
                 self.readings
                     .set_favorite(actor.id, book_id, favorite)
                     .await?;
@@ -208,8 +281,18 @@ impl BookReadingService {
     }
 
     pub async fn list_shelves(&self, actor: &User) -> DomainResult<Vec<ShelfDto>> {
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(actor.id, MediaKind::Book)
+            .await?;
         let shelves = self.readings.list_shelves(actor.id).await?;
-        Ok(shelves.iter().map(ShelfDto::from).collect())
+        Ok(shelves
+            .into_iter()
+            .map(|mut s| {
+                s.book_ids.retain(|id| bound_ids.contains(&id.0));
+                ShelfDto::from(&s)
+            })
+            .collect())
     }
 
     pub async fn create_shelf(&self, actor: &User, name: String) -> DomainResult<ShelfDto> {
@@ -259,7 +342,7 @@ impl BookReadingService {
         shelf_id: ShelfId,
         book_id: BookId,
     ) -> DomainResult<ShelfDto> {
-        self.ensure_book_exists(book_id).await?;
+        self.ensure_book_bound(actor, book_id).await?;
         let mut shelf = self
             .readings
             .find_shelf(actor.id, shelf_id)
@@ -286,7 +369,15 @@ impl BookReadingService {
         Ok(ShelfDto::from(&shelf))
     }
 
-    async fn ensure_book_exists(&self, book_id: BookId) -> DomainResult<()> {
+    async fn ensure_book_bound(&self, actor: &User, book_id: BookId) -> DomainResult<()> {
+        self.bindings
+            .require_bound(
+                actor.id,
+                MediaKind::Book,
+                book_id.0,
+                &format!("book {book_id} not found"),
+            )
+            .await?;
         if self.books.find_by_id(book_id).await?.is_none() {
             return Err(DomainError::NotFound(format!("book {book_id} not found")));
         }

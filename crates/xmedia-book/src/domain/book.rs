@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -284,6 +284,8 @@ pub struct BookQuery {
     pub library_ids: Vec<LibraryId>,
     pub favorite_for_user: Option<UserId>,
     pub shelf_book_ids: Option<Vec<BookId>>,
+    pub allowed_book_ids: Option<HashSet<BookId>>,
+    pub exclude_online_tracked: bool,
     pub include_missing: bool,
     pub sort_by: BookSortField,
     pub sort_order: SortOrder,
@@ -302,6 +304,8 @@ impl Default for BookQuery {
             library_ids: Vec::new(),
             favorite_for_user: None,
             shelf_book_ids: None,
+            allowed_book_ids: None,
+            exclude_online_tracked: false,
             include_missing: false,
             sort_by: BookSortField::CreatedAt,
             sort_order: SortOrder::Desc,

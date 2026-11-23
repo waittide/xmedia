@@ -11,10 +11,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use toasty::Db;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::infra::persistence::repositories::ToastyUserMediaBindingRepository;
 
 use application::BookServices;
 use application::catalog::BookCatalogService;
@@ -55,6 +57,30 @@ pub fn init_book_module_with_allow_private_ips(
     events: Arc<dyn RealtimeEventPort>,
     allow_private_ips: bool,
 ) -> DomainResult<BookServices> {
+    let bindings = Arc::new(MediaBindingService::new(
+        Arc::new(ToastyUserMediaBindingRepository::new(db.clone())),
+        Some(events.clone()),
+    ));
+    init_book_module_with_bindings(
+        db,
+        data_dir,
+        libraries_repo,
+        library_service,
+        bindings,
+        events,
+        allow_private_ips,
+    )
+}
+
+pub fn init_book_module_with_bindings(
+    db: Db,
+    data_dir: &Path,
+    libraries_repo: Arc<dyn LibraryRepository>,
+    library_service: &LibraryService,
+    bindings: Arc<MediaBindingService>,
+    events: Arc<dyn RealtimeEventPort>,
+    allow_private_ips: bool,
+) -> DomainResult<BookServices> {
     let books = Arc::new(ToastyBookRepository::new(db.clone()));
     let readings = Arc::new(ToastyBookReadingRepository::new(db.clone()));
     let sources = Arc::new(ToastyBookSourceRepository::new(db.clone()));
@@ -68,6 +94,7 @@ pub fn init_book_module_with_allow_private_ips(
         books.clone(),
         readings.clone(),
         online_shelves.clone(),
+        bindings.clone(),
         scanner,
         parser.clone(),
         storage.clone(),
@@ -79,10 +106,11 @@ pub fn init_book_module_with_allow_private_ips(
         books.clone(),
         libraries_repo,
         readings.clone(),
+        bindings.clone(),
         parser,
         storage,
     ));
-    let reading = Arc::new(BookReadingService::new(readings, books));
+    let reading = Arc::new(BookReadingService::new(readings, books, bindings));
     let engine = source::BookSourceEngine::new(
         source::http::HttpClientConfig {
             allow_private_ips,
