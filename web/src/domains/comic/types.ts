@@ -76,6 +76,10 @@ export interface SeriesSummaryDto {
   updated_at: number | string
 }
 
+export interface PoolSeriesSummaryDto extends SeriesSummaryDto {
+  bound: boolean
+}
+
 export interface ContinueReadingItemDto {
   series: SeriesSummaryDto
   pointer: ContinueReadingPointer

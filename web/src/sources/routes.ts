@@ -31,7 +31,7 @@ export interface LibraryRouteParams extends Partial<SourceFilter> {
 }
 
 const VALID_DOMAINS: readonly MediaKind[] = ['book', 'comic', 'music', 'video']
-const VALID_SCOPES: readonly SourceScope[] = ['local', 'online', 'remote']
+const VALID_SCOPES: readonly SourceScope[] = ['local', 'pool', 'online', 'remote']
 
 export function isMediaKind(value: unknown): value is MediaKind {
   return typeof value === 'string' && (VALID_DOMAINS as readonly string[]).includes(value)
@@ -88,8 +88,8 @@ function setMultiOrSingle(
 export function parseSourceFilter(query: LocationQuery): SourceFilter {
   const rawScope = readFirstQueryString(query, ['scope'])
   const scope: SourceScope = isSourceScope(rawScope) ? rawScope : 'local'
-  if (scope === 'local') {
-    return { scope: 'local', sourceId: null }
+  if (scope === 'local' || scope === 'pool') {
+    return { scope, sourceId: null }
   }
   const sourceId = readFirstQueryString(query, ['source', 'source_id', 'sourceId'])
   return {

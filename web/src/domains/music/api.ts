@@ -1,5 +1,9 @@
 import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
-import type { CoreLibraryDto } from '@/types/api'
+import type {
+  BindMediaItemsResultDto,
+  CoreLibraryDto,
+  UnbindMediaItemResultDto,
+} from '@/types/api'
 import type {
   AlbumDetailDto,
   AlbumDto,
@@ -8,6 +12,7 @@ import type {
   ArtistDto,
   ArtistRoleFilter,
   AudioFormat,
+  BindMusicItemsInput,
   BookmarkDto,
   GenreStatDto,
   HomeOverviewDto,
@@ -18,6 +23,7 @@ import type {
   PlayQueueDto,
   PlaylistDetailDto,
   PlaylistSummaryDto,
+  PoolTrackDto,
   SearchResultDto,
   SortOrder,
   StarredBundleDto,
@@ -132,6 +138,29 @@ export const api = {
     page?: number
     page_size?: number
   }) => requestJson<PagedResult<TrackDto>>(`/music/tracks${toQuery(params)}`),
+  listPool: (
+    params: {
+      library_id?: string
+      album_id?: string
+      artist_id?: string
+      genre?: string
+      search?: string
+      sort_by?: TrackSortField
+      sort_order?: SortOrder
+      page?: number
+      page_size?: number
+    } = {},
+  ) => requestJson<PagedResult<PoolTrackDto>>(`/music/pool${toQuery(params)}`),
+  bindItems: (input: BindMusicItemsInput) =>
+    requestJson<BindMediaItemsResultDto>('/music/bindings', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  unbindItem: (trackId: string, userId?: string | null) =>
+    requestJson<UnbindMediaItemResultDto>(
+      `/music/bindings/${encodeURIComponent(trackId)}${toQuery({ user_id: userId })}`,
+      { method: 'DELETE' },
+    ),
   randomTracks: (size = 20, genre?: string) =>
     requestJson<TrackDto[]>(`/music/tracks/random${toQuery({ size, genre })}`),
   recentTracks: (limit = 50) =>

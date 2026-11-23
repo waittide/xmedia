@@ -5,6 +5,7 @@ import type { RouteLocationRaw } from 'vue-router'
 import {
   LuChevronRight,
   LuCompass,
+  LuDatabase,
   LuFolderPlus,
   LuRefreshCw,
   LuUpload,
@@ -134,6 +135,10 @@ const resolvedExploreOnlineTo = computed<RouteLocationRaw>(
   () => props.exploreOnlineTo ?? libraryRoute(props.domain, { scope: 'online' }),
 )
 
+const resolvedBrowsePoolTo = computed<RouteLocationRaw>(() =>
+  libraryRoute(props.domain, { scope: 'pool' }),
+)
+
 const gridClass = computed(() => mediaGridClassFor(resolvedAspect.value))
 
 const skeletonCount = computed(() => (resolvedAspect.value === 'video' ? 8 : 12))
@@ -157,6 +162,7 @@ const resolvedEmptyDescription = computed(() => {
 })
 
 const addLibraryLabel = computed(() => t('domainUi.addLibraryBtn'))
+const browsePoolLabel = computed(() => t('domainUi.browsePoolBtn'))
 const exploreOnlineLabel = computed(() => t('domainUi.exploreOnlineBtn'))
 const uploadLabel = computed(() => t('common.uploadMedia'))
 
@@ -256,6 +262,9 @@ function itemKey(item: MediaItemVM, idx: number): string {
             >
               {{ uploadLabel }}
             </MdButton>
+            <MdButton variant="tonal" :icon="LuDatabase" :to="resolvedBrowsePoolTo">
+              {{ browsePoolLabel }}
+            </MdButton>
             <MdButton
               v-if="hasOnlineSources"
               variant="text"
@@ -265,14 +274,19 @@ function itemKey(item: MediaItemVM, idx: number): string {
               {{ exploreOnlineLabel }}
             </MdButton>
           </template>
-          <MdButton
-            v-else-if="hasOnlineSources"
-            variant="tonal"
-            :icon="LuCompass"
-            :to="resolvedExploreOnlineTo"
-          >
-            {{ exploreOnlineLabel }}
-          </MdButton>
+          <template v-else>
+            <MdButton variant="filled" :icon="LuDatabase" :to="resolvedBrowsePoolTo">
+              {{ browsePoolLabel }}
+            </MdButton>
+            <MdButton
+              v-if="hasOnlineSources"
+              variant="tonal"
+              :icon="LuCompass"
+              :to="resolvedExploreOnlineTo"
+            >
+              {{ exploreOnlineLabel }}
+            </MdButton>
+          </template>
         </slot>
       </template>
     </MdEmptyState>

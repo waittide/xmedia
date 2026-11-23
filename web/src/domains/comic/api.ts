@@ -1,5 +1,10 @@
 import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
-import type { CoreLibraryDto } from '@/types/api'
+import type {
+  BindMediaItemsInput,
+  BindMediaItemsResultDto,
+  CoreLibraryDto,
+  UnbindMediaItemResultDto,
+} from '@/types/api'
 import type {
   ChapterItemDto,
   ChapterMetadataPatch,
@@ -8,6 +13,7 @@ import type {
   EffectiveReaderPrefDto,
   HomeOverviewDto,
   Library,
+  PoolSeriesSummaryDto,
   ReaderContextDto,
   ScanResultDto,
   Series,
@@ -127,6 +133,28 @@ export const api = {
     if (filter.sort_dir) params.set('sort_dir', filter.sort_dir)
     const qs = params.toString()
     return requestJson<SeriesSummaryDto[]>(`/comic/series${qs ? `?${qs}` : ''}`)
+  },
+
+  listPool: (filter: { search?: string; library_id?: string } = {}) => {
+    const params = new URLSearchParams()
+    if (filter.search) params.set('search', filter.search)
+    if (filter.library_id) params.set('library_id', filter.library_id)
+    const qs = params.toString()
+    return requestJson<PoolSeriesSummaryDto[]>(`/comic/pool${qs ? `?${qs}` : ''}`)
+  },
+
+  bindItems: (input: BindMediaItemsInput) =>
+    requestJson<BindMediaItemsResultDto>('/comic/bindings', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  unbindItem: (seriesId: string, userId?: string | null) => {
+    const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : ''
+    return requestJson<UnbindMediaItemResultDto>(
+      `/comic/bindings/${encodeURIComponent(seriesId)}${qs}`,
+      { method: 'DELETE' },
+    )
   },
 
   getSeriesDetail: (id: string) =>

@@ -114,6 +114,10 @@ export interface BookSummaryDto {
   updated_at: string
 }
 
+export interface PoolBookSummaryDto extends BookSummaryDto {
+  bound: boolean
+}
+
 export interface PagedResult<T> {
   items: T[]
   total: number

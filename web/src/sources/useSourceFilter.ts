@@ -210,6 +210,9 @@ export function useSourceFilter(
     if (f.scope === 'local') {
       return localDescriptor.value
     }
+    if (f.scope === 'pool') {
+      return null
+    }
     if (!f.sourceId) {
       return null
     }
@@ -248,11 +251,12 @@ export function useSourceFilter(
   async function setScope(scope: SourceScope): Promise<void> {
     const nextQuery: LocationQueryRaw = {}
 
-    // Preserve q (and continue/favorites tab when applicable); drop source/page.
+    // Preserve q; preserve continue/favorites tab only for local scope; drop source/page.
     if (typeof route.query.q === 'string' && route.query.q.trim()) {
       nextQuery.q = route.query.q
     }
     if (
+      scope === 'local' &&
       typeof route.query.tab === 'string' &&
       (route.query.tab === 'continue' || route.query.tab === 'favorites')
     ) {

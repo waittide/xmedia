@@ -145,7 +145,7 @@ export function isAvailabilityBlocked(
 // Unified Frontend Source & Item Contract (§3.1 / §3.2)
 // ---------------------------------------------------------------------------
 
-export type SourceScope = 'local' | 'online' | 'remote'
+export type SourceScope = 'local' | 'pool' | 'online' | 'remote'
 export type SourceHealth = 'ok' | 'failing' | 'untested'
 export type SourceProtocol = 'rule' | 'opds' | 'subsonic'
 

@@ -125,6 +125,19 @@ export interface ShowSummaryDto {
   online_tracking?: OnlineTrackedShowDto | null
 }
 
+export interface PoolVideoSummaryDto extends VideoSummaryDto {
+  bound: boolean
+}
+
+export interface PoolShowSummaryDto extends ShowSummaryDto {
+  bound: boolean
+}
+
+export interface VideoPoolDto {
+  movies: PoolVideoSummaryDto[]
+  shows: PoolShowSummaryDto[]
+}
+
 export interface SeasonGroupDto {
   season_number: number
   episodes: VideoSummaryDto[]

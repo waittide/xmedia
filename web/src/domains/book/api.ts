@@ -1,5 +1,10 @@
 import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
-import type { CoreLibraryDto } from '@/types/api'
+import type {
+  BindMediaItemsInput,
+  BindMediaItemsResultDto,
+  CoreLibraryDto,
+  UnbindMediaItemResultDto,
+} from '@/types/api'
 import type {
   BookBookmarkItemDto,
   BookFormat,
@@ -10,6 +15,7 @@ import type {
   FacetCount,
   LibraryDto,
   PagedResult,
+  PoolBookSummaryDto,
   ReadingProgress,
   ShelfDto,
   SortOrder,
@@ -96,6 +102,35 @@ export const api = {
     }
     const qs = sp.toString()
     return requestJson<PagedResult<BookSummaryDto>>(`/book/books${qs ? `?${qs}` : ''}`)
+  },
+  listPool: (params: {
+    keyword?: string
+    library_id?: string
+    sort_by?: BookSortField
+    sort_order?: SortOrder
+    page?: number
+    page_size?: number
+  } = {}) => {
+    const sp = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') {
+        sp.set(k, String(v))
+      }
+    }
+    const qs = sp.toString()
+    return requestJson<PagedResult<PoolBookSummaryDto>>(`/book/pool${qs ? `?${qs}` : ''}`)
+  },
+  bindItems: (input: BindMediaItemsInput) =>
+    requestJson<BindMediaItemsResultDto>('/book/bindings', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  unbindItem: (bookId: string, userId?: string | null) => {
+    const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : ''
+    return requestJson<UnbindMediaItemResultDto>(
+      `/book/bindings/${encodeURIComponent(bookId)}${qs}`,
+      { method: 'DELETE' },
+    )
   },
   batchBooks: (payload: {
     book_ids: string[]

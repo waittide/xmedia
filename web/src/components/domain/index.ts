@@ -17,6 +17,7 @@ export {
 
 export { default as DomainHomeTemplate } from './DomainHomeTemplate.vue'
 export { default as DomainLibraryTemplate } from './DomainLibraryTemplate.vue'
+export { default as DomainPoolSection } from './DomainPoolSection.vue'
 export { default as MediaDetailTemplate } from './MediaDetailTemplate.vue'
 export type { MediaDetailSpec, MediaDetailTag } from './MediaDetailTemplate.vue'
 export { default as ImmersiveMediaTemplate } from './ImmersiveMediaTemplate.vue'

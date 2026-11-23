@@ -114,3 +114,20 @@ export interface SystemOverviewDto {
   }[]
   libraries: CoreLibraryDto[]
 }
+
+export interface BindMediaItemsInput {
+  item_ids?: string[]
+  library_id?: string | null
+  user_id?: string | null
+}
+
+export interface BindMediaItemsResultDto {
+  bound_count: number
+  total_requested: number
+}
+
+export interface UnbindMediaItemResultDto {
+  unbound: boolean
+  remaining_bindings: number
+  deleted_from_pool: boolean
+}

@@ -1,5 +1,10 @@
 import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
-import type { CoreLibraryDto } from '@/types/api'
+import type {
+  BindMediaItemsInput,
+  BindMediaItemsResultDto,
+  CoreLibraryDto,
+  UnbindMediaItemResultDto,
+} from '@/types/api'
 import type {
   ShowDetailDto,
   ShowMetadataPatch,
@@ -11,6 +16,7 @@ import type {
   VideoKindFilter,
   VideoLibraryDto,
   VideoMetadataPatch,
+  VideoPoolDto,
   VideoQualityProfile,
   VideoShelfDetailDto,
   VideoShelfDto,
@@ -104,6 +110,18 @@ export const api = {
     sort_by?: VideoSortBy
     sort_desc?: boolean
   } = {}) => requestJson<VideoSummaryDto[]>(`/video/videos${toQuery(params)}`),
+  listPool: (params: { library_id?: string; search?: string } = {}) =>
+    requestJson<VideoPoolDto>(`/video/pool${toQuery(params)}`),
+  bindItems: (input: BindMediaItemsInput) =>
+    requestJson<BindMediaItemsResultDto>('/video/bindings', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  unbindItem: (id: string, userId?: string | null) =>
+    requestJson<UnbindMediaItemResultDto>(
+      `/video/bindings/${encodeURIComponent(id)}${toQuery({ user_id: userId })}`,
+      { method: 'DELETE' },
+    ),
   getVideo: (id: string) => requestJson<VideoDetailDto>(`/video/videos/${encodeURIComponent(id)}`),
   updateVideo: (id: string, patch: VideoMetadataPatch) =>
     requestJson<VideoSummaryDto>(`/video/videos/${encodeURIComponent(id)}`, {

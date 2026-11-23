@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuCloud, LuGlobe, LuHardDrive } from 'vue-icons-plus/lu'
+import { LuCloud, LuDatabase, LuGlobe, LuHardDrive } from 'vue-icons-plus/lu'
 import { MdSegmentedButton, type SegmentedOption } from '@/components/ui'
 import { useSourceFilter, type SourceScope } from '@/sources'
 import type { MediaKind } from '@/types/api'
@@ -14,12 +14,15 @@ const props = withDefaults(
     domain?: MediaKind
     /** Synchronize clicks to URL query (`scope=online`). Defaults to `true` when `domain` is given without `modelValue`. */
     syncUrl?: boolean
+    /** Show the local server pool segment (`scope=pool`). Defaults to `true`. */
+    showPool?: boolean
     /** Show the remote OPDS/Subsonic segment. Defaults to `sourceFilter.hasRemoteSources` when `domain` is given. */
     showRemote?: boolean
     size?: 'sm' | 'md'
     fullWidth?: boolean
     disabled?: boolean
     localLabel?: string
+    poolLabel?: string
     onlineLabel?: string
     remoteLabel?: string
     ariaLabel?: string
@@ -28,11 +31,13 @@ const props = withDefaults(
     modelValue: undefined,
     domain: undefined,
     syncUrl: undefined,
+    showPool: true,
     showRemote: undefined,
     size: 'sm',
     fullWidth: false,
     disabled: false,
     localLabel: '',
+    poolLabel: '',
     onlineLabel: '',
     remoteLabel: '',
     ariaLabel: '',
@@ -76,12 +81,19 @@ const options = computed<readonly SegmentedOption<SourceScope>[]>(() => {
       label: props.localLabel || t('domainUi.scopeLocal'),
       icon: LuHardDrive,
     },
-    {
-      value: 'online',
-      label: props.onlineLabel || t('domainUi.scopeOnline'),
-      icon: LuGlobe,
-    },
   ]
+  if (props.showPool) {
+    list.push({
+      value: 'pool',
+      label: props.poolLabel || t('domainUi.scopePool'),
+      icon: LuDatabase,
+    })
+  }
+  list.push({
+    value: 'online',
+    label: props.onlineLabel || t('domainUi.scopeOnline'),
+    icon: LuGlobe,
+  })
   if (includeRemote.value) {
     list.push({
       value: 'remote',

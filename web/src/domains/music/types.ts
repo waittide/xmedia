@@ -112,6 +112,18 @@ export interface TrackDto {
   online_tracking?: OnlineTrackedTrackDto | null
 }
 
+export interface PoolTrackDto extends TrackDto {
+  bound: boolean
+}
+
+export interface BindMusicItemsInput {
+  item_ids?: string[]
+  album_id?: string | null
+  artist_id?: string | null
+  library_id?: string | null
+  user_id?: string | null
+}
+
 export interface AlbumDto {
   id: string
   library_id: string
