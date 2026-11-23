@@ -52,7 +52,7 @@ function handleSelect(): void {
         :class="checked ? 'bg-[var(--md-sys-color-primary)]' : 'bg-[var(--md-sys-color-on-surface)]'"
       />
     </span>
-    <span v-if="label || $slots.default" class="md-body-medium text-[var(--md-sys-color-on-surface)]">
+    <span v-if="label || $slots.default" class="text-body-medium text-on-surface">
       <slot>{{ label }}</slot>
     </span>
   </button>

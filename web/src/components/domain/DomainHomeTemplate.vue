@@ -3,13 +3,9 @@ import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RouteLocationRaw } from 'vue-router'
 import {
-  LuBookOpen,
   LuChevronRight,
   LuCompass,
-  LuFilm,
   LuFolderPlus,
-  LuImage,
-  LuMusic,
   LuRefreshCw,
   LuUpload,
 } from 'vue-icons-plus/lu'
@@ -19,10 +15,15 @@ import { libraryRoute, type MediaItemVM } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import type { MediaKind } from '@/types/api'
 import MediaErrorState from './MediaErrorState.vue'
-import MediaItemCard, {
+import MediaItemCard from './MediaItemCard.vue'
+import {
+  mediaGridClassFor,
+  resolveDomainAspect,
+  resolveDomainCoverStyle,
+  resolveDomainIcon,
   type MediaItemCardAspect,
   type MediaItemCoverStyle,
-} from './MediaItemCard.vue'
+} from './mediaLayout'
 
 const props = withDefaults(
   defineProps<{
@@ -92,33 +93,15 @@ const resolvedIsAdmin = computed(() =>
   props.isAdmin !== undefined ? props.isAdmin : authStore.isAdmin,
 )
 
-const resolvedAspect = computed<MediaItemCardAspect>(() => {
-  if (props.aspect) return props.aspect
-  if (props.domain === 'music') return 'square'
-  if (props.domain === 'video') return 'video'
-  return 'poster'
-})
+const resolvedAspect = computed<MediaItemCardAspect>(() =>
+  resolveDomainAspect(props.domain, props.aspect),
+)
 
-const resolvedCoverStyle = computed<MediaItemCoverStyle>(() => {
-  if (props.coverStyle) return props.coverStyle
-  if (props.domain === 'book' || props.domain === 'comic') return 'book'
-  if (props.domain === 'music') return 'album'
-  return 'plain'
-})
+const resolvedCoverStyle = computed<MediaItemCoverStyle>(() =>
+  resolveDomainCoverStyle(props.domain, props.coverStyle),
+)
 
-const domainIcon = computed<Component>(() => {
-  switch (props.domain) {
-    case 'comic':
-      return LuImage
-    case 'music':
-      return LuMusic
-    case 'video':
-      return LuFilm
-    case 'book':
-    default:
-      return LuBookOpen
-  }
-})
+const domainIcon = computed<Component>(() => resolveDomainIcon(props.domain))
 
 const domainLabel = computed(() => t(`app.domains.${props.domain}`))
 const resolvedTitle = computed(() => props.title || domainLabel.value)
@@ -151,11 +134,7 @@ const resolvedExploreOnlineTo = computed<RouteLocationRaw>(
   () => props.exploreOnlineTo ?? libraryRoute(props.domain, { scope: 'online' }),
 )
 
-const gridClass = computed(() =>
-  resolvedAspect.value === 'video'
-    ? 'grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
-    : 'grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6',
-)
+const gridClass = computed(() => mediaGridClassFor(resolvedAspect.value))
 
 const skeletonCount = computed(() => (resolvedAspect.value === 'video' ? 8 : 12))
 const showSkeleton = useDelayedLoading(() => props.loading && !hasAnyContent.value)

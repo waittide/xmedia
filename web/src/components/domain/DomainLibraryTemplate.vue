@@ -1,13 +1,7 @@
 <script setup lang="ts">
 import { computed, useSlots, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import {
-  LuBookOpen,
-  LuFilm,
-  LuImage,
-  LuMusic,
-  LuSlidersHorizontal,
-} from 'vue-icons-plus/lu'
+import { LuSlidersHorizontal } from 'vue-icons-plus/lu'
 import {
   MdButton,
   MdChip,
@@ -22,7 +16,11 @@ import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import type { SourceScope } from '@/sources'
 import type { MediaKind } from '@/types/api'
 import MediaErrorState from './MediaErrorState.vue'
-import type { MediaItemCardAspect } from './MediaItemCard.vue'
+import {
+  resolveDomainAspect,
+  resolveDomainIcon,
+  type MediaItemCardAspect,
+} from './mediaLayout'
 import PaginationBar, { type PaginationMode } from './PaginationBar.vue'
 import SourceScopeBar from './SourceScopeBar.vue'
 
@@ -117,27 +115,11 @@ const emit = defineEmits<{
 const slots = useSlots()
 const { t } = useI18n()
 
-const resolvedAspect = computed<MediaItemCardAspect>(() => {
-  if (props.skeletonAspect) return props.skeletonAspect
-  if (props.domain === 'music') return 'square'
-  if (props.domain === 'video') return 'video'
-  return 'poster'
-})
+const resolvedAspect = computed<MediaItemCardAspect>(() =>
+  resolveDomainAspect(props.domain, props.skeletonAspect),
+)
 
-const domainIcon = computed<Component>(() => {
-  if (props.emptyIcon) return props.emptyIcon
-  switch (props.domain) {
-    case 'comic':
-      return LuImage
-    case 'music':
-      return LuMusic
-    case 'video':
-      return LuFilm
-    case 'book':
-    default:
-      return LuBookOpen
-  }
-})
+const domainIcon = computed<Component>(() => resolveDomainIcon(props.domain, props.emptyIcon))
 
 const resolvedTitle = computed(() => {
   if (props.title) return props.title

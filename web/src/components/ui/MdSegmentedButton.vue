@@ -116,8 +116,8 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
             ? 'h-9 gap-1 px-1.5 text-xs'
             : 'h-9 gap-1.5 px-3.5 text-xs'
           : fullWidth
-            ? 'md-label-large h-10 gap-1.5 px-2.5'
-            : 'md-label-large h-10 gap-1.5 px-4',
+            ? 'text-label-large h-10 gap-1.5 px-2.5'
+            : 'text-label-large h-10 gap-1.5 px-4',
         idx > 0 ? 'border-l border-[var(--md-sys-color-outline-variant)]/80' : '',
         modelValue === opt.value
           ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'

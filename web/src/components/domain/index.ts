@@ -4,11 +4,16 @@ export { default as PaginationBar } from './PaginationBar.vue'
 export type { PaginationMode } from './PaginationBar.vue'
 export { default as SourceScopeBar } from './SourceScopeBar.vue'
 export { default as MediaItemCard } from './MediaItemCard.vue'
-export type {
-  MediaItemCardAspect,
-  MediaItemCardLayout,
-  MediaItemCoverStyle,
-} from './MediaItemCard.vue'
+export {
+  aspectClassFor,
+  mediaGridClassFor,
+  resolveDomainAspect,
+  resolveDomainCoverStyle,
+  resolveDomainIcon,
+  type MediaItemCardAspect,
+  type MediaItemCardLayout,
+  type MediaItemCoverStyle,
+} from './mediaLayout'
 
 export { default as DomainHomeTemplate } from './DomainHomeTemplate.vue'
 export { default as DomainLibraryTemplate } from './DomainLibraryTemplate.vue'

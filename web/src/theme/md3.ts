@@ -2,8 +2,9 @@
  * Single-seed Material Design 3 dynamic color.
  *
  * One seed color produces the full light & dark MD3 color schemes (tonal-spot variant):
- * five tonal palettes (primary / secondary / tertiary / neutral / neutral-variant) plus
- * error / success / warning palettes, sampled at the official MD3 tones.
+ * five core tonal palettes (primary / secondary / tertiary / neutral / neutral-variant) plus
+ * MD3 custom extended semantic palettes (error, and fixed-hue success / warning extensions
+ * following the same tone 40/100/90/10 light and 80/20/30/90 dark contrast contract).
  *
  * Tone is CIE L* (identical to HCT tone); hue & chroma are expressed in OKLCH and gamut-mapped
  * by reducing chroma, which keeps every role at its exact MD3 tone and therefore inherits the
@@ -440,6 +441,7 @@ export function normalizeThemeMode(raw: unknown): ThemeMode {
 }
 
 const STYLE_ELEMENT_ID = 'md3-dynamic-scheme'
+const THEME_COLOR_CACHE_KEY = 'xmedia.theme_color_cache'
 
 /**
  * Applies a seed + mode to the document. When `seedHex` is the default seed, the static
@@ -468,11 +470,27 @@ export function applyMd3Theme(
     style.textContent = buildSchemeCss(pair)
   }
 
+  const lightSurface = pair.light['surface-container']
+  const darkSurface = pair.dark['surface-container']
+
   let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
   if (!meta) {
     meta = document.createElement('meta')
     meta.name = 'theme-color'
     document.head.appendChild(meta)
   }
-  meta.content = (isDark ? pair.dark : pair.light)['surface-container']
+  meta.content = isDark ? darkSurface : lightSurface
+
+  try {
+    if (seed === DEFAULT_SEED_COLOR) {
+      localStorage.removeItem(THEME_COLOR_CACHE_KEY)
+    } else {
+      localStorage.setItem(
+        THEME_COLOR_CACHE_KEY,
+        JSON.stringify({ light: lightSurface, dark: darkSurface }),
+      )
+    }
+  } catch {
+    // ignore storage quota/privacy errors
+  }
 }

@@ -4,14 +4,10 @@ import { useI18n } from 'vue-i18n'
 import type { RouteLocationRaw } from 'vue-router'
 import {
   LuAlertCircle,
-  LuBookOpen,
   LuChevronDown,
   LuChevronUp,
   LuCompass,
-  LuFilm,
   LuGlobe,
-  LuImage,
-  LuMusic,
   LuRefreshCw,
   LuSearch,
   LuSettings2,
@@ -20,6 +16,10 @@ import {
   MediaErrorState,
   MediaItemCard,
   PaginationBar,
+  mediaGridClassFor,
+  resolveDomainAspect,
+  resolveDomainCoverStyle,
+  resolveDomainIcon,
   type MediaItemCardAspect,
   type MediaItemCoverStyle,
 } from '@/components/domain'
@@ -136,35 +136,17 @@ const resolvedSettingsTo = computed<RouteLocationRaw>(
   () => props.settingsTo ?? { path: `/${props.domain}/settings`, query: { tab: 'sources' } },
 )
 
-const resolvedAspect = computed<MediaItemCardAspect>(() => {
-  if (props.itemAspect) return props.itemAspect
-  if (props.domain === 'music') return 'square'
-  if (props.domain === 'video') return 'video'
-  return 'poster'
-})
+const resolvedAspect = computed<MediaItemCardAspect>(() =>
+  resolveDomainAspect(props.domain, props.itemAspect),
+)
 
-const resolvedCoverStyle = computed<MediaItemCoverStyle>(() => {
-  if (props.itemCoverStyle) return props.itemCoverStyle
-  if (props.domain === 'book' || props.domain === 'comic') return 'book'
-  if (props.domain === 'music') return 'album'
-  return 'plain'
-})
+const resolvedCoverStyle = computed<MediaItemCoverStyle>(() =>
+  resolveDomainCoverStyle(props.domain, props.itemCoverStyle),
+)
 
 const domainLabel = computed(() => t(`onlineSources.domainLabel.${props.domain}`))
 
-const domainIcon = computed<Component>(() => {
-  switch (props.domain) {
-    case 'comic':
-      return LuImage
-    case 'music':
-      return LuMusic
-    case 'video':
-      return LuFilm
-    case 'book':
-    default:
-      return LuBookOpen
-  }
-})
+const domainIcon = computed<Component>(() => resolveDomainIcon(props.domain))
 
 const resolvedSearchPlaceholder = computed(() => {
   if (props.searchPlaceholder) return props.searchPlaceholder
@@ -293,11 +275,7 @@ const showIdleState = computed(
     resolvedItemCount.value === 0,
 )
 
-const gridClass = computed(() =>
-  resolvedAspect.value === 'video'
-    ? 'grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
-    : 'grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6',
-)
+const gridClass = computed(() => mediaGridClassFor(resolvedAspect.value))
 
 const skeletonCount = computed(() => (resolvedAspect.value === 'video' ? 8 : 12))
 

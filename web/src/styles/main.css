@@ -431,112 +431,6 @@ a,
 }
 
 @layer components {
-  /* MD3 Type Scale */
-  .md-display-large {
-    font-size: 3.5625rem;
-    line-height: 4rem;
-    font-weight: 400;
-    letter-spacing: -0.015625rem;
-  }
-
-  .md-display-medium {
-    font-size: 2.8125rem;
-    line-height: 3.25rem;
-    font-weight: 400;
-    letter-spacing: 0;
-  }
-
-  .md-display-small {
-    font-size: 2.25rem;
-    line-height: 2.75rem;
-    font-weight: 400;
-    letter-spacing: 0;
-  }
-
-  .md-headline-large {
-    font-size: 2rem;
-    line-height: 2.5rem;
-    font-weight: 400;
-    letter-spacing: 0;
-  }
-
-  .md-headline-medium {
-    font-size: 1.75rem;
-    line-height: 2.25rem;
-    font-weight: 400;
-    letter-spacing: 0;
-  }
-
-  .md-headline-small {
-    font-size: 1.5rem;
-    line-height: 2rem;
-    font-weight: 400;
-    letter-spacing: 0;
-  }
-
-  .md-title-large {
-    font-size: 1.375rem;
-    line-height: 1.75rem;
-    font-weight: 400;
-    letter-spacing: 0;
-  }
-
-  .md-title-medium {
-    font-size: 1rem;
-    line-height: 1.5rem;
-    font-weight: 500;
-    letter-spacing: 0.009375rem;
-  }
-
-  .md-title-small {
-    font-size: 0.875rem;
-    line-height: 1.25rem;
-    font-weight: 500;
-    letter-spacing: 0.00625rem;
-  }
-
-  .md-body-large {
-    font-size: 1rem;
-    line-height: 1.5rem;
-    font-weight: 400;
-    letter-spacing: 0.03125rem;
-  }
-
-  .md-body-medium {
-    font-size: 0.875rem;
-    line-height: 1.25rem;
-    font-weight: 400;
-    letter-spacing: 0.015625rem;
-  }
-
-  .md-body-small {
-    font-size: 0.75rem;
-    line-height: 1rem;
-    font-weight: 400;
-    letter-spacing: 0.025rem;
-  }
-
-  .md-label-large {
-    font-size: 0.875rem;
-    line-height: 1.25rem;
-    font-weight: 500;
-    letter-spacing: 0.00625rem;
-  }
-
-  .md-label-medium {
-    font-size: 0.75rem;
-    line-height: 1rem;
-    font-weight: 500;
-    letter-spacing: 0.03125rem;
-  }
-
-  .md-label-small {
-    font-size: 0.6875rem;
-    line-height: 1rem;
-    font-weight: 500;
-    letter-spacing: 0.03125rem;
-  }
-
   /* MD3 State Layer mixin */
   .md-state,
   .md-btn,
@@ -590,7 +484,6 @@ a,
   }
 
   .md-state[data-dragging="true"]::after,
-  .md-state.md-dragging::after,
   .md-btn[data-dragging="true"]::after,
   .md-chip[data-dragging="true"]::after {
     opacity: 0.16;
@@ -760,16 +653,10 @@ a,
     font-weight: 600;
   }
 
-  /* MD3 Card Variants (spec: medium 12px corner; tonal containers, no hairline on filled/elevated) */
+  /* MD3 Card Variants (spec: medium 12px corner; tonal containers, no hairline on filled) */
   .md-card-filled {
     background-color: var(--md-sys-color-surface-container-highest);
     border-radius: var(--md-sys-shape-corner-md);
-  }
-
-  .md-card-elevated {
-    background-color: var(--md-sys-color-surface-container-low);
-    border-radius: var(--md-sys-shape-corner-md);
-    box-shadow: var(--md-sys-elevation-1);
   }
 
   .md-card-outlined {
@@ -818,12 +705,6 @@ a,
     background-color: transparent;
   }
 
-  /* MD3 Navigation Active Indicator Pill */
-  .md-nav-indicator {
-    background-color: var(--md-sys-color-secondary-container);
-    color: var(--md-sys-color-on-secondary-container);
-  }
-
   /* Low-precedence display helper so utility overrides (hidden, sm:inline-flex) always win */
   .md-inline-flex {
     display: inline-flex;
@@ -841,10 +722,6 @@ a,
 
   .safe-pl {
     padding-left: var(--safe-area-left);
-  }
-
-  .safe-pr {
-    padding-right: var(--safe-area-right);
   }
 
   .safe-px {
@@ -1045,7 +922,6 @@ body,
 main,
 aside,
 nav,
-.md-scroll,
 [class*="overflow-y-auto"],
 [class*="overflow-x-auto"],
 [class*="overflow-auto"] {
@@ -1058,7 +934,6 @@ body::-webkit-scrollbar,
 main::-webkit-scrollbar,
 aside::-webkit-scrollbar,
 nav::-webkit-scrollbar,
-.md-scroll::-webkit-scrollbar,
 [class*="overflow-y-auto"]::-webkit-scrollbar,
 [class*="overflow-x-auto"]::-webkit-scrollbar,
 [class*="overflow-auto"]::-webkit-scrollbar {
@@ -1071,7 +946,6 @@ body::-webkit-scrollbar-thumb,
 main::-webkit-scrollbar-thumb,
 aside::-webkit-scrollbar-thumb,
 nav::-webkit-scrollbar-thumb,
-.md-scroll::-webkit-scrollbar-thumb,
 [class*="overflow-y-auto"]::-webkit-scrollbar-thumb,
 [class*="overflow-x-auto"]::-webkit-scrollbar-thumb,
 [class*="overflow-auto"]::-webkit-scrollbar-thumb {
@@ -1084,7 +958,6 @@ body::-webkit-scrollbar-thumb:hover,
 main::-webkit-scrollbar-thumb:hover,
 aside::-webkit-scrollbar-thumb:hover,
 nav::-webkit-scrollbar-thumb:hover,
-.md-scroll::-webkit-scrollbar-thumb:hover,
 [class*="overflow-y-auto"]::-webkit-scrollbar-thumb:hover,
 [class*="overflow-x-auto"]::-webkit-scrollbar-thumb:hover,
 [class*="overflow-auto"]::-webkit-scrollbar-thumb:hover {
@@ -1096,7 +969,6 @@ body::-webkit-scrollbar-track,
 main::-webkit-scrollbar-track,
 aside::-webkit-scrollbar-track,
 nav::-webkit-scrollbar-track,
-.md-scroll::-webkit-scrollbar-track,
 [class*="overflow-y-auto"]::-webkit-scrollbar-track,
 [class*="overflow-x-auto"]::-webkit-scrollbar-track,
 [class*="overflow-auto"]::-webkit-scrollbar-track {

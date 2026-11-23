@@ -25,7 +25,11 @@ import {
 } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import MediaErrorState from './MediaErrorState.vue'
-import type { MediaItemCardAspect, MediaItemCoverStyle } from './MediaItemCard.vue'
+import {
+  aspectClassFor,
+  type MediaItemCardAspect,
+  type MediaItemCoverStyle,
+} from './mediaLayout'
 
 export interface MediaDetailTag {
   label: string
@@ -151,17 +155,7 @@ const normalizedProgress = computed<number | null>(() => {
   return Math.min(100, Math.max(1, Math.round(raw)))
 })
 
-const aspectClass = computed(() => {
-  switch (props.aspect) {
-    case 'square':
-      return 'aspect-square'
-    case 'video':
-      return 'aspect-video'
-    case 'poster':
-    default:
-      return 'aspect-[2/3]'
-  }
-})
+const aspectClass = computed(() => aspectClassFor(props.aspect))
 
 const coverSizeClass = computed(() => {
   switch (props.aspect) {

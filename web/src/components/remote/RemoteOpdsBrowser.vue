@@ -11,7 +11,6 @@ import {
   LuDownload,
   LuFolder,
   LuHome,
-  LuInfo,
   LuLoader2,
   LuPlus,
   LuRefreshCw,
@@ -422,7 +421,7 @@ defineExpose({
       <template v-else-if="opdsFeed">
         <!-- Navigation Chips -->
         <section v-if="opdsFeed.nav_links.length > 0" class="space-y-2.5">
-          <h2 class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]">
+          <h2 class="text-label-medium text-on-surface-variant">
             {{ t('remote.opdsCategories') }}
           </h2>
           <div class="flex flex-wrap gap-2">
@@ -450,7 +449,7 @@ defineExpose({
         <section v-if="opdsFeed.entries.length > 0" class="space-y-3">
           <h2
             v-if="opdsFeed.nav_links.length > 0"
-            class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]"
+            class="text-label-medium text-on-surface-variant"
           >
             {{ t('remote.opdsBooks') }}
           </h2>
@@ -461,15 +460,12 @@ defineExpose({
               :key="card.entry.id"
               class="group flex flex-col"
             >
-              <!-- 2:3 Portrait Cover -->
-              <div
-                role="button"
-                tabindex="0"
+              <!-- Pure 2:3 Portrait Cover (zero text/button overlays) -->
+              <button
+                type="button"
                 :aria-label="card.entry.title"
-                class="book-shadow relative aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-low)] outline-none transition duration-200 group-hover:-translate-y-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
+                class="book-shadow relative block aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-corner-md bg-surface-container-low text-left outline-none transition duration-200 group-hover:-translate-y-1 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
                 @click="opdsDetailEntry = card.entry"
-                @keydown.enter.prevent="opdsDetailEntry = card.entry"
-                @keydown.space.prevent="opdsDetailEntry = card.entry"
               >
                 <img
                   v-if="card.entry.cover_url && !opdsCoverFailed[card.entry.id]"
@@ -482,60 +478,39 @@ defineExpose({
                 />
                 <div
                   v-else
-                  class="flex h-full w-full flex-col justify-end bg-gradient-to-br from-[var(--md-sys-color-surface-container-high)] via-[var(--md-sys-color-surface-container)] to-[var(--md-sys-color-primary-container)]/35 p-3.5 text-left"
+                  class="flex h-full w-full flex-col justify-end bg-gradient-to-br from-surface-container-high via-surface-container to-primary-container/35 p-3.5 text-left"
                 >
-                  <p
-                    class="line-clamp-3 text-sm font-bold leading-snug text-[var(--md-sys-color-on-surface)]"
-                  >
+                  <p class="line-clamp-3 text-title-small text-on-surface">
                     {{ card.entry.title }}
                   </p>
-                  <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                  <p class="mt-1 truncate text-body-small text-on-surface-variant">
                     {{ card.entry.authors.join(', ') || t('remote.opdsUnknownAuthor') }}
                   </p>
                 </div>
-
-                <!-- Format badge -->
-                <span
-                  v-if="card.selectedDownload"
-                  class="pointer-events-none absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-white backdrop-blur-sm"
-                >
-                  {{ card.selectedDownload.format || 'FILE' }}
-                </span>
-
-                <!-- Info button -->
-                <button
-                  type="button"
-                  :title="t('remote.opdsDetailTitle')"
-                  :aria-label="t('remote.opdsDetailTitle')"
-                  class="absolute top-2 right-2 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full bg-black/55 text-white opacity-100 backdrop-blur-sm transition hover:bg-black/75 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                  @click.stop="opdsDetailEntry = card.entry"
-                >
-                  <LuInfo class="h-3.5 w-3.5" />
-                </button>
-              </div>
+              </button>
 
               <!-- Title & Author -->
               <div class="mt-2.5 min-w-0 px-0.5">
                 <button
                   type="button"
-                  class="block w-full cursor-pointer truncate text-left text-sm font-semibold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
+                  class="block w-full cursor-pointer truncate text-left text-title-small text-on-surface transition-colors group-hover:text-primary"
                   :title="card.entry.title"
                   @click="opdsDetailEntry = card.entry"
                 >
                   {{ card.entry.title }}
                 </button>
-                <p class="mt-0.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                <p class="mt-0.5 truncate text-body-small text-on-surface-variant">
                   {{ card.entry.authors.join(', ') || t('remote.opdsUnknownAuthor') }}
                 </p>
               </div>
 
-              <!-- Compact Import Action -->
-              <div class="mt-2 flex items-center gap-1.5">
+              <!-- Import Action & Format Pill (metadata kept below cover) -->
+              <div class="mt-2 flex items-center gap-2">
                 <template v-if="card.selectedDownload">
                   <button
                     v-if="card.entry.downloads.length > 1"
                     type="button"
-                    class="h-7 shrink-0 rounded-full border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-2 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-surface-variant)] hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-surface)]"
+                    class="md-state md-touch-target h-9 shrink-0 cursor-pointer rounded-corner-full border border-outline-variant bg-surface-container-low px-2.5 font-mono text-label-small uppercase text-on-surface-variant hover:border-primary hover:text-on-surface"
                     :title="t('remote.opdsFormats')"
                     @click="
                       opdsSelectedFormatIdx = {
@@ -548,17 +523,23 @@ defineExpose({
                   >
                     {{ card.selectedDownload.format || 'FILE' }}
                   </button>
+                  <span
+                    v-else
+                    class="shrink-0 rounded-corner-sm bg-surface-container-high px-2 py-1 font-mono text-label-small uppercase text-on-surface-variant"
+                  >
+                    {{ card.selectedDownload.format || 'FILE' }}
+                  </span>
 
                   <button
                     type="button"
-                    class="md-btn md-btn-sm md-state !h-7 flex-1 !px-2.5 !text-[11px]"
+                    class="md-btn md-btn-sm md-state h-9 flex-1 px-3 text-label-medium"
                     :class="card.imported ? 'md-btn-outlined' : 'md-btn-tonal'"
                     :disabled="card.importing"
                     @click="handleImportOpds(card.entry, card.selectedDownload)"
                   >
-                    <LuLoader2 v-if="card.importing" class="h-3 w-3 animate-spin" />
-                    <LuCheck v-else-if="card.imported" class="h-3 w-3" />
-                    <LuDownload v-else class="h-3 w-3" />
+                    <LuLoader2 v-if="card.importing" class="h-3.5 w-3.5 animate-spin" />
+                    <LuCheck v-else-if="card.imported" class="h-3.5 w-3.5" />
+                    <LuDownload v-else class="h-3.5 w-3.5" />
                     <span>
                       {{
                         card.importing
@@ -572,7 +553,7 @@ defineExpose({
                 </template>
                 <span
                   v-else
-                  class="w-full truncate text-center text-[11px] text-[var(--md-sys-color-on-surface-variant)]/70"
+                  class="w-full truncate text-center text-body-small text-on-surface-variant/70"
                 >
                   {{ t('remote.opdsNoDownload') }}
                 </span>
@@ -651,7 +632,7 @@ defineExpose({
           </div>
 
           <div class="space-y-2">
-            <h4 class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]">
+            <h4 class="text-label-medium text-on-surface-variant">
               {{ t('remote.opdsFormats') }}
             </h4>
             <div

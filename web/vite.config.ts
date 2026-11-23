@@ -1,34 +1,19 @@
 import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import tailwindcss from '@tailwindcss/vite'
-import { fileURLToPath, URL } from 'node:url'
+import { createSharedAlias, createSharedPlugins, matchVueVendorChunk } from './vite.shared.ts'
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: createSharedPlugins(),
   resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
-    },
+    alias: createSharedAlias(import.meta.url),
   },
   build: {
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         manualChunks(id) {
+          const vueVendor = matchVueVendorChunk(id)
+          if (vueVendor) return vueVendor
           if (!id.includes('node_modules')) return undefined
-          if (
-            id.includes('/node_modules/vue/') ||
-            id.includes('/node_modules/@vue/') ||
-            id.includes('/node_modules/vue-router/') ||
-            id.includes('/node_modules/pinia/') ||
-            id.includes('/node_modules/vue-i18n/') ||
-            id.includes('/node_modules/@intlify/')
-          ) {
-            return 'vue-vendor'
-          }
-          if (id.includes('/node_modules/vue-icons-plus/')) {
-            return 'icons'
-          }
           if (id.includes('/node_modules/pdfjs-dist/')) {
             return 'pdf-vendor'
           }

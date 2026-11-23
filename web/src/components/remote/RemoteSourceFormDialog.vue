@@ -247,7 +247,7 @@ async function handleSubmit(): Promise<void> {
       </div>
 
       <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
+        <label class="text-label-medium mb-1.5 block text-on-surface-variant">
           {{ t('remote.protocolLabel') }}
         </label>
         <div
@@ -277,7 +277,7 @@ async function handleSubmit(): Promise<void> {
       <div>
         <label
           for="remote-source-url"
-          class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-label-medium mb-1.5 block text-on-surface-variant"
         >
           {{ t('remote.urlLabel') }}
         </label>
@@ -298,7 +298,7 @@ async function handleSubmit(): Promise<void> {
       <div>
         <label
           for="remote-source-name"
-          class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-label-medium mb-1.5 block text-on-surface-variant"
         >
           {{ t('remote.nameLabel') }}
         </label>
@@ -316,7 +316,7 @@ async function handleSubmit(): Promise<void> {
         <div>
           <label
             for="remote-source-username"
-            class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+            class="text-label-medium mb-1.5 block text-on-surface-variant"
           >
             {{ t('remote.usernameLabel') }}
           </label>
@@ -336,7 +336,7 @@ async function handleSubmit(): Promise<void> {
         <div>
           <label
             for="remote-source-password"
-            class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+            class="text-label-medium mb-1.5 block text-on-surface-variant"
           >
             {{ t('remote.passwordLabel') }}
           </label>

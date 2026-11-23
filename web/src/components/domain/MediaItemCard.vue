@@ -4,19 +4,20 @@ import { useI18n } from 'vue-i18n'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import {
   LuAlertTriangle,
-  LuBookOpen,
-  LuFilm,
   LuHeart,
-  LuImage,
   LuMoreVertical,
-  LuMusic,
 } from 'vue-icons-plus/lu'
 import { MdIconButton, MdLinearProgress, MdMenu, MediaCoverImage } from '@/components/ui'
 import { isAvailabilityBlocked, type MediaItemVM } from '@/sources'
+import {
+  aspectClassFor,
+  resolveDomainIcon,
+  type MediaItemCardAspect,
+  type MediaItemCardLayout,
+  type MediaItemCoverStyle,
+} from './mediaLayout'
 
-export type MediaItemCardAspect = 'poster' | 'square' | 'video'
-export type MediaItemCardLayout = 'vertical' | 'horizontal'
-export type MediaItemCoverStyle = 'plain' | 'book' | 'album'
+export type { MediaItemCardAspect, MediaItemCardLayout, MediaItemCoverStyle }
 
 const props = withDefaults(
   defineProps<{
@@ -81,32 +82,11 @@ const resolvedTo = computed<RouteLocationRaw | undefined>(() => {
   return props.item.to
 })
 
-const resolvedFallbackIcon = computed<Component>(() => {
-  if (props.fallbackIcon) return props.fallbackIcon
-  switch (props.item.ref.domain) {
-    case 'comic':
-      return LuImage
-    case 'music':
-      return LuMusic
-    case 'video':
-      return LuFilm
-    case 'book':
-    default:
-      return LuBookOpen
-  }
-})
+const resolvedFallbackIcon = computed<Component>(() =>
+  resolveDomainIcon(props.item.ref.domain, props.fallbackIcon),
+)
 
-const aspectClass = computed(() => {
-  switch (props.aspect) {
-    case 'square':
-      return 'aspect-square'
-    case 'video':
-      return 'aspect-video'
-    case 'poster':
-    default:
-      return 'aspect-[2/3]'
-  }
-})
+const aspectClass = computed(() => aspectClassFor(props.aspect))
 
 const horizontalCoverClass = computed(() => {
   switch (props.aspect) {
