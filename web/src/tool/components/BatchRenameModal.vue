@@ -9,6 +9,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { useActionFeedback } from '@/composables/useActionFeedback'
 import type { MediaKind } from '@/types/api'
@@ -363,15 +364,11 @@ async function handleExecute(): Promise<void> {
     </template>
 
     <div class="space-y-4 py-1">
-      <div
+      <MdLinearProgress
         v-if="(loadingPreview || executing) && inlineProgressPct !== null"
-        class="h-1.5 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
-      >
-        <div
-          class="h-full bg-[var(--md-sys-color-primary)] transition-all duration-150"
-          :style="{ width: `${inlineProgressPct}%` }"
-        />
-      </div>
+        :value="inlineProgressPct"
+        aria-label="整理归档进度"
+      />
 
       <!-- Template Editor -->
       <div class="space-y-2.5 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3.5">

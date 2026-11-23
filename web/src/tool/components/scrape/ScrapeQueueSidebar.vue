@@ -340,21 +340,28 @@ const filteredEntries = computed(() => {
 
           <!-- Session Saved / Missing Cover Indicator -->
           <div class="shrink-0">
-            <LuCheckCircle2
+            <span
               v-if="savedKeys.has(entryCompositeKey(entry))"
-              class="h-3.5 w-3.5 text-[var(--md-sys-color-success)]"
+              class="inline-flex items-center gap-0.5 text-success"
               title="本次会话已保存"
-            />
+              aria-label="本次会话已保存"
+            >
+              <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
             <span
               v-else-if="!entry.completeness.has_cover"
-              class="block h-2 w-2 rounded-full bg-[var(--md-sys-color-warning)]"
+              class="rounded-full bg-warning-container px-1.5 py-0.5 text-[10px] font-medium text-on-warning-container"
               title="缺封面"
-            />
+            >
+              缺封
+            </span>
             <span
               v-else-if="!isEntryComplete(entry)"
-              class="block h-2 w-2 rounded-full bg-[var(--md-sys-color-primary)]/60"
+              class="rounded-full bg-primary-container px-1.5 py-0.5 text-[10px] font-medium text-on-primary-container"
               title="元数据待完善"
-            />
+            >
+              待补
+            </span>
           </div>
         </button>
       </div>

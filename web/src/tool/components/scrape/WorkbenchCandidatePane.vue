@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { LuLoader2, LuSearch, LuSparkles } from 'vue-icons-plus/lu'
 import { toolApi } from '../../api'
 import { mergeScrapedClientSide } from '../../merger'
@@ -202,12 +202,23 @@ function currentEntryKey(): string {
   return props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''
 }
 
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+
 function flashFeedback(label: string): void {
+  if (flashTimer) clearTimeout(flashTimer)
   recentFlash.value = label
-  setTimeout(() => {
+  flashTimer = setTimeout(() => {
+    flashTimer = null
     if (recentFlash.value === label) recentFlash.value = null
   }, 1800)
 }
+
+onBeforeUnmount(() => {
+  if (flashTimer) {
+    clearTimeout(flashTimer)
+    flashTimer = null
+  }
+})
 
 function selectMergedPreview(): void {
   if (!mergedMeta.value) return

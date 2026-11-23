@@ -17,6 +17,8 @@ const props = withDefaults(
     size?: MdDialogSize
     maxWidth?: string
     fullscreen?: boolean
+    hideHeader?: boolean
+    noBodyPadding?: boolean
     closeOnBackdrop?: boolean
     hideClose?: boolean
     footerAlign?: 'between' | 'end'
@@ -27,6 +29,8 @@ const props = withDefaults(
     size: undefined,
     maxWidth: '',
     fullscreen: false,
+    hideHeader: false,
+    noBodyPadding: false,
     closeOnBackdrop: true,
     hideClose: false,
     footerAlign: 'end',
@@ -94,7 +98,7 @@ const resolvedWidthClass = computed(() => {
           >
             <!-- MD3 Full-Screen Dialog Top App Bar -->
             <div
-              v-if="fullscreen"
+              v-if="fullscreen && !hideHeader"
               class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-outline-variant bg-surface-container px-4 py-2"
             >
               <div class="flex min-w-0 items-center gap-2">
@@ -127,7 +131,7 @@ const resolvedWidthClass = computed(() => {
 
             <!-- MD3 Basic Dialog Header -->
             <div
-              v-else-if="title || $slots.header || $slots.icon"
+              v-else-if="!hideHeader && (title || $slots.header || $slots.icon)"
               class="flex items-start justify-between gap-4 px-6 pt-6 pb-3"
             >
               <slot name="header">
@@ -167,8 +171,14 @@ const resolvedWidthClass = computed(() => {
 
             <!-- Scrollable Content -->
             <div
-              class="flex-1 overflow-y-auto"
-              :class="fullscreen ? 'safe-px safe-pb px-6 py-5' : 'px-6 py-2'"
+              class="min-h-0 flex-1"
+              :class="
+                noBodyPadding
+                  ? 'flex flex-col overflow-hidden'
+                  : fullscreen
+                    ? 'safe-px safe-pb overflow-y-auto px-6 py-5'
+                    : 'overflow-y-auto px-6 py-2'
+              "
             >
               <slot />
             </div>

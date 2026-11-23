@@ -304,9 +304,28 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-@reference "tailwindcss";
-
 .tb-btn {
-  @apply flex h-7 w-7 items-center justify-center rounded-lg text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)];
+  position: relative;
+  display: flex;
+  height: 2.25rem;
+  width: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  color: var(--md-sys-color-on-surface-variant);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.tb-btn:hover {
+  background-color: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+}
+
+@media (pointer: coarse) {
+  .tb-btn::before {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
 }
 </style>

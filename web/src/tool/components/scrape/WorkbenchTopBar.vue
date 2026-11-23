@@ -15,6 +15,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { buildArtworkUrl } from '../../api'
 import { entryCompositeKey, isEntryComplete } from '../../completeness'
@@ -205,13 +206,12 @@ const savedSessionCount = computed(() => {
               <span class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
                 快速切换队列条目（{{ entries.length }} 项）
               </span>
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state !h-6 !w-6"
+              <MdIconButton
+                size="sm"
+                :icon="LuX"
+                aria-label="关闭队列切换弹窗"
                 @click="emit('update:queueDropdownOpen', false)"
-              >
-                <LuX class="h-3.5 w-3.5" />
-              </button>
+              />
             </div>
 
             <div
@@ -289,14 +289,19 @@ const savedSessionCount = computed(() => {
                   {{ entry.file_name }}
                 </div>
               </div>
-              <LuCheckCircle2
+              <span
                 v-if="savedKeys.has(entryCompositeKey(entry))"
-                class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-success)]"
-              />
+                class="inline-flex shrink-0 items-center text-success"
+                aria-label="本次会话已保存"
+              >
+                <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+              </span>
               <span
                 v-else-if="!entry.completeness.has_cover"
-                class="h-2 w-2 shrink-0 rounded-full bg-[var(--md-sys-color-warning)]"
-              />
+                class="shrink-0 rounded-full bg-warning-container px-1.5 py-0.5 text-[10px] font-medium text-on-warning-container"
+              >
+                缺封
+              </span>
             </button>
           </div>
         </div>

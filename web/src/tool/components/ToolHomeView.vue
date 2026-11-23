@@ -14,6 +14,7 @@ import {
   LuLayers,
   LuSparkles,
 } from 'vue-icons-plus/lu'
+import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl } from '../api'
@@ -230,24 +231,23 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
       <section class="md-card-filled space-y-2.5 p-5">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">元信息完整率</span>
+            <span class="text-xs font-semibold text-on-surface">元信息完整率</span>
             <span
-              class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
+              class="rounded-full bg-primary-container px-2.5 py-0.5 font-mono text-[11px] font-semibold text-on-primary-container"
             >
               {{ completionPct }}%
             </span>
           </div>
-          <span class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+          <span class="text-[11px] text-on-surface-variant">
             齐全 {{ stats.complete }} 项 · 待补齐 {{ stats.incomplete }} 项 · 缺标签/NFO
             {{ stats.missingTag }} 项
           </span>
         </div>
-        <div class="h-2 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]">
-          <div
-            class="h-full rounded-full bg-[var(--md-sys-color-success)] transition-all duration-300"
-            :style="{ width: `${completionPct}%` }"
-          />
-        </div>
+        <MdLinearProgress
+          :value="completionPct"
+          tone="success"
+          aria-label="元信息完整率"
+        />
       </section>
 
       <!-- Pending / Incomplete Items Section -->

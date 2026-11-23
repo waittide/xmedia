@@ -350,22 +350,25 @@ function onTocDrop(targetIdx: number): void {
   </div>
 
   <!-- Fixed-Height Draggable Chapter Rows (Zero Vertical Jump) -->
-  <div class="flex-1 space-y-0.5 overflow-y-auto p-1.5">
+  <div class="flex-1 space-y-0.5 overflow-y-auto p-1.5" role="listbox" aria-label="章节目录">
     <div
       v-for="{ ch, idx, anomaly } in filteredTocItems"
       :key="ch.key"
+      role="option"
+      :aria-selected="activeIndex === idx"
+      :tabindex="renamingIdx === idx ? -1 : 0"
       :draggable="!tocSearchQuery && !onlyShowAnomalies && renamingIdx !== idx"
-      class="group relative flex h-9 items-center gap-1 rounded-xl px-2 transition"
+      class="group relative flex min-h-10 cursor-pointer items-center gap-1 rounded-xl px-2 transition outline-none focus-visible:outline-2 focus-visible:outline-secondary"
       :class="[
         ch.level > 0 ? 'pl-5' : '',
         activeIndex === idx
-          ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-          : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]',
+          ? 'bg-secondary-container text-on-secondary-container'
+          : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
         dragOverIdx === idx && dragDropPos === 'before'
-          ? 'border-t-2 border-[var(--md-sys-color-primary)]'
+          ? 'border-t-2 border-primary'
           : '',
         dragOverIdx === idx && dragDropPos === 'after'
-          ? 'border-b-2 border-[var(--md-sys-color-primary)]'
+          ? 'border-b-2 border-primary'
           : '',
       ]"
       @dragstart="onTocDragStart(idx, $event)"
@@ -373,6 +376,8 @@ function onTocDrop(targetIdx: number): void {
       @dragend="onTocDragEnd"
       @drop.prevent="onTocDrop(idx)"
       @click="emit('select', idx)"
+      @keydown.enter.self.prevent="emit('select', idx)"
+      @keydown.space.self.prevent="emit('select', idx)"
       @dblclick.stop="startInlineRename(idx)"
     >
       <LuGripVertical

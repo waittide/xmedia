@@ -64,13 +64,17 @@ function isCoverUsable(
   <!-- Multi-source Merged Quick Card -->
   <div
     v-if="mergedMeta"
-    class="cursor-pointer rounded-2xl border p-2.5 transition"
+    role="button"
+    tabindex="0"
+    class="cursor-pointer rounded-2xl border p-2.5 transition outline-none focus-visible:outline-2 focus-visible:outline-secondary"
     :class="
       selected
-        ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/50 ring-1 ring-[var(--md-sys-color-primary)]/45'
-        : 'border-[var(--md-sys-color-primary)]/40 bg-[var(--md-sys-color-primary-container)]/25 hover:border-[var(--md-sys-color-primary)]/75'
+        ? 'border-primary bg-primary-container/50 ring-1 ring-primary/45'
+        : 'border-primary/40 bg-primary-container/25 hover:border-primary/75'
     "
     @click="emit('select-merged')"
+    @keydown.enter.self.prevent="emit('select-merged')"
+    @keydown.space.self.prevent="emit('select-merged')"
   >
     <div class="flex items-center justify-between gap-2">
       <div class="flex items-center gap-1.5 text-[11px] font-bold text-[var(--md-sys-color-primary)]">
@@ -108,10 +112,10 @@ function isCoverUsable(
         />
         <div
           v-else
-          class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--md-sys-color-on-surface-variant)]/55"
+          class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-on-surface-variant/75"
         >
           <LuImage class="h-3.5 w-3.5" />
-          <span class="text-[8px]">无图</span>
+          <span class="text-[10px]">无图</span>
         </div>
       </button>
 

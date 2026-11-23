@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, type Component } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
@@ -15,6 +15,7 @@ import {
   LuSparkles,
 } from 'vue-icons-plus/lu'
 import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdTabs from '@/components/ui/MdTabs.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
@@ -65,12 +66,23 @@ function selectDomainSubTab(dom: MediaKind): void {
   emit('selectDomain', dom)
 }
 
+let savedBannerTimer: ReturnType<typeof setTimeout> | null = null
+
 function flashSavedBanner(): void {
+  if (savedBannerTimer) clearTimeout(savedBannerTimer)
   savedBanner.value = true
-  setTimeout(() => {
+  savedBannerTimer = setTimeout(() => {
+    savedBannerTimer = null
     savedBanner.value = false
   }, 2200)
 }
+
+onBeforeUnmount(() => {
+  if (savedBannerTimer) {
+    clearTimeout(savedBannerTimer)
+    savedBannerTimer = null
+  }
+})
 
 const domainTabItems = computed<{ value: MediaKind; label: string; icon: Component }[]>(() => [
   { value: 'book', label: txt.value.domains.book, icon: LuBookOpen },
@@ -85,21 +97,16 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
     <!-- Top Header (Aligned with Server SettingsView) -->
     <div class="mb-8 flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
+        <h1 class="text-headline-medium text-on-surface">
           {{ t('settings.title') }}
         </h1>
-        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+        <p class="text-body-small mt-1 text-on-surface-variant">
           {{ txt.settings.subtitle }}
         </p>
       </div>
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-tonal md-state"
-        @click="emit('back')"
-      >
-        <LuArrowLeft class="h-3.5 w-3.5" />
-        <span>{{ txt.settings.backToWorkbench }}</span>
-      </button>
+      <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="emit('back')">
+        {{ txt.settings.backToWorkbench }}
+      </MdButton>
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_minmax(0,1fr)]">

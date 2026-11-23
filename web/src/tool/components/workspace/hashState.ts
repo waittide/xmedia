@@ -30,8 +30,6 @@ export function parseToolHash(): ParsedToolHash {
   }
   if (segs[1] === 'home' || segs[1] === 'items' || segs[1] === 'settings') {
     out.nav = segs[1]
-  } else if (segs[1] === 'tasks') {
-    out.nav = 'items'
   }
   const params = new URLSearchParams(queryPart)
   const root = params.get('root')

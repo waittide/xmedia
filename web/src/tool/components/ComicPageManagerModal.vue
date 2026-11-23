@@ -19,9 +19,13 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 
-import MdSelect from '@/components/ui/MdSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
+import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useDialogStore } from '@/stores/dialog'
 import { formatBytes } from '@/utils/format'
 import { toolApi } from '../api'
@@ -72,9 +76,18 @@ const dragOverIdx = ref<number | null>(null)
 
 // Lightbox preview state
 const lightboxIdx = ref<number | null>(null)
+const lightboxRef = ref<HTMLElement | null>(null)
 const lightboxPage = computed(() =>
   lightboxIdx.value !== null ? (pages.value[lightboxIdx.value] ?? null) : null,
 )
+const escapeStack = useEscapeStack()
+escapeStack.register(
+  () => lightboxIdx.value !== null,
+  () => {
+    lightboxIdx.value = null
+  },
+)
+useFocusTrap(lightboxRef, () => lightboxIdx.value !== null)
 
 const reencodeOptions = [
   { value: 'keep', label: '保持原图（无损重写）' },
@@ -329,7 +342,7 @@ async function handleSave(): Promise<void> {
     :open="Boolean(open && entry)"
     :title="entry ? `漫画页面管理与体积瘦身 · ${entry.file_name}` : '漫画页面管理与体积瘦身'"
     :subtitle="dialogSubtitle"
-    max-width="max-w-[96vw] h-[94vh]"
+    fullscreen
     :close-on-backdrop="!saving && lightboxIdx === null"
     @close="handleDialogClose"
   >
@@ -338,25 +351,25 @@ async function handleSave(): Promise<void> {
     </template>
 
     <template #headerActions>
-      <button
+      <MdButton
         v-if="deletedCount > 0"
-        type="button"
-        class="md-btn md-btn-sm md-btn-outlined md-state"
+        variant="outlined"
+        size="sm"
+        :icon="LuRotateCcw"
         @click="restoreAll"
       >
-        <LuRotateCcw class="h-3.5 w-3.5" />
-        <span>恢复全部</span>
-      </button>
-      <button
-        type="button"
-        :disabled="saving || loading || !isCbzEditable"
-        class="md-btn md-btn-sm md-btn-filled md-state"
+        恢复全部
+      </MdButton>
+      <MdButton
+        variant="filled"
+        size="sm"
+        :icon="LuSave"
+        :loading="saving"
+        :disabled="loading || !isCbzEditable"
         @click="handleSave"
       >
-        <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-        <LuSave v-else class="h-3.5 w-3.5" />
-        <span>保存重写 CBZ</span>
-      </button>
+        保存重写 CBZ
+      </MdButton>
     </template>
 
     <div v-if="entry" class="space-y-4 py-1">
@@ -439,13 +452,15 @@ async function handleSave(): Promise<void> {
             @dragend="handleDragEnd"
           >
             <!-- Thumbnail -->
-            <div
-              class="relative aspect-[3/4] w-full cursor-zoom-in overflow-hidden bg-[var(--md-sys-color-surface-container)]"
+            <button
+              type="button"
+              :aria-label="`放大预览第 ${idx + 1} 页 ${page.entry_name}`"
+              class="relative block aspect-[3/4] w-full cursor-zoom-in overflow-hidden bg-surface-container text-left outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
               @click="lightboxIdx = idx"
             >
               <div
                 v-if="!loadedEntries.has(page.entry_name)"
-                class="absolute inset-0 animate-pulse bg-[var(--md-sys-color-surface-container-high)]"
+                class="absolute inset-0 animate-pulse bg-surface-container-high"
               />
               <img
                 :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, page.entry_name, 320, imgVersion)"
@@ -458,36 +473,36 @@ async function handleSave(): Promise<void> {
               />
               <!-- Top badges -->
               <div class="absolute top-1.5 left-1.5 flex flex-wrap gap-1">
-                <span class="inline-flex items-center gap-0.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                <span class="inline-flex items-center gap-0.5 rounded-md bg-scrim/75 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                   <LuGripVertical v-if="isCbzEditable" class="h-2.5 w-2.5 opacity-75" />
                   #{{ idx + 1 }}
                 </span>
                 <span
                   v-if="page.page_type === 'FrontCover'"
-                  class="rounded-md bg-[var(--md-sys-color-primary)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary)]"
+                  class="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-on-primary"
                 >
                   封面
                 </span>
                 <span
                   v-if="page.double_page"
-                  class="rounded-md bg-[var(--md-sys-color-tertiary-container)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-tertiary-container)]"
+                  class="rounded-md bg-tertiary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-container"
                 >
                   双页跨页
                 </span>
               </div>
               <span
-                class="absolute right-1.5 bottom-1.5 rounded-lg bg-black/65 p-1 text-white opacity-0 transition group-hover:opacity-100"
-                title="放大预览"
+                class="absolute right-1.5 bottom-1.5 rounded-lg bg-scrim/70 p-1 text-white opacity-0 transition group-hover:opacity-100"
+                aria-hidden="true"
               >
                 <LuMaximize2 class="h-3 w-3" />
               </span>
               <span
                 v-if="page.deleted"
-                class="absolute inset-0 flex items-center justify-center bg-black/55 text-xs font-semibold text-[var(--md-sys-color-error)]"
+                class="absolute inset-0 flex items-center justify-center bg-scrim/65 text-xs font-semibold text-error-container"
               >
                 待删除
               </span>
-            </div>
+            </button>
 
             <!-- Meta + Actions -->
             <div class="flex flex-col gap-1.5 p-2">
@@ -555,20 +570,12 @@ async function handleSave(): Promise<void> {
         </div>
 
         <div v-if="hasMorePages" class="mt-6 flex justify-center gap-2">
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            @click="visibleLimit += PAGE_BATCH_SIZE"
-          >
+          <MdButton variant="tonal" size="sm" @click="visibleLimit += PAGE_BATCH_SIZE">
             加载更多页面（剩余 {{ pages.length - visibleLimit }} 页）
-          </button>
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
-            @click="visibleLimit = pages.length"
-          >
+          </MdButton>
+          <MdButton variant="text" size="sm" @click="visibleLimit = pages.length">
             展开全部 {{ pages.length }} 页
-          </button>
+          </MdButton>
         </div>
       </template>
 
@@ -576,38 +583,40 @@ async function handleSave(): Promise<void> {
       <Teleport to="body">
         <div
           v-if="lightboxIdx !== null && lightboxPage"
+          ref="lightboxRef"
           role="dialog"
           aria-modal="true"
+          tabindex="-1"
           :aria-label="lightboxPage.entry_name"
-          class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-[var(--md-sys-color-scrim)]/90 text-white"
+          class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-scrim/90 text-white outline-none"
           @click.self="lightboxIdx = null"
         >
-          <div class="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">
-            <div class="flex items-center gap-2">
-              <span class="rounded-md bg-white/15 px-2 py-0.5 font-semibold">
+          <div class="safe-pt safe-px flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="shrink-0 rounded-md bg-white/15 px-2 py-0.5 font-semibold">
                 #{{ lightboxIdx + 1 }} / {{ pages.length }}
               </span>
               <span class="truncate font-medium">{{ lightboxPage.entry_name }}</span>
-              <span class="text-white/60">
+              <span class="shrink-0 text-white/75">
                 {{ lightboxPage.width && lightboxPage.height ? `${lightboxPage.width}×${lightboxPage.height}` : '' }}
                 · {{ formatBytes(lightboxPage.file_size) }}
               </span>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex shrink-0 items-center gap-2">
               <template v-if="isCbzEditable">
                 <button
                   type="button"
-                  class="rounded-full bg-white/10 px-3 py-1 hover:bg-white/20"
+                  class="rounded-full bg-white/10 px-3 py-1.5 hover:bg-white/20"
                   @click="setAsCover(lightboxIdx)"
                 >
                   设为封面
                 </button>
                 <button
                   type="button"
-                  class="rounded-full px-3 py-1"
+                  class="rounded-full px-3 py-1.5"
                   :class="
                     lightboxPage.double_page
-                      ? 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
+                      ? 'bg-primary text-on-primary'
                       : 'bg-white/10 hover:bg-white/20'
                   "
                   @click="toggleDoublePage(lightboxIdx)"
@@ -616,52 +625,47 @@ async function handleSave(): Promise<void> {
                 </button>
                 <button
                   type="button"
-                  class="rounded-full px-3 py-1"
+                  class="rounded-full px-3 py-1.5"
                   :class="
                     lightboxPage.deleted
-                      ? 'bg-[var(--md-sys-color-success)] text-black'
-                      : 'bg-[var(--md-sys-color-error)] text-[var(--md-sys-color-on-error)]'
+                      ? 'bg-success text-on-success'
+                      : 'bg-error text-on-error'
                   "
                   @click="toggleDelete(lightboxIdx)"
                 >
                   {{ lightboxPage.deleted ? '恢复此页' : '删除此页' }}
                 </button>
               </template>
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state !bg-white/10 !text-white hover:!bg-white/20"
+              <MdIconButton
+                size="sm"
+                :icon="LuX"
                 aria-label="关闭大图预览"
+                class="!bg-white/10 !text-white hover:!bg-white/20"
                 @click="lightboxIdx = null"
-              >
-                <LuX class="h-4 w-4" />
-              </button>
+              />
             </div>
           </div>
 
           <div class="relative flex min-h-0 flex-1 items-center justify-center p-4" @click.self="lightboxIdx = null">
-            <button
+            <MdIconButton
               v-if="lightboxIdx > 0"
-              type="button"
-              class="md-icon-btn md-state absolute left-4 !bg-[var(--md-sys-color-scrim)]/65 !text-white hover:!bg-[var(--md-sys-color-scrim)]/85"
+              :icon="LuChevronLeft"
               aria-label="上一页"
+              class="absolute left-4 !bg-scrim/65 !text-white hover:!bg-scrim/85"
               @click="lightboxIdx -= 1"
-            >
-              <LuChevronLeft class="h-5 w-5" />
-            </button>
+            />
             <img
               :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, lightboxPage.entry_name, 1400, imgVersion)"
               :alt="lightboxPage.entry_name"
-              class="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+              class="max-h-full max-w-full rounded-lg object-contain shadow-elevation-3"
             />
-            <button
+            <MdIconButton
               v-if="lightboxIdx < pages.length - 1"
-              type="button"
-              class="md-icon-btn md-state absolute right-4 !bg-[var(--md-sys-color-scrim)]/65 !text-white hover:!bg-[var(--md-sys-color-scrim)]/85"
+              :icon="LuChevronRight"
               aria-label="下一页"
+              class="absolute right-4 !bg-scrim/65 !text-white hover:!bg-scrim/85"
               @click="lightboxIdx += 1"
-            >
-              <LuChevronRight class="h-5 w-5" />
-            </button>
+            />
           </div>
         </div>
       </Teleport>

@@ -185,13 +185,18 @@ function handleManualScrape(): void {
         <div
           v-for="item in items"
           :key="item.rel_path"
-          class="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border p-3 transition"
+          role="checkbox"
+          :aria-checked="checkedPaths.has(item.rel_path)"
+          tabindex="0"
+          class="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border p-3 transition outline-none focus-visible:outline-2 focus-visible:outline-secondary"
           :class="
             isItemLowConfidence(item)
-              ? 'border-[var(--md-sys-color-warning)]/45 bg-[var(--md-sys-color-warning-container)]/35'
-              : 'border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)]'
+              ? 'border-warning/45 bg-warning-container/35'
+              : 'border-outline-variant/55 bg-surface-container-low'
           "
           @click="togglePath(item.rel_path)"
+          @keydown.enter.self.prevent="togglePath(item.rel_path)"
+          @keydown.space.self.prevent="togglePath(item.rel_path)"
         >
           <div class="flex min-w-0 items-start gap-2.5">
             <div class="pt-0.5" @click.stop>

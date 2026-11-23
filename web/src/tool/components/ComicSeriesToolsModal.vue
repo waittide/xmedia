@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { LuCheck, LuCombine, LuLayers, LuLoader2 } from 'vue-icons-plus/lu'
+import { LuCheck, LuCombine, LuLayers } from 'vue-icons-plus/lu'
 
-import MdSelect from '@/components/ui/MdSelect.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
-import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
+import MdTabs from '@/components/ui/MdTabs.vue'
 import { toolApi } from '../api'
 import type { MediaFileEntry } from '../types'
 
@@ -172,7 +173,7 @@ async function handleMerge(): Promise<void> {
     </template>
 
     <div class="space-y-4 py-1 text-xs">
-      <MdSegmentedButton v-model="activeTab" :options="tabOptions" size="sm" />
+      <MdTabs v-model="activeTab" :tabs="tabOptions" variant="primary" aria-label="漫画系列工具功能" />
 
       <div v-if="activeTab === 'sync'" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label class="block">
@@ -281,33 +282,27 @@ async function handleMerge(): Promise<void> {
 
     <template #footer>
       <div class="ml-auto flex items-center gap-2">
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          @click="emit('close')"
-        >
-          关闭
-        </button>
-        <button
+        <MdButton variant="text" size="sm" @click="emit('close')">关闭</MdButton>
+        <MdButton
           v-if="activeTab === 'sync'"
-          type="button"
-          :disabled="busy || sortedEntries.length === 0"
-          class="md-btn md-btn-sm md-btn-filled md-state"
+          variant="filled"
+          size="sm"
+          :loading="busy"
+          :disabled="sortedEntries.length === 0"
           @click="handleBatchSync"
         >
-          <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-          <span>执行批量同步</span>
-        </button>
-        <button
+          执行批量同步
+        </MdButton>
+        <MdButton
           v-else
-          type="button"
-          :disabled="busy || sortedEntries.length < 2"
-          class="md-btn md-btn-sm md-btn-filled md-state"
+          variant="filled"
+          size="sm"
+          :loading="busy"
+          :disabled="sortedEntries.length < 2"
           @click="handleMerge"
         >
-          <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-          <span>合并生成 CBZ</span>
-        </button>
+          合并生成 CBZ
+        </MdButton>
       </div>
     </template>
   </MdDialog>

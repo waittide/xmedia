@@ -22,19 +22,24 @@ const emit = defineEmits<{
 
 <template>
   <div
-    class="cursor-pointer rounded-2xl border p-2.5 transition"
+    role="button"
+    tabindex="0"
+    class="cursor-pointer rounded-2xl border p-2.5 transition outline-none focus-visible:outline-2 focus-visible:outline-secondary"
     :class="
       selected
-        ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/35 ring-1 ring-[var(--md-sys-color-primary)]/40'
-        : 'border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] hover:border-[var(--md-sys-color-primary)]/50'
+        ? 'border-primary bg-primary-container/35 ring-1 ring-primary/40'
+        : 'border-outline-variant/55 bg-surface hover:border-primary/50'
     "
     @click="emit('select-preview', candidate)"
+    @keydown.enter.self.prevent="emit('select-preview', candidate)"
+    @keydown.space.self.prevent="emit('select-preview', candidate)"
   >
     <div class="flex items-start gap-2.5">
       <button
         type="button"
-        class="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)]"
+        class="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-outline-variant/60 bg-surface-container-high"
         title="点击在右侧预览此候选详情"
+        :aria-label="`预览 ${candidate.title}`"
         @click.stop="emit('select-preview', candidate)"
       >
         <img
@@ -48,10 +53,10 @@ const emit = defineEmits<{
         />
         <div
           v-else
-          class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--md-sys-color-on-surface-variant)]/50"
+          class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-on-surface-variant/75"
         >
           <LuImage class="h-3.5 w-3.5" />
-          <span class="text-[8px]">无图</span>
+          <span class="text-[10px]">无图</span>
         </div>
       </button>
 

@@ -37,7 +37,7 @@ const emit = defineEmits<{
 
 <template>
   <header
-    class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-4 select-none"
+    class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-outline-variant bg-surface-container-low px-4 py-1.5 select-none"
   >
     <div class="flex min-w-0 items-center gap-2.5">
       <div

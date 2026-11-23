@@ -30,11 +30,16 @@ import { useBookEditorDocument } from './book-editor/useBookEditorDocument'
 import { useBookEditorFindReplace } from './book-editor/useBookEditorFindReplace'
 import {
   countNonWhitespace,
-  escapeXml,
   extractPlainFromXhtml,
   hydrateXhtmlForBrowser as hydrateXhtmlForBrowserRaw,
   serializeContainerToValidXhtml,
 } from './book-editor/xhtmlUtils'
+import {
+  formatSelectionBlock,
+  insertHorizontalRuleAtSelection,
+  removeInlineFormatAtSelection,
+  toggleInlineTagAtSelection,
+} from './book-editor/wysiwygDom'
 import type { MediaFileDetail, MediaFileEntry } from '../types'
 
 const props = defineProps<{
@@ -314,23 +319,39 @@ function scheduleIdleMetricsUpdate(): void {
   }, 160)
 }
 
-function onWysiwygFocus(): void {
-  try {
-    document.execCommand('defaultParagraphSeparator', false, 'p')
-  } catch {
-    // ignore browser differences
+const MAX_UNDO_HISTORY = 50
+let undoStack: string[] = []
+let redoStack: string[] = []
+let lastRecordedHtml = ''
+
+function resetWysiwygHistory(): void {
+  undoStack = []
+  redoStack = []
+  lastRecordedHtml = wysiwygRef.value?.innerHTML ?? ''
+}
+
+function recordWysiwygUndoSnapshot(): void {
+  if (!wysiwygRef.value) return
+  const current = wysiwygRef.value.innerHTML
+  if (lastRecordedHtml && current !== lastRecordedHtml) {
+    undoStack.push(lastRecordedHtml)
+    if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
+    redoStack = []
   }
+  lastRecordedHtml = current
 }
 
 function onWysiwygInput(): void {
   hasUnsavedEdits.value = true
   if (isComposing) return
+  recordWysiwygUndoSnapshot()
   scheduleIdleMetricsUpdate()
 }
 
 function onWysiwygCompositionEnd(): void {
   isComposing = false
   hasUnsavedEdits.value = true
+  recordWysiwygUndoSnapshot()
   scheduleIdleMetricsUpdate()
 }
 
@@ -370,6 +391,7 @@ async function selectChapter(idx: number): Promise<void> {
   flushActiveSurfaceToRecord()
   activeIndex.value = idx
   await mountActiveChapterIntoSurface()
+  resetWysiwygHistory()
 }
 
 async function switchSurfaceMode(next: SurfaceMode): Promise<void> {
@@ -377,6 +399,7 @@ async function switchSurfaceMode(next: SurfaceMode): Promise<void> {
   flushActiveSurfaceToRecord()
   surfaceMode.value = next
   await mountActiveChapterIntoSurface()
+  resetWysiwygHistory()
 }
 
 function toggleLivePreview(): void {
@@ -403,17 +426,69 @@ watch(
   },
 )
 
-function execWysiwygCmd(command: string, value?: string): void {
+function execWysiwygCmd(command: string): void {
   if (surfaceMode.value !== 'wysiwyg' || !wysiwygRef.value) return
-  wysiwygRef.value.focus()
-  document.execCommand(command, false, value)
-  hasUnsavedEdits.value = true
-  scheduleIdleMetricsUpdate()
+  const container = wysiwygRef.value
+  container.focus()
+
+  if (command === 'undo') {
+    const prev = undoStack.pop()
+    if (prev === undefined) return
+    redoStack.push(container.innerHTML)
+    container.innerHTML = prev
+    lastRecordedHtml = prev
+    hasUnsavedEdits.value = true
+    scheduleIdleMetricsUpdate()
+    return
+  }
+
+  if (command === 'redo') {
+    const next = redoStack.pop()
+    if (next === undefined) return
+    undoStack.push(container.innerHTML)
+    container.innerHTML = next
+    lastRecordedHtml = next
+    hasUnsavedEdits.value = true
+    scheduleIdleMetricsUpdate()
+    return
+  }
+
+  const before = container.innerHTML
+  let changed = false
+  if (command === 'bold') {
+    changed = toggleInlineTagAtSelection(container, 'strong')
+  } else if (command === 'italic') {
+    changed = toggleInlineTagAtSelection(container, 'em')
+  } else if (command === 'underline') {
+    changed = toggleInlineTagAtSelection(container, 'u')
+  } else if (command === 'removeFormat') {
+    changed = removeInlineFormatAtSelection(container)
+  }
+
+  if (changed) {
+    undoStack.push(before)
+    if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
+    redoStack = []
+    lastRecordedHtml = container.innerHTML
+    hasUnsavedEdits.value = true
+    scheduleIdleMetricsUpdate()
+  }
 }
 
 function formatBlockTag(tag: 'P' | 'H1' | 'H2' | 'H3' | 'BLOCKQUOTE'): void {
-  if (surfaceMode.value === 'wysiwyg') {
-    execWysiwygCmd('formatBlock', `<${tag.toLowerCase()}>`)
+  if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
+    const container = wysiwygRef.value
+    container.focus()
+    const before = container.innerHTML
+    const lower = tag.toLowerCase() as 'p' | 'h1' | 'h2' | 'h3' | 'blockquote'
+    if (formatSelectionBlock(container, lower)) {
+      undoStack.push(before)
+      if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
+      redoStack = []
+      lastRecordedHtml = container.innerHTML
+      hasUnsavedEdits.value = true
+      scheduleIdleMetricsUpdate()
+    }
   } else if (sourceTextareaRef.value) {
     const ta = sourceTextareaRef.value
     const start = ta.selectionStart
@@ -428,12 +503,18 @@ function formatBlockTag(tag: 'P' | 'H1' | 'H2' | 'H3' | 'BLOCKQUOTE'): void {
 }
 
 function wrapInlineCode(): void {
-  if (surfaceMode.value === 'wysiwyg') {
-    const sel = window.getSelection()
-    if (!sel || sel.rangeCount === 0) return
-    const text = sel.toString()
-    if (!text) return
-    execWysiwygCmd('insertHTML', `<code>${escapeXml(text)}</code>`)
+  if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
+    const container = wysiwygRef.value
+    container.focus()
+    const before = container.innerHTML
+    if (toggleInlineTagAtSelection(container, 'code')) {
+      undoStack.push(before)
+      if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
+      redoStack = []
+      lastRecordedHtml = container.innerHTML
+      hasUnsavedEdits.value = true
+      scheduleIdleMetricsUpdate()
+    }
   } else if (sourceTextareaRef.value) {
     const ta = sourceTextareaRef.value
     const s = ta.selectionStart
@@ -445,8 +526,17 @@ function wrapInlineCode(): void {
 }
 
 function insertHorizontalRule(): void {
-  if (surfaceMode.value === 'wysiwyg') {
-    execWysiwygCmd('insertHorizontalRule')
+  if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
+    const container = wysiwygRef.value
+    container.focus()
+    const before = container.innerHTML
+    insertHorizontalRuleAtSelection(container)
+    undoStack.push(before)
+    if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
+    redoStack = []
+    lastRecordedHtml = container.innerHTML
+    hasUnsavedEdits.value = true
+    scheduleIdleMetricsUpdate()
   } else if (sourceTextareaRef.value) {
     const ta = sourceTextareaRef.value
     const pos = ta.selectionStart
@@ -518,14 +608,15 @@ onBeforeUnmount(() => {
 <template>
   <MdDialog
     :open="open && Boolean(entry)"
-    max-width="max-w-[98vw] h-[94vh] !max-h-[94vh]"
+    fullscreen
+    hide-header
+    no-body-padding
     :close-on-backdrop="false"
-    :hide-close="true"
     @close="requestClose"
   >
     <div
       v-if="entry"
-      class="-mx-6 -my-2 flex h-[calc(100%+1rem)] flex-col overflow-hidden bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)]"
+      class="flex h-full min-h-0 flex-col overflow-hidden bg-surface text-on-surface"
     >
       <BookEditorHeader
         :title="docTitle || entry.display_title"
@@ -682,7 +773,7 @@ onBeforeUnmount(() => {
                 spellcheck="false"
                 class="epub-wysiwyg-surface min-h-[65vh] outline-none"
                 :class="indentParagraphs ? 'indent-paras' : ''"
-                @focus="onWysiwygFocus"
+                @focus="lastRecordedHtml = wysiwygRef?.innerHTML ?? ''"
                 @input="onWysiwygInput"
                 @compositionstart="isComposing = true"
                 @compositionend="onWysiwygCompositionEnd"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   LuAlertCircle,
   LuArrowDown,
@@ -269,14 +269,18 @@ async function handleProviderDialogUpdated(next: PublicSettingsDto): Promise<voi
   await loadProviders()
 }
 
+let cacheClearedTimer: ReturnType<typeof setTimeout> | null = null
+
 async function handleClearCache(): Promise<void> {
   clearingCache.value = true
   emit('error', null)
   try {
     const res = await toolApi.clearScrapeCache()
     await loadCacheStats()
+    if (cacheClearedTimer) clearTimeout(cacheClearedTimer)
     cacheClearedBanner.value = `已清理 ${res.removed_count} 条刮削缓存记录`
-    setTimeout(() => {
+    cacheClearedTimer = setTimeout(() => {
+      cacheClearedTimer = null
       cacheClearedBanner.value = null
     }, 2400)
   } catch (err) {
@@ -285,6 +289,13 @@ async function handleClearCache(): Promise<void> {
     clearingCache.value = false
   }
 }
+
+onBeforeUnmount(() => {
+  if (cacheClearedTimer) {
+    clearTimeout(cacheClearedTimer)
+    cacheClearedTimer = null
+  }
+})
 
 async function handleSaveGlobalSettings(): Promise<void> {
   saving.value = true

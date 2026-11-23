@@ -49,15 +49,19 @@ const emit = defineEmits<{
 
 <template>
   <div
-    class="md-state group flex cursor-pointer items-center gap-3.5 px-4 py-3"
+    role="button"
+    tabindex="0"
+    class="md-state group flex cursor-pointer items-center gap-3.5 px-4 py-3 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
     :class="
       isInspecting
-        ? 'bg-[var(--md-sys-color-secondary-container)]/75'
+        ? 'bg-secondary-container/75'
         : isSelected
-          ? 'bg-[var(--md-sys-color-primary-container)]/35'
+          ? 'bg-primary-container/35'
           : ''
     "
     @click="emit('inspectFile', file)"
+    @keydown.enter.self.prevent="emit('inspectFile', file)"
+    @keydown.space.self.prevent="emit('inspectFile', file)"
   >
     <div @click.stop="emit('toggleSelectFile', selectionKey, $event.shiftKey)">
       <AppCheckbox :model-value="isSelected" />
@@ -226,7 +230,7 @@ const emit = defineEmits<{
     </div>
 
     <!-- Row Quick Icon Actions -->
-    <div class="flex shrink-0 items-center gap-0.5 opacity-65 transition group-hover:opacity-100">
+    <div class="flex shrink-0 items-center gap-1 opacity-75 transition group-hover:opacity-100 group-focus-within:opacity-100">
       <button
         v-if="file.media_kind === 'book' && (file.extension === 'txt' || file.extension === 'epub')"
         type="button"

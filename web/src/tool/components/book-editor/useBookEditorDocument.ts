@@ -10,6 +10,7 @@ import type {
 import { cssPresets } from './BookEditorCssPanel.vue'
 import type { ChapterRecord, SurfaceMode } from './useBookEditorChapters'
 import { countNonWhitespace, escapeXml, extractPlainFromXhtml } from './xhtmlUtils'
+import { insertHtmlAtSelection } from './wysiwygDom'
 
 export interface UseBookEditorDocumentOptions {
   open: Ref<boolean>
@@ -170,9 +171,8 @@ export function useBookEditorDocument(opts: UseBookEditorDocumentOptions) {
 
       if (opts.surfaceMode.value === 'wysiwyg' && opts.wysiwygRef.value) {
         opts.wysiwygRef.value.focus()
-        document.execCommand(
-          'insertHTML',
-          false,
+        insertHtmlAtSelection(
+          opts.wysiwygRef.value,
           `<figure><img src="${escapeXml(browserUrl)}" data-epub-src="${escapeXml(inserted.chapter_rel_href)}" alt="${altText}"/></figure><p><br/></p>`,
         )
         opts.flushActiveSurfaceToRecord()

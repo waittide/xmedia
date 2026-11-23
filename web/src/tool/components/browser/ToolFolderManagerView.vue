@@ -190,13 +190,17 @@ function formatModifiedDate(unixSecs: number): string {
         <div
           v-for="folder in sortedFolders"
           :key="`fm-dir-${folder.rel_path}`"
-          class="md-state group flex w-full cursor-pointer items-center gap-3.5 px-4 py-2.5 text-left"
+          role="button"
+          tabindex="0"
+          class="md-state group flex w-full cursor-pointer items-center gap-3.5 px-4 py-2.5 text-left outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
           :class="
             selectedPaths.has(folder.rel_path)
-              ? 'bg-[var(--md-sys-color-primary-container)]/35'
+              ? 'bg-primary-container/35'
               : ''
           "
           @click="emit('enterFolder', folder.rel_path, true)"
+          @keydown.enter.self.prevent="emit('enterFolder', folder.rel_path, true)"
+          @keydown.space.self.prevent="emit('enterFolder', folder.rel_path, true)"
         >
           <div
             class="flex w-5 shrink-0 items-center justify-center"
@@ -241,33 +245,34 @@ function formatModifiedDate(unixSecs: number): string {
                 / {{ folder.child_dir_count }} 目录
               </span>
             </template>
-            <span v-else class="opacity-60">空目录</span>
+            <span v-else class="opacity-80">空目录</span>
           </div>
           <div
-            class="hidden w-24 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] opacity-60 xl:block"
+            class="hidden w-24 shrink-0 text-right font-mono text-[11px] text-on-surface-variant opacity-80 xl:block"
           >
             —
           </div>
           <div class="hidden w-32 shrink-0 justify-end sm:flex">
             <span
-              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+              class="rounded-full bg-surface-container-high px-2 py-0.5 text-[10px] text-on-surface-variant"
             >
               文件夹
             </span>
           </div>
           <div
-            class="flex w-24 shrink-0 items-center justify-end gap-0.5 text-[var(--md-sys-color-on-surface-variant)]"
+            class="flex w-24 shrink-0 items-center justify-end gap-0.5 text-on-surface-variant"
           >
             <button
               type="button"
-              class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-error)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--md-sys-color-error-container)]/50"
+              class="md-icon-btn md-icon-btn-sm md-state text-error opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:bg-error-container/50"
               title="删除整个文件夹及其内部所有文件"
+              aria-label="删除整个文件夹及其内部所有文件"
               @click.stop="emit('requestDeleteFiles', [folder.rel_path], false)"
             >
               <LuTrash2 class="h-4 w-4" />
             </button>
             <LuChevronRight
-              class="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5 group-hover:opacity-100"
+              class="h-4 w-4 opacity-75 transition group-hover:translate-x-0.5 group-hover:opacity-100"
             />
           </div>
         </div>
@@ -276,16 +281,20 @@ function formatModifiedDate(unixSecs: number): string {
         <div
           v-for="raw in sortedRawFiles"
           :key="`fm-raw-${raw.rel_path}`"
-          class="md-state group flex items-center gap-3.5 px-4 py-2.5"
+          :role="mediaEntryMap.has(raw.rel_path) ? 'button' : undefined"
+          :tabindex="mediaEntryMap.has(raw.rel_path) ? 0 : undefined"
+          class="md-state group flex items-center gap-3.5 px-4 py-2.5 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
           :class="[
             mediaEntryMap.has(raw.rel_path) ? 'cursor-pointer' : 'cursor-default',
             inspectingPath === raw.rel_path
-              ? 'bg-[var(--md-sys-color-secondary-container)]/75'
+              ? 'bg-secondary-container/75'
               : selectedPaths.has(raw.rel_path)
-                ? 'bg-[var(--md-sys-color-primary-container)]/35'
+                ? 'bg-primary-container/35'
                 : '',
           ]"
           @click="handleRawFileRowClick(raw)"
+          @keydown.enter.self.prevent="handleRawFileRowClick(raw)"
+          @keydown.space.self.prevent="handleRawFileRowClick(raw)"
         >
           <div
             class="flex w-5 shrink-0 items-center justify-center"

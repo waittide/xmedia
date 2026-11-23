@@ -2,7 +2,11 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { LuAlertCircle, LuLock, LuRefreshCw, LuWrench } from 'vue-icons-plus/lu'
 import AppDialogHost from '@/components/ui/AppDialogHost.vue'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdCard from '@/components/ui/MdCard.vue'
+import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
 import MdSnackbarHost from '@/components/ui/MdSnackbarHost.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import { useThemeStore } from '@/stores/theme'
 import { toolApi } from './api'
 import ToolWorkspace from './components/ToolWorkspace.vue'
@@ -87,108 +91,99 @@ onBeforeUnmount(() => {
 <template>
   <div
     v-if="booting"
-    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] text-xs text-[var(--md-sys-color-on-surface-variant)]"
+    class="safe-px safe-py text-body-small flex min-h-dvh w-screen items-center justify-center gap-2.5 bg-surface-container text-on-surface-variant"
   >
-    <LuRefreshCw class="mr-2 h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
+    <MdCircularProgress :size="20" :aria-label="txt.boot.connecting" />
     <span>{{ txt.boot.connecting }}</span>
   </div>
 
   <!-- Connection Error / Retry State -->
   <div
     v-else-if="bootError || !status"
-    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
+    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-surface-container p-4 text-on-surface"
   >
-    <div
-      class="w-full max-w-sm space-y-4 rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-6 shadow-[var(--md-sys-elevation-3)]"
-    >
+    <MdCard variant="elevated" padding="lg" class="w-full max-w-sm space-y-4 rounded-corner-xl">
       <div class="flex items-center gap-3">
         <div
-          class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
+          class="flex h-11 w-11 items-center justify-center rounded-corner-lg bg-error-container text-on-error-container"
         >
           <LuAlertCircle class="h-5 w-5" />
         </div>
         <div>
-          <h1 class="text-base font-bold">{{ txt.boot.failedTitle }}</h1>
-          <p class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">{{ txt.brand }}</p>
+          <h1 class="text-title-medium text-on-surface">{{ txt.boot.failedTitle }}</h1>
+          <p class="text-label-small text-on-surface-variant">{{ txt.brand }}</p>
         </div>
       </div>
 
-      <p class="text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
+      <p class="text-body-small text-on-surface-variant">
         {{ txt.boot.failedDesc }}
       </p>
 
       <div
         v-if="bootError"
-        class="rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 font-mono text-[11px] break-all text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="rounded-corner-md bg-error-container px-3 py-2 font-mono text-[11px] break-all text-on-error-container"
       >
         {{ bootError }}
       </div>
 
-      <button
-        type="button"
-        class="md-btn md-btn-filled md-state w-full"
-        @click="fetchStatus()"
-      >
-        <LuRefreshCw class="h-3.5 w-3.5" />
-        <span>{{ txt.boot.retry }}</span>
-      </button>
-    </div>
+      <MdButton variant="filled" block :icon="LuRefreshCw" @click="fetchStatus()">
+        {{ txt.boot.retry }}
+      </MdButton>
+    </MdCard>
   </div>
 
   <!-- Password Gate when `--password` / `XMEDIA_TOOL_PASSWORD` is configured -->
   <div
     v-else-if="status?.requires_password && !status.authenticated"
-    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
+    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-surface-container p-4 text-on-surface"
   >
-    <form
-      class="w-full max-w-sm space-y-4 rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-6 shadow-[var(--md-sys-elevation-3)]"
-      @submit.prevent="handleUnlock"
-    >
-      <div class="flex items-center gap-3">
+    <MdCard variant="elevated" padding="lg" class="w-full max-w-sm rounded-corner-xl">
+      <form class="space-y-4" @submit.prevent="handleUnlock">
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-11 w-11 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
+          >
+            <LuWrench class="h-5 w-5" />
+          </div>
+          <div>
+            <h1 class="text-title-medium text-on-surface">{{ txt.unlock.title }}</h1>
+            <p class="text-label-small text-on-surface-variant">v{{ status.version }}</p>
+          </div>
+        </div>
+
+        <p class="text-body-small text-on-surface-variant">
+          {{ txt.unlock.subtitle }}
+        </p>
+
         <div
-          class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
+          v-if="unlockError"
+          role="alert"
+          class="rounded-corner-md bg-error-container px-3 py-2 text-xs text-on-error-container"
         >
-          <LuWrench class="h-5 w-5" />
+          {{ unlockError }}
         </div>
-        <div>
-          <h1 class="text-base font-bold">{{ txt.unlock.title }}</h1>
-          <p class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">v{{ status.version }}</p>
-        </div>
-      </div>
 
-      <p class="text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
-        {{ txt.unlock.subtitle }}
-      </p>
-
-      <div
-        v-if="unlockError"
-        class="rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
-      >
-        {{ unlockError }}
-      </div>
-
-      <div class="relative">
-        <LuLock
-          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-        />
-        <input
+        <MdTextField
           v-model="passwordInput"
           type="password"
-          autofocus
+          :leading-icon="LuLock"
           :placeholder="txt.unlock.placeholder"
-          class="md-input h-10 w-full pr-3 pl-10 text-xs"
+          :aria-label="txt.unlock.placeholder"
+          autofocus
         />
-      </div>
 
-      <button
-        type="submit"
-        :disabled="!passwordInput.trim() || unlocking"
-        class="md-btn md-btn-filled md-state w-full"
-      >
-        <LuRefreshCw v-if="unlocking" class="h-3.5 w-3.5 animate-spin" />
-        <span>{{ txt.unlock.submit }}</span>
-      </button>
-    </form>
+        <MdButton
+          type="submit"
+          variant="filled"
+          block
+          :loading="unlocking"
+          :disabled="!passwordInput.trim()"
+        >
+          {{ txt.unlock.submit }}
+        </MdButton>
+      </form>
+    </MdCard>
   </div>
 
   <!-- Main Workbench -->
