@@ -286,6 +286,11 @@ async fn delete_library_cascades_all_collection_references() {
     catalog_repo.save_track(&keep_track).await.unwrap();
     catalog_repo.save_track(&del_track).await.unwrap();
     catalog_repo.recompute_catalog_aggregates().await.unwrap();
+    env.music_services
+        .catalog
+        .bind_tracks_for_user(admin.id, &[keep_track.id, del_track.id])
+        .await
+        .unwrap();
 
     // Populate stars, ratings, playlist, bookmarks, play queue, scrobbles/stats, and tags
     env.music_services

@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::library::LibraryId;
+use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::user::{User, UserId};
 
 use crate::application::catalog::MusicCatalogService;
@@ -41,11 +41,16 @@ impl MusicCollectionService {
     }
 
     pub async fn list_playlists(&self, user_id: UserId) -> DomainResult<Vec<PlaylistSummaryDto>> {
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user_id, MediaKind::Music)
+            .await?;
         let playlists = self.collections.list_visible_playlists(user_id).await?;
         let mut all_track_ids = Vec::new();
         for pl in &playlists {
             for &tid in &pl.track_ids {
-                if !all_track_ids.contains(&tid) {
+                if bound_ids.contains(&tid.0) && !all_track_ids.contains(&tid) {
                     all_track_ids.push(tid);
                 }
             }
@@ -75,10 +80,20 @@ impl MusicCollectionService {
             ));
         }
 
-        let fetched = self.catalog_repo.find_tracks_by_ids(&pl.track_ids).await?;
-        let track_map: HashMap<TrackId, Track> = fetched.into_iter().map(|t| (t.id, t)).collect();
-        let ordered: Vec<Track> = pl
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(actor.id, MediaKind::Music)
+            .await?;
+        let visible_ids: Vec<TrackId> = pl
             .track_ids
+            .iter()
+            .copied()
+            .filter(|tid| bound_ids.contains(&tid.0))
+            .collect();
+        let fetched = self.catalog_repo.find_tracks_by_ids(&visible_ids).await?;
+        let track_map: HashMap<TrackId, Track> = fetched.into_iter().map(|t| (t.id, t)).collect();
+        let ordered: Vec<Track> = visible_ids
             .iter()
             .filter_map(|tid| track_map.get(tid).cloned())
             .filter(|t| !t.is_missing)
@@ -105,7 +120,16 @@ impl MusicCollectionService {
     ) -> DomainResult<PlaylistDetailDto> {
         let mut pl = Playlist::new(owner.id, &owner.username, name, comment, is_public)?;
         if !initial_track_ids.is_empty() {
-            pl.replace_tracks(initial_track_ids);
+            let bound_ids = self
+                .catalog_service
+                .bindings()
+                .list_bound_ids(owner.id, MediaKind::Music)
+                .await?;
+            let allowed: Vec<TrackId> = initial_track_ids
+                .into_iter()
+                .filter(|tid| bound_ids.contains(&tid.0))
+                .collect();
+            pl.replace_tracks(allowed);
         }
         self.collections.save_playlist(&pl).await?;
         self.get_playlist(owner, pl.id).await
@@ -131,13 +155,32 @@ impl MusicCollectionService {
 
         pl.update_meta(input.name, input.comment, input.is_public)?;
         if let Some(replaced) = input.replace_track_ids {
-            pl.replace_tracks(replaced);
+            let bound_ids = self
+                .catalog_service
+                .bindings()
+                .list_bound_ids(actor.id, MediaKind::Music)
+                .await?;
+            let allowed: Vec<TrackId> = replaced
+                .into_iter()
+                .filter(|tid| bound_ids.contains(&tid.0))
+                .collect();
+            pl.replace_tracks(allowed);
         } else {
             if !input.remove_indices.is_empty() {
                 pl.remove_indices(input.remove_indices);
             }
             if !input.add_track_ids.is_empty() {
-                pl.append_tracks(&input.add_track_ids);
+                let bound_ids = self
+                    .catalog_service
+                    .bindings()
+                    .list_bound_ids(actor.id, MediaKind::Music)
+                    .await?;
+                let allowed: Vec<TrackId> = input
+                    .add_track_ids
+                    .into_iter()
+                    .filter(|tid| bound_ids.contains(&tid.0))
+                    .collect();
+                pl.append_tracks(&allowed);
             }
         }
         self.collections.save_playlist(&pl).await?;
@@ -165,19 +208,41 @@ impl MusicCollectionService {
         album_ids: &[AlbumId],
         artist_ids: &[ArtistId],
     ) -> DomainResult<()> {
+        let bound_tracks = self.catalog_service.load_bound_tracks(user_id).await?;
+        let bound_track_ids: HashSet<TrackId> = bound_tracks.iter().map(|t| t.id).collect();
+        let bound_album_ids: HashSet<AlbumId> = bound_tracks.iter().map(|t| t.album_id).collect();
+        let mut bound_artist_ids: HashSet<ArtistId> = HashSet::new();
+        for t in &bound_tracks {
+            bound_artist_ids.insert(t.artist_id);
+            bound_artist_ids.insert(t.album_artist_id);
+        }
+
         let now = Timestamp::now();
         for &aid in album_ids {
+            if !bound_album_ids.contains(&aid) {
+                return Err(DomainError::NotFound("album not found".into()));
+            }
             self.collections
                 .set_starred(user_id, StarTargetKind::Album, aid.0, now)
                 .await?;
         }
         for &arid in artist_ids {
+            if !bound_artist_ids.contains(&arid) {
+                return Err(DomainError::NotFound("artist not found".into()));
+            }
             self.collections
                 .set_starred(user_id, StarTargetKind::Artist, arid.0, now)
                 .await?;
         }
         for raw in raw_ids {
-            let (kind, uuid) = self.resolve_star_target(raw).await?;
+            let (kind, uuid) = self
+                .resolve_bound_star_target(
+                    raw,
+                    &bound_track_ids,
+                    &bound_album_ids,
+                    &bound_artist_ids,
+                )
+                .await?;
             self.collections
                 .set_starred(user_id, kind, uuid, now)
                 .await?;
@@ -214,6 +279,18 @@ impl MusicCollectionService {
         user_id: UserId,
         library_id: Option<LibraryId>,
     ) -> DomainResult<StarredBundleDto> {
+        let mut bound_tracks = self.catalog_service.load_bound_tracks(user_id).await?;
+        if let Some(lid) = library_id {
+            bound_tracks.retain(|t| t.library_id == lid);
+        }
+        if bound_tracks.is_empty() {
+            return Ok(StarredBundleDto {
+                artists: Vec::new(),
+                albums: Vec::new(),
+                tracks: Vec::new(),
+            });
+        }
+
         let mut all = self.collections.list_starred(user_id, None).await?;
         all.sort_by_key(|a| std::cmp::Reverse(a.starred_at));
 
@@ -229,30 +306,33 @@ impl MusicCollectionService {
             }
         }
 
-        let fetched_artists = self.catalog_repo.find_artists_by_ids(&artist_ids).await?;
+        let projected_artists = self
+            .catalog_service
+            .project_user_artists(&bound_tracks)
+            .await?;
         let artist_map: HashMap<ArtistId, Artist> =
-            fetched_artists.into_iter().map(|a| (a.id, a)).collect();
+            projected_artists.into_iter().map(|a| (a.id, a)).collect();
         let ordered_artists: Vec<Artist> = artist_ids
             .into_iter()
             .filter_map(|id| artist_map.get(&id).cloned())
             .collect();
 
-        let fetched_albums = self.catalog_repo.find_albums_by_ids(&album_ids).await?;
+        let projected_albums = self
+            .catalog_service
+            .project_user_albums(&bound_tracks)
+            .await?;
         let album_map: HashMap<AlbumId, Album> =
-            fetched_albums.into_iter().map(|a| (a.id, a)).collect();
+            projected_albums.into_iter().map(|a| (a.id, a)).collect();
         let ordered_albums: Vec<Album> = album_ids
             .into_iter()
             .filter_map(|id| album_map.get(&id).cloned())
-            .filter(|a| library_id.is_none_or(|lid| a.library_id == lid))
             .collect();
 
-        let fetched_tracks = self.catalog_repo.find_tracks_by_ids(&track_ids).await?;
         let track_map: HashMap<TrackId, Track> =
-            fetched_tracks.into_iter().map(|t| (t.id, t)).collect();
+            bound_tracks.into_iter().map(|t| (t.id, t)).collect();
         let ordered_tracks: Vec<Track> = track_ids
             .into_iter()
             .filter_map(|id| track_map.get(&id).cloned())
-            .filter(|t| !t.is_missing && library_id.is_none_or(|lid| t.library_id == lid))
             .collect();
 
         Ok(StarredBundleDto {
@@ -277,7 +357,22 @@ impl MusicCollectionService {
                 "rating must be between 0 and 5".into(),
             ));
         }
-        let (kind, uuid) = self.resolve_star_target(raw_id).await?;
+        let bound_tracks = self.catalog_service.load_bound_tracks(user_id).await?;
+        let bound_track_ids: HashSet<TrackId> = bound_tracks.iter().map(|t| t.id).collect();
+        let bound_album_ids: HashSet<AlbumId> = bound_tracks.iter().map(|t| t.album_id).collect();
+        let mut bound_artist_ids: HashSet<ArtistId> = HashSet::new();
+        for t in &bound_tracks {
+            bound_artist_ids.insert(t.artist_id);
+            bound_artist_ids.insert(t.album_artist_id);
+        }
+        let (kind, uuid) = self
+            .resolve_bound_star_target(
+                raw_id,
+                &bound_track_ids,
+                &bound_album_ids,
+                &bound_artist_ids,
+            )
+            .await?;
         if rating == 0 {
             self.collections.remove_rating(user_id, kind, uuid).await
         } else {
@@ -294,6 +389,11 @@ impl MusicCollectionService {
         submission: bool,
         client_name: &str,
     ) -> DomainResult<()> {
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user.id, MediaKind::Music)
+            .await?;
         let now = Timestamp::now();
         let client = if client_name.trim().is_empty() {
             "xmedia-web"
@@ -302,6 +402,9 @@ impl MusicCollectionService {
         };
 
         for (track_id, played_at_opt) in entries {
+            if !bound_ids.contains(&track_id.0) {
+                continue;
+            }
             let Some(track) = self
                 .catalog_repo
                 .find_track_by_id(track_id)
@@ -334,13 +437,22 @@ impl MusicCollectionService {
     }
 
     pub async fn list_now_playing(&self, viewer_id: UserId) -> DomainResult<Vec<NowPlayingDto>> {
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(viewer_id, MediaKind::Music)
+            .await?;
         let now = Timestamp::now();
         let active_entries: Vec<NowPlayingEntry> = {
             let Ok(mut guard) = self.now_playing.write() else {
                 return Ok(Vec::new());
             };
             guard.retain(|_, entry| now.duration_since(entry.updated_at).as_secs() <= 15 * 60);
-            guard.values().cloned().collect()
+            guard
+                .values()
+                .filter(|e| bound_ids.contains(&e.track_id.0))
+                .cloned()
+                .collect()
         };
 
         if active_entries.is_empty() {
@@ -374,21 +486,31 @@ impl MusicCollectionService {
         let Some(queue) = self.collections.get_play_queue(user_id).await? else {
             return Ok(None);
         };
-        let fetched = self
-            .catalog_repo
-            .find_tracks_by_ids(&queue.track_ids)
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user_id, MediaKind::Music)
             .await?;
-        let lookup: HashMap<TrackId, Track> = fetched.into_iter().map(|t| (t.id, t)).collect();
-        let ordered: Vec<Track> = queue
+        let visible_ids: Vec<TrackId> = queue
             .track_ids
+            .iter()
+            .copied()
+            .filter(|id| bound_ids.contains(&id.0))
+            .collect();
+        let fetched = self.catalog_repo.find_tracks_by_ids(&visible_ids).await?;
+        let lookup: HashMap<TrackId, Track> = fetched.into_iter().map(|t| (t.id, t)).collect();
+        let ordered: Vec<Track> = visible_ids
             .iter()
             .filter_map(|id| lookup.get(id).cloned())
             .filter(|t| !t.is_missing)
             .collect();
+        let current_track_id = queue
+            .current_track_id
+            .filter(|cid| bound_ids.contains(&cid.0));
         let dtos = self.catalog_service.enrich_tracks(user_id, ordered).await?;
         Ok(Some(PlayQueueDto {
             tracks: dtos,
-            current_track_id: queue.current_track_id,
+            current_track_id,
             position_ms: queue.position_ms,
             changed_by: queue.changed_by,
             updated_at: queue.updated_at,
@@ -403,10 +525,20 @@ impl MusicCollectionService {
         position_ms: u64,
         changed_by: &str,
     ) -> DomainResult<()> {
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user_id, MediaKind::Music)
+            .await?;
+        let allowed_ids: Vec<TrackId> = track_ids
+            .into_iter()
+            .filter(|id| bound_ids.contains(&id.0))
+            .collect();
+        let allowed_current = current_track_id.filter(|cid| bound_ids.contains(&cid.0));
         let queue = PlayQueue {
             user_id,
-            track_ids,
-            current_track_id,
+            track_ids: allowed_ids,
+            current_track_id: allowed_current,
             position_ms,
             changed_by: if changed_by.trim().is_empty() {
                 "xmedia-web".to_string()
@@ -419,7 +551,18 @@ impl MusicCollectionService {
     }
 
     pub async fn list_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<BookmarkDto>> {
-        let bms = self.collections.list_bookmarks(user_id).await?;
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user_id, MediaKind::Music)
+            .await?;
+        let bms: Vec<_> = self
+            .collections
+            .list_bookmarks(user_id)
+            .await?
+            .into_iter()
+            .filter(|b| bound_ids.contains(&b.track_id.0))
+            .collect();
         if bms.is_empty() {
             return Ok(Vec::new());
         }
@@ -475,6 +618,31 @@ impl MusicCollectionService {
 
     pub async fn delete_bookmark(&self, user_id: UserId, track_id: TrackId) -> DomainResult<()> {
         self.collections.delete_bookmark(user_id, track_id).await
+    }
+
+    async fn resolve_bound_star_target(
+        &self,
+        raw_id: &str,
+        bound_track_ids: &HashSet<TrackId>,
+        bound_album_ids: &HashSet<AlbumId>,
+        bound_artist_ids: &HashSet<ArtistId>,
+    ) -> DomainResult<(StarTargetKind, Uuid)> {
+        let trimmed = raw_id.trim();
+        let uuid = Uuid::parse_str(trimmed)
+            .map_err(|_| DomainError::Validation(format!("invalid entity id: {trimmed}")))?;
+
+        if bound_track_ids.contains(&TrackId(uuid)) {
+            return Ok((StarTargetKind::Track, uuid));
+        }
+        if bound_album_ids.contains(&AlbumId(uuid)) {
+            return Ok((StarTargetKind::Album, uuid));
+        }
+        if bound_artist_ids.contains(&ArtistId(uuid)) {
+            return Ok((StarTargetKind::Artist, uuid));
+        }
+        Err(DomainError::NotFound(format!(
+            "entity not found: {trimmed}"
+        )))
     }
 
     async fn resolve_star_target(&self, raw_id: &str) -> DomainResult<(StarTargetKind, Uuid)> {

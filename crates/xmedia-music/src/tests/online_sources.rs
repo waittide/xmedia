@@ -4768,7 +4768,7 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
     let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
     let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
 
-    // 2. Non-admin member cannot track into managed library
+    // 2. Admin tracks the online song (lightweight registration, audio not yet downloaded)
     let track_payload = serde_json::json!({
         "source_id": source_id,
         "track_id": "song-001",
@@ -4779,17 +4779,6 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
         "cover_url": format!("{base_url}/cover.png"),
         "format": "wav"
     });
-    let (st_forb, _, _) = send_json(
-        &app,
-        "POST",
-        "/api/v1/music/online/track",
-        &member_session.token,
-        Some(track_payload.clone()),
-    )
-    .await;
-    assert_eq!(st_forb, StatusCode::FORBIDDEN);
-
-    // 3. Admin tracks the online song (lightweight registration, audio not yet downloaded)
     let (st_track, _, b_track) = send_json(
         &app,
         "POST",
@@ -4813,7 +4802,53 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
     assert!(tracked["cover_key"].as_str().is_some());
     assert_eq!(audio_hits.load(Ordering::SeqCst), 0);
 
-    // Idempotent re-track returns the exact same TrackId
+    // 3. Before member tracks it, member cannot see admin's private OnlineTracked track or cache it
+    let (st_mem_404, _, _) = send_json(
+        &app,
+        "GET",
+        &format!("/api/v1/music/tracks/{track_id}"),
+        &member_session.token,
+        None,
+    )
+    .await;
+    assert_eq!(st_mem_404, StatusCode::NOT_FOUND);
+
+    let (st_mem_cache_404, _, _) = send_json(
+        &app,
+        "POST",
+        &format!("/api/v1/music/tracks/{track_id}/online/cache"),
+        &member_session.token,
+        None,
+    )
+    .await;
+    assert_eq!(st_mem_cache_404, StatusCode::NOT_FOUND);
+
+    let (st_pool, _, b_pool) = send_json(
+        &app,
+        "GET",
+        "/api/v1/music/pool",
+        &member_session.token,
+        None,
+    )
+    .await;
+    assert_eq!(st_pool, StatusCode::OK);
+    let pool_val: serde_json::Value = serde_json::from_slice(&b_pool).unwrap();
+    assert_eq!(pool_val["total"], 0);
+
+    // Member can track the same online song -> deduplicates and reuses exact same pooled TrackId
+    let (st_mem_track, _, b_mem_track) = send_json(
+        &app,
+        "POST",
+        "/api/v1/music/online/track",
+        &member_session.token,
+        Some(track_payload.clone()),
+    )
+    .await;
+    assert_eq!(st_mem_track, StatusCode::OK);
+    let mem_tracked: serde_json::Value = serde_json::from_slice(&b_mem_track).unwrap();
+    assert_eq!(mem_tracked["id"], track_id);
+
+    // Idempotent re-track by admin returns the exact same TrackId
     let (st_dup, _, b_dup) = send_json(
         &app,
         "POST",
@@ -4947,6 +4982,35 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
     let cached2: serde_json::Value = serde_json::from_slice(&b_cache).unwrap();
     assert_eq!(cached2["online_tracking"]["cached"], true);
     assert_eq!(audio_hits.load(Ordering::SeqCst), 2);
+
+    // 9. Unbinding removes personal binding and auto-GCs OnlineTracked track at 0 remaining bindings
+    let (st_unb_m, _, b_unb_m) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/v1/music/bindings/{track_id}"),
+        &member_session.token,
+        None,
+    )
+    .await;
+    assert_eq!(st_unb_m, StatusCode::OK);
+    let unb_m: serde_json::Value = serde_json::from_slice(&b_unb_m).unwrap();
+    assert_eq!(unb_m["unbound"], true);
+    assert_eq!(unb_m["remaining_bindings"], 1);
+    assert_eq!(unb_m["deleted_from_pool"], false);
+
+    let (st_unb_a, _, b_unb_a) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/v1/music/bindings/{track_id}"),
+        &admin_session.token,
+        None,
+    )
+    .await;
+    assert_eq!(st_unb_a, StatusCode::OK);
+    let unb_a: serde_json::Value = serde_json::from_slice(&b_unb_a).unwrap();
+    assert_eq!(unb_a["unbound"], true);
+    assert_eq!(unb_a["remaining_bindings"], 0);
+    assert_eq!(unb_a["deleted_from_pool"], true);
 
     server_handle.abort();
 }

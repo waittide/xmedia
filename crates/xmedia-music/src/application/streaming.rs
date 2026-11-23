@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::user::UserId;
 
 use crate::application::ports::{
     AudioTranscoderPort, FfmpegStatusDto, MusicStoragePort, TranscodeFormat, TranscodeRequest,
@@ -27,6 +30,7 @@ pub enum ResolvedAudioStream {
 pub struct MusicStreamingService {
     libraries: Arc<dyn LibraryRepository>,
     catalog: Arc<dyn MusicCatalogRepository>,
+    bindings: Arc<MediaBindingService>,
     storage: Arc<dyn MusicStoragePort>,
     transcoder: Arc<dyn AudioTranscoderPort>,
 }
@@ -35,12 +39,14 @@ impl MusicStreamingService {
     pub fn new(
         libraries: Arc<dyn LibraryRepository>,
         catalog: Arc<dyn MusicCatalogRepository>,
+        bindings: Arc<MediaBindingService>,
         storage: Arc<dyn MusicStoragePort>,
         transcoder: Arc<dyn AudioTranscoderPort>,
     ) -> Self {
         Self {
             libraries,
             catalog,
+            bindings,
             storage,
             transcoder,
         }
@@ -52,9 +58,13 @@ impl MusicStreamingService {
 
     pub async fn open_raw_download(
         &self,
+        user_id: UserId,
         track_id: TrackId,
         spec: ByteRangeSpec,
     ) -> DomainResult<ResolvedAudioStream> {
+        self.bindings
+            .require_bound(user_id, MediaKind::Music, track_id.0, "track not found")
+            .await?;
         let track = self
             .catalog
             .find_track_by_id(track_id)
@@ -80,12 +90,16 @@ impl MusicStreamingService {
 
     pub async fn open_stream(
         &self,
+        user_id: UserId,
         track_id: TrackId,
         requested_format: Option<&str>,
         max_bit_rate_kbps: Option<u32>,
         time_offset_secs: Option<u32>,
         spec: ByteRangeSpec,
     ) -> DomainResult<ResolvedAudioStream> {
+        self.bindings
+            .require_bound(user_id, MediaKind::Music, track_id.0, "track not found")
+            .await?;
         let track = self
             .catalog
             .find_track_by_id(track_id)

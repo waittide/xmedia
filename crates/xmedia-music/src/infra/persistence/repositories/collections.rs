@@ -720,4 +720,109 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
             .map_err(db_err)?;
         Ok(())
     }
+
+    async fn delete_by_user_and_track(
+        &self,
+        user_id: UserId,
+        track_id: TrackId,
+    ) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        for mut pl in MusicPlaylistModel::filter_by_owner_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            if pl.track_ids.0.contains(&track_id) {
+                let filtered: Vec<TrackId> = pl
+                    .track_ids
+                    .0
+                    .iter()
+                    .copied()
+                    .filter(|&id| id != track_id)
+                    .collect();
+                pl.update()
+                    .track_ids(toasty::Json(filtered))
+                    .updated_at(Timestamp::now())
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+        }
+        if let Some(mut q) = MusicPlayQueueModel::filter_by_user_id(user_id.0)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            let has_in_list = q.track_ids.0.contains(&track_id);
+            let is_current = q.current_track_id == Some(track_id.0);
+            if has_in_list || is_current {
+                let filtered: Vec<TrackId> = q
+                    .track_ids
+                    .0
+                    .iter()
+                    .copied()
+                    .filter(|&id| id != track_id)
+                    .collect();
+                let next_current = if is_current {
+                    filtered.first().map(|id| id.0)
+                } else {
+                    q.current_track_id
+                };
+                let next_position = if is_current { 0 } else { q.position_ms };
+                q.update()
+                    .track_ids(toasty::Json(filtered))
+                    .current_track_id(next_current)
+                    .position_ms(next_position)
+                    .updated_at(Timestamp::now())
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+        }
+        let bm_key = format!("{}:{}", user_id.0, track_id.0);
+        MusicBookmarkModel::filter_by_bookmark_key(&bm_key)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        let stat_key = format!("{}:{}", user_id.0, track_id.0);
+        MusicPlayStatModel::filter_by_stat_key(&stat_key)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        for sc in MusicScrobbleModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            if sc.track_id == track_id.0 {
+                sc.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+        let star_key = format!(
+            "{}:{}:{}",
+            user_id.0,
+            StarTargetKind::Track.as_str(),
+            track_id.0
+        );
+        MusicStarredModel::filter_by_star_key(&star_key)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        let rating_key = format!(
+            "{}:{}:{}",
+            user_id.0,
+            StarTargetKind::Track.as_str(),
+            track_id.0
+        );
+        MusicRatingModel::filter_by_rating_key(&rating_key)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
 }

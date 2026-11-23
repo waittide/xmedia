@@ -119,6 +119,10 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         self.count_all_active_tracks_impl().await
     }
 
+    async fn list_all_active_track_ids(&self) -> DomainResult<Vec<TrackId>> {
+        self.list_all_active_track_ids_impl().await
+    }
+
     async fn query_tracks(&self, query: &TrackQuery) -> DomainResult<PagedResult<Track>> {
         self.query_tracks_impl(query).await
     }

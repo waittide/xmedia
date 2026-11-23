@@ -344,6 +344,8 @@ pub struct TrackQuery {
     pub sort_order: SortOrder,
     pub page: u32,
     pub page_size: u32,
+    #[serde(skip)]
+    pub exclude_online_tracked: bool,
 }
 
 impl Default for TrackQuery {
@@ -361,6 +363,7 @@ impl Default for TrackQuery {
             sort_order: SortOrder::Desc,
             page: 1,
             page_size: 50,
+            exclude_online_tracked: false,
         }
     }
 }

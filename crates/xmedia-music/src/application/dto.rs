@@ -84,6 +84,23 @@ pub struct TrackDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolTrackDto {
+    #[serde(flatten)]
+    pub track: TrackDto,
+    pub bound: bool,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct BindMusicItemsInput {
+    pub item_ids: Vec<Uuid>,
+    pub album_id: Option<Uuid>,
+    pub artist_id: Option<Uuid>,
+    pub library_id: Option<Uuid>,
+    pub user_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlbumDto {
     pub id: AlbumId,
     pub library_id: LibraryId,

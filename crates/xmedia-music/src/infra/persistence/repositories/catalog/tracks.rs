@@ -76,6 +76,15 @@ impl ToastyMusicCatalogRepository {
         Ok(rows.len() as u64)
     }
 
+    pub(super) async fn list_all_active_track_ids_impl(&self) -> DomainResult<Vec<TrackId>> {
+        let mut db = self.db.clone();
+        let rows = MusicTrackModel::filter_by_is_missing(false)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(|r| TrackId(r.id)).collect())
+    }
+
     pub(super) async fn query_tracks_impl(
         &self,
         query: &TrackQuery,
@@ -120,6 +129,9 @@ impl ToastyMusicCatalogRepository {
             .into_iter()
             .map(Self::track_to_domain)
             .filter(|t| {
+                if query.exclude_online_tracked && t.source.is_online_tracked() {
+                    return false;
+                }
                 if let Some(ref tset) = tag_track_set
                     && !tset.contains(&t.id)
                 {

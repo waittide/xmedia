@@ -216,8 +216,14 @@ async fn handle_authenticated_method(
                 .libraries
                 .list_libraries(Some(MediaKind::Music))
                 .await?;
+            let counts = state
+                .services
+                .catalog
+                .count_bound_tracks_by_library(user.id)
+                .await?;
             let folders: Vec<SsNode> = libs
                 .into_iter()
+                .filter(|l| counts.get(&l.id).copied().unwrap_or(0) > 0)
                 .map(|l| {
                     SsNode::new()
                         .attr_str("id", l.id.to_string())
@@ -331,7 +337,7 @@ async fn handle_authenticated_method(
         }
 
         "getGenres" => {
-            let genres = state.services.catalog.list_genres().await?;
+            let genres = state.services.catalog.list_genres(user.id).await?;
             let items: Vec<SsNode> = genres
                 .into_iter()
                 .map(|g| {
@@ -502,6 +508,11 @@ async fn handle_authenticated_method(
             let id = parse_uuid_param(params, "id")?;
             state
                 .services
+                .catalog
+                .require_track_bound(user.id, TrackId(id))
+                .await?;
+            state
+                .services
                 .online
                 .ensure_tracked_track_cached(TrackId(id))
                 .await?;
@@ -510,6 +521,7 @@ async fn handle_authenticated_method(
                 .services
                 .streaming
                 .open_stream(
+                    user.id,
                     TrackId(id),
                     params.first("format"),
                     params.u32("maxBitRate"),
@@ -524,6 +536,11 @@ async fn handle_authenticated_method(
             let id = parse_uuid_param(params, "id")?;
             state
                 .services
+                .catalog
+                .require_track_bound(user.id, TrackId(id))
+                .await?;
+            state
+                .services
                 .online
                 .ensure_tracked_track_cached(TrackId(id))
                 .await?;
@@ -531,7 +548,7 @@ async fn handle_authenticated_method(
             let resolved = state
                 .services
                 .streaming
-                .open_raw_download(TrackId(id), spec)
+                .open_raw_download(user.id, TrackId(id), spec)
                 .await?;
             Ok(into_audio_http_response(resolved, true))
         }
@@ -551,7 +568,7 @@ async fn handle_authenticated_method(
             let lyr = state
                 .services
                 .catalog
-                .get_lyrics_by_artist_title(artist, title)
+                .get_lyrics_by_artist_title(user.id, artist, title)
                 .await?;
             let node = SsNode::new()
                 .attr_opt_str(
@@ -568,6 +585,11 @@ async fn handle_authenticated_method(
 
         "getLyricsBySongId" => {
             let id = parse_uuid_param(params, "id")?;
+            state
+                .services
+                .catalog
+                .require_track_bound(user.id, TrackId(id))
+                .await?;
             let _ = state
                 .services
                 .online
@@ -576,7 +598,7 @@ async fn handle_authenticated_method(
             let lyr = state
                 .services
                 .catalog
-                .get_lyrics_by_track(TrackId(id))
+                .get_lyrics_by_track(user.id, TrackId(id))
                 .await?;
             let structured = if lyr.is_empty() {
                 Vec::new()
@@ -920,7 +942,7 @@ async fn handle_authenticated_method(
                     let _ = state.libraries.trigger_scan(user, lib.id).await;
                 }
             }
-            let status = state.services.ingest.get_scan_status().await?;
+            let status = state.services.ingest.get_scan_status(user.id).await?;
             let node = SsNode::new()
                 .attr_bool("scanning", status.scanning)
                 .attr_uint("count", status.count);
@@ -928,7 +950,7 @@ async fn handle_authenticated_method(
         }
 
         "getScanStatus" => {
-            let status = state.services.ingest.get_scan_status().await?;
+            let status = state.services.ingest.get_scan_status(user.id).await?;
             let node = SsNode::new()
                 .attr_bool("scanning", status.scanning)
                 .attr_uint("count", status.count);

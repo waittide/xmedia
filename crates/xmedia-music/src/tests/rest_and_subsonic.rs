@@ -337,7 +337,7 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
     let artist_name = uploaded.uploaded_tracks[0].artist_name.clone();
     let fallback_lyrics = music_services
         .catalog
-        .get_lyrics_by_artist_title(Some(&artist_name), None)
+        .get_lyrics_by_artist_title(admin.id, Some(&artist_name), None)
         .await
         .unwrap();
     assert!(!fallback_lyrics.is_empty());

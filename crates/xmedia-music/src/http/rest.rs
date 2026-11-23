@@ -6,6 +6,7 @@ use axum::{Json, Router};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xmedia_core::application::bindings::{BindMediaItemsResultDto, UnbindMediaItemResultDto};
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::require_admin;
@@ -15,10 +16,10 @@ use xmedia_core::http::{
 };
 
 use crate::application::dto::{
-    AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BookmarkDto, GlobalScanStatusDto,
-    HomeOverviewDto, NowPlayingDto, PlayQueueDto, PlaylistDetailDto, PlaylistSummaryDto,
-    SearchResultDto, StarredBundleDto, TrackDto, UpdatePlaylistInput, UploadBatchResultDto,
-    UploadFilePathItem,
+    AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BindMusicItemsInput, BookmarkDto,
+    GlobalScanStatusDto, HomeOverviewDto, NowPlayingDto, PlayQueueDto, PlaylistDetailDto,
+    PlaylistSummaryDto, PoolTrackDto, SearchResultDto, StarredBundleDto, TrackDto,
+    UpdatePlaylistInput, UploadBatchResultDto, UploadFilePathItem,
 };
 use crate::application::ports::FfmpegStatusDto;
 use crate::domain::catalog::{
@@ -35,6 +36,9 @@ pub fn router() -> Router<MusicHttpState> {
     Router::new()
         .route("/status", get(music_status))
         .route("/home", get(home_overview))
+        .route("/pool", get(list_pool_tracks))
+        .route("/bindings", post(bind_tracks))
+        .route("/bindings/{id}", axum::routing::delete(unbind_track))
         .route(
             "/upload",
             post(upload_tracks).layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
@@ -236,11 +240,11 @@ struct BookmarkBody {
 
 async fn music_status(
     State(state): State<MusicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<MusicStatusResponse>> {
     let ffmpeg =
         MusicFfmpegStatusResponse::from(state.services.streaming.get_ffmpeg_status().await);
-    let scan = state.services.ingest.get_scan_status().await?;
+    let scan = state.services.ingest.get_scan_status(user.id).await?;
     Ok(Json(MusicStatusResponse {
         ffmpeg,
         scan,
@@ -312,6 +316,59 @@ async fn home_overview(
     ))
 }
 
+async fn list_pool_tracks(
+    State(state): State<MusicHttpState>,
+    WebAuth(user): WebAuth,
+    Query(p): Query<TrackListParams>,
+) -> ApiResult<Json<PagedResult<PoolTrackDto>>> {
+    let q = TrackQuery {
+        library_id: p.library_id.map(LibraryId),
+        album_id: p.album_id.map(AlbumId),
+        artist_id: p.artist_id.map(ArtistId),
+        genre: p.genre,
+        tag: p.tag,
+        year_from: p.year_from,
+        year_to: p.year_to,
+        search: p.search,
+        sort_by: p.sort_by.unwrap_or(TrackSortField::CreatedAt),
+        sort_order: p.sort_order.unwrap_or(SortOrder::Desc),
+        page: p.page.unwrap_or(1),
+        page_size: p.page_size.unwrap_or(50).clamp(1, 500),
+        exclude_online_tracked: true,
+    };
+    Ok(Json(
+        state.services.catalog.list_pool_tracks(user.id, q).await?,
+    ))
+}
+
+async fn bind_tracks(
+    State(state): State<MusicHttpState>,
+    WebAuth(user): WebAuth,
+    Json(input): Json<BindMusicItemsInput>,
+) -> ApiResult<Json<BindMediaItemsResultDto>> {
+    Ok(Json(state.services.ingest.bind_tracks(&user, input).await?))
+}
+
+#[derive(Deserialize, Default)]
+struct UnbindQuery {
+    user_id: Option<Uuid>,
+}
+
+async fn unbind_track(
+    State(state): State<MusicHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    Query(query): Query<UnbindQuery>,
+) -> ApiResult<Json<UnbindMediaItemResultDto>> {
+    Ok(Json(
+        state
+            .services
+            .ingest
+            .unbind_track(&user, TrackId(id), query.user_id)
+            .await?,
+    ))
+}
+
 async fn query_tracks(
     State(state): State<MusicHttpState>,
     WebAuth(user): WebAuth,
@@ -330,6 +387,7 @@ async fn query_tracks(
         sort_order: p.sort_order.unwrap_or(SortOrder::Desc),
         page: p.page.unwrap_or(1),
         page_size: p.page_size.unwrap_or(50).clamp(1, 500),
+        exclude_online_tracked: false,
     };
     Ok(Json(state.services.catalog.query_tracks(user.id, q).await?))
 }
@@ -398,9 +456,14 @@ async fn delete_track(
 
 async fn get_track_lyrics(
     State(state): State<MusicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<StructuredLyrics>> {
+    state
+        .services
+        .catalog
+        .require_track_bound(user.id, TrackId(id))
+        .await?;
     let _ = state
         .services
         .online
@@ -410,18 +473,23 @@ async fn get_track_lyrics(
         state
             .services
             .catalog
-            .get_lyrics_by_track(TrackId(id))
+            .get_lyrics_by_track(user.id, TrackId(id))
             .await?,
     ))
 }
 
 async fn stream_track(
     State(state): State<MusicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Query(p): Query<StreamParams>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    state
+        .services
+        .catalog
+        .require_track_bound(user.id, TrackId(id))
+        .await?;
     state
         .services
         .online
@@ -432,6 +500,7 @@ async fn stream_track(
         .services
         .streaming
         .open_stream(
+            user.id,
             TrackId(id),
             p.format.as_deref(),
             p.max_bit_rate,
@@ -444,10 +513,15 @@ async fn stream_track(
 
 async fn download_track(
     State(state): State<MusicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    state
+        .services
+        .catalog
+        .require_track_bound(user.id, TrackId(id))
+        .await?;
     state
         .services
         .online
@@ -457,7 +531,7 @@ async fn download_track(
     let resolved = state
         .services
         .streaming
-        .open_raw_download(TrackId(id), spec)
+        .open_raw_download(user.id, TrackId(id), spec)
         .await?;
     Ok(into_audio_http_response(resolved, true))
 }
@@ -549,16 +623,16 @@ struct SetTrackTagsBody {
 
 async fn list_genres(
     State(state): State<MusicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<GenreStat>>> {
-    Ok(Json(state.services.catalog.list_genres().await?))
+    Ok(Json(state.services.catalog.list_genres(user.id).await?))
 }
 
 async fn list_tags(
     State(state): State<MusicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<MusicTagStat>>> {
-    Ok(Json(state.services.catalog.list_tags().await?))
+    Ok(Json(state.services.catalog.list_tags(user.id).await?))
 }
 
 async fn set_track_tags(

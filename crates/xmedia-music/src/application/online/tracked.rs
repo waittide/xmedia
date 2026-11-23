@@ -13,7 +13,7 @@ use uuid::Uuid;
 use xmedia_core::application::ports::{BinaryPayload, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_source::http::{
     DEFAULT_WEBVIEW_UA, HttpClientConfig, build_sanitized_headers, validate_target_url_static,
 };
@@ -421,6 +421,7 @@ impl MusicOnlineService {
 
     async fn track_single_inner(
         &self,
+        actor: &User,
         deps: &MusicTrackingDeps,
         managed_lib_id: xmedia_core::domain::library::LibraryId,
         existing_tracks: &mut Vec<Track>,
@@ -430,7 +431,7 @@ impl MusicOnlineService {
         if title.is_empty() {
             return Err(DomainError::Validation("曲目标题不能为空".into()));
         }
-        let _src_rec = self.load_source(input.source_id).await?;
+        let _src_rec = self.load_source_for_actor(actor, input.source_id).await?;
         let item_id = canonical_item_id(&input);
 
         if let Some(existing) = existing_tracks.iter().find(|tr| {
@@ -578,7 +579,6 @@ impl MusicOnlineService {
         actor: &User,
         input: TrackOnlineMusicInput,
     ) -> DomainResult<TrackDto> {
-        require_admin(actor)?;
         let deps = self.require_tracking()?;
         let managed_lib = deps.ingest_service.ensure_default_managed_library().await?;
         let mut existing = deps
@@ -587,7 +587,7 @@ impl MusicOnlineService {
             .await?;
 
         let (track, created) = self
-            .track_single_inner(deps, managed_lib.id, &mut existing, input)
+            .track_single_inner(actor, deps, managed_lib.id, &mut existing, input)
             .await?;
 
         if created {
@@ -596,6 +596,9 @@ impl MusicOnlineService {
                 media_kind: MediaKind::Music,
             });
         }
+        deps.catalog_service
+            .bind_track_for_user(actor.id, track.id)
+            .await?;
 
         let mut list = deps
             .catalog_service
@@ -610,7 +613,6 @@ impl MusicOnlineService {
         actor: &User,
         inputs: Vec<TrackOnlineMusicInput>,
     ) -> DomainResult<Vec<TrackDto>> {
-        require_admin(actor)?;
         if inputs.is_empty() {
             return Err(DomainError::Validation("请至少选择一首曲目".into()));
         }
@@ -631,7 +633,7 @@ impl MusicOnlineService {
         let mut any_created = false;
         for item in inputs {
             let (track, created) = self
-                .track_single_inner(deps, managed_lib.id, &mut existing, item)
+                .track_single_inner(actor, deps, managed_lib.id, &mut existing, item)
                 .await?;
             any_created |= created;
             tracks.push(track);
@@ -643,6 +645,10 @@ impl MusicOnlineService {
                 media_kind: MediaKind::Music,
             });
         }
+        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
+        deps.catalog_service
+            .bind_tracks_for_user(actor.id, &track_ids)
+            .await?;
 
         deps.catalog_service.enrich_tracks(actor.id, tracks).await
     }
@@ -652,8 +658,10 @@ impl MusicOnlineService {
         actor: &User,
         track_id: TrackId,
     ) -> DomainResult<TrackDto> {
-        require_admin(actor)?;
         let deps = self.require_tracking()?;
+        deps.catalog_service
+            .require_track_bound(actor.id, track_id)
+            .await?;
         self.ensure_tracked_track_cached(track_id).await?;
         deps.catalog_service.get_track(actor.id, track_id).await
     }

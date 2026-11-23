@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use toasty::Db;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
@@ -19,7 +20,9 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
-use xmedia_core::infra::persistence::repositories::ToastyOnlineLibraryItemRepository;
+use xmedia_core::infra::persistence::repositories::{
+    ToastyOnlineLibraryItemRepository, ToastyUserMediaBindingRepository,
+};
 use xmedia_source::http::HttpClientConfig;
 
 use application::MusicServices;
@@ -67,6 +70,34 @@ pub fn init_music_module_with_allow_private_ips(
     events: Arc<dyn RealtimeEventPort>,
     allow_private_ips: bool,
 ) -> DomainResult<MusicServices> {
+    let bindings_repo = Arc::new(ToastyUserMediaBindingRepository::new(db.clone()));
+    let bindings = Arc::new(MediaBindingService::new(
+        bindings_repo,
+        Some(events.clone()),
+    ));
+    init_music_module_with_bindings(
+        db,
+        data_dir,
+        ffmpeg,
+        libraries_repo,
+        library_service,
+        events,
+        bindings,
+        allow_private_ips,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn init_music_module_with_bindings(
+    db: Db,
+    data_dir: &Path,
+    ffmpeg: FfmpegToolkit,
+    libraries_repo: Arc<dyn LibraryRepository>,
+    library_service: &LibraryService,
+    events: Arc<dyn RealtimeEventPort>,
+    bindings: Arc<MediaBindingService>,
+    allow_private_ips: bool,
+) -> DomainResult<MusicServices> {
     let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(db.clone()));
     let collections_repo = Arc::new(ToastyMusicCollectionRepository::new(db.clone()));
     let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
@@ -82,6 +113,7 @@ pub fn init_music_module_with_allow_private_ips(
         libraries_repo.clone(),
         catalog_repo.clone(),
         collections_repo.clone(),
+        bindings.clone(),
         storage.clone(),
         lyrics,
     ));
@@ -94,6 +126,7 @@ pub fn init_music_module_with_allow_private_ips(
         libraries_repo.clone(),
         catalog_repo.clone(),
         collections_repo,
+        bindings.clone(),
         (*catalog).clone(),
         storage.clone(),
         scanner,
@@ -105,6 +138,7 @@ pub fn init_music_module_with_allow_private_ips(
     let streaming = Arc::new(MusicStreamingService::new(
         libraries_repo.clone(),
         catalog_repo.clone(),
+        bindings,
         storage.clone(),
         transcoder,
     ));

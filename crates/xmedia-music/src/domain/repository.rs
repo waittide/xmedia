@@ -23,6 +23,7 @@ pub trait MusicCatalogRepository: Send + Sync {
     async fn list_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Track>>;
     async fn count_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
     async fn count_all_active_tracks(&self) -> DomainResult<u64>;
+    async fn list_all_active_track_ids(&self) -> DomainResult<Vec<TrackId>>;
     async fn query_tracks(&self, query: &TrackQuery) -> DomainResult<PagedResult<Track>>;
     async fn list_tracks_by_album(&self, album_id: AlbumId) -> DomainResult<Vec<Track>>;
     async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>>;
@@ -157,6 +158,11 @@ pub trait MusicCollectionRepository: Send + Sync {
     async fn save_bookmark(&self, bookmark: &AudioBookmark) -> DomainResult<()>;
     async fn delete_bookmark(&self, user_id: UserId, track_id: TrackId) -> DomainResult<()>;
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
+    async fn delete_by_user_and_track(
+        &self,
+        user_id: UserId,
+        track_id: TrackId,
+    ) -> DomainResult<()>;
 }
 
 #[async_trait]
