@@ -372,8 +372,8 @@
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
 
-  /* Global PlayerBar height (< sm includes compact progress slider row) */
-  --player-bar-h: 5.875rem;
+  /* Global PlayerBar height (< 600px: 2px progress line + 56px bar = 58px; >= 600px: 80px) */
+  --player-bar-h: 3.625rem;
 }
 
 @media (min-width: 600px) {

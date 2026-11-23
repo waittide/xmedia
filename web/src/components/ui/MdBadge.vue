@@ -30,26 +30,28 @@ const displayText = computed(() => {
 
 const toneClass = computed(() => {
   if (props.tone === 'primary') {
-    return 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
+    return 'bg-primary text-on-primary'
   }
   if (props.tone === 'warning') {
-    return 'bg-[var(--md-sys-color-warning)] text-[var(--md-sys-color-on-primary)]'
+    return 'bg-warning text-on-warning'
   }
-  return 'bg-[var(--md-sys-color-error)] text-[var(--md-sys-color-on-error)]'
+  return 'bg-error text-on-error'
 })
 </script>
 
 <template>
   <span
     v-if="isDot"
+    :role="ariaLabel ? 'status' : undefined"
     :aria-label="ariaLabel"
-    class="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+    :aria-hidden="ariaLabel ? undefined : 'true'"
+    class="inline-block h-1.5 w-1.5 shrink-0 rounded-corner-full"
     :class="toneClass"
   />
   <span
     v-else
     :aria-label="ariaLabel"
-    class="md-label-small inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 leading-none tabular-nums"
+    class="text-label-small inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-corner-full px-1 leading-none tabular-nums"
     :class="toneClass"
   >
     {{ displayText }}

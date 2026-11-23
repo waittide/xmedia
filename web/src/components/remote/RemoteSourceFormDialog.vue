@@ -364,11 +364,11 @@ async function handleSubmit(): Promise<void> {
 
       <div
         v-if="testResult"
-        class="flex items-center gap-2 rounded-[var(--md-sys-shape-corner-md)] px-3.5 py-2.5 text-xs font-medium"
+        class="text-body-small flex items-center gap-2 rounded-corner-md px-3.5 py-2.5 font-medium"
         :class="
           testResult.ok
-            ? 'bg-[color-mix(in_srgb,var(--md-sys-color-success,#16a34a)_14%,transparent)] text-[var(--md-sys-color-success,#15803d)]'
-            : 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+            ? 'bg-success-container text-on-success-container'
+            : 'bg-error-container text-on-error-container'
         "
       >
         <LuCheckCircle2 v-if="testResult.ok" class="h-4 w-4 shrink-0" />

@@ -7,7 +7,6 @@ import {
   LuDisc3,
   LuHeart,
   LuListMusic,
-  LuLoader2,
   LuMic2,
   LuPause,
   LuPlay,
@@ -306,7 +305,7 @@ onBeforeUnmount(() => {
       >
         <button
           type="button"
-          class="group relative h-10 w-10 shrink-0 cursor-pointer overflow-hidden rounded-corner-sm shadow-elevation-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-secondary sm:h-12 sm:w-12"
+          class="md-touch-target group relative h-10 w-10 shrink-0 cursor-pointer overflow-hidden rounded-corner-sm shadow-elevation-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-secondary sm:h-12 sm:w-12"
           :title="t('player.openLyrics')"
           :aria-label="t('player.openLyrics')"
           @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
@@ -319,7 +318,7 @@ onBeforeUnmount(() => {
             class="h-full w-full"
           />
           <span
-            class="absolute inset-0 z-[2] flex items-center justify-center bg-scrim/45 text-on-primary opacity-0 transition-opacity duration-150 ease-standard group-focus-visible:opacity-100 group-hover:opacity-100"
+            class="absolute inset-0 z-[2] flex items-center justify-center bg-scrim/45 text-white opacity-0 transition-opacity duration-150 ease-standard group-focus-visible:opacity-100 group-hover:opacity-100"
           >
             <LuChevronUp
               class="h-5 w-5 transition-transform duration-200 ease-standard"
@@ -397,10 +396,11 @@ onBeforeUnmount(() => {
             </MdIconButton>
           </div>
 
-          <button
-            type="button"
-            :disabled="!playerStore.currentTrack || playerStore.onlineResolving"
-            class="md-state flex h-10 w-10 cursor-pointer items-center justify-center rounded-corner-full bg-primary text-on-primary shadow-elevation-1 transition-transform duration-150 ease-standard hover:scale-105 disabled:cursor-not-allowed disabled:opacity-45"
+          <MdIconButton
+            variant="filled"
+            size="md"
+            :loading="playerStore.onlineResolving"
+            :disabled="!playerStore.currentTrack"
             :title="
               playerStore.onlineResolving
                 ? t('player.resolvingStream')
@@ -415,13 +415,11 @@ onBeforeUnmount(() => {
                   ? t('player.pause')
                   : t('player.play')
             "
-            :aria-busy="playerStore.onlineResolving ? 'true' : undefined"
             @click="playerStore.togglePlay()"
           >
-            <LuLoader2 v-if="playerStore.onlineResolving" class="h-4 w-4 animate-spin" />
-            <LuPause v-else-if="playerStore.isPlaying" class="h-4 w-4 fill-current" />
-            <LuPlay v-else class="ml-0.5 h-4 w-4 fill-current" />
-          </button>
+            <LuPause v-if="playerStore.isPlaying" class="h-4 w-4 fill-current" aria-hidden="true" />
+            <LuPlay v-else class="ml-0.5 h-4 w-4 fill-current" aria-hidden="true" />
+          </MdIconButton>
 
           <MdIconButton
             size="sm"
@@ -461,17 +459,19 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Right: Lyrics, Queue, Volume (lg+) & Playback Options Menu (sm+; mobile accesses via LyricsOverlay) -->
-      <div class="hidden shrink-0 items-center justify-end gap-0.5 sm:flex md:max-w-[30%] md:flex-1 md:gap-1">
-        <MdIconButton
-          size="sm"
-          :variant="playerStore.lyricsOpen ? 'tonal' : 'standard'"
-          :selected="playerStore.lyricsOpen"
-          :icon="LuMic2"
-          :title="t('player.openLyrics')"
-          :aria-label="t('player.openLyrics')"
-          @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
-        />
+      <!-- Right: Queue (always accessible), Lyrics, Volume (lg+) & Playback Options Menu (sm+) -->
+      <div class="flex shrink-0 items-center justify-end gap-0.5 md:max-w-[30%] md:flex-1 md:gap-1">
+        <div class="hidden sm:inline-flex">
+          <MdIconButton
+            size="sm"
+            :variant="playerStore.lyricsOpen ? 'tonal' : 'standard'"
+            :selected="playerStore.lyricsOpen"
+            :icon="LuMic2"
+            :title="t('player.openLyrics')"
+            :aria-label="t('player.openLyrics')"
+            @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
+          />
+        </div>
 
         <div class="relative inline-flex">
           <MdIconButton
@@ -513,69 +513,70 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <MdMenu
-          v-if="hasQualityMenuItems || playerStore.currentLocalTrack"
-          placement="top-end"
-          :min-width="220"
-          :aria-label="t('player.optionsMenu')"
-        >
-          <template #trigger="{ toggle, open, triggerAttrs }">
-            <MdIconButton
-              v-bind="triggerAttrs"
-              size="sm"
-              :variant="open ? 'tonal' : 'standard'"
-              :icon="LuSlidersHorizontal"
-              :title="t('player.optionsMenu')"
-              :aria-label="t('player.optionsMenu')"
-              @click="toggle"
-            />
-          </template>
+        <div v-if="hasQualityMenuItems || playerStore.currentLocalTrack" class="hidden sm:inline-flex">
+          <MdMenu
+            placement="top-end"
+            :min-width="220"
+            :aria-label="t('player.optionsMenu')"
+          >
+            <template #trigger="{ toggle, open, triggerAttrs }">
+              <MdIconButton
+                v-bind="triggerAttrs"
+                size="sm"
+                :variant="open ? 'tonal' : 'standard'"
+                :icon="LuSlidersHorizontal"
+                :title="t('player.optionsMenu')"
+                :aria-label="t('player.optionsMenu')"
+                @click="toggle"
+              />
+            </template>
 
-          <template v-if="hasQualityMenuItems">
-            <div
-              class="text-label-small flex items-center justify-between px-3 py-1.5 text-on-surface-variant"
-            >
-              <span>{{ t('player.qualityHeading') }}</span>
-              <span v-if="playerStore.qualitySummary" class="font-mono">
-                {{ playerStore.qualitySummary }}
-              </span>
-            </div>
+            <template v-if="hasQualityMenuItems">
+              <div
+                class="text-label-small flex items-center justify-between px-3 py-1.5 text-on-surface-variant"
+              >
+                <span>{{ t('player.qualityHeading') }}</span>
+                <span v-if="playerStore.qualitySummary" class="font-mono">
+                  {{ playerStore.qualitySummary }}
+                </span>
+              </div>
+
+              <template v-if="playerStore.currentLocalTrack">
+                <MdMenuItem
+                  v-for="opt in qualityOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :trailing-text="opt.trailing"
+                  :selected="playerStore.transcodeProfile === opt.value"
+                  @select="playerStore.setTranscodeProfile(opt.value)"
+                />
+              </template>
+
+              <template v-else-if="playerStore.isCurrentOnline">
+                <MdMenuItem
+                  v-for="opt in onlineQualityOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :selected="
+                    (playerStore.currentOnlineItem?.selectedQuality ??
+                      onlineQualityOptions[0]?.value) === opt.value
+                  "
+                  @select="playerStore.setOnlineQuality(opt.value)"
+                />
+              </template>
+            </template>
 
             <template v-if="playerStore.currentLocalTrack">
+              <div class="my-1 border-t border-outline-variant" role="separator" />
               <MdMenuItem
-                v-for="opt in qualityOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :trailing-text="opt.trailing"
-                :selected="playerStore.transcodeProfile === opt.value"
-                @select="playerStore.setTranscodeProfile(opt.value)"
+                :icon="LuBookmark"
+                :label="t('player.bookmarkBtn')"
+                :disabled="savingBookmark"
+                @select="saveCurrentBookmark"
               />
             </template>
-
-            <template v-else-if="playerStore.isCurrentOnline">
-              <MdMenuItem
-                v-for="opt in onlineQualityOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :selected="
-                  (playerStore.currentOnlineItem?.selectedQuality ??
-                    onlineQualityOptions[0]?.value) === opt.value
-                "
-                @select="playerStore.setOnlineQuality(opt.value)"
-              />
-            </template>
-          </template>
-
-          <template v-if="playerStore.currentLocalTrack">
-            <div class="my-1 border-t border-outline-variant" role="separator" />
-            <MdMenuItem
-              :icon="LuBookmark"
-              :label="t('player.bookmarkBtn')"
-              :disabled="savingBookmark"
-              @select="saveCurrentBookmark"
-            />
-          </template>
-        </MdMenu>
+          </MdMenu>
+        </div>
       </div>
     </div>
   </footer>
