@@ -1,12 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::User;
 
-use crate::application::catalog::VideoCatalogService;
+use crate::application::catalog::{VideoCatalogService, video_binding_id};
 use crate::application::dto::{
     SaveWatchProgressInput, UpsertVideoShelfInput, VideoFavoritesDto, VideoShelfDetailDto,
     VideoShelfDto,
@@ -43,10 +44,9 @@ impl VideoWatchService {
         input: SaveWatchProgressInput,
     ) -> DomainResult<WatchProgress> {
         let video = self
-            .catalog_repo
-            .find_video_by_id(video_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+            .catalog_service
+            .require_video_bound(user.id, video_id)
+            .await?;
 
         let existing = self.watch_repo.get_progress(user.id, video_id).await?;
         let duration_secs = input
@@ -87,10 +87,9 @@ impl VideoWatchService {
         watched: bool,
     ) -> DomainResult<WatchProgress> {
         let video = self
-            .catalog_repo
-            .find_video_by_id(video_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+            .catalog_service
+            .require_video_bound(user.id, video_id)
+            .await?;
         let existing = self.watch_repo.get_progress(user.id, video_id).await?;
         let pos = if watched {
             f64::from(video.duration_secs)
@@ -121,16 +120,14 @@ impl VideoWatchService {
         if favorite {
             match kind {
                 VideoFavoriteKind::Video => {
-                    if self
-                        .catalog_repo
-                        .find_video_by_id(VideoId(target_id))
-                        .await?
-                        .is_none()
-                    {
-                        return Err(DomainError::NotFound("video not found".into()));
-                    }
+                    self.catalog_service
+                        .require_video_bound(user.id, VideoId(target_id))
+                        .await?;
                 }
                 VideoFavoriteKind::Show => {
+                    self.catalog_service
+                        .require_show_bound(user.id, ShowId(target_id))
+                        .await?;
                     if self
                         .catalog_repo
                         .find_show_by_id(ShowId(target_id))
@@ -150,6 +147,17 @@ impl VideoWatchService {
     }
 
     pub async fn list_favorites(&self, user: &User) -> DomainResult<VideoFavoritesDto> {
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user.id, MediaKind::Video)
+            .await?;
+        if bound_ids.is_empty() {
+            return Ok(VideoFavoritesDto {
+                videos: Vec::new(),
+                shows: Vec::new(),
+            });
+        }
         let favs = self.watch_repo.list_favorites(user.id, None).await?;
         let mut video_ids = Vec::new();
         let mut show_ids = Vec::new();
@@ -166,7 +174,7 @@ impl VideoWatchService {
         let ordered_videos: Vec<VideoItem> = video_ids
             .iter()
             .filter_map(|id| v_map.get(id).cloned())
-            .filter(|v| !v.is_missing)
+            .filter(|v| !v.is_missing && bound_ids.contains(&video_binding_id(v)))
             .collect();
         let videos = self
             .catalog_service
@@ -181,6 +189,7 @@ impl VideoWatchService {
         let ordered_shows: Vec<_> = show_ids
             .iter()
             .filter_map(|id| s_map.get(id).cloned())
+            .filter(|s| bound_ids.contains(&s.id.0))
             .collect();
         let shows = self
             .catalog_service
@@ -191,30 +200,37 @@ impl VideoWatchService {
     }
 
     pub async fn list_shelves(&self, user: &User) -> DomainResult<Vec<VideoShelfDto>> {
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user.id, MediaKind::Video)
+            .await?;
         let shelves = self.watch_repo.list_shelves(user.id).await?;
-        let mut first_ids = Vec::new();
-        for s in &shelves {
-            if let Some(&fid) = s.video_ids.first() {
-                first_ids.push(fid);
-            }
-        }
-        let fetched = self.catalog_repo.find_videos_by_ids(&first_ids).await?;
-        let poster_lookup: HashMap<VideoId, Option<String>> =
-            fetched.into_iter().map(|v| (v.id, v.poster_key)).collect();
+        let all_ids: Vec<VideoId> = shelves
+            .iter()
+            .flat_map(|s| s.video_ids.iter().copied())
+            .collect();
+        let fetched = self.catalog_repo.find_videos_by_ids(&all_ids).await?;
+        let video_lookup: HashMap<VideoId, VideoItem> = fetched
+            .into_iter()
+            .filter(|v| !v.is_missing && bound_ids.contains(&video_binding_id(v)))
+            .map(|v| (v.id, v))
+            .collect();
 
         Ok(shelves
             .into_iter()
             .map(|s| {
-                let poster_key = s
+                let bound_videos: Vec<&VideoItem> = s
                     .video_ids
-                    .first()
-                    .and_then(|fid| poster_lookup.get(fid).cloned())
-                    .flatten();
+                    .iter()
+                    .filter_map(|id| video_lookup.get(id))
+                    .collect();
+                let poster_key = bound_videos.first().and_then(|v| v.poster_key.clone());
                 VideoShelfDto {
                     id: s.id,
                     name: s.name,
                     description: s.description,
-                    video_count: s.video_ids.len(),
+                    video_count: bound_videos.len(),
                     poster_key,
                     updated_at: s.updated_at,
                 }
@@ -233,6 +249,11 @@ impl VideoWatchService {
             .await?
             .filter(|s| s.user_id == user.id)
             .ok_or_else(|| DomainError::NotFound("video shelf not found".into()))?;
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user.id, MediaKind::Video)
+            .await?;
         let fetched = self
             .catalog_repo
             .find_videos_by_ids(&shelf.video_ids)
@@ -242,7 +263,7 @@ impl VideoWatchService {
             .video_ids
             .iter()
             .filter_map(|id| v_map.get(id).cloned())
-            .filter(|v| !v.is_missing)
+            .filter(|v| !v.is_missing && bound_ids.contains(&video_binding_id(v)))
             .collect();
         let poster_key = ordered.first().and_then(|v| v.poster_key.clone());
         let videos = self.catalog_service.enrich_videos(user.id, ordered).await?;
@@ -260,12 +281,41 @@ impl VideoWatchService {
         })
     }
 
+    async fn filter_bound_video_ids(
+        &self,
+        user: &User,
+        video_ids: Vec<VideoId>,
+    ) -> DomainResult<Vec<VideoId>> {
+        if video_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let bound_ids = self
+            .catalog_service
+            .bindings()
+            .list_bound_ids(user.id, MediaKind::Video)
+            .await?;
+        if bound_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let fetched = self.catalog_repo.find_videos_by_ids(&video_ids).await?;
+        let allowed: HashSet<VideoId> = fetched
+            .into_iter()
+            .filter(|v| !v.is_missing && bound_ids.contains(&video_binding_id(v)))
+            .map(|v| v.id)
+            .collect();
+        Ok(video_ids
+            .into_iter()
+            .filter(|id| allowed.contains(id))
+            .collect())
+    }
+
     pub async fn create_shelf(
         &self,
         user: &User,
         input: UpsertVideoShelfInput,
     ) -> DomainResult<VideoShelfDetailDto> {
-        let shelf = VideoShelf::new(user.id, input.name, input.description, input.video_ids)?;
+        let filtered_ids = self.filter_bound_video_ids(user, input.video_ids).await?;
+        let shelf = VideoShelf::new(user.id, input.name, input.description, filtered_ids)?;
         self.watch_repo.save_shelf(&shelf).await?;
         self.get_shelf(user, shelf.id).await
     }
@@ -288,9 +338,10 @@ impl VideoWatchService {
                 "shelf name must be between 1 and 120 characters".into(),
             ));
         }
+        let filtered_ids = self.filter_bound_video_ids(user, input.video_ids).await?;
         shelf.name = trimmed.to_string();
         shelf.description = input.description.trim().to_string();
-        shelf.video_ids = input.video_ids;
+        shelf.video_ids = filtered_ids;
         shelf.updated_at = Timestamp::now();
         self.watch_repo.save_shelf(&shelf).await?;
         self.get_shelf(user, shelf.id).await

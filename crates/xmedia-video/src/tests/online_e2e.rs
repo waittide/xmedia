@@ -4203,21 +4203,7 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
     assert_eq!(st_imp, StatusCode::OK, "{imp_val}");
     let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
 
-    // 2. Non-admin cannot track into managed library
-    let (st_forb, _) = send_json_with_method(
-        &app,
-        "POST",
-        "/api/v1/video/online/track",
-        &member_tok,
-        Some(serde_json::json!({
-            "source_id": source_id,
-            "video_id": "101"
-        })),
-    )
-    .await;
-    assert_eq!(st_forb, StatusCode::FORBIDDEN);
-
-    // 3. Track single-episode movie
+    // 2. Admin tracks single-episode movie into the deduplicated pool and binds it
     let (st_mv, mv_val) = send_json_with_method(
         &app,
         "POST",
@@ -4238,7 +4224,39 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
     assert!(mv_val["video"]["poster_key"].as_str().is_some());
     assert_eq!(mp4_hits.load(Ordering::SeqCst), 0);
 
-    // 4. Resolve on-demand playback stream for uncached movie
+    // 3. Before binding, member cannot see admin's private online movie in pool or play/cache it
+    let (st_pool, pool_val) =
+        send_json_with_method(&app, "GET", "/api/v1/video/pool", &member_tok, None).await;
+    assert_eq!(st_pool, StatusCode::OK, "{pool_val}");
+    assert!(pool_val["movies"].as_array().unwrap().is_empty());
+
+    let (st_iso, _) = send_json_with_method(
+        &app,
+        "GET",
+        &format!("/api/v1/video/videos/{movie_id}/online/play?token={member_tok}"),
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_iso, StatusCode::NOT_FOUND);
+
+    // Non-admin member tracks the same online movie -> deduplicates onto same movie_id
+    let (st_member_mv, member_mv_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/online/track",
+        &member_tok,
+        Some(serde_json::json!({
+            "source_id": source_id,
+            "video_id": "101"
+        })),
+    )
+    .await;
+    assert_eq!(st_member_mv, StatusCode::OK, "{member_mv_val}");
+    assert_eq!(member_mv_val["video"]["id"].as_str().unwrap(), movie_id);
+    assert_eq!(member_mv_val["added_episodes"], 0);
+
+    // 4. Resolve on-demand playback stream for uncached movie (now bound to member)
     let (st_play, play_val) = send_json_with_method(
         &app,
         "GET",
@@ -4352,6 +4370,47 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
     assert_eq!(sc_val2["cached_count"], 0);
     assert_eq!(sc_val2["skipped_count"], 3);
     assert_eq!(mp4_hits.load(Ordering::SeqCst), 4);
+
+    // 8. Unbind movie: admin unbinds first (1 remaining -> NOT deleted), member unbinds second (0 -> GC)
+    let (st_ub1, ub1_val) = send_json_with_method(
+        &app,
+        "DELETE",
+        &format!("/api/v1/video/bindings/{movie_id}"),
+        &admin_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_ub1, StatusCode::OK, "{ub1_val}");
+    assert_eq!(ub1_val["unbound"], true);
+    assert_eq!(ub1_val["remaining_bindings"], 1);
+    assert_eq!(ub1_val["deleted_from_pool"], false);
+
+    let (st_ub2, ub2_val) = send_json_with_method(
+        &app,
+        "DELETE",
+        &format!("/api/v1/video/bindings/{movie_id}"),
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_ub2, StatusCode::OK, "{ub2_val}");
+    assert_eq!(ub2_val["unbound"], true);
+    assert_eq!(ub2_val["remaining_bindings"], 0);
+    assert_eq!(ub2_val["deleted_from_pool"], true);
+
+    // Unbind show by sole owner -> auto-GC show & episodes
+    let (st_ubs, ubs_val) = send_json_with_method(
+        &app,
+        "DELETE",
+        &format!("/api/v1/video/bindings/{show_id}"),
+        &admin_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_ubs, StatusCode::OK, "{ubs_val}");
+    assert_eq!(ubs_val["unbound"], true);
+    assert_eq!(ubs_val["remaining_bindings"], 0);
+    assert_eq!(ubs_val["deleted_from_pool"], true);
 
     srv_handle.abort();
 }

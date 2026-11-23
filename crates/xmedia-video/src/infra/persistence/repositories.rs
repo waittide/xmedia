@@ -936,6 +936,76 @@ impl VideoWatchRepository for ToastyVideoWatchRepository {
             .map_err(db_err)?;
         Ok(())
     }
+
+    async fn delete_by_user_and_targets(
+        &self,
+        user_id: UserId,
+        video_ids: &[VideoId],
+        show_id: Option<ShowId>,
+    ) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let video_set: HashSet<VideoId> = video_ids.iter().copied().collect();
+
+        for &vid in video_ids {
+            let p_key = format!("{}:{}", user_id.0, vid.0);
+            VideoProgressModel::filter_by_progress_key(&p_key)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            let f_key = format!(
+                "{}:{}:{}",
+                user_id.0,
+                VideoFavoriteKind::Video.as_str(),
+                vid.0
+            );
+            VideoFavoriteModel::filter_by_fav_key(&f_key)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        }
+
+        if let Some(sid) = show_id {
+            let f_key = format!(
+                "{}:{}:{}",
+                user_id.0,
+                VideoFavoriteKind::Show.as_str(),
+                sid.0
+            );
+            VideoFavoriteModel::filter_by_fav_key(&f_key)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        }
+
+        if !video_set.is_empty() {
+            for mut shelf in VideoShelfModel::filter_by_user_id(user_id.0)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+            {
+                if shelf.video_ids.0.iter().any(|id| video_set.contains(id)) {
+                    let filtered: Vec<VideoId> = shelf
+                        .video_ids
+                        .0
+                        .iter()
+                        .copied()
+                        .filter(|id| !video_set.contains(id))
+                        .collect();
+                    shelf
+                        .update()
+                        .video_ids(toasty::Json(filtered))
+                        .updated_at(Timestamp::now())
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

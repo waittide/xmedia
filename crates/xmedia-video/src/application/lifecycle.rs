@@ -12,7 +12,7 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{User, UserId, require_admin};
 use xmedia_core::http::TempUploadFile;
 
-use crate::application::catalog::VideoCatalogService;
+use crate::application::catalog::{VideoCatalogService, video_binding_id};
 use crate::application::dto::{VideoUploadItem, VideoUploadPathItem, VideoUploadResultDto};
 use crate::application::ports::{
     ParsedNfoMetadata, ProbedVideoInfo, VideoMediaEnginePort, VideoScannerPort, VideoStoragePort,
@@ -205,6 +205,10 @@ impl VideoDomainLifecycle {
         }
 
         self.catalog_repo.recompute_show_aggregates().await?;
+        let binding_ids: Vec<uuid::Uuid> = created_videos.iter().map(video_binding_id).collect();
+        self.catalog_service
+            .bind_entities_for_user(actor.id, &binding_ids)
+            .await?;
         self.events.publish(SystemEvent::MediaChanged {
             media_kind: MediaKind::Video,
         });
@@ -585,6 +589,7 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
             .await?;
 
         let mut video_ids = Vec::with_capacity(videos.len());
+        let mut standalone_binding_ids = Vec::new();
         let mut show_id_set: HashSet<ShowId> = shows.into_iter().map(|s| s.id).collect();
         for v in &videos {
             for key in v.source.managed_file_keys() {
@@ -593,9 +598,24 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
             video_ids.push(v.id);
             if let Some(sid) = v.show_id {
                 show_id_set.insert(sid);
+            } else {
+                standalone_binding_ids.push(v.id.0);
             }
         }
         let show_ids: Vec<ShowId> = show_id_set.into_iter().collect();
+
+        for raw_id in standalone_binding_ids {
+            self.catalog_service
+                .bindings()
+                .delete_item_bindings(MediaKind::Video, raw_id)
+                .await?;
+        }
+        for sid in &show_ids {
+            self.catalog_service
+                .bindings()
+                .delete_item_bindings(MediaKind::Video, sid.0)
+                .await?;
+        }
 
         self.watch_repo
             .delete_library_references(&video_ids, &show_ids)
@@ -607,7 +627,33 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
     }
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {
-        self.watch_repo.delete_by_user(user_id).await
+        self.watch_repo.delete_by_user(user_id).await?;
+        let unbound = self
+            .catalog_service
+            .bindings()
+            .delete_user_bindings_for_media(user_id, MediaKind::Video)
+            .await?;
+        for raw_id in unbound {
+            let remaining = self
+                .catalog_service
+                .bindings()
+                .count_bindings_for_item(MediaKind::Video, raw_id)
+                .await?;
+            if remaining != 0 {
+                continue;
+            }
+            if let Some(show) = self.catalog_repo.find_show_by_id(ShowId(raw_id)).await? {
+                if show.online_tracked_ref().is_some() {
+                    self.catalog_service.delete_show_internal(show.id).await?;
+                }
+            } else if let Some(video) = self.catalog_repo.find_video_by_id(VideoId(raw_id)).await?
+                && video.show_id.is_none()
+                && video.source.is_online_tracked()
+            {
+                self.catalog_service.delete_video_internal(video).await?;
+            }
+        }
+        Ok(())
     }
 }
 

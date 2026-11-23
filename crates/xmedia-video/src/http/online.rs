@@ -382,14 +382,14 @@ async fn cache_tracked_show(
 
 async fn resolve_tracked_video_play(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<TrackedPlayQuery>,
 ) -> ApiResult<Json<TrackedVideoPlayResponseDto>> {
     let out = state
         .services
         .online
-        .resolve_tracked_video_play(VideoId(id), q.token.as_deref())
+        .resolve_tracked_video_play(&user, VideoId(id), q.token.as_deref())
         .await?;
     Ok(Json(out))
 }

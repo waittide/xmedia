@@ -1,11 +1,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::application::ports::{ByteChunkStream, ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::VideoQualityProfile;
+use xmedia_core::domain::user::{UserId, VideoQualityProfile};
 
 use crate::application::ports::{
     VideoMediaEnginePort, VideoStoragePort, VideoStreamTranscodeRequest, VideoTranscodeMode,
@@ -30,6 +32,7 @@ pub enum ResolvedVideoStream {
 pub struct VideoStreamingService {
     libraries: Arc<dyn LibraryRepository>,
     catalog: Arc<dyn VideoCatalogRepository>,
+    bindings: Arc<MediaBindingService>,
     storage: Arc<dyn VideoStoragePort>,
     engine: Arc<dyn VideoMediaEnginePort>,
 }
@@ -38,12 +41,14 @@ impl VideoStreamingService {
     pub fn new(
         libraries: Arc<dyn LibraryRepository>,
         catalog: Arc<dyn VideoCatalogRepository>,
+        bindings: Arc<MediaBindingService>,
         storage: Arc<dyn VideoStoragePort>,
         engine: Arc<dyn VideoMediaEnginePort>,
     ) -> Self {
         Self {
             libraries,
             catalog,
+            bindings,
             storage,
             engine,
         }
@@ -55,10 +60,11 @@ impl VideoStreamingService {
 
     pub async fn open_raw_download(
         &self,
+        user_id: UserId,
         video_id: VideoId,
         spec: ByteRangeSpec,
     ) -> DomainResult<ResolvedVideoStream> {
-        let (video, library) = self.load_video_and_library(video_id).await?;
+        let (video, library) = self.load_bound_video_and_library(user_id, video_id).await?;
         let range_stream = self
             .storage
             .open_video_range_stream(&library, &video, spec)
@@ -72,13 +78,14 @@ impl VideoStreamingService {
 
     pub async fn open_stream(
         &self,
+        user_id: UserId,
         video_id: VideoId,
         quality: VideoQualityProfile,
         audio_stream_index: Option<u32>,
         start_secs: Option<u32>,
         spec: ByteRangeSpec,
     ) -> DomainResult<ResolvedVideoStream> {
-        let (video, library) = self.load_video_and_library(video_id).await?;
+        let (video, library) = self.load_bound_video_and_library(user_id, video_id).await?;
         if let Some(requested_audio) = audio_stream_index
             && !video
                 .audio_streams
@@ -154,8 +161,9 @@ impl VideoStreamingService {
         Ok(ResolvedVideoStream::TranscodedFmp4 { video, stream })
     }
 
-    async fn load_video_and_library(
+    async fn load_bound_video_and_library(
         &self,
+        user_id: UserId,
         video_id: VideoId,
     ) -> DomainResult<(VideoItem, xmedia_core::domain::library::Library)> {
         let video = self
@@ -164,6 +172,10 @@ impl VideoStreamingService {
             .await?
             .filter(|v| !v.is_missing)
             .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+        let binding_id = video.show_id.map(|s| s.0).unwrap_or(video.id.0);
+        self.bindings
+            .require_bound(user_id, MediaKind::Video, binding_id, "video not found")
+            .await?;
         let library = self
             .libraries
             .find_by_id(video.library_id)

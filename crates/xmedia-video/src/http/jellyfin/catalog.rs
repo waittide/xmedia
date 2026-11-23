@@ -76,6 +76,9 @@ pub async fn handle_views(state: &VideoHttpState, user: &User) -> DomainResult<R
     for lib in libs {
         let movie_cnt = all_movies.iter().filter(|m| m.library_id == lib.id).count();
         let show_cnt = all_shows.iter().filter(|s| s.library_id == lib.id).count();
+        if movie_cnt + show_cnt == 0 {
+            continue;
+        }
         let collection_type = if show_cnt > 0 && movie_cnt == 0 {
             Some("tvshows")
         } else if movie_cnt > 0 && show_cnt == 0 {
@@ -139,7 +142,32 @@ pub async fn handle_item_detail(
     if let Ok(lib) = state.libraries.get_library(LibraryId(uuid)).await
         && lib.media_kind == MediaKind::Video
     {
-        let dto = build_library_view_item(&lib, None, lib.item_count as usize);
+        let movie_cnt = state
+            .services
+            .catalog
+            .list_videos(
+                user,
+                VideoQueryFilter {
+                    library_id: Some(lib.id),
+                    kind: VideoKindFilter::Standalone,
+                    ..Default::default()
+                },
+            )
+            .await?
+            .len();
+        let show_cnt = state
+            .services
+            .catalog
+            .list_shows(
+                user,
+                ShowQueryFilter {
+                    library_id: Some(lib.id),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .len();
+        let dto = build_library_view_item(&lib, None, movie_cnt + show_cnt);
         return Ok((StatusCode::OK, Json(dto)).into_response());
     }
 
@@ -924,8 +952,8 @@ pub async fn handle_next_up(
         .into_response())
 }
 
-pub async fn handle_genres(state: &VideoHttpState) -> DomainResult<Response> {
-    let taxonomy = state.services.catalog.get_taxonomy().await?;
+pub async fn handle_genres(state: &VideoHttpState, user: &User) -> DomainResult<Response> {
+    let taxonomy = state.services.catalog.get_taxonomy(user.id).await?;
     let items: Vec<Value> = taxonomy
         .genres
         .into_iter()

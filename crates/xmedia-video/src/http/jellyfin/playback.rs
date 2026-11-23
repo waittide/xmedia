@@ -29,6 +29,7 @@ use super::dto::{
 
 pub async fn handle_playback_info(
     state: &VideoHttpState,
+    user: &User,
     raw_item_id: &str,
     api_key: &str,
 ) -> DomainResult<Response> {
@@ -37,9 +38,8 @@ pub async fn handle_playback_info(
     let video = state
         .services
         .catalog
-        .find_raw_video(VideoId(uuid))
-        .await?
-        .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+        .require_video_bound(user.id, VideoId(uuid))
+        .await?;
 
     let media_source = if video.source.is_cached() {
         let subs = VideoCatalogService::collect_subtitle_dtos(&video);
@@ -62,6 +62,7 @@ pub async fn handle_playback_info(
 
 pub async fn handle_video_stream(
     state: &VideoHttpState,
+    user: &User,
     raw_item_id: &str,
     headers: &HeaderMap,
     as_attachment: bool,
@@ -71,16 +72,15 @@ pub async fn handle_video_stream(
     let video = state
         .services
         .catalog
-        .find_raw_video(VideoId(uuid))
-        .await?
-        .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+        .require_video_bound(user.id, VideoId(uuid))
+        .await?;
 
     if video.source.is_cached() {
         let spec = parse_http_range_spec(headers);
         let resolved = state
             .services
             .streaming
-            .open_raw_download(video.id, spec)
+            .open_raw_download(user.id, video.id, spec)
             .await?;
         return Ok(into_video_http_response(resolved, as_attachment));
     }
@@ -123,12 +123,18 @@ fn build_hls_playlist_response(rewritten: String) -> Response {
 
 pub async fn handle_video_hls_master(
     state: &VideoHttpState,
+    user: &User,
     raw_item_id: &str,
     headers: &HeaderMap,
     api_key: &str,
 ) -> DomainResult<Response> {
     let uuid = Uuid::parse_str(raw_item_id.trim())
         .map_err(|_| DomainError::NotFound("invalid item id".into()))?;
+    state
+        .services
+        .catalog
+        .require_video_bound(user.id, VideoId(uuid))
+        .await?;
     let (source_id, play_res) = state
         .services
         .online
@@ -217,9 +223,8 @@ pub async fn handle_subtitle_stream(
     let video = state
         .services
         .catalog
-        .find_raw_video(VideoId(uuid))
-        .await?
-        .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+        .require_video_bound(user.id, VideoId(uuid))
+        .await?;
 
     let vtt = if video.source.is_cached() {
         let subs = VideoCatalogService::collect_subtitle_dtos(&video);
@@ -231,7 +236,7 @@ pub async fn handle_subtitle_stream(
         state
             .services
             .catalog
-            .get_subtitle_webvtt(video.id, &target.id)
+            .get_subtitle_webvtt(user.id, video.id, &target.id)
             .await?
     } else {
         let (source_id, play_res) = state
@@ -274,28 +279,45 @@ pub async fn handle_image(
     let uuid = Uuid::parse_str(raw_item_id.trim())
         .map_err(|_| DomainError::NotFound("invalid item id".into()))?;
 
-    let poster_key =
+    let (poster_key, online_tracked_video, online_tracked_show) =
         if let Some(video) = state.services.catalog.find_raw_video(VideoId(uuid)).await? {
-            video.poster_key
+            let is_tracked = video.source.is_online_tracked();
+            (video.poster_key, is_tracked.then_some(video.id), None)
         } else if let Some(show) = state.services.catalog.find_raw_show(ShowId(uuid)).await? {
-            show.poster_key
+            let is_tracked = show.online_tracked_ref().is_some();
+            (show.poster_key, None, is_tracked.then_some(show.id))
         } else if let Some((show_id, _season_num)) = resolve_synthetic_season(state, uuid).await? {
-            state
-                .services
-                .catalog
-                .find_raw_show(show_id)
-                .await?
-                .and_then(|s| s.poster_key)
+            if let Some(show) = state.services.catalog.find_raw_show(show_id).await? {
+                let is_tracked = show.online_tracked_ref().is_some();
+                (show.poster_key, None, is_tracked.then_some(show.id))
+            } else {
+                (None, None, None)
+            }
         } else {
-            None
-        }
-        .ok_or_else(|| DomainError::NotFound("image not found".into()))?;
+            (None, None, None)
+        };
+    let poster_key = poster_key.ok_or_else(|| DomainError::NotFound("image not found".into()))?;
 
     let tag_matches = query
         .get("tag")
         .is_some_and(|t| t.trim() == poster_key.as_str());
-    if authenticated_user.is_none() && !tag_matches {
-        return Err(DomainError::Unauthorized("authentication required".into()));
+    if !tag_matches {
+        let Some(user) = authenticated_user else {
+            return Err(DomainError::Unauthorized("authentication required".into()));
+        };
+        if let Some(vid) = online_tracked_video {
+            state
+                .services
+                .catalog
+                .require_video_bound(user.id, vid)
+                .await?;
+        } else if let Some(sid) = online_tracked_show {
+            state
+                .services
+                .catalog
+                .require_show_bound(user.id, sid)
+                .await?;
+        }
     }
 
     let max_size = query

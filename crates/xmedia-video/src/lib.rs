@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use toasty::Db;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
@@ -16,7 +17,9 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
-use xmedia_core::infra::persistence::repositories::ToastyOnlineLibraryItemRepository;
+use xmedia_core::infra::persistence::repositories::{
+    ToastyOnlineLibraryItemRepository, ToastyUserMediaBindingRepository,
+};
 use xmedia_source::http::HttpClientConfig;
 
 use application::VideoServices;
@@ -62,6 +65,31 @@ pub fn init_video_module_with_allow_private_ips(
     events: Arc<dyn RealtimeEventPort>,
     allow_private_ips: bool,
 ) -> DomainResult<VideoServices> {
+    let binding_repo = Arc::new(ToastyUserMediaBindingRepository::new(db.clone()));
+    let bindings = Arc::new(MediaBindingService::new(binding_repo, Some(events.clone())));
+    init_video_module_with_bindings(
+        db,
+        data_dir,
+        ffmpeg,
+        libraries_repo,
+        library_service,
+        bindings,
+        events,
+        allow_private_ips,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn init_video_module_with_bindings(
+    db: Db,
+    data_dir: &Path,
+    ffmpeg: FfmpegToolkit,
+    libraries_repo: Arc<dyn LibraryRepository>,
+    library_service: &LibraryService,
+    bindings: Arc<MediaBindingService>,
+    events: Arc<dyn RealtimeEventPort>,
+    allow_private_ips: bool,
+) -> DomainResult<VideoServices> {
     let catalog_repo = Arc::new(ToastyVideoCatalogRepository::new(db.clone()));
     let watch_repo = Arc::new(ToastyVideoWatchRepository::new(db.clone()));
     let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
@@ -75,6 +103,7 @@ pub fn init_video_module_with_allow_private_ips(
         libraries_repo.clone(),
         catalog_repo.clone(),
         watch_repo.clone(),
+        bindings.clone(),
         storage.clone(),
         engine.clone(),
         events.clone(),
@@ -87,6 +116,7 @@ pub fn init_video_module_with_allow_private_ips(
     let streaming = Arc::new(VideoStreamingService::new(
         libraries_repo.clone(),
         catalog_repo.clone(),
+        bindings,
         storage.clone(),
         engine.clone(),
     ));
@@ -153,6 +183,7 @@ mod tests {
     use toasty::schema::ModelSet;
     use tower::ServiceExt;
     use xmedia_core::application::auth::AuthService;
+    use xmedia_core::application::bindings::BindMediaItemsInput;
     use xmedia_core::application::dto::{CreateLibraryInput, SetupAdminInput};
     use xmedia_core::application::library::LibraryService;
     use xmedia_core::application::ports::SystemEvent;
@@ -353,6 +384,36 @@ mod tests {
             2
         );
 
+        // Scanned local library stays in the pool until claimed
+        assert!(
+            video_services
+                .catalog
+                .list_shows(&admin, Default::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let pool_before = video_services
+            .catalog
+            .list_pool(&admin, Some(mount_lib.id), None)
+            .await
+            .unwrap();
+        assert_eq!(pool_before.shows.len(), 1);
+        assert!(!pool_before.shows[0].bound);
+
+        video_services
+            .catalog
+            .bind_items(
+                &admin,
+                BindMediaItemsInput {
+                    item_ids: Vec::new(),
+                    library_id: Some(mount_lib.id.0),
+                    user_id: None,
+                },
+            )
+            .await
+            .unwrap();
+
         let shows = video_services
             .catalog
             .list_shows(&admin, Default::default())
@@ -381,7 +442,7 @@ mod tests {
 
         let ass_vtt = video_services
             .catalog
-            .get_subtitle_webvtt(ep1.id, "ext-s0")
+            .get_subtitle_webvtt(admin.id, ep1.id, "ext-s0")
             .await
             .unwrap();
         assert!(ass_vtt.contains("00:00:02.500 --> 00:00:05.000"));
@@ -454,6 +515,19 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+
+        video_services
+            .catalog
+            .bind_items(
+                &admin,
+                BindMediaItemsInput {
+                    item_ids: Vec::new(),
+                    library_id: Some(mount_lib.id.0),
+                    user_id: None,
+                },
+            )
+            .await
+            .unwrap();
 
         let moved_ep1 = video_services
             .catalog
@@ -854,6 +928,19 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+
+        video_services
+            .catalog
+            .bind_items(
+                &admin,
+                BindMediaItemsInput {
+                    item_ids: Vec::new(),
+                    library_id: Some(mount_lib.id.0),
+                    user_id: None,
+                },
+            )
+            .await
+            .unwrap();
 
         let shows = video_services
             .catalog

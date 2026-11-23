@@ -126,6 +126,26 @@ pub struct ShowSummaryDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolVideoSummaryDto {
+    #[serde(flatten)]
+    pub video: VideoSummaryDto,
+    pub bound: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolShowSummaryDto {
+    #[serde(flatten)]
+    pub show: ShowSummaryDto,
+    pub bound: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoPoolDto {
+    pub movies: Vec<PoolVideoSummaryDto>,
+    pub shows: Vec<PoolShowSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeasonGroupDto {
     pub season_number: u32,
     pub episodes: Vec<VideoSummaryDto>,

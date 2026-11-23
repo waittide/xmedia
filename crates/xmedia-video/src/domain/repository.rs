@@ -77,6 +77,12 @@ pub trait VideoWatchRepository: Send + Sync {
     async fn delete_shelf(&self, id: VideoShelfId) -> DomainResult<()>;
 
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
+    async fn delete_by_user_and_targets(
+        &self,
+        user_id: UserId,
+        video_ids: &[VideoId],
+        show_id: Option<ShowId>,
+    ) -> DomainResult<()>;
 }
 
 #[async_trait]

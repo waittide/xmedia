@@ -2,11 +2,15 @@ use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xmedia_core::application::bindings::{
+    BindMediaItemsInput, BindMediaItemsResultDto, UnbindMediaItemResultDto,
+};
 use xmedia_core::domain::error::DomainError;
+use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
     ApiError, ApiResult, TempUploadFile, WebAuth, into_binary_cache_response,
@@ -15,8 +19,8 @@ use xmedia_core::http::{
 
 use crate::application::dto::{
     SaveWatchProgressInput, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, UpsertVideoShelfInput,
-    VideoDetailDto, VideoFavoritesDto, VideoHomeOverviewDto, VideoShelfDetailDto, VideoShelfDto,
-    VideoSummaryDto, VideoSystemStatusDto, VideoTaxonomyDto, VideoUploadPathItem,
+    VideoDetailDto, VideoFavoritesDto, VideoHomeOverviewDto, VideoPoolDto, VideoShelfDetailDto,
+    VideoShelfDto, VideoSummaryDto, VideoSystemStatusDto, VideoTaxonomyDto, VideoUploadPathItem,
     VideoUploadResultDto,
 };
 use crate::application::ports::parse_quality_param;
@@ -34,6 +38,9 @@ pub fn router() -> Router<VideoHttpState> {
         .route("/status", get(video_status))
         .route("/home", get(home_overview))
         .route("/taxonomy", get(video_taxonomy))
+        .route("/pool", get(list_pool))
+        .route("/bindings", post(bind_items))
+        .route("/bindings/{id}", delete(unbind_item))
         .route(
             "/upload",
             post(upload_videos).layer(DefaultBodyLimit::max(4 * 1024 * 1024 * 1024)),
@@ -106,11 +113,22 @@ struct FavoriteBody {
     favorite: bool,
 }
 
+#[derive(Deserialize, Default)]
+struct PoolQueryParams {
+    library_id: Option<Uuid>,
+    search: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct UnbindQueryParams {
+    user_id: Option<Uuid>,
+}
+
 async fn video_status(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<VideoSystemStatusDto>> {
-    Ok(Json(state.services.catalog.system_status().await?))
+    Ok(Json(state.services.catalog.system_status(user.id).await?))
 }
 
 async fn home_overview(
@@ -122,9 +140,46 @@ async fn home_overview(
 
 async fn video_taxonomy(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<VideoTaxonomyDto>> {
-    Ok(Json(state.services.catalog.get_taxonomy().await?))
+    Ok(Json(state.services.catalog.get_taxonomy(user.id).await?))
+}
+
+async fn list_pool(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Query(q): Query<PoolQueryParams>,
+) -> ApiResult<Json<VideoPoolDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .list_pool(&user, q.library_id.map(LibraryId), q.search)
+            .await?,
+    ))
+}
+
+async fn bind_items(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Json(input): Json<BindMediaItemsInput>,
+) -> ApiResult<Json<BindMediaItemsResultDto>> {
+    Ok(Json(state.services.catalog.bind_items(&user, input).await?))
+}
+
+async fn unbind_item(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<UnbindQueryParams>,
+) -> ApiResult<Json<UnbindMediaItemResultDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .unbind_item(&user, id, q.user_id)
+            .await?,
+    ))
 }
 
 const MAX_VIDEO_UPLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -252,7 +307,7 @@ async fn upload_video_poster(
 
 async fn stream_video(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<StreamQueryParams>,
     headers: HeaderMap,
@@ -262,14 +317,21 @@ async fn stream_video(
     let resolved = state
         .services
         .streaming
-        .open_stream(VideoId(id), quality, q.audio_stream, q.start_secs, spec)
+        .open_stream(
+            user.id,
+            VideoId(id),
+            quality,
+            q.audio_stream,
+            q.start_secs,
+            spec,
+        )
         .await?;
     Ok(into_video_http_response(resolved, false))
 }
 
 async fn download_video(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
@@ -277,35 +339,35 @@ async fn download_video(
     let resolved = state
         .services
         .streaming
-        .open_raw_download(VideoId(id), spec)
+        .open_raw_download(user.id, VideoId(id), spec)
         .await?;
     Ok(into_video_http_response(resolved, true))
 }
 
 async fn list_video_subtitles(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<SubtitleTrackDto>>> {
     Ok(Json(
         state
             .services
             .catalog
-            .list_video_subtitles(VideoId(id))
+            .list_video_subtitles(user.id, VideoId(id))
             .await?,
     ))
 }
 
 async fn get_subtitle_vtt(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path((id, sub_id)): Path<(Uuid, String)>,
     Query(q): Query<SubtitleParams>,
 ) -> ApiResult<Response> {
     let vtt = state
         .services
         .catalog
-        .get_subtitle_webvtt_with_offset(VideoId(id), &sub_id, q.offset_secs)
+        .get_subtitle_webvtt_with_offset(user.id, VideoId(id), &sub_id, q.offset_secs)
         .await?;
     let mut res = (StatusCode::OK, Body::from(vtt)).into_response();
     let headers = res.headers_mut();

@@ -423,7 +423,7 @@ async fn dispatch_jellyfin_inner(
 
         // Genres & Search Hints
         (&Method::GET, ["genres"]) | (&Method::GET, ["musicgenres"]) => {
-            catalog::handle_genres(state).await
+            catalog::handle_genres(state, &user).await
         }
         (&Method::GET, ["search", "hints"]) => {
             catalog::handle_search_hints(state, &user, &query).await
@@ -431,22 +431,22 @@ async fn dispatch_jellyfin_inner(
 
         // PlaybackInfo
         (&Method::GET | &Method::POST, ["items", _, "playbackinfo"]) => {
-            playback::handle_playback_info(state, &raw_slice[1], &api_key).await
+            playback::handle_playback_info(state, &user, &raw_slice[1], &api_key).await
         }
 
         // Video direct/proxy streaming & download
         (&Method::GET | &Method::HEAD, ["videos", _, seg])
             if *seg == "stream" || seg.starts_with("stream.") =>
         {
-            playback::handle_video_stream(state, &raw_slice[1], headers, false).await
+            playback::handle_video_stream(state, &user, &raw_slice[1], headers, false).await
         }
         (&Method::GET | &Method::HEAD, ["items", _, "download"]) => {
-            playback::handle_video_stream(state, &raw_slice[1], headers, true).await
+            playback::handle_video_stream(state, &user, &raw_slice[1], headers, true).await
         }
 
         // HLS master & segment proxy for uncached tracked online HLS videos
         (&Method::GET | &Method::HEAD, ["videos", _, "hls", "master.m3u8"]) => {
-            playback::handle_video_hls_master(state, &raw_slice[1], headers, &api_key).await
+            playback::handle_video_hls_master(state, &user, &raw_slice[1], headers, &api_key).await
         }
         (&Method::GET | &Method::HEAD, ["videos", _, "hls", "proxy"]) => {
             playback::handle_video_hls_proxy(state, &query, headers, &api_key).await

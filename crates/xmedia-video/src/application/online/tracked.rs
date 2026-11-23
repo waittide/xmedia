@@ -13,7 +13,7 @@ use uuid::Uuid;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_source::http::{
     DEFAULT_WEBVIEW_UA, build_sanitized_headers, decode_response_bytes, validate_target_url_static,
 };
@@ -231,7 +231,6 @@ impl VideoOnlineService {
         actor: &User,
         input: TrackOnlineVideoInput,
     ) -> DomainResult<TrackOnlineVideoResultDto> {
-        require_admin(actor)?;
         let deps = self.require_tracking()?;
 
         let detail_resp = self
@@ -311,6 +310,9 @@ impl VideoOnlineService {
                             && (info.video_id == canonical_video_id || info.play_url == ep.play_url)
                     })
             }) {
+                deps.catalog_service
+                    .bind_entity_for_user(actor.id, existing.id.0)
+                    .await?;
                 let mut enriched = deps
                     .catalog_service
                     .enrich_videos(actor.id, vec![existing])
@@ -363,6 +365,9 @@ impl VideoOnlineService {
                 updated_at: now,
             };
             deps.catalog_repo.save_video(&item).await?;
+            deps.catalog_service
+                .bind_entity_for_user(actor.id, item.id.0)
+                .await?;
             deps.events.publish(SystemEvent::MediaChanged {
                 media_kind: MediaKind::Video,
             });
@@ -500,6 +505,9 @@ impl VideoOnlineService {
             });
         }
 
+        deps.catalog_service
+            .bind_entity_for_user(actor.id, show.id.0)
+            .await?;
         let show_detail = deps.catalog_service.get_show_detail(actor, show.id).await?;
         Ok(TrackOnlineVideoResultDto {
             kind: "show".into(),
@@ -514,8 +522,10 @@ impl VideoOnlineService {
         actor: &User,
         show_id: ShowId,
     ) -> DomainResult<ShowDetailDto> {
-        require_admin(actor)?;
         let deps = self.require_tracking()?;
+        deps.catalog_service
+            .require_show_bound(actor.id, show_id)
+            .await?;
 
         let mut show = deps
             .catalog_repo
@@ -737,16 +747,15 @@ impl VideoOnlineService {
 
     pub async fn resolve_tracked_video_play(
         &self,
+        user: &User,
         video_id: VideoId,
         query_token: Option<&str>,
     ) -> DomainResult<TrackedVideoPlayResponseDto> {
         let deps = self.require_tracking()?;
         let video = deps
-            .catalog_repo
-            .find_video_by_id(video_id)
-            .await?
-            .filter(|v| !v.is_missing)
-            .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+            .catalog_service
+            .require_video_bound(user.id, video_id)
+            .await?;
 
         if video.source.is_cached() {
             return Ok(TrackedVideoPlayResponseDto {
@@ -1183,8 +1192,10 @@ impl VideoOnlineService {
         actor: &User,
         video_id: VideoId,
     ) -> DomainResult<VideoSummaryDto> {
-        require_admin(actor)?;
         let deps = self.require_tracking()?;
+        deps.catalog_service
+            .require_video_bound(actor.id, video_id)
+            .await?;
 
         let lock = get_or_insert_weak_lock(&self.video_cache_locks, video_id);
         let _guard = lock.lock().await;
@@ -1344,8 +1355,10 @@ impl VideoOnlineService {
         show_id: ShowId,
         video_ids: Option<Vec<VideoId>>,
     ) -> DomainResult<VideoCacheReportDto> {
-        require_admin(actor)?;
         let deps = self.require_tracking()?;
+        deps.catalog_service
+            .require_show_bound(actor.id, show_id)
+            .await?;
 
         let _show = deps
             .catalog_repo
