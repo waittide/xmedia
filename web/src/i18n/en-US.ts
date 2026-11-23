@@ -69,7 +69,6 @@ export default {
     navigation: 'Navigation',
     home: 'Home',
     library: 'Resources',
-    discover: 'Discover',
     history: 'History',
     domainSettings: 'Settings',
     showLess: 'Show less',

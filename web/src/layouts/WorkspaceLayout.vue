@@ -5,7 +5,6 @@ import { useI18n } from 'vue-i18n'
 import {
   LuBookOpen,
   LuClapperboard,
-  LuCompass,
   LuDisc3,
   LuHistory,
   LuHome,
@@ -43,7 +42,7 @@ import NavigationBar from './NavigationBar.vue'
 import NavigationRail, { type DomainNavTab } from './NavigationRail.vue'
 
 interface SecondaryTab {
-  key: 'home' | 'library' | 'discover' | 'history' | 'settings'
+  key: 'home' | 'library' | 'history' | 'settings'
   label: string
   icon: Component
   active: boolean
@@ -106,45 +105,18 @@ const domainTabs = computed<DomainNavTab[]>(() => {
   return all.filter((item) => authStore.hasModule(item.kind))
 })
 
-function hasCanonicalRoute(path: string): boolean {
-  const resolved = router.resolve(path)
-  if (resolved.matched.length === 0) return false
-  return resolved.matched[resolved.matched.length - 1]?.path !== '/:pathMatch(.*)*'
-}
-
-function legacyCatalogPath(domain: MediaKind): string {
-  if (domain === 'comic') return '/comic/series'
-  if (domain === 'music') return '/music/songs'
-  return `/${domain}/catalog`
-}
-
 const secondaryTabs = computed<SecondaryTab[]>(() => {
   if (isSettingsRoute.value) return []
   const d = domainStore.activeDomain
-  const useCanonical = hasCanonicalRoute(`/${d}/library`)
-  const scope = typeof route.query.scope === 'string' ? route.query.scope : ''
-  const name = String(route.name ?? '')
 
   const isHome = route.path === `/${d}`
   const isHistory = route.path === `/${d}/history`
   const isDomainSettings = route.path.startsWith(`/${d}/settings`)
-  const isDiscover =
-    route.path === `/${d}/discover` || (scope === 'online' && !name.includes('detail'))
   const isLibrary =
     !isHome &&
     !isHistory &&
     !isDomainSettings &&
-    !isDiscover &&
-    (route.path.startsWith(`/${d}/library`) ||
-      name === 'book-catalog' ||
-      name === 'book-detail' ||
-      name === 'comic-series-list' ||
-      name === 'comic-series-detail' ||
-      name === 'music-songs' ||
-      name === 'music-album-detail' ||
-      name === 'music-artist-detail' ||
-      name === 'video-catalog' ||
-      name === 'video-show-detail')
+    (route.path.startsWith(`/${d}/library`) || route.path.startsWith(`/${d}/item/`))
 
   return [
     {
@@ -159,16 +131,7 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
       label: t('nav.library'),
       icon: LuLibrary,
       active: isLibrary,
-      to: useCanonical ? `/${d}/library` : legacyCatalogPath(d),
-    },
-    {
-      key: 'discover',
-      label: t('nav.discover'),
-      icon: LuCompass,
-      active: isDiscover,
-      to: useCanonical
-        ? `/${d}/discover`
-        : { path: legacyCatalogPath(d), query: { scope: 'online' } },
+      to: `/${d}/library`,
     },
     {
       key: 'history',

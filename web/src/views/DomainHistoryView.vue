@@ -38,7 +38,7 @@ import {
 } from '@/components/ui'
 import { activityFlushRevision, livePendingSeconds } from '@/composables/useActivityTracker'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
-import { useMergedShelf, type MediaItemVM } from '@/sources'
+import { libraryRoute, useMergedShelf, type MediaItemVM } from '@/sources'
 import { useDomainStore } from '@/stores/domain'
 import type { MediaKind } from '@/types/api'
 
@@ -701,8 +701,13 @@ watch(activityFlushRevision, () => {
                 <MdButton variant="tonal" size="sm" :icon="LuLibrary" :to="`/${domain}/library`">
                   {{ t('nav.library') }}
                 </MdButton>
-                <MdButton variant="text" size="sm" :icon="LuCompass" :to="`/${domain}/discover`">
-                  {{ t('nav.discover') }}
+                <MdButton
+                  variant="text"
+                  size="sm"
+                  :icon="LuCompass"
+                  :to="libraryRoute(domain, { scope: 'online' })"
+                >
+                  {{ t('domainUi.exploreOnlineBtn') }}
                 </MdButton>
               </template>
             </MdEmptyState>

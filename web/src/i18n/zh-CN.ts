@@ -69,7 +69,6 @@ export default {
     navigation: '导航栏',
     home: '首页',
     library: '资源',
-    discover: '发现',
     history: '历史',
     domainSettings: '设置',
     showLess: '收起',
