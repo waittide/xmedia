@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::Client;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
@@ -16,9 +16,38 @@ const MAX_CACHED_HTTP_CLIENTS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SsrfRedirectGuard {
-    None,
     PublicOnly,
     AllowPrivate,
+}
+
+static PROVIDER_NEXT_SLOT: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn provider_min_interval(provider_id: &str) -> Duration {
+    match provider_id {
+        "musicbrainz" => Duration::from_millis(1100),
+        "douban" | "bangumi" | "neodb" | "anilist" | "mangadex" => Duration::from_millis(250),
+        _ => Duration::from_millis(100),
+    }
+}
+
+/// Reserves the next per-provider request slot without holding any lock across `.await`.
+pub async fn acquire_provider_rate_slot(provider_id: &str) {
+    let min_interval = provider_min_interval(provider_id);
+    if min_interval.is_zero() {
+        return;
+    }
+    let sleep_for = {
+        let mut guard = PROVIDER_NEXT_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let next_allowed = guard.get(provider_id).copied().unwrap_or(now);
+        let scheduled = next_allowed.max(now);
+        guard.insert(provider_id.to_string(), scheduled + min_interval);
+        scheduled.saturating_duration_since(now)
+    };
+    if !sleep_for.is_zero() {
+        tokio::time::sleep(sleep_for).await;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -250,38 +279,31 @@ pub fn get_or_build_http_client(
         builder = builder.no_proxy().dns_resolver(Arc::new(SsrfSafeResolver));
     }
 
-    match key.ssrf_guard {
-        SsrfRedirectGuard::None => {}
-        SsrfRedirectGuard::PublicOnly | SsrfRedirectGuard::AllowPrivate => {
-            let allow_private_ips = key.ssrf_guard == SsrfRedirectGuard::AllowPrivate;
-            let policy = reqwest::redirect::Policy::custom(move |attempt| {
-                if attempt.previous().len() >= MAX_REDIRECT_HOPS {
-                    return attempt.error(std::io::Error::other(format!(
-                        "redirect limit ({MAX_REDIRECT_HOPS}) exceeded"
-                    )));
-                }
-                if let Some(prev) = attempt.previous().last()
-                    && prev.scheme().eq_ignore_ascii_case("https")
-                    && attempt.url().scheme().eq_ignore_ascii_case("http")
-                {
-                    return attempt.error(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "HTTPS-to-HTTP redirect downgrade is forbidden",
-                    ));
-                }
-                if let Err(err) =
-                    validate_artwork_http_url(attempt.url().as_str(), allow_private_ips)
-                {
-                    return attempt.error(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        err.to_string(),
-                    ));
-                }
-                attempt.follow()
-            });
-            builder = builder.redirect(policy);
+    let allow_private_ips = key.ssrf_guard == SsrfRedirectGuard::AllowPrivate;
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= MAX_REDIRECT_HOPS {
+            return attempt.error(std::io::Error::other(format!(
+                "redirect limit ({MAX_REDIRECT_HOPS}) exceeded"
+            )));
         }
-    }
+        if let Some(prev) = attempt.previous().last()
+            && prev.scheme().eq_ignore_ascii_case("https")
+            && attempt.url().scheme().eq_ignore_ascii_case("http")
+        {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "HTTPS-to-HTTP redirect downgrade is forbidden",
+            ));
+        }
+        if let Err(err) = validate_artwork_http_url(attempt.url().as_str(), allow_private_ips) {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                err.to_string(),
+            ));
+        }
+        attempt.follow()
+    });
+    builder = builder.redirect(policy);
 
     let client = builder
         .build()
@@ -298,19 +320,7 @@ pub fn get_or_build_http_client(
 }
 
 pub fn build_http_client(creds: &ProviderCredentials) -> DomainResult<Client> {
-    let ua = creds
-        .user_agent
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_TOOL_USER_AGENT);
-    let timeout_secs = creds.timeout_secs.map(|s| s.clamp(5, 120)).unwrap_or(20);
-    get_or_build_http_client(
-        creds.http_proxy.as_deref(),
-        ua,
-        timeout_secs,
-        SsrfRedirectGuard::None,
-    )
+    build_ssrf_safe_http_client(creds, false)
 }
 
 pub fn build_ssrf_safe_http_client(
@@ -338,8 +348,10 @@ mod tests {
 
     #[test]
     fn http_client_cache_reuses_entries_by_tuple_key() {
-        let c1 = get_or_build_http_client(None, "test-ua-1", 15, SsrfRedirectGuard::None).unwrap();
-        let c2 = get_or_build_http_client(None, "test-ua-1", 15, SsrfRedirectGuard::None).unwrap();
+        let c1 = get_or_build_http_client(None, "test-ua-1", 15, SsrfRedirectGuard::AllowPrivate)
+            .unwrap();
+        let c2 = get_or_build_http_client(None, "test-ua-1", 15, SsrfRedirectGuard::AllowPrivate)
+            .unwrap();
         let _c3 =
             get_or_build_http_client(None, "test-ua-1", 15, SsrfRedirectGuard::PublicOnly).unwrap();
         let _ = (c1, c2);
@@ -348,7 +360,7 @@ mod tests {
             proxy_url: None,
             user_agent: "test-ua-1".into(),
             timeout_secs: 15,
-            ssrf_guard: SsrfRedirectGuard::None,
+            ssrf_guard: SsrfRedirectGuard::AllowPrivate,
         }));
         assert!(guard.contains_key(&HttpClientCacheKey {
             proxy_url: None,
@@ -356,5 +368,11 @@ mod tests {
             timeout_secs: 15,
             ssrf_guard: SsrfRedirectGuard::PublicOnly,
         }));
+    }
+
+    #[test]
+    fn musicbrainz_enforces_at_least_one_second_interval() {
+        assert!(provider_min_interval("musicbrainz") >= Duration::from_secs(1));
+        assert!(provider_min_interval("tmdb") >= Duration::from_millis(100));
     }
 }

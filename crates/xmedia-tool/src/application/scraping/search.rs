@@ -22,6 +22,7 @@ use crate::domain::scraper::{
     is_compatible_secondary_source, merge_scraped_by_priority, promote_exact_match_anchor,
 };
 use crate::domain::workspace::RootId;
+use crate::infra::scrapers::http_client::acquire_provider_rate_slot;
 
 impl ScrapingOrchestratorService {
     fn sort_providers_by_priority(
@@ -157,6 +158,7 @@ impl ScrapingOrchestratorService {
                 if let Some(cached) = cache.get_search(&id, &q, &loc, ttl_ms) {
                     return (order_idx, cached);
                 }
+                acquire_provider_rate_slot(&id).await;
                 let items = match provider.search(&q, &c).await {
                     Ok(items) => {
                         cache.put_search(&id, &q, &loc, ttl_ms, &items);
@@ -283,6 +285,7 @@ impl ScrapingOrchestratorService {
                 {
                     return (order_idx, id, prov_desc.name, cached);
                 }
+                acquire_provider_rate_slot(&id).await;
                 let detail_res = provider
                     .fetch_detail(&top_cand.external_id, top_cand.target, &loc, &c)
                     .await;
@@ -399,6 +402,7 @@ impl ScrapingOrchestratorService {
             return Ok(cached);
         }
 
+        acquire_provider_rate_slot(provider_id).await;
         let detail = provider
             .fetch_detail(external_id, target, &effective_locale, &creds)
             .await?;

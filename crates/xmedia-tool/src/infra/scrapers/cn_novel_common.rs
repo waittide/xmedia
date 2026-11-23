@@ -53,7 +53,7 @@ pub fn build_browser_http_client(
         creds.http_proxy.as_deref(),
         ua,
         timeout_secs,
-        SsrfRedirectGuard::None,
+        SsrfRedirectGuard::PublicOnly,
     )
 }
 
