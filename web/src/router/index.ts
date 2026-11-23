@@ -141,6 +141,12 @@ export const router = createRouter({
           meta: { domain: 'book' as MediaKind },
         },
         {
+          path: 'book/history',
+          name: 'book-history',
+          component: () => import('@/views/DomainHistoryView.vue'),
+          meta: { domain: 'book' as MediaKind },
+        },
+        {
           // Placeholder until Wave 4B introduces a dedicated online book detail view
           path: 'book/item/online',
           name: 'book-online-detail',
@@ -179,6 +185,12 @@ export const router = createRouter({
           meta: { domain: 'comic' as MediaKind },
         },
         {
+          path: 'comic/history',
+          name: 'comic-history',
+          component: () => import('@/views/DomainHistoryView.vue'),
+          meta: { domain: 'comic' as MediaKind },
+        },
+        {
           path: 'comic/item/online',
           name: 'comic-online-detail',
           component: () => import('@/domains/comic/views/OnlineComicDetailView.vue'),
@@ -202,6 +214,12 @@ export const router = createRouter({
           path: 'music/library',
           name: 'music-library',
           component: () => import('@/domains/music/views/SongsView.vue'),
+          meta: { domain: 'music' as MediaKind },
+        },
+        {
+          path: 'music/history',
+          name: 'music-history',
+          component: () => import('@/views/DomainHistoryView.vue'),
           meta: { domain: 'music' as MediaKind },
         },
         {
@@ -236,6 +254,12 @@ export const router = createRouter({
           path: 'video/library',
           name: 'video-library',
           component: () => import('@/domains/video/views/CatalogView.vue'),
+          meta: { domain: 'video' as MediaKind },
+        },
+        {
+          path: 'video/history',
+          name: 'video-history',
+          component: () => import('@/views/DomainHistoryView.vue'),
           meta: { domain: 'video' as MediaKind },
         },
         {

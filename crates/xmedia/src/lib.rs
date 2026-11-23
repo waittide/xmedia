@@ -16,13 +16,14 @@ use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
+use xmedia_core::application::activity::ActivityService;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::persistence::repositories::{
-    ToastyLibraryRepository, ToastyUserRepository,
+    ToastyLibraryRepository, ToastyUserActivityRepository, ToastyUserRepository,
 };
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{
@@ -179,6 +180,8 @@ impl XMediaApp {
 
         let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
         let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let activity_repo = Arc::new(ToastyUserActivityRepository::new(db.clone()));
+        let activity = Arc::new(ActivityService::new(activity_repo));
         let lifecycles = Arc::new(RwLock::new(HashMap::new()));
         let events = Arc::new(BroadcastEventHub::default());
         let security = Arc::new(SecurityManager::new(&cfg.secret));
@@ -362,6 +365,7 @@ impl XMediaApp {
             auth: auth.clone(),
             libraries: libraries.clone(),
             libraries_repo,
+            activity,
             events: events.clone(),
             sse_limiter: SseConnectionLimiter::new(),
             ffmpeg,

@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
+use xmedia_core::application::activity::{
+    ActivityDayDto, ActivityHeatmapDto, ActivityHeatmapQuery, ActivityService, RecordActivityInput,
+};
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::dto::{
     ChangePasswordInput, CreateLibraryInput, CreateUserInput, FfmpegStatusDto, LibraryDto,
@@ -134,6 +137,7 @@ pub struct GatewayState {
     pub auth: Arc<AuthService>,
     pub libraries: Arc<LibraryService>,
     pub libraries_repo: Arc<dyn LibraryRepository>,
+    pub activity: Arc<ActivityService>,
     pub events: Arc<BroadcastEventHub>,
     pub sse_limiter: SseConnectionLimiter,
     pub ffmpeg: FfmpegToolkit,
@@ -172,6 +176,8 @@ pub fn core_api_router() -> Router<GatewayState> {
         .route("/libraries/{id}/scan", post(trigger_library_scan))
         .route("/system/capabilities", get(system_capabilities))
         .route("/system/overview", get(system_overview))
+        .route("/activity/heartbeat", post(record_activity_heartbeat))
+        .route("/activity/heatmap", get(get_activity_heatmap))
         .route("/events/stream", get(events_stream))
 }
 
@@ -326,6 +332,7 @@ async fn delete_user(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state.auth.delete_user(&user, UserId(id)).await?;
+    let _ = state.activity.purge_user(UserId(id)).await;
     Ok(Json(OkResponse { ok: true }))
 }
 
@@ -504,6 +511,22 @@ fn spawn_sse_event_stream(
         rx: stream_rx,
         _permit: permit,
     }
+}
+
+async fn record_activity_heartbeat(
+    State(state): State<GatewayState>,
+    CoreWebAuth(user): CoreWebAuth,
+    Json(input): Json<RecordActivityInput>,
+) -> ApiResult<Json<ActivityDayDto>> {
+    Ok(Json(state.activity.record_heartbeat(user.id, input).await?))
+}
+
+async fn get_activity_heatmap(
+    State(state): State<GatewayState>,
+    CoreWebAuth(user): CoreWebAuth,
+    Query(query): Query<ActivityHeatmapQuery>,
+) -> ApiResult<Json<ActivityHeatmapDto>> {
+    Ok(Json(state.activity.get_heatmap(user.id, query).await?))
 }
 
 async fn events_stream(

@@ -3,13 +3,14 @@ use jiff::Timestamp;
 use toasty::Db;
 use uuid::Uuid;
 
+use crate::domain::activity::{UserActivityDaily, UserActivityRepository};
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
 use crate::domain::online_item::{OnlineItemSourceKind, OnlineLibraryItem};
 use crate::domain::repository::{LibraryRepository, OnlineLibraryItemRepository, UserRepository};
 use crate::domain::user::{User, UserId, UserPreferences, UserRole};
 
-use super::models::{LibraryModel, OnlineLibraryItemModel, UserModel};
+use super::models::{LibraryModel, OnlineLibraryItemModel, UserActivityDailyModel, UserModel};
 
 #[derive(Clone)]
 pub struct ToastyUserRepository {
@@ -555,6 +556,119 @@ impl OnlineLibraryItemRepository for ToastyOnlineLibraryItemRepository {
             .exec(&mut db)
             .await
             .map_err(|e| online_item_err("purge", e))?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ToastyUserActivityRepository {
+    db: Db,
+}
+
+impl ToastyUserActivityRepository {
+    pub fn new(db: Db) -> Self {
+        Self { db }
+    }
+
+    fn model_to_domain(m: UserActivityDailyModel) -> DomainResult<UserActivityDaily> {
+        Ok(UserActivityDaily {
+            id: m.id,
+            user_id: UserId(m.user_id),
+            media_kind: MediaKind::parse(&m.media_kind)?,
+            activity_date: m.activity_date,
+            duration_secs: u64::try_from(m.duration_secs.max(0)).unwrap_or(0),
+            active_sessions: u32::try_from(m.active_sessions.max(0)).unwrap_or(0),
+            last_item_title: m.last_item_title,
+            updated_at: m.updated_at,
+        })
+    }
+}
+
+fn activity_err(action: &str, e: impl std::fmt::Display) -> DomainError {
+    DomainError::Persistence(format!("{action} user activity failed: {e}"))
+}
+
+#[async_trait]
+impl UserActivityRepository for ToastyUserActivityRepository {
+    async fn list_by_user_and_domain(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+    ) -> DomainResult<Vec<UserActivityDaily>> {
+        let mut db = self.db.clone();
+        let rows = UserActivityDailyModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(|e| activity_err("list", e))?;
+        let wanted = media_kind.as_str();
+        rows.into_iter()
+            .filter(|m| m.media_kind == wanted)
+            .map(Self::model_to_domain)
+            .collect()
+    }
+
+    async fn find_by_key(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        activity_date: &str,
+    ) -> DomainResult<Option<UserActivityDaily>> {
+        let mut db = self.db.clone();
+        let rows = UserActivityDailyModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(|e| activity_err("find", e))?;
+        let wanted_kind = media_kind.as_str();
+        rows.into_iter()
+            .find(|m| m.media_kind == wanted_kind && m.activity_date == activity_date)
+            .map(Self::model_to_domain)
+            .transpose()
+    }
+
+    async fn save(&self, record: &UserActivityDaily) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let duration_i64 = i64::try_from(record.duration_secs).unwrap_or(i64::MAX);
+        let sessions_i64 = i64::from(record.active_sessions);
+        let existing = UserActivityDailyModel::filter_by_id(record.id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| activity_err("probe", e))?;
+
+        if let Some(mut rec) = existing {
+            rec.update()
+                .duration_secs(duration_i64)
+                .active_sessions(sessions_i64)
+                .last_item_title(record.last_item_title.clone())
+                .updated_at(record.updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(|e| activity_err("update", e))?;
+        } else {
+            toasty::create!(UserActivityDailyModel {
+                id: record.id,
+                user_id: record.user_id.0,
+                media_kind: record.media_kind.as_str().to_string(),
+                activity_date: record.activity_date.clone(),
+                duration_secs: duration_i64,
+                active_sessions: sessions_i64,
+                last_item_title: record.last_item_title.clone(),
+                updated_at: record.updated_at,
+            })
+            .exec(&mut db)
+            .await
+            .map_err(|e| activity_err("create", e))?;
+        }
+        Ok(())
+    }
+
+    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        UserActivityDailyModel::filter_by_user_id(user_id.0)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(|e| activity_err("purge", e))?;
         Ok(())
     }
 }

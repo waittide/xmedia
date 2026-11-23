@@ -1,4 +1,6 @@
 #[cfg(feature = "server")]
+pub mod activity;
+#[cfg(feature = "server")]
 pub mod auth;
 pub mod dto;
 #[cfg(feature = "server")]

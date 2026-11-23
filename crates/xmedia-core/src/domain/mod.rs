@@ -1,3 +1,5 @@
+#[cfg(feature = "server")]
+pub mod activity;
 pub mod error;
 pub mod library;
 pub mod media;

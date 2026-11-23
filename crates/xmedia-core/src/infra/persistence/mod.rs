@@ -8,12 +8,13 @@ use toasty::schema::{Model, ModelSet};
 use tracing::info;
 
 use crate::domain::error::{DomainError, DomainResult};
-use models::{LibraryModel, OnlineLibraryItemModel, UserModel};
+use models::{LibraryModel, OnlineLibraryItemModel, UserActivityDailyModel, UserModel};
 
 pub fn register_core_models(set: &mut ModelSet) {
     <UserModel as Model>::register(set);
     <LibraryModel as Model>::register(set);
     <OnlineLibraryItemModel as Model>::register(set);
+    <UserActivityDailyModel as Model>::register(set);
 }
 
 /// Returns `true` if all core schema tables (`users` and `libraries`) are already present.
@@ -53,6 +54,20 @@ pub async fn ensure_core_schema(db: &mut Db, database_url: &str) -> DomainResult
         let bootstrap = connect_bootstrap(set, database_url).await?;
         bootstrap.push_schema().await.map_err(|e| {
             DomainError::Persistence(format!("failed to push online_library_items schema: {e}"))
+        })?;
+    }
+    if UserActivityDailyModel::all()
+        .limit(1)
+        .exec(db)
+        .await
+        .is_err()
+    {
+        info!("migrating user_activity_daily table via toasty");
+        let mut set = ModelSet::new();
+        <UserActivityDailyModel as Model>::register(&mut set);
+        let bootstrap = connect_bootstrap(set, database_url).await?;
+        bootstrap.push_schema().await.map_err(|e| {
+            DomainError::Persistence(format!("failed to push user_activity_daily schema: {e}"))
         })?;
     }
     Ok(())

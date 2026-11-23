@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { useActivityTracker } from '@/composables/useActivityTracker'
 import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
 import { useThemeStore } from '@/stores/theme'
@@ -8,6 +9,7 @@ import AppDialogHost from '@/components/ui/AppDialogHost.vue'
 import MdSnackbarHost from '@/components/ui/MdSnackbarHost.vue'
 
 useThemeStore()
+useActivityTracker()
 
 const authStore = useAuthStore()
 const eventsStore = useEventsStore()

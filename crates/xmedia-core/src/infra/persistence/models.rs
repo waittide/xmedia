@@ -98,3 +98,24 @@ pub(crate) struct OnlineLibraryItemModel {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
+
+#[derive(Debug, toasty::Model)]
+#[table = "user_activity_daily"]
+pub(crate) struct UserActivityDailyModel {
+    #[key]
+    pub id: Uuid,
+
+    #[index]
+    pub user_id: Uuid,
+
+    #[index]
+    pub media_kind: String,
+
+    #[index]
+    pub activity_date: String,
+
+    pub duration_secs: i64,
+    pub active_sessions: i64,
+    pub last_item_title: Option<String>,
+    pub updated_at: Timestamp,
+}

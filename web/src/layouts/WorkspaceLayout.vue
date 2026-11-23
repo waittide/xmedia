@@ -7,6 +7,7 @@ import {
   LuClapperboard,
   LuCompass,
   LuDisc3,
+  LuHistory,
   LuHome,
   LuLayers,
   LuLibrary,
@@ -43,7 +44,7 @@ import NavigationBar from './NavigationBar.vue'
 import NavigationRail, { type DomainNavTab } from './NavigationRail.vue'
 
 interface SecondaryTab {
-  key: 'home' | 'library' | 'discover'
+  key: 'home' | 'library' | 'discover' | 'history'
   label: string
   icon: Component
   active: boolean
@@ -140,10 +141,12 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
   const name = String(route.name ?? '')
 
   const isHome = route.path === `/${d}`
+  const isHistory = route.path === `/${d}/history`
   const isDiscover =
     route.path === `/${d}/discover` || (scope === 'online' && !name.includes('detail'))
   const isLibrary =
     !isHome &&
+    !isHistory &&
     !isDiscover &&
     (route.path.startsWith(`/${d}/library`) ||
       name === 'book-catalog' ||
@@ -179,6 +182,13 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
       to: useCanonical
         ? `/${d}/discover`
         : { path: legacyCatalogPath(d), query: { scope: 'online' } },
+    },
+    {
+      key: 'history',
+      label: tr('nav.history', '历史', 'History'),
+      icon: LuHistory,
+      active: isHistory,
+      to: `/${d}/history`,
     },
   ]
 })
