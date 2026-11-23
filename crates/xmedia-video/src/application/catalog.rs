@@ -11,16 +11,15 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::dto::{
-    SeasonGroupDto, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, VideoDetailDto,
-    VideoHomeOverviewDto, VideoSummaryDto, VideoSystemStatusDto, VideoTaxonomyDto,
-    VideoTaxonomyItemDto,
+    OnlineTrackedShowDto, OnlineTrackedVideoDto, SeasonGroupDto, ShowDetailDto, ShowSummaryDto,
+    SubtitleTrackDto, VideoDetailDto, VideoHomeOverviewDto, VideoSummaryDto, VideoSystemStatusDto,
+    VideoTaxonomyDto, VideoTaxonomyItemDto,
 };
 use crate::application::ports::{VideoMediaEnginePort, VideoStoragePort};
 use crate::domain::id::{ShowId, VideoId};
 use crate::domain::repository::{VideoCatalogRepository, VideoWatchRepository};
 use crate::domain::video::{
     ShowMetadataPatch, ShowQueryFilter, VideoItem, VideoMetadataPatch, VideoQueryFilter, VideoShow,
-    VideoSource,
 };
 use crate::domain::watch::{VideoFavoriteKind, WatchProgress};
 
@@ -75,6 +74,18 @@ impl VideoCatalogService {
             .map(|v| {
                 let resolution = v.resolution_label();
                 let can_direct_play = v.can_direct_play_in_browser();
+                let online_tracking =
+                    v.source
+                        .online_tracking_info()
+                        .map(|info| OnlineTrackedVideoDto {
+                            source_id: info.source_id,
+                            video_id: info.video_id.clone(),
+                            detail_url: info.detail_url.clone(),
+                            play_url: info.play_url.clone(),
+                            group_name: info.group_name.clone(),
+                            episode_name: info.episode_name.clone(),
+                            cached: info.cached && info.storage_key.is_some(),
+                        });
                 VideoSummaryDto {
                     id: v.id,
                     library_id: v.library_id,
@@ -100,6 +111,7 @@ impl VideoCatalogService {
                     is_favorite: fav_set.contains(&v.id.0),
                     progress: prog_map.get(&v.id).cloned(),
                     created_at: v.created_at,
+                    online_tracking,
                 }
             })
             .collect()
@@ -112,20 +124,29 @@ impl VideoCatalogService {
     ) -> Vec<ShowSummaryDto> {
         shows
             .into_iter()
-            .map(|s| ShowSummaryDto {
-                id: s.id,
-                library_id: s.library_id,
-                title: s.title,
-                summary: s.summary,
-                year: s.year,
-                genres: s.genres,
-                tags: s.tags,
-                poster_key: s.poster_key,
-                season_count: s.season_count,
-                episode_count: s.episode_count,
-                watched_episode_count: watched_by_show.get(&s.id).copied().unwrap_or(0),
-                is_favorite: fav_set.contains(&s.id.0),
-                created_at: s.created_at,
+            .map(|s| {
+                let online_tracking =
+                    s.online_tracked_ref()
+                        .map(|(source_id, item_key)| OnlineTrackedShowDto {
+                            source_id,
+                            item_key: item_key.to_string(),
+                        });
+                ShowSummaryDto {
+                    id: s.id,
+                    library_id: s.library_id,
+                    title: s.title,
+                    summary: s.summary,
+                    year: s.year,
+                    genres: s.genres,
+                    tags: s.tags,
+                    poster_key: s.poster_key,
+                    season_count: s.season_count,
+                    episode_count: s.episode_count,
+                    watched_episode_count: watched_by_show.get(&s.id).copied().unwrap_or(0),
+                    is_favorite: fav_set.contains(&s.id.0),
+                    created_at: s.created_at,
+                    online_tracking,
+                }
             })
             .collect()
     }
@@ -610,15 +631,8 @@ impl VideoCatalogService {
             .await?
             .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
         let old_show_id = item.show_id;
-        if let VideoSource::Managed {
-            ref storage_key,
-            ref sidecar_subtitles,
-        } = item.source
-        {
-            let _ = self.storage.delete_managed_file(storage_key).await;
-            for sc in sidecar_subtitles {
-                let _ = self.storage.delete_managed_file(&sc.path_or_key).await;
-            }
+        for key in item.source.managed_file_keys() {
+            let _ = self.storage.delete_managed_file(key).await;
         }
         self.watch.delete_progress_by_video(video_id).await?;
         self.catalog.delete_video(video_id).await?;

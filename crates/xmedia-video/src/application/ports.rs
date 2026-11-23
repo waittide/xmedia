@@ -189,6 +189,12 @@ pub trait VideoMediaEnginePort: Send + Sync {
         fs_path: &Path,
         req: &VideoStreamTranscodeRequest,
     ) -> DomainResult<ByteChunkStream>;
+
+    async fn remux_local_hls_to_mp4(
+        &self,
+        local_playlist_path: &Path,
+        output_mp4_path: &Path,
+    ) -> DomainResult<()>;
 }
 
 pub fn parse_quality_param(raw: Option<&str>) -> VideoQualityProfile {

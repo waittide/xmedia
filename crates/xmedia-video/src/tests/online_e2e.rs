@@ -4083,3 +4083,275 @@ async fn online_video_items_favorites_episode_progress_and_availability_e2e() {
     .await;
     assert_eq!(st_del, StatusCode::NO_CONTENT);
 }
+
+#[tokio::test]
+async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let include_ep3 = Arc::new(AtomicBool::new(false));
+    let include_ep3_srv = Arc::clone(&include_ep3);
+    let mp4_hits = Arc::new(AtomicUsize::new(0));
+    let mp4_hits_srv = Arc::clone(&mp4_hits);
+    let mp4_bytes = Arc::new(fake_mp4_payload());
+    let mp4_for_srv = Arc::clone(&mp4_bytes);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+    let base_srv = base_url.clone();
+
+    let mock_router = Router::new()
+        .route(
+            "/api.php/provide/vod/",
+            get(move |Query(q): Query<AppleCmsQuery>| {
+                let b = base_srv.clone();
+                let ep3 = Arc::clone(&include_ep3_srv);
+                async move {
+                    let ids = q.ids.unwrap_or_default();
+                    let list = if ids == "101" {
+                        serde_json::json!([{
+                            "vod_id": 101,
+                            "vod_name": "星际迷航：测试电影",
+                            "vod_pic": format!("{b}/poster.png"),
+                            "vod_year": "2025",
+                            "vod_area": "科幻",
+                            "vod_content": "一部用于测试在线追更和离线缓存的电影。",
+                            "vod_play_from": "mp4line",
+                            "vod_play_url": format!("正片${b}/media/movie.mp4")
+                        }])
+                    } else if ids == "202" {
+                        let mut eps = format!("第01集${b}/media/ep1.mp4#第02集${b}/media/ep2.mp4");
+                        if ep3.load(Ordering::SeqCst) {
+                            eps.push_str(&format!("#第03集${b}/media/ep3.mp4"));
+                        }
+                        serde_json::json!([{
+                            "vod_id": 202,
+                            "vod_name": "星海纪元",
+                            "vod_pic": format!("{b}/poster.png"),
+                            "vod_year": "2026",
+                            "vod_area": "动画",
+                            "vod_content": "一部连载中的在线追更剧集。",
+                            "vod_play_from": "mp4line",
+                            "vod_play_url": eps
+                        }])
+                    } else {
+                        serde_json::json!([])
+                    };
+                    let body = serde_json::json!({
+                        "code": 1,
+                        "page": 1,
+                        "pagecount": 1,
+                        "total": list.as_array().map(|a| a.len()).unwrap_or(0),
+                        "list": list
+                    });
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        body.to_string(),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/media/{name}",
+            get(move || {
+                let hits = Arc::clone(&mp4_hits_srv);
+                let bytes = Arc::clone(&mp4_for_srv);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "video/mp4")],
+                        (*bytes).clone(),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/poster.png",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "image/png")],
+                    PNG_1X1.to_vec(),
+                )
+            }),
+        );
+
+    let srv_handle = tokio::spawn(async move {
+        axum::serve(listener, mock_router).await.unwrap();
+    });
+
+    // 1. Import mock AppleCMS v10 source
+    let source_spec = serde_json::json!({
+        "sourceName": "Mock Tracked Video Source",
+        "sourceUrl": base_url,
+        "apiUrl": format!("{base_url}/api.php/provide/vod/"),
+        "sourceFormat": "applecms_v10",
+        "enabled": true
+    });
+    let (st_imp, imp_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        Some(serde_json::json!({ "raw_json": source_spec.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK, "{imp_val}");
+    let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 2. Non-admin cannot track into managed library
+    let (st_forb, _) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/online/track",
+        &member_tok,
+        Some(serde_json::json!({
+            "source_id": source_id,
+            "video_id": "101"
+        })),
+    )
+    .await;
+    assert_eq!(st_forb, StatusCode::FORBIDDEN);
+
+    // 3. Track single-episode movie
+    let (st_mv, mv_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/online/track",
+        &admin_tok,
+        Some(serde_json::json!({
+            "source_id": source_id,
+            "video_id": "101"
+        })),
+    )
+    .await;
+    assert_eq!(st_mv, StatusCode::OK, "{mv_val}");
+    assert_eq!(mv_val["kind"], "movie");
+    assert_eq!(mv_val["added_episodes"], 1);
+    let movie_id = mv_val["video"]["id"].as_str().unwrap().to_string();
+    assert_eq!(mv_val["video"]["title"], "星际迷航：测试电影");
+    assert_eq!(mv_val["video"]["online_tracking"]["cached"], false);
+    assert!(mv_val["video"]["poster_key"].as_str().is_some());
+    assert_eq!(mp4_hits.load(Ordering::SeqCst), 0);
+
+    // 4. Resolve on-demand playback stream for uncached movie
+    let (st_play, play_val) = send_json_with_method(
+        &app,
+        "GET",
+        &format!("/api/v1/video/videos/{movie_id}/online/play?token={member_tok}"),
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_play, StatusCode::OK, "{play_val}");
+    assert_eq!(play_val["cached"], false);
+    assert_eq!(play_val["stream_type"], "mp4");
+    assert!(
+        play_val["proxy_stream_url"]
+            .as_str()
+            .unwrap()
+            .contains("/api/v1/video/online/stream-proxy")
+    );
+
+    // 5. Explicitly cache movie to local managed storage -> HTTP 206 Range stream succeeds
+    let (st_cache, cached_mv) = send_json_with_method(
+        &app,
+        "POST",
+        &format!("/api/v1/video/videos/{movie_id}/online/cache"),
+        &admin_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_cache, StatusCode::OK, "{cached_mv}");
+    assert_eq!(cached_mv["online_tracking"]["cached"], true);
+    assert_eq!(cached_mv["file_size"], mp4_bytes.len() as u64);
+    assert_eq!(mp4_hits.load(Ordering::SeqCst), 1);
+
+    let range_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/video/videos/{movie_id}/stream?quality=direct&token={member_tok}"
+                ))
+                .header(header::RANGE, "bytes=0-15")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(range_resp.status(), StatusCode::PARTIAL_CONTENT);
+    let range_bytes = to_bytes(range_resp.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(&range_bytes[..16], &mp4_bytes[..16]);
+
+    // 6. Track multi-episode TV show -> refresh picks up newly added Episode 3
+    let (st_show, show_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/online/track",
+        &admin_tok,
+        Some(serde_json::json!({
+            "source_id": source_id,
+            "video_id": "202"
+        })),
+    )
+    .await;
+    assert_eq!(st_show, StatusCode::OK, "{show_val}");
+    assert_eq!(show_val["kind"], "show");
+    assert_eq!(show_val["added_episodes"], 2);
+    let show_id = show_val["show"]["show"]["id"].as_str().unwrap().to_string();
+    assert_eq!(show_val["show"]["show"]["episode_count"], 2);
+    assert_eq!(
+        show_val["show"]["show"]["online_tracking"]["source_id"],
+        source_id
+    );
+
+    include_ep3.store(true, Ordering::SeqCst);
+    let (st_ref, ref_val) = send_json_with_method(
+        &app,
+        "POST",
+        &format!("/api/v1/video/shows/{show_id}/online/refresh"),
+        &admin_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_ref, StatusCode::OK, "{ref_val}");
+    assert_eq!(ref_val["show"]["episode_count"], 3);
+    assert_eq!(
+        ref_val["seasons"][0]["episodes"].as_array().unwrap().len(),
+        3
+    );
+
+    // 7. Cache entire show -> 3 cached, second pass skips all 3
+    let (st_sc, sc_val) = send_json_with_method(
+        &app,
+        "POST",
+        &format!("/api/v1/video/shows/{show_id}/online/cache"),
+        &admin_tok,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(st_sc, StatusCode::OK, "{sc_val}");
+    assert_eq!(sc_val["cached_count"], 3);
+    assert_eq!(sc_val["failed_count"], 0);
+    assert_eq!(mp4_hits.load(Ordering::SeqCst), 4);
+
+    let (st_sc2, sc_val2) = send_json_with_method(
+        &app,
+        "POST",
+        &format!("/api/v1/video/shows/{show_id}/online/cache"),
+        &admin_tok,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(st_sc2, StatusCode::OK);
+    assert_eq!(sc_val2["cached_count"], 0);
+    assert_eq!(sc_val2["skipped_count"], 3);
+    assert_eq!(mp4_hits.load(Ordering::SeqCst), 4);
+
+    srv_handle.abort();
+}

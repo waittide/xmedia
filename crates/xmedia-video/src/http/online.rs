@@ -17,13 +17,16 @@ use xmedia_source::crud::{
 };
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
+use crate::application::dto::{ShowDetailDto, VideoSummaryDto};
 use crate::application::online::{
-    BatchVideoSourcesInput, BatchVideoSourcesReportDto, HlsProxyOutcome,
+    BatchVideoSourcesInput, BatchVideoSourcesReportDto, CacheTrackedShowInput, HlsProxyOutcome,
     ImportVideoSourcesReportDto, LoginActionResponseDto, OnlineVideoBrowseResponseDto,
     OnlineVideoCategoriesResponseDto, OnlineVideoDetailResponseDto, OnlineVideoPlayResponseDto,
-    OnlineVideoSearchResponseDto, ProxyStreamOutcome, ProxyStreamPayload, UpdateVideoSourceInput,
-    VideoSourceSummaryDto, VideoSourceTestInput, VideoSourceTestReportDto,
+    OnlineVideoSearchResponseDto, ProxyStreamOutcome, ProxyStreamPayload, TrackOnlineVideoInput,
+    TrackOnlineVideoResultDto, TrackedVideoPlayResponseDto, UpdateVideoSourceInput,
+    VideoCacheReportDto, VideoSourceSummaryDto, VideoSourceTestInput, VideoSourceTestReportDto,
 };
+use crate::domain::id::{ShowId, VideoId};
 use crate::http::state::VideoHttpState;
 
 pub fn router() -> Router<VideoHttpState> {
@@ -48,6 +51,11 @@ pub fn router() -> Router<VideoHttpState> {
         .route("/online/browse", post(online_browse))
         .route("/online/detail", post(online_detail))
         .route("/online/play", post(online_play))
+        .route("/online/track", post(track_online_video))
+        .route("/shows/{id}/online/refresh", post(refresh_tracked_show))
+        .route("/shows/{id}/online/cache", post(cache_tracked_show))
+        .route("/videos/{id}/online/cache", post(cache_tracked_video))
+        .route("/videos/{id}/online/play", get(resolve_tracked_video_play))
         .route("/online/poster-proxy", get(online_poster_proxy))
         .route("/online/stream-proxy", get(online_stream_proxy))
         .route("/online/hls-proxy", get(online_hls_proxy))
@@ -108,6 +116,11 @@ struct PosterProxyQuery {
 struct StreamProxyQuery {
     url: String,
     source_id: Option<Uuid>,
+    token: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TrackedPlayQuery {
     token: Option<String>,
 }
 
@@ -313,6 +326,70 @@ async fn online_play(
             &req.play_url,
             req.group_name.as_deref(),
         )
+        .await?;
+    Ok(Json(out))
+}
+
+async fn track_online_video(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Json(req): Json<TrackOnlineVideoInput>,
+) -> ApiResult<Json<TrackOnlineVideoResultDto>> {
+    let out = state.services.online.track_online_video(&user, req).await?;
+    Ok(Json(out))
+}
+
+async fn refresh_tracked_show(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<ShowDetailDto>> {
+    let out = state
+        .services
+        .online
+        .refresh_tracked_show(&user, ShowId(id))
+        .await?;
+    Ok(Json(out))
+}
+
+async fn cache_tracked_video(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<VideoSummaryDto>> {
+    let out = state
+        .services
+        .online
+        .cache_tracked_video(&user, VideoId(id))
+        .await?;
+    Ok(Json(out))
+}
+
+async fn cache_tracked_show(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    body: Option<Json<CacheTrackedShowInput>>,
+) -> ApiResult<Json<VideoCacheReportDto>> {
+    let video_ids = body.and_then(|Json(b)| b.video_ids);
+    let out = state
+        .services
+        .online
+        .cache_tracked_show(&user, ShowId(id), video_ids)
+        .await?;
+    Ok(Json(out))
+}
+
+async fn resolve_tracked_video_play(
+    State(state): State<VideoHttpState>,
+    WebAuth(_user): WebAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<TrackedPlayQuery>,
+) -> ApiResult<Json<TrackedVideoPlayResponseDto>> {
+    let out = state
+        .services
+        .online
+        .resolve_tracked_video_play(VideoId(id), q.token.as_deref())
         .await?;
     Ok(Json(out))
 }

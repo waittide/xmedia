@@ -3,6 +3,7 @@ mod debug;
 mod dto;
 mod items;
 mod sources;
+mod tracked;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,11 +11,17 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use uuid::Uuid;
+use xmedia_core::application::ports::RealtimeEventPort;
+use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_source::http::HttpClientConfig;
 use xmedia_source::model::ConcurrentRateSpec;
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
-use crate::domain::repository::VideoSourceRepository;
+use crate::application::catalog::VideoCatalogService;
+use crate::application::lifecycle::VideoDomainLifecycle;
+use crate::application::ports::{VideoMediaEnginePort, VideoStoragePort};
+use crate::domain::id::VideoId;
+use crate::domain::repository::{VideoCatalogRepository, VideoSourceRepository};
 use crate::source::VideoSourceEngine;
 
 pub use dto::*;
@@ -99,13 +106,26 @@ pub(super) fn get_or_insert_weak_lock<K: Eq + std::hash::Hash>(
     lock
 }
 
+#[derive(Clone)]
+pub struct VideoTrackingDeps {
+    pub libraries: Arc<dyn LibraryRepository>,
+    pub catalog_repo: Arc<dyn VideoCatalogRepository>,
+    pub catalog_service: Arc<VideoCatalogService>,
+    pub lifecycle: Arc<VideoDomainLifecycle>,
+    pub storage: Arc<dyn VideoStoragePort>,
+    pub media_engine: Arc<dyn VideoMediaEnginePort>,
+    pub events: Arc<dyn RealtimeEventPort>,
+}
+
 pub struct VideoOnlineService {
     sources: Arc<dyn VideoSourceRepository>,
     engine: VideoSourceEngine,
     http_config: HttpClientConfig,
     source_state_locks: AsyncLockMap<Uuid>,
+    video_cache_locks: AsyncLockMap<VideoId>,
     rate_limiters: RateLimiterMap,
     seed_import_lock: tokio::sync::Mutex<()>,
+    tracking: Option<VideoTrackingDeps>,
     allow_private_ips: bool,
     op_timeout: Duration,
     detail_timeout: Duration,
@@ -127,12 +147,19 @@ impl VideoOnlineService {
             engine,
             http_config,
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            video_cache_locks: Arc::new(Mutex::new(HashMap::new())),
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             seed_import_lock: tokio::sync::Mutex::new(()),
+            tracking: None,
             allow_private_ips,
             op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
             detail_timeout: DETAIL_OP_TIMEOUT,
         }
+    }
+
+    pub fn with_tracking(mut self, deps: VideoTrackingDeps) -> Self {
+        self.tracking = Some(deps);
+        self
     }
 
     #[cfg(test)]

@@ -21,8 +21,8 @@ use crate::source::hls::{
     build_poster_proxy_url, build_stream_proxy_url, build_subtitle_proxy_url,
     get_or_build_streaming_async_client, infer_segment_content_type, is_forbidden_media_ct,
     is_forbidden_subtitle_ct, is_hls_playlist_response, is_partial_hls_playlist_range_candidate,
-    looks_like_html_bytes, read_sniff_prefix_with_context, rewrite_m3u8_playlist,
-    spawn_chunk_stream, validate_and_normalize_subtitle_to_vtt,
+    looks_like_html_bytes, read_sniff_prefix_with_context, spawn_chunk_stream,
+    validate_and_normalize_subtitle_to_vtt,
 };
 use crate::source::model::VideoSourceSpec;
 
@@ -44,7 +44,10 @@ fn validate_range_header(raw: Option<&str>) -> DomainResult<Option<String>> {
     Ok(Some(val.to_string()))
 }
 
-fn lookup_cookie_for_url(cookies: &HashMap<String, String>, target_url: &str) -> Option<String> {
+pub(super) fn lookup_cookie_for_url(
+    cookies: &HashMap<String, String>,
+    target_url: &str,
+) -> Option<String> {
     let key = normalize_cookie_key(target_url);
     if key.is_empty() {
         return None;
@@ -775,10 +778,58 @@ impl VideoOnlineService {
         source_id: Option<Uuid>,
         range_header: Option<&str>,
     ) -> DomainResult<ProxyStreamOutcome> {
+        let source_headers = self.resolve_source_media_headers(actor, source_id).await?;
+        self.open_stream_proxy_with_headers(raw_url, source_headers, range_header)
+            .await
+    }
+
+    pub async fn open_stream_proxy_for_tracked(
+        &self,
+        raw_url: &str,
+        source_id: Option<Uuid>,
+        range_header: Option<&str>,
+    ) -> DomainResult<ProxyStreamOutcome> {
+        let source_headers = self
+            .resolve_internal_media_headers(source_id, raw_url)
+            .await;
+        self.open_stream_proxy_with_headers(raw_url, source_headers, range_header)
+            .await
+    }
+
+    pub(super) async fn resolve_internal_media_headers(
+        &self,
+        source_id: Option<Uuid>,
+        target_url: &str,
+    ) -> HashMap<String, String> {
+        let Some(sid) = source_id else {
+            return HashMap::new();
+        };
+        let Ok(rec) = self.load_source(sid).await else {
+            return HashMap::new();
+        };
+        let Ok(spec) = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json) else {
+            return HashMap::new();
+        };
+        let mut merged = spec.parse_media_header_map();
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
+            && spec.enabled_cookie_jar
+            && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)
+        {
+            merged.insert("Cookie".to_string(), cookie);
+        }
+        merged
+    }
+
+    async fn open_stream_proxy_with_headers(
+        &self,
+        raw_url: &str,
+        source_headers: HashMap<String, String>,
+        range_header: Option<&str>,
+    ) -> DomainResult<ProxyStreamOutcome> {
         let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
             .map_err(DomainError::Validation)?;
         let sanitized_range = validate_range_header(range_header)?;
-        let source_headers = self.resolve_source_media_headers(actor, source_id).await?;
 
         let mut header_map = build_sanitized_headers(&source_headers);
         if !header_map.contains_key(USER_AGENT) {
@@ -892,10 +943,43 @@ impl VideoOnlineService {
         range_header: Option<&str>,
         token: Option<&str>,
     ) -> DomainResult<HlsProxyOutcome> {
+        let source_headers = self.resolve_source_media_headers(actor, source_id).await?;
+        self.open_hls_proxy_with_rewriter(raw_url, source_headers, range_header, |resolved| {
+            build_hls_proxy_url(resolved, source_id, token)
+        })
+        .await
+    }
+
+    pub async fn open_hls_proxy_for_tracked<F>(
+        &self,
+        raw_url: &str,
+        source_id: Option<Uuid>,
+        range_header: Option<&str>,
+        rewrite_uri: F,
+    ) -> DomainResult<HlsProxyOutcome>
+    where
+        F: FnMut(&str) -> String,
+    {
+        let source_headers = self
+            .resolve_internal_media_headers(source_id, raw_url)
+            .await;
+        self.open_hls_proxy_with_rewriter(raw_url, source_headers, range_header, rewrite_uri)
+            .await
+    }
+
+    async fn open_hls_proxy_with_rewriter<F>(
+        &self,
+        raw_url: &str,
+        source_headers: HashMap<String, String>,
+        range_header: Option<&str>,
+        rewrite_uri: F,
+    ) -> DomainResult<HlsProxyOutcome>
+    where
+        F: FnMut(&str) -> String,
+    {
         let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
             .map_err(DomainError::Validation)?;
         let sanitized_range = validate_range_header(range_header)?;
-        let source_headers = self.resolve_source_media_headers(actor, source_id).await?;
 
         let mut header_map = build_sanitized_headers(&source_headers);
         if !header_map.contains_key(USER_AGENT) {
@@ -1069,7 +1153,8 @@ impl VideoOnlineService {
                     "无效的 HLS 播放列表：缺少 #EXTM3U 头".into(),
                 ));
             }
-            let rewritten = rewrite_m3u8_playlist(&text, &final_url, source_id, token);
+            let rewritten =
+                crate::source::hls::rewrite_m3u8_playlist_with(&text, &final_url, rewrite_uri);
             return Ok(HlsProxyOutcome::Playlist(rewritten));
         }
 

@@ -22,7 +22,7 @@ use xmedia_source::http::HttpClientConfig;
 use application::VideoServices;
 use application::catalog::VideoCatalogService;
 use application::lifecycle::VideoDomainLifecycle;
-use application::online::{VideoOnlineService, VideoOnlineSourceDirectory};
+use application::online::{VideoOnlineService, VideoOnlineSourceDirectory, VideoTrackingDeps};
 use application::streaming::VideoStreamingService;
 use application::watch::VideoWatchService;
 use infra::media_engine::FfmpegVideoEngine;
@@ -71,18 +71,18 @@ pub fn init_video_module_with_allow_private_ips(
     let scanner = Arc::new(LocalVideoScanner);
     let engine = Arc::new(FfmpegVideoEngine::new(ffmpeg));
 
-    let catalog = VideoCatalogService::new(
+    let catalog = Arc::new(VideoCatalogService::new(
         libraries_repo.clone(),
         catalog_repo.clone(),
         watch_repo.clone(),
         storage.clone(),
         engine.clone(),
         events.clone(),
-    );
+    ));
     let watch = Arc::new(VideoWatchService::new(
         catalog_repo.clone(),
         watch_repo.clone(),
-        catalog.clone(),
+        (*catalog).clone(),
     ));
     let streaming = Arc::new(VideoStreamingService::new(
         libraries_repo.clone(),
@@ -91,14 +91,14 @@ pub fn init_video_module_with_allow_private_ips(
         engine.clone(),
     ));
     let ingest = Arc::new(VideoDomainLifecycle::new(
-        libraries_repo,
-        catalog_repo,
+        libraries_repo.clone(),
+        catalog_repo.clone(),
         watch_repo,
-        catalog.clone(),
-        storage,
+        (*catalog).clone(),
+        storage.clone(),
         scanner,
-        engine,
-        events,
+        engine.clone(),
+        events.clone(),
     ));
     library_service.register_lifecycle(ingest.clone());
 
@@ -109,11 +109,18 @@ pub fn init_video_module_with_allow_private_ips(
         },
         Duration::from_secs(45),
     );
-    let online = Arc::new(VideoOnlineService::with_engine(
-        source_repo.clone(),
-        source_engine,
-        allow_private_ips,
-    ));
+    let online = Arc::new(
+        VideoOnlineService::with_engine(source_repo.clone(), source_engine, allow_private_ips)
+            .with_tracking(VideoTrackingDeps {
+                libraries: libraries_repo,
+                catalog_repo,
+                catalog_service: catalog.clone(),
+                lifecycle: ingest.clone(),
+                storage,
+                media_engine: engine,
+                events,
+            }),
+    );
     let online_items = Arc::new(OnlineLibraryService::new(
         MediaKind::Video,
         online_items_repo,
@@ -121,7 +128,7 @@ pub fn init_video_module_with_allow_private_ips(
     ));
 
     Ok(VideoServices::new(
-        Arc::new(catalog),
+        catalog,
         watch,
         streaming,
         ingest,

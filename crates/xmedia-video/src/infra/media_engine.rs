@@ -1,10 +1,13 @@
 use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::process::Command;
 use tracing::debug;
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::application::ports::ByteChunkStream;
-use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::stream::decode_text_smart;
 
@@ -169,6 +172,58 @@ impl VideoMediaEnginePort for FfmpegVideoEngine {
             "spawning ffmpeg real-time fMP4 video stream"
         );
         self.ffmpeg.spawn_stdout_stream(&args)
+    }
+
+    async fn remux_local_hls_to_mp4(
+        &self,
+        local_playlist_path: &Path,
+        output_mp4_path: &Path,
+    ) -> DomainResult<()> {
+        let output = tokio::time::timeout(
+            Duration::from_secs(900),
+            Command::new(self.ffmpeg.ffmpeg_bin())
+                .kill_on_drop(true)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .args([
+                    "-y",
+                    "-v",
+                    "error",
+                    "-allowed_extensions",
+                    "ALL",
+                    "-protocol_whitelist",
+                    "file,crypto,data",
+                    "-i",
+                ])
+                .arg(local_playlist_path)
+                .args([
+                    "-c",
+                    "copy",
+                    "-bsf:a",
+                    "aac_adtstoasc",
+                    "-movflags",
+                    "+faststart",
+                    "-f",
+                    "mp4",
+                ])
+                .arg(output_mp4_path)
+                .output(),
+        )
+        .await
+        .map_err(|_| DomainError::Storage("FFmpeg 封装 HLS 超时".into()))?
+        .map_err(|e| DomainError::Storage(format!("启动 FFmpeg 封装 HLS 失败: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let msg = stderr.trim();
+            return Err(DomainError::Storage(if msg.is_empty() {
+                format!("FFmpeg 封装 HLS 失败 (exit {})", output.status)
+            } else {
+                format!("FFmpeg 封装 HLS 失败: {msg}")
+            }));
+        }
+        Ok(())
     }
 }
 

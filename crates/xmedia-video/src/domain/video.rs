@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
@@ -101,6 +102,24 @@ pub struct SidecarSubtitle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnlineTrackedVideoSource {
+    #[serde(default)]
+    pub storage_key: Option<String>,
+    pub source_id: Uuid,
+    pub video_id: String,
+    pub detail_url: String,
+    pub play_url: String,
+    #[serde(default)]
+    pub group_name: Option<String>,
+    #[serde(default)]
+    pub episode_name: Option<String>,
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(default)]
+    pub sidecar_subtitles: Vec<SidecarSubtitle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VideoSource {
     Managed {
@@ -114,6 +133,7 @@ pub enum VideoSource {
         #[serde(default)]
         sidecar_subtitles: Vec<SidecarSubtitle>,
     },
+    OnlineTracked(Box<OnlineTrackedVideoSource>),
 }
 
 impl VideoSource {
@@ -121,7 +141,59 @@ impl VideoSource {
         match self {
             Self::Managed { storage_key, .. } => storage_key,
             Self::LocalPath { relative_path, .. } => relative_path,
+            Self::OnlineTracked(info) => {
+                info.storage_key
+                    .as_deref()
+                    .unwrap_or(if !info.play_url.is_empty() {
+                        info.play_url.as_str()
+                    } else {
+                        info.detail_url.as_str()
+                    })
+            }
         }
+    }
+
+    pub fn is_online_tracked(&self) -> bool {
+        matches!(self, Self::OnlineTracked(_))
+    }
+
+    pub fn is_cached(&self) -> bool {
+        match self {
+            Self::Managed { .. } | Self::LocalPath { .. } => true,
+            Self::OnlineTracked(info) => info.cached && info.storage_key.is_some(),
+        }
+    }
+
+    pub fn online_tracking_info(&self) -> Option<&OnlineTrackedVideoSource> {
+        match self {
+            Self::OnlineTracked(info) => Some(info.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub fn managed_file_keys(&self) -> Vec<&str> {
+        let mut keys = Vec::new();
+        match self {
+            Self::Managed {
+                storage_key,
+                sidecar_subtitles,
+            } => {
+                keys.push(storage_key.as_str());
+                for sc in sidecar_subtitles {
+                    keys.push(sc.path_or_key.as_str());
+                }
+            }
+            Self::OnlineTracked(info) => {
+                if let Some(ref key) = info.storage_key {
+                    keys.push(key.as_str());
+                }
+                for sc in &info.sidecar_subtitles {
+                    keys.push(sc.path_or_key.as_str());
+                }
+            }
+            Self::LocalPath { .. } => {}
+        }
+        keys
     }
 
     pub fn sidecar_subtitles(&self) -> &[SidecarSubtitle] {
@@ -132,6 +204,7 @@ impl VideoSource {
             | Self::LocalPath {
                 sidecar_subtitles, ..
             } => sidecar_subtitles,
+            Self::OnlineTracked(info) => &info.sidecar_subtitles,
         }
     }
 
@@ -143,6 +216,7 @@ impl VideoSource {
             | Self::LocalPath {
                 sidecar_subtitles, ..
             } => sidecar_subtitles,
+            Self::OnlineTracked(info) => &mut info.sidecar_subtitles,
         }
     }
 }
@@ -165,8 +239,28 @@ pub struct VideoShow {
 }
 
 impl VideoShow {
+    pub const ONLINE_TRACKED_KEY_PREFIX: &'static str = "online_tracked:";
+
     pub fn compute_show_key(library_id: LibraryId, title: &str) -> String {
         format!("{}:{}", library_id.0, title.trim().to_lowercase())
+    }
+
+    pub fn compute_online_tracked_key(source_id: Uuid, item_key: &str) -> String {
+        format!(
+            "{}{source_id}:{}",
+            Self::ONLINE_TRACKED_KEY_PREFIX,
+            item_key.trim()
+        )
+    }
+
+    pub fn online_tracked_ref(&self) -> Option<(Uuid, &str)> {
+        let rest = self
+            .show_key
+            .strip_prefix(Self::ONLINE_TRACKED_KEY_PREFIX)?;
+        let (sid_str, item_key) = rest.split_once(':')?;
+        let source_id = Uuid::parse_str(sid_str.trim()).ok()?;
+        let item_key = item_key.trim();
+        (!item_key.is_empty()).then_some((source_id, item_key))
     }
 
     /// Applies a metadata patch to this show, syncing `show_key` on rename and normalizing
@@ -180,7 +274,9 @@ impl VideoShow {
             }
             if self.title != trimmed {
                 self.title = trimmed.to_string();
-                self.show_key = Self::compute_show_key(self.library_id, &self.title);
+                if !self.show_key.starts_with(Self::ONLINE_TRACKED_KEY_PREFIX) {
+                    self.show_key = Self::compute_show_key(self.library_id, &self.title);
+                }
                 title_changed = true;
             }
         }

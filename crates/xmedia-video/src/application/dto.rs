@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::media::ProbedAudioStream;
@@ -48,6 +49,23 @@ pub struct SubtitleTrackDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnlineTrackedVideoDto {
+    pub source_id: Uuid,
+    pub video_id: String,
+    pub detail_url: String,
+    pub play_url: String,
+    pub group_name: Option<String>,
+    pub episode_name: Option<String>,
+    pub cached: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnlineTrackedShowDto {
+    pub source_id: Uuid,
+    pub item_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoSummaryDto {
     pub id: VideoId,
     pub library_id: LibraryId,
@@ -73,6 +91,8 @@ pub struct VideoSummaryDto {
     pub is_favorite: bool,
     pub progress: Option<WatchProgress>,
     pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_tracking: Option<OnlineTrackedVideoDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +121,8 @@ pub struct ShowSummaryDto {
     pub watched_episode_count: u32,
     pub is_favorite: bool,
     pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_tracking: Option<OnlineTrackedShowDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

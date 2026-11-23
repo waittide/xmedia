@@ -328,7 +328,7 @@ impl VideoDomainLifecycle {
         })
     }
 
-    async fn ensure_managed_library(&self) -> DomainResult<Library> {
+    pub(crate) async fn ensure_managed_library(&self) -> DomainResult<Library> {
         if let Some(existing) = self
             .libraries
             .find_managed_by_media(MediaKind::Video)
@@ -695,15 +695,8 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
         let mut video_ids = Vec::with_capacity(videos.len());
         let mut show_id_set: HashSet<ShowId> = shows.into_iter().map(|s| s.id).collect();
         for v in &videos {
-            if let VideoSource::Managed {
-                ref storage_key,
-                ref sidecar_subtitles,
-            } = v.source
-            {
-                let _ = self.storage.delete_managed_file(storage_key).await;
-                for sc in sidecar_subtitles {
-                    let _ = self.storage.delete_managed_file(&sc.path_or_key).await;
-                }
+            for key in v.source.managed_file_keys() {
+                let _ = self.storage.delete_managed_file(key).await;
             }
             video_ids.push(v.id);
             if let Some(sid) = v.show_id {

@@ -567,6 +567,19 @@ pub fn rewrite_m3u8_playlist(
     source_id: Option<uuid::Uuid>,
     token: Option<&str>,
 ) -> String {
+    rewrite_m3u8_playlist_with(playlist_text, base_url, |resolved| {
+        build_hls_proxy_url(resolved, source_id, token)
+    })
+}
+
+pub fn rewrite_m3u8_playlist_with<F>(
+    playlist_text: &str,
+    base_url: &Url,
+    mut rewrite_uri: F,
+) -> String
+where
+    F: FnMut(&str) -> String,
+{
     let trimmed_start =
         playlist_text.trim_start_matches(|c: char| c == '\u{feff}' || c.is_ascii_whitespace());
     let clean_text = if trimmed_start.starts_with("#EXTM3U") {
@@ -593,7 +606,7 @@ pub fn rewrite_m3u8_playlist(
                         let raw_uri = &caps[2];
                         let suffix = &caps[3];
                         if let Some(resolved) = resolve_m3u8_uri(raw_uri, base_url) {
-                            let proxied = build_hls_proxy_url(&resolved, source_id, token);
+                            let proxied = rewrite_uri(&resolved);
                             format!("{prefix}{proxied}{suffix}")
                         } else {
                             caps[0].to_string()
@@ -608,7 +621,7 @@ pub fn rewrite_m3u8_playlist(
         }
 
         if let Some(resolved) = resolve_m3u8_uri(trimmed, base_url) {
-            out.push_str(&build_hls_proxy_url(&resolved, source_id, token));
+            out.push_str(&rewrite_uri(&resolved));
         } else {
             out.push_str(line_no_cr);
         }

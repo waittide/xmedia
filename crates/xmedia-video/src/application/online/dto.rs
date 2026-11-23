@@ -2,9 +2,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::application::ports::ByteChunkStream;
 
+use crate::application::dto::{ShowDetailDto, VideoSummaryDto};
+use crate::domain::id::VideoId;
 use crate::source::model::{
     ExecutionDiagnostics, OnlineVideoCategory, OnlineVideoDetail, OnlineVideoPlayResult,
-    OnlineVideoSummary,
+    OnlineVideoSubtitle, OnlineVideoSummary,
 };
 
 pub type VideoSourceSummaryDto = xmedia_source::crud::SourceSummaryDto;
@@ -137,4 +139,56 @@ pub enum HlsProxyOutcome {
     Playlist(String),
     Segment(ProxyStreamPayload),
     RangeNotSatisfiable { content_range: Option<String> },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackOnlineVideoInput {
+    pub source_id: Uuid,
+    #[serde(default)]
+    pub video_id: Option<String>,
+    #[serde(default)]
+    pub detail_url: Option<String>,
+    #[serde(default)]
+    pub group_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackOnlineVideoResultDto {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoSummaryDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show: Option<ShowDetailDto>,
+    pub added_episodes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedVideoPlayResponseDto {
+    pub video_id: VideoId,
+    pub cached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_stream_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_type: Option<String>,
+    #[serde(default)]
+    pub subtitles: Vec<OnlineVideoSubtitle>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CacheTrackedShowInput {
+    #[serde(default)]
+    pub video_ids: Option<Vec<VideoId>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoCacheReportDto {
+    pub cached_count: usize,
+    pub skipped_count: usize,
+    pub failed_count: usize,
+    #[serde(default)]
+    pub errors: Vec<String>,
 }

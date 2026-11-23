@@ -54,6 +54,17 @@ impl LocalVideoStorage {
             (LibraryKind::Managed, VideoSource::Managed { storage_key, .. }) => {
                 sanitize_join(&self.uploads_dir, storage_key)
             }
+            (LibraryKind::Managed, VideoSource::OnlineTracked(info)) => {
+                if info.cached
+                    && let Some(ref key) = info.storage_key
+                {
+                    sanitize_join(&self.uploads_dir, key)
+                } else {
+                    Err(DomainError::NotFound(
+                        "online-tracked video is not cached yet".into(),
+                    ))
+                }
+            }
             (
                 LibraryKind::LocalMount { root_path },
                 VideoSource::LocalPath { relative_path, .. },
@@ -203,10 +214,12 @@ impl VideoStoragePort for LocalVideoStorage {
             .ok_or_else(|| DomainError::NotFound("subtitle track not found".into()))?;
 
         let (root_dir, path) = match (&library.kind, &video.source) {
-            (LibraryKind::Managed, VideoSource::Managed { .. }) => (
-                self.subtitles_dir.clone(),
-                sanitize_join(&self.subtitles_dir, &sub.path_or_key)?,
-            ),
+            (LibraryKind::Managed, VideoSource::Managed { .. } | VideoSource::OnlineTracked(_)) => {
+                (
+                    self.subtitles_dir.clone(),
+                    sanitize_join(&self.subtitles_dir, &sub.path_or_key)?,
+                )
+            }
             (LibraryKind::LocalMount { root_path }, VideoSource::LocalPath { .. }) => (
                 PathBuf::from(root_path),
                 sanitize_join(Path::new(root_path), &sub.path_or_key)?,
