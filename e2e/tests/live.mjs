@@ -51,6 +51,12 @@ import {
   assertRasterImage,
   assertSecurityHeaders,
 } from '../lib/fixtures.mjs';
+import {
+  browserLogin,
+  clickButtonByText as sharedClickButtonByText,
+  ensureBootstrapped as sharedEnsureBootstrapped,
+  toRelativeApiPath,
+} from '../lib/helpers.mjs';
 
 const ADMIN_CREDS = { username: 'admin', display_name: 'E2E Live Admin', password: 'AdminPass123!' };
 const MEMBER_CREDS = {
@@ -76,32 +82,12 @@ async function withRetries(fn, { attempts = 2, delayMs = 800 } = {}) {
   throw lastErr;
 }
 
-async function ensureBootstrapped(baseUrl) {
-  const probe = new ApiClient(baseUrl, { authMode: 'none' });
-  const status = await probe.getSetupStatus();
-  const admin = new ApiClient(baseUrl, { authMode: 'bearer' });
-  if (status.needs_setup) {
-    await admin.setupAdmin(ADMIN_CREDS);
-  } else {
-    await admin.login({ username: ADMIN_CREDS.username, password: ADMIN_CREDS.password });
-  }
-
-  const member = new ApiClient(baseUrl, { authMode: 'bearer' });
-  const createRes = await admin.request('POST', '/api/v1/users', { body: MEMBER_CREDS });
-  if (createRes.status === 404 || createRes.status === 405) {
-    throw new SutEndpointMissingError('POST', '/api/v1/users', createRes.status, createRes.text);
-  }
-  await member.login({ username: MEMBER_CREDS.username, password: MEMBER_CREDS.password });
-  return { admin, member };
+function ensureBootstrapped(baseUrl) {
+  return sharedEnsureBootstrapped(baseUrl, ADMIN_CREDS, MEMBER_CREDS);
 }
 
-function toRelativeApiPath(urlOrPath) {
-  if (!urlOrPath) return '';
-  if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
-    const u = new URL(urlOrPath);
-    return `${u.pathname}${u.search}`;
-  }
-  return urlOrPath.startsWith('/') ? urlOrPath : `/${urlOrPath}`;
+function clickButtonByText(cdp, texts, opts = {}) {
+  return sharedClickButtonByText(cdp, texts, { timeoutMs: 10000, ...opts });
 }
 
 async function fetchStreamHeadBytes(baseUrl, relPath, token, maxBytes = 8192, timeoutMs = 20000) {
@@ -146,88 +132,6 @@ function findMatchingSources(sources, namePatterns) {
     const hay = `${s.name || ''} ${s.source_url || ''} ${s.group_name || ''}`.toLowerCase();
     return pats.some((p) => hay.includes(p));
   });
-}
-
-async function browserLogin(cdp, baseUrl, creds) {
-  await cdp.goto(`${baseUrl}/login`);
-  await cdp.waitForSelector('input[autocomplete="username"]', { visible: true });
-  assert.equal(
-    cdp.exceptions.length,
-    0,
-    `Unexpected JS exceptions before login: ${JSON.stringify(cdp.exceptions)}`,
-  );
-  const unexpectedPreHttp = cdp.httpErrors.filter(
-    (e) => !(e.status === 401 && String(e.url || '').includes('/api/v1/auth/me')),
-  );
-  assert.equal(
-    unexpectedPreHttp.length,
-    0,
-    `Unexpected HTTP errors before login: ${JSON.stringify(unexpectedPreHttp)}`,
-  );
-  cdp.clearErrors();
-  await cdp.type('input[autocomplete="username"]', creds.username);
-  await cdp.type('input[autocomplete="current-password"]', creds.password);
-  await cdp.click('button[type="submit"]');
-  await cdp.waitForFn(() => !window.location.pathname.startsWith('/login'), {
-    timeoutMs: 10000,
-    label: 'browser redirect after login',
-  });
-  await cdp.waitForSelector('[data-workspace-shell]', { visible: true, timeoutMs: 12000 });
-}
-
-async function clickButtonByText(cdp, texts, { timeoutMs = 10000 } = {}) {
-  const list = Array.isArray(texts) ? texts : [texts];
-  const clicked = await cdp.waitForFn(
-    `(() => {
-      const targets = ${JSON.stringify(list)}.map(s => s.toLowerCase());
-      const isVisible = (el) => {
-        if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
-        const st = getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden') return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      };
-      const getCandidates = (el) =>
-        [
-          el.textContent || '',
-          el.getAttribute('aria-label') || '',
-          el.getAttribute('title') || '',
-        ]
-          .map((s) => s.trim().toLowerCase())
-          .filter(Boolean);
-      const matchesExact = (el) => {
-        if (getCandidates(el).some((c) => targets.includes(c))) return true;
-        return [...el.querySelectorAll('h1, h2, h3, h4, p, span, strong')].some((child) =>
-          targets.includes((child.textContent || '').trim().toLowerCase()),
-        );
-      };
-      const matchesIncludes = (el) =>
-        getCandidates(el).some((c) => targets.some((t) => c.includes(t)));
-      const primary = [...document.querySelectorAll('button, [role="link"], [role="button"], [role="tab"], [role="menuitem"], a')];
-      for (const matcher of [matchesExact, matchesIncludes]) {
-        for (const el of primary) {
-          if (isVisible(el) && matcher(el)) {
-            el.scrollIntoView({ block: 'center' });
-            el.click();
-            return true;
-          }
-        }
-      }
-      const fallback = [...document.querySelectorAll('tr, td')];
-      for (const matcher of [matchesExact, matchesIncludes]) {
-        for (const el of fallback) {
-          if (isVisible(el) && matcher(el)) {
-            el.scrollIntoView({ block: 'center' });
-            el.click();
-            return true;
-          }
-        }
-      }
-      return false;
-    })()`,
-    { timeoutMs, pollMs: 100, label: `clickButtonByText(${list.join('|')})` },
-  );
-  assert.equal(clicked, true);
 }
 
 export async function runLiveTests(context = {}) {

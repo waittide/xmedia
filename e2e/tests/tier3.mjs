@@ -28,218 +28,24 @@ import {
   assertSecurityHeaders,
   decryptAes128Cbc,
 } from '../lib/fixtures.mjs';
+import {
+  browserLogin,
+  buildMinimalZip,
+  clickButtonByText,
+  deleteSourceSafe,
+  ensureBootstrapped as sharedEnsureBootstrapped,
+  getMockRequests,
+  importSource,
+  resetMockRequests,
+  toRelativeApiPath,
+} from '../lib/helpers.mjs';
 import { MockOriginServer } from '../lib/mock_origin.mjs';
 
 const ADMIN_CREDS = { username: 'admin', display_name: 'E2E Admin', password: 'AdminPass123!' };
 const MEMBER_CREDS = { username: 'e2e_member', display_name: 'E2E Member', password: 'UserPass123!', role: 'member' };
 
-// ---------------------------------------------------------------------------
-// Minimal deterministic STORE ZIP builder (valid CBZ for local upload checks)
-// ---------------------------------------------------------------------------
-const ZIP_CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n += 1) {
-    let c = n;
-    for (let k = 0; k < 8; k += 1) {
-      c = (c & 1) !== 0 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    }
-    table[n] = c >>> 0;
-  }
-  return table;
-})();
-
-function zipCrc32(buf) {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i += 1) {
-    c = ZIP_CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function buildMinimalZip(entries) {
-  const localParts = [];
-  const centralParts = [];
-  let offset = 0;
-
-  for (const { name, data } of entries) {
-    const nameBuf = Buffer.from(name, 'utf8');
-    const dataBuf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    const crc = zipCrc32(dataBuf);
-
-    const localHdr = Buffer.alloc(30);
-    localHdr.writeUInt32LE(0x04034b50, 0);
-    localHdr.writeUInt16LE(20, 4);
-    localHdr.writeUInt16LE(0x0800, 6);
-    localHdr.writeUInt16LE(0, 8);
-    localHdr.writeUInt16LE(0, 10);
-    localHdr.writeUInt16LE(0, 12);
-    localHdr.writeUInt32LE(crc, 14);
-    localHdr.writeUInt32LE(dataBuf.length, 18);
-    localHdr.writeUInt32LE(dataBuf.length, 22);
-    localHdr.writeUInt16LE(nameBuf.length, 26);
-    localHdr.writeUInt16LE(0, 28);
-    localParts.push(localHdr, nameBuf, dataBuf);
-
-    const centralHdr = Buffer.alloc(46);
-    centralHdr.writeUInt32LE(0x02014b50, 0);
-    centralHdr.writeUInt16LE(20, 4);
-    centralHdr.writeUInt16LE(20, 6);
-    centralHdr.writeUInt16LE(0x0800, 8);
-    centralHdr.writeUInt16LE(0, 10);
-    centralHdr.writeUInt16LE(0, 12);
-    centralHdr.writeUInt16LE(0, 14);
-    centralHdr.writeUInt32LE(crc, 16);
-    centralHdr.writeUInt32LE(dataBuf.length, 20);
-    centralHdr.writeUInt32LE(dataBuf.length, 24);
-    centralHdr.writeUInt16LE(nameBuf.length, 28);
-    centralHdr.writeUInt16LE(0, 30);
-    centralHdr.writeUInt16LE(0, 32);
-    centralHdr.writeUInt16LE(0, 34);
-    centralHdr.writeUInt16LE(0, 36);
-    centralHdr.writeUInt32LE(0, 38);
-    centralHdr.writeUInt32LE(offset, 42);
-    centralParts.push(centralHdr, nameBuf);
-
-    offset += localHdr.length + nameBuf.length + dataBuf.length;
-  }
-
-  const centralDir = Buffer.concat(centralParts);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(0, 4);
-  eocd.writeUInt16LE(0, 6);
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(centralDir.length, 12);
-  eocd.writeUInt32LE(offset, 16);
-  eocd.writeUInt16LE(0, 20);
-
-  return Buffer.concat([...localParts, centralDir, eocd]);
-}
-
-async function ensureBootstrapped(baseUrl) {
-  const probe = new ApiClient(baseUrl, { authMode: 'none' });
-  const status = await probe.getSetupStatus();
-  const admin = new ApiClient(baseUrl, { authMode: 'bearer' });
-  if (status.needs_setup) {
-    await admin.setupAdmin(ADMIN_CREDS);
-  } else {
-    await admin.login({ username: ADMIN_CREDS.username, password: ADMIN_CREDS.password });
-  }
-
-  const member = new ApiClient(baseUrl, { authMode: 'bearer' });
-  const createRes = await admin.request('POST', '/api/v1/users', { body: MEMBER_CREDS });
-  if (createRes.status === 404 || createRes.status === 405) {
-    throw new SutEndpointMissingError('POST', '/api/v1/users', createRes.status, createRes.text);
-  }
-  await member.login({ username: MEMBER_CREDS.username, password: MEMBER_CREDS.password });
-  return { admin, member };
-}
-
-async function importSource(admin, domain, sourceObj) {
-  const rawJson = typeof sourceObj === 'string' ? sourceObj : JSON.stringify(sourceObj);
-  const res = await admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import`, {
-    body: { raw_json: rawJson },
-    expectedStatus: 200,
-  });
-  const list = res.json?.sources || [];
-  assert.ok(list.length >= 1, `Expected imported source in response for ${domain}`);
-  const targetName = typeof sourceObj === 'object' ? (sourceObj.sourceName || sourceObj.name) : null;
-  return (targetName && list.find((s) => s.name === targetName)) || list[0];
-}
-
-async function deleteSourceSafe(admin, domain, id) {
-  if (!id) return;
-  await admin.request('DELETE', `/api/v1/${domain}/sources/${id}`).catch(() => {});
-}
-
-async function resetMockRequests(mockBaseUrl) {
-  const res = await fetch(`${mockBaseUrl}/__mock/reset`, { method: 'POST' });
-  assert.equal(res.status, 200);
-}
-
-async function getMockRequests(mockBaseUrl, limit = 200) {
-  const res = await fetch(`${mockBaseUrl}/__mock/requests?limit=${limit}`);
-  assert.equal(res.status, 200);
-  return res.json();
-}
-
-function toRelativeApiPath(urlOrPath) {
-  if (!urlOrPath) return '';
-  if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
-    const u = new URL(urlOrPath);
-    return `${u.pathname}${u.search}`;
-  }
-  return urlOrPath.startsWith('/') ? urlOrPath : `/${urlOrPath}`;
-}
-
-async function browserLogin(cdp, baseUrl, creds) {
-  await cdp.goto(`${baseUrl}/login`);
-  await cdp.waitForSelector('input[autocomplete="username"]', { visible: true });
-  assert.equal(
-    cdp.exceptions.length,
-    0,
-    `Unexpected JS exceptions before login: ${JSON.stringify(cdp.exceptions)}`,
-  );
-  const unexpectedPreHttp = cdp.httpErrors.filter(
-    (e) => !(e.status === 401 && String(e.url || '').includes('/api/v1/auth/me')),
-  );
-  assert.equal(
-    unexpectedPreHttp.length,
-    0,
-    `Unexpected HTTP errors before login: ${JSON.stringify(unexpectedPreHttp)}`,
-  );
-  cdp.clearErrors();
-  await cdp.type('input[autocomplete="username"]', creds.username);
-  await cdp.type('input[autocomplete="current-password"]', creds.password);
-  await cdp.click('button[type="submit"]');
-  await cdp.waitForFn(() => !window.location.pathname.startsWith('/login'), {
-    timeoutMs: 10000,
-    label: 'browser redirect after login',
-  });
-  await cdp.waitForSelector('[data-workspace-shell]', { visible: true, timeoutMs: 12000 });
-}
-
-async function clickButtonByText(cdp, texts, { timeoutMs = 8000 } = {}) {
-  const list = Array.isArray(texts) ? texts : [texts];
-  const clicked = await cdp.waitForFn(
-    `(() => {
-      const targets = ${JSON.stringify(list)}.map(s => s.toLowerCase());
-      const isVisible = (el) => {
-        const st = getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden') return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      };
-      const matchesEl = (el) => {
-        const candidates = [
-          el.textContent || '',
-          el.getAttribute('aria-label') || '',
-          el.getAttribute('title') || '',
-        ].map((s) => s.trim().toLowerCase()).filter(Boolean);
-        return candidates.some((c) => targets.some((t) => c.includes(t)));
-      };
-      const primary = [...document.querySelectorAll('button, [role="link"], [role="button"], [role="tab"], [role="menuitem"], a')];
-      for (const el of primary) {
-        if (isVisible(el) && matchesEl(el)) {
-          el.scrollIntoView({ block: 'center' });
-          el.click();
-          return true;
-        }
-      }
-      const fallback = [...document.querySelectorAll('tr, td')];
-      for (const el of fallback) {
-        if (isVisible(el) && matchesEl(el)) {
-          el.scrollIntoView({ block: 'center' });
-          el.click();
-          return true;
-        }
-      }
-      return false;
-    })()`,
-    { timeoutMs, pollMs: 100, label: `clickButtonByText(${list.join('|')})` },
-  );
-  assert.equal(clicked, true);
+function ensureBootstrapped(baseUrl) {
+  return sharedEnsureBootstrapped(baseUrl, ADMIN_CREDS, MEMBER_CREDS);
 }
 
 export async function runTier3(context = {}) {
