@@ -1,4 +1,5 @@
 import { computed, watch, type ComputedRef, type Ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuCheckCircle2,
@@ -8,7 +9,6 @@ import {
   LuSparkles,
 } from 'vue-icons-plus/lu'
 import { completenessScore, entryCompositeKey, isEntryComplete } from '../../completeness'
-import { useToolText } from '../../i18n'
 import type { DirectorySnapshot, ManagedRootDto, MediaFileDetail, MediaFileEntry } from '../../types'
 import {
   PAGE_CHUNK_SIZE,
@@ -43,7 +43,7 @@ export interface UseWorkspaceFilteringOptions {
 }
 
 export function useWorkspaceFiltering(opts: UseWorkspaceFilteringOptions) {
-  const txt = useToolText()
+  const { t } = useI18n()
 
   const stats = computed(() => {
     const files = opts.snapshot.value?.files ?? []
@@ -68,9 +68,9 @@ export function useWorkspaceFiltering(opts: UseWorkspaceFilteringOptions) {
   })
 
   const filterItems = computed(() => [
-    { id: 'all' as CompletenessFilter, label: txt.value.filters.all, count: stats.value.total, icon: LuLayers },
-    { id: 'complete' as CompletenessFilter, label: txt.value.filters.complete, count: stats.value.complete, icon: LuCheckCircle2 },
-    { id: 'incomplete' as CompletenessFilter, label: txt.value.filters.incomplete, count: stats.value.incomplete, icon: LuAlertCircle },
+    { id: 'all' as CompletenessFilter, label: t('tool.filters.all'), count: stats.value.total, icon: LuLayers },
+    { id: 'complete' as CompletenessFilter, label: t('tool.filters.complete'), count: stats.value.complete, icon: LuCheckCircle2 },
+    { id: 'incomplete' as CompletenessFilter, label: t('tool.filters.incomplete'), count: stats.value.incomplete, icon: LuAlertCircle },
     { id: 'missing_cover' as CompletenessFilter, label: opts.domainLabels.value.missingCover, count: stats.value.missingCover, icon: LuImage },
     { id: 'missing_summary' as CompletenessFilter, label: opts.domainLabels.value.missingSummary, count: stats.value.missingSummary, icon: LuFileText },
     { id: 'missing_tag' as CompletenessFilter, label: opts.domainLabels.value.missingTagBlock, count: stats.value.missingTag, icon: LuSparkles },
@@ -81,11 +81,11 @@ export function useWorkspaceFiltering(opts: UseWorkspaceFilteringOptions) {
   )
 
   const sortOptions = computed(() => [
-    { value: 'name', label: txt.value.sort.name },
-    { value: 'title', label: txt.value.sort.title },
-    { value: 'incomplete', label: txt.value.sort.incomplete },
-    { value: 'size', label: txt.value.sort.size },
-    { value: 'modified', label: txt.value.sort.modified },
+    { value: 'name', label: t('tool.sort.name') },
+    { value: 'title', label: t('tool.sort.title') },
+    { value: 'incomplete', label: t('tool.sort.incomplete') },
+    { value: 'size', label: t('tool.sort.size') },
+    { value: 'modified', label: t('tool.sort.modified') },
   ])
 
   function setSortField(field: SortField): void {

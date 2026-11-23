@@ -16,8 +16,8 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import { formatBytes } from '@/utils/format'
 import { buildArtworkUrl } from '../../api'
-import { formatBytes } from '../../i18n'
 import type { ScrapeSubItem } from '../../tasks'
 import type { MediaFileEntry } from '../../types'
 

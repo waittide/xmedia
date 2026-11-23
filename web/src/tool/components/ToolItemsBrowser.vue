@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuArrowDown,
   LuArrowUp,
@@ -22,7 +23,6 @@ import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { MediaKind } from '@/types/api'
 import type { ToolCompletenessFilter } from '../completeness'
-import { useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem } from '../tasks'
 import type {
   DirectorySnapshot,
@@ -116,7 +116,7 @@ const emit = defineEmits<{
   showAll: []
 }>()
 
-const txt = useToolText()
+const { t } = useI18n()
 const taskStore = useToolTaskStore()
 
 function fileTaskStatus(file: MediaFileEntry): ScrapeSubItem['status'] | undefined {
@@ -262,12 +262,12 @@ const folderSelectionSummary = computed<string>(() => {
   const dirs = selectedFolderCount.value
   const files = Math.max(0, props.selectedPaths.size - dirs)
   const parts: string[] = []
-  if (dirs > 0) parts.push(`${dirs} 文件夹`)
-  if (files > 0) parts.push(`${files} 文件`)
-  if (parts.length === 0) return `已选 ${props.selectedPaths.size} 项`
-  const base = `已选 ${parts.join(' · ')}`
+  if (dirs > 0) parts.push(t('tool.browser.selectedDirs', { count: dirs }))
+  if (files > 0) parts.push(t('tool.browser.selectedFiles', { count: files }))
+  if (parts.length === 0) return t('tool.batch.selectedCount', { count: props.selectedPaths.size })
+  const base = t('tool.browser.selectedPrefix', { summary: parts.join(' · ') })
   if (dirs > 0 && props.checkedFiles.length > 0) {
-    return `${base}（含 ${props.checkedFiles.length} 媒体）`
+    return t('tool.browser.selectedWithMedia', { base, count: props.checkedFiles.length })
   }
   return base
 })
@@ -312,7 +312,7 @@ function relativeDirBadge(relPath: string): string | null {
         @click="emit('openSettingsRoots')"
       >
         <LuFolderPlus class="h-4 w-4" />
-        <span>{{ txt.roots.add }}</span>
+        <span>{{ t('tool.roots.add') }}</span>
       </button>
     </div>
 
@@ -324,7 +324,8 @@ function relativeDirBadge(relPath: string): string | null {
             v-if="snapshot && snapshot.parent_rel_path !== null"
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state mr-1"
-            title="返回上级目录"
+            :title="t('tool.browser.parentDirTitle')"
+            :aria-label="t('tool.browser.parentDirTitle')"
             @click="emit('enterFolder', snapshot.parent_rel_path, viewMode === 'folders')"
           >
             <LuCornerLeftUp class="h-4 w-4" />
@@ -333,15 +334,15 @@ function relativeDirBadge(relPath: string): string | null {
           <template v-for="(bc, idx) in breadcrumbs" :key="bc.relPath || '__root__'">
             <LuChevronRight
               v-if="idx > 0"
-              class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
+              class="h-4 w-4 shrink-0 text-on-surface-variant"
             />
             <button
               type="button"
               class="md-state rounded-full px-2.5 py-1 transition"
               :class="
                 idx === breadcrumbs.length - 1
-                  ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
-                  : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+                  ? 'font-semibold text-on-surface'
+                  : 'text-on-surface-variant hover:text-on-surface'
               "
               @click="emit('enterFolder', bc.relPath, viewMode === 'folders')"
             >
@@ -351,13 +352,18 @@ function relativeDirBadge(relPath: string): string | null {
 
           <span
             v-if="isFolderManagerMode && snapshot"
-            class="ml-2 hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] sm:inline-flex"
+            class="ml-2 hidden rounded-full bg-surface-container-high px-2.5 py-0.5 font-mono text-[11px] text-on-surface-variant sm:inline-flex"
           >
             <template v-if="isMultiRootSummary">
-              {{ domainRoots.length }} 个挂载目录
+              {{ t('tool.browser.mountedRootsCount', { count: domainRoots.length }) }}
             </template>
             <template v-else>
-              {{ sortedFolders.length }} 文件夹 · {{ sortedRawFiles.length }} 文件
+              {{
+                t('tool.browser.folderFileCount', {
+                  folders: sortedFolders.length,
+                  files: sortedRawFiles.length,
+                })
+              }}
             </template>
           </span>
         </div>
@@ -366,8 +372,8 @@ function relativeDirBadge(relPath: string): string | null {
           <MdSegmentedButton
             :model-value="viewMode"
             :options="[
-              { value: 'flat', label: '全部媒体', icon: LuList, title: '平铺展示当前目录及子目录内所有媒体' },
-              { value: 'folders', label: '文件夹', icon: LuFolder, title: '按文件夹层级浏览' },
+              { value: 'flat', label: t('tool.browser.viewFlat'), icon: LuList, title: t('tool.browser.viewFlatTitle') },
+              { value: 'folders', label: t('tool.browser.viewFolders'), icon: LuFolder, title: t('tool.browser.viewFoldersTitle') },
             ]"
             size="sm"
             @update:model-value="emit('setViewMode', $event)"
@@ -385,7 +391,8 @@ function relativeDirBadge(relPath: string): string | null {
             <button
               type="button"
               class="md-icon-btn md-icon-btn-sm md-state"
-              :title="sortDir === 'asc' ? txt.sort.asc : txt.sort.desc"
+              :title="sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
+              :aria-label="sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
               @click="emit('toggleSortDir')"
             >
               <LuArrowUp v-if="sortDir === 'asc'" class="h-4 w-4" />
@@ -398,17 +405,19 @@ function relativeDirBadge(relPath: string): string | null {
             type="button"
             :disabled="notifyingRescan"
             class="md-icon-btn md-icon-btn-sm md-state"
-            :title="txt.batch.triggerRescan"
+            :title="t('tool.batch.triggerRescan')"
+            :aria-label="t('tool.batch.triggerRescan')"
             @click="emit('triggerRescan')"
           >
-            <LuRefreshCw v-if="notifyingRescan" class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
+            <LuRefreshCw v-if="notifyingRescan" class="h-4 w-4 animate-spin text-primary" />
             <LuRadio v-else class="h-4 w-4" />
           </button>
 
           <button
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state"
-            title="变更历史与一键撤销"
+            :title="t('tool.browser.historyTooltip')"
+            :aria-label="t('tool.browser.historyTooltip')"
             @click="emit('openHistory')"
           >
             <LuUndo2 class="h-4 w-4" />
@@ -417,7 +426,7 @@ function relativeDirBadge(relPath: string): string | null {
           <RefreshButton
             :action="() => emit('refreshDir')"
             :busy="loadingDir"
-            :title="txt.actions.refresh"
+            :title="t('tool.actions.refresh')"
           />
         </div>
       </div>
@@ -425,17 +434,17 @@ function relativeDirBadge(relPath: string): string | null {
       <!-- Focused Unmatched Review Banner -->
       <div
         v-if="focusPaths && focusPaths.size > 0"
-        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-warning-container)] px-4 py-2.5 text-xs text-[var(--md-sys-color-on-warning-container)]"
+        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-warning-container px-4 py-2.5 text-xs text-on-warning-container"
       >
         <span class="font-semibold">
-          正在聚焦查看任务结果（{{ filteredFiles.length }} 项）· 点击条目即可在右侧精修元信息或对照在线候选
+          {{ t('tool.browser.focusBanner', { count: filteredFiles.length }) }}
         </span>
         <button
           type="button"
           class="md-state rounded-full px-3 py-1 text-xs font-semibold"
           @click="emit('clearFocusPaths')"
         >
-          退出聚焦
+          {{ t('tool.browser.exitFocus') }}
         </button>
       </div>
 
@@ -462,8 +471,8 @@ function relativeDirBadge(relPath: string): string | null {
             :model-value="allFilteredSelected"
             :label="
               selectedPaths.size > 0
-                ? txt.batch.selectedCount.replace('{count}', String(selectedPaths.size))
-                : txt.actions.selectAll
+                ? t('tool.batch.selectedCount', { count: selectedPaths.size })
+                : t('tool.actions.selectAll')
             "
             @change="emit('toggleSelectAll')"
           />
@@ -472,30 +481,31 @@ function relativeDirBadge(relPath: string): string | null {
             v-if="filteredFiles.length > 0 && selectedPaths.size === 0"
             type="button"
             class="md-btn md-btn-sm md-btn-outlined md-state"
-            title="进入三栏刮削工作台（左本地 · 中刮削源 · 右对照编辑）"
+            :title="t('tool.browser.workbenchTooltip')"
             @click="emit('openScrapeWorkbench')"
           >
             <LuColumns3 class="h-3.5 w-3.5" />
-            <span>刮削工作台</span>
+            <span>{{ t('tool.browser.workbenchBtn') }}</span>
           </button>
 
           <div
             v-if="filteredFiles.length > 0 && selectedPaths.size === 0"
-            class="inline-flex items-center overflow-hidden rounded-full bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]"
+            class="inline-flex items-center overflow-hidden rounded-full bg-secondary-container text-on-secondary-container"
           >
             <button
               type="button"
               class="md-state inline-flex h-8 items-center gap-1.5 pr-2.5 pl-3.5 text-xs font-semibold"
-              :title="`按上次策略一键快刮全部 (${lastScrapeSummary})`"
+              :title="t('tool.browser.quickScrapeAllTitle', { summary: lastScrapeSummary })"
               @click="emit('quickScrapeSelection')"
             >
               <LuSparkles class="h-3.5 w-3.5" />
-              <span>快刮全部 ({{ filteredFiles.length }})</span>
+              <span>{{ t('tool.browser.quickScrapeAll', { count: filteredFiles.length }) }}</span>
             </button>
             <button
               type="button"
-              class="md-state inline-flex h-8 items-center border-l border-[var(--md-sys-color-outline-variant)]/50 px-2.5 text-xs"
-              :title="`配置自动刮削策略（当前：${lastScrapeSummary}）`"
+              class="md-state inline-flex h-8 items-center border-l border-outline-variant/50 px-2.5 text-xs"
+              :title="t('tool.browser.configureScrapeTitle', { summary: lastScrapeSummary })"
+              :aria-label="t('tool.browser.configureScrapeTitle', { summary: lastScrapeSummary })"
               @click="emit('configureScrapeSelection')"
             >
               <LuSlidersHorizontal class="h-3.5 w-3.5" />
@@ -546,20 +556,20 @@ function relativeDirBadge(relPath: string): string | null {
       <!-- Empty File List (Flat / Filtered Mode) -->
       <div
         v-else-if="filteredFiles.length === 0"
-        class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-16 text-center"
+        class="rounded-[24px] bg-surface-container-low py-16 text-center"
       >
-        <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ hasActiveSearchOrFilter ? '当前筛选条件下没有匹配文件' : '当前目录暂无支持的媒体文件' }}
+        <p class="text-sm font-semibold text-on-surface">
+          {{ hasActiveSearchOrFilter ? t('tool.browser.emptyFilteredTitle') : t('tool.browser.emptyDirTitle') }}
         </p>
-        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          {{ hasActiveSearchOrFilter ? '尝试切换筛选标签或清空搜索关键词' : '切换至文件夹视图浏览目录，或从左侧切换其他媒体目录' }}
+        <p class="mt-1 text-xs text-on-surface-variant">
+          {{ hasActiveSearchOrFilter ? t('tool.browser.emptyFilteredDesc') : t('tool.browser.emptyDirDesc') }}
         </p>
       </div>
 
       <!-- MD3 Tonal Media List -->
       <div v-else class="space-y-3">
         <div
-          class="divide-y divide-[var(--md-sys-color-outline-variant)]/35 overflow-hidden rounded-[20px] bg-[var(--md-sys-color-surface-container-low)]"
+          class="divide-y divide-outline-variant/35 overflow-hidden rounded-[20px] bg-surface-container-low"
         >
           <ToolMediaItemRow
             v-for="file in visibleFiles"
@@ -589,13 +599,14 @@ function relativeDirBadge(relPath: string): string | null {
         <!-- Load More Bar -->
         <div
           v-if="filteredFiles.length > visibleFiles.length"
-          class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-surface-container-low px-4 py-2.5 text-xs text-on-surface-variant"
         >
           <span>
             {{
-              txt.batch.showingOf
-                .replace('{shown}', String(visibleFiles.length))
-                .replace('{total}', String(filteredFiles.length))
+              t('tool.batch.showingOf', {
+                shown: visibleFiles.length,
+                total: filteredFiles.length,
+              })
             }}
           </span>
           <div class="flex items-center gap-2">
@@ -605,10 +616,9 @@ function relativeDirBadge(relPath: string): string | null {
               @click="emit('loadMore')"
             >
               {{
-                txt.batch.loadMore.replace(
-                  '{remaining}',
-                  String(filteredFiles.length - visibleFiles.length),
-                )
+                t('tool.batch.loadMore', {
+                  remaining: filteredFiles.length - visibleFiles.length,
+                })
               }}
             </button>
             <button
@@ -616,7 +626,7 @@ function relativeDirBadge(relPath: string): string | null {
               class="md-btn md-btn-sm md-btn-text md-state"
               @click="emit('showAll')"
             >
-              {{ txt.batch.showAll }}
+              {{ t('tool.batch.showAll') }}
             </button>
           </div>
         </div>

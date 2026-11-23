@@ -18,7 +18,6 @@ import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdTabs from '@/components/ui/MdTabs.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
-import { useToolText } from '../i18n'
 import type { PublicSettingsDto } from '../types'
 import ToolScrapersSettingsTab from './settings/ToolScrapersSettingsTab.vue'
 import ToolRootsSettingsTab from './settings/ToolRootsSettingsTab.vue'
@@ -40,7 +39,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const txt = useToolText()
 
 const activeTab = ref<ToolSettingsTab>(props.initialTab ?? 'appearance')
 const domainSubTab = ref<MediaKind>(props.activeDomain)
@@ -85,10 +83,10 @@ onBeforeUnmount(() => {
 })
 
 const domainTabItems = computed<{ value: MediaKind; label: string; icon: Component }[]>(() => [
-  { value: 'book', label: txt.value.domains.book, icon: LuBookOpen },
-  { value: 'comic', label: txt.value.domains.comic, icon: LuLayers },
-  { value: 'music', label: txt.value.domains.music, icon: LuDisc3 },
-  { value: 'video', label: txt.value.domains.video, icon: LuClapperboard },
+  { value: 'book', label: t('tool.domains.book'), icon: LuBookOpen },
+  { value: 'comic', label: t('tool.domains.comic'), icon: LuLayers },
+  { value: 'music', label: t('tool.domains.music'), icon: LuDisc3 },
+  { value: 'video', label: t('tool.domains.video'), icon: LuClapperboard },
 ])
 </script>
 
@@ -101,11 +99,11 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           {{ t('settings.title') }}
         </h1>
         <p class="text-body-small mt-1 text-on-surface-variant">
-          {{ txt.settings.subtitle }}
+          {{ t('tool.settings.subtitle') }}
         </p>
       </div>
       <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="emit('back')">
-        {{ txt.settings.backToWorkbench }}
+        {{ t('tool.settings.backToWorkbench') }}
       </MdButton>
     </div>
 
@@ -117,8 +115,8 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'appearance'
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'appearance'"
         >
@@ -131,29 +129,29 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'scrapers'
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'scrapers'"
         >
           <LuSparkles class="h-4 w-4" />
-          <span>{{ txt.settings.tabScrapers }}</span>
+          <span>{{ t('tool.settings.tabScrapers') }}</span>
         </button>
 
-        <div class="my-2 hidden h-px bg-[var(--md-sys-color-outline-variant)]/50 lg:block" />
+        <div class="my-2 hidden h-px bg-outline-variant/50 lg:block" />
 
         <button
           type="button"
           class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'roots'
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'roots'"
         >
           <LuLibrary class="h-4 w-4" />
-          <span>{{ txt.settings.tabRoots }}</span>
+          <span>{{ t('tool.settings.tabRoots') }}</span>
         </button>
 
         <button
@@ -161,13 +159,13 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'templates'
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'templates'"
         >
           <LuFileSignature class="h-4 w-4" />
-          <span>{{ txt.settings.tabTemplates }}</span>
+          <span>{{ t('tool.settings.tabTemplates') }}</span>
         </button>
 
       </nav>
@@ -176,7 +174,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
       <div class="min-w-0 space-y-6">
         <div
           v-if="errorMsg"
-          class="flex items-center gap-2 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]"
+          class="flex items-center gap-2 rounded-2xl bg-error-container px-4 py-3 text-xs text-on-error-container"
         >
           <LuAlertCircle class="h-4 w-4 shrink-0" />
           <span>{{ errorMsg }}</span>
@@ -184,10 +182,10 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
 
         <div
           v-if="savedBanner"
-          class="flex items-center gap-2 rounded-2xl bg-[var(--md-sys-color-success-container)] px-4 py-3 text-xs font-medium text-[var(--md-sys-color-on-success-container)]"
+          class="flex items-center gap-2 rounded-2xl bg-success-container px-4 py-3 text-xs font-medium text-on-success-container"
         >
           <LuCheckCircle2 class="h-4 w-4 shrink-0" />
-          <span>{{ txt.settings.savedBanner }}</span>
+          <span>{{ t('tool.settings.savedBanner') }}</span>
         </div>
 
         <!-- Domain Isolation Sub-Tab Bar (for scrapers / roots / templates) -->
@@ -196,7 +194,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           :model-value="domainSubTab"
           :tabs="domainTabItems"
           variant="primary"
-          aria-label="媒体领域"
+          :aria-label="t('tool.settings.domainsAriaLabel')"
           @update:model-value="selectDomainSubTab($event)"
         />
 

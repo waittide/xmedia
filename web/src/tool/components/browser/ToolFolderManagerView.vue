@@ -15,7 +15,7 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import { formatBytes } from '../../i18n'
+import { formatBytes } from '@/utils/format'
 import type {
   DirectorySnapshot,
   FolderEntryDto,

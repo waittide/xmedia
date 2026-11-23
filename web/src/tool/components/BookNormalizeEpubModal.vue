@@ -13,8 +13,8 @@ import MdSelect from '@/components/ui/MdSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import MdSwitch from '@/components/ui/MdSwitch.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import { formatBytes } from '@/utils/format'
 import { toolApi } from '../api'
-import { formatBytes } from '../i18n'
 import type {
   BookImageCompressFormat,
   MediaFileEntry,

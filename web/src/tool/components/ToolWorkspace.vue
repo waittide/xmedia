@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuBookOpen, LuClapperboard, LuDisc3, LuLayers } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
@@ -8,7 +9,6 @@ import type { MediaKind } from '@/types/api'
 import { stripAriaModalOnLeave } from '@/utils/dom'
 import { toolApi } from '../api'
 import { entryCompositeKey } from '../completeness'
-import { useToolText } from '../i18n'
 import { useToolTaskStore } from '../tasks'
 import type {
   DirectorySnapshot,
@@ -63,7 +63,7 @@ const emit = defineEmits<{
 
 const taskStore = useToolTaskStore()
 const snackbar = useSnackbarStore()
-const txt = useToolText()
+const { t } = useI18n()
 
 const initialHash = parseToolHash()
 
@@ -163,13 +163,23 @@ async function confirmActiveEditorClean(): Promise<boolean> {
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
 const domainTabs = computed<Array<{ value: MediaKind; label: string; icon: Component }>>(() => [
-  { value: 'book', label: txt.value.domains.book, icon: LuBookOpen },
-  { value: 'comic', label: txt.value.domains.comic, icon: LuLayers },
-  { value: 'music', label: txt.value.domains.music, icon: LuDisc3 },
-  { value: 'video', label: txt.value.domains.video, icon: LuClapperboard },
+  { value: 'book', label: t('tool.domains.book'), icon: LuBookOpen },
+  { value: 'comic', label: t('tool.domains.comic'), icon: LuLayers },
+  { value: 'music', label: t('tool.domains.music'), icon: LuDisc3 },
+  { value: 'video', label: t('tool.domains.video'), icon: LuClapperboard },
 ])
 
-const domainLabels = computed(() => txt.value.domainLabels[activeDomain.value])
+const domainLabels = computed(() => {
+  const dom = activeDomain.value
+  return {
+    missingCover: t(`tool.domainLabels.${dom}.missingCover`),
+    missingSummary: t(`tool.domainLabels.${dom}.missingSummary`),
+    missingTagBlock: t(`tool.domainLabels.${dom}.missingTagBlock`),
+    emptyRootsTitle: t(`tool.domainLabels.${dom}.emptyRootsTitle`),
+    emptyRootsDesc: t(`tool.domainLabels.${dom}.emptyRootsDesc`),
+    searchPlaceholder: t(`tool.domainLabels.${dom}.searchPlaceholder`),
+  }
+})
 
 const domainRoots = computed<ManagedRootDto[]>(() =>
   (settings.value?.roots ?? []).filter((r) => r.default_kind === activeDomain.value),
@@ -605,7 +615,7 @@ onBeforeUnmount(() => {
                 class="md-btn md-btn-filled md-state"
                 @click="loadInitial()"
               >
-                重试加载配置
+                {{ t('tool.workspace.retryLoadConfig') }}
               </button>
             </div>
 
@@ -728,9 +738,9 @@ onBeforeUnmount(() => {
             >
               <div
                 v-if="loadingInspector && !activeDetail"
-                class="flex h-full w-full items-center justify-center px-12 text-xs text-[var(--md-sys-color-on-surface-variant)] lg:w-[440px]"
+                class="flex h-full w-full items-center justify-center px-12 text-xs text-on-surface-variant lg:w-[440px]"
               >
-                正在解析原文件流与元数据…
+                {{ t('tool.workspace.parsingFile') }}
               </div>
               <MetadataInspectorDrawer
                 v-else-if="activeDetail"

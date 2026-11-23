@@ -2,7 +2,6 @@
 import { useI18n } from 'vue-i18n'
 import { LuClock, LuHome, LuLibrary, LuLoader2, LuSettings } from 'vue-icons-plus/lu'
 import MdBadge from '@/components/ui/MdBadge.vue'
-import { useToolText } from '../../i18n'
 import type { PrimaryNavKey } from './hashState'
 
 defineProps<{
@@ -19,7 +18,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const txt = useToolText()
 </script>
 
 <template>
@@ -53,7 +51,7 @@ const txt = useToolText()
               : 'text-on-surface-variant'
           "
         >
-          {{ txt.nav.home }}
+          {{ t('tool.nav.home') }}
         </span>
       </button>
 
@@ -81,7 +79,7 @@ const txt = useToolText()
               : 'text-on-surface-variant'
           "
         >
-          {{ txt.nav.items }}
+          {{ t('tool.nav.items') }}
         </span>
       </button>
 
@@ -113,7 +111,7 @@ const txt = useToolText()
           class="text-label-medium truncate"
           :class="tasksDrawerOpen ? 'text-on-surface' : 'text-on-surface-variant'"
         >
-          {{ txt.tasks.title }}
+          {{ t('tool.tasks.title') }}
         </span>
       </button>
 

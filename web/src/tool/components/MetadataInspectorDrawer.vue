@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuArrowDown,
   LuArrowUp,
@@ -25,8 +26,8 @@ import {
 } from 'vue-icons-plus/lu'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
+import { formatBytes, formatDuration } from '@/utils/format'
 import { buildArtworkUrl, resolveScraperCoverUrl, toolApi } from '../api'
-import { formatBytes, formatDuration, useToolText } from '../i18n'
 import type {
   MediaFileDetail,
   MediaFileEntry,
@@ -69,7 +70,7 @@ const emit = defineEmits<{
   openHistory: []
 }>()
 
-const txt = useToolText()
+const { t } = useI18n()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 
@@ -410,7 +411,7 @@ defineExpose({
               v-if="isCurrentDirty"
               class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
             >
-              未保存
+              {{ t('tool.inspector.unsaved') }}
             </span>
           </div>
           <div class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
@@ -425,17 +426,18 @@ defineExpose({
         <button
           type="button"
           class="md-btn md-btn-sm md-btn-tonal md-state"
-          title="进入三栏刮削工作台（左本地 · 中刮削源 · 右可编辑预览）"
+          :title="t('tool.browser.workbenchTooltip')"
           @click="emit('openWorkbench', detail)"
         >
           <LuColumns3 class="h-3.5 w-3.5" />
-          <span>刮削工作台</span>
+          <span>{{ t('tool.browser.workbenchBtn') }}</span>
         </button>
 
         <button
           type="button"
           class="md-icon-btn md-icon-btn-sm md-state"
-          title="关闭详情面板"
+          :title="t('tool.inspector.closePanel')"
+          :aria-label="t('tool.inspector.closePanel')"
           @click="requestClose"
         >
           <LuX class="h-4 w-4" />
@@ -475,13 +477,13 @@ defineExpose({
                   <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" />
                   <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" />
                   <LuClapperboard v-else class="h-6 w-6 opacity-55" />
-                  <span class="text-[10px]">无封面</span>
+                  <span class="text-[10px]">{{ t('tool.inspector.noCover') }}</span>
                 </div>
                 <span
                   v-if="pendingCoverUrl"
                   class="absolute inset-x-0 bottom-0 bg-[var(--md-sys-color-primary)]/90 py-0.5 text-center text-[9px] font-semibold text-[var(--md-sys-color-on-primary)]"
                 >
-                  待保存封面
+                  {{ t('tool.inspector.pendingCover') }}
                 </span>
               </div>
 
@@ -524,7 +526,7 @@ defineExpose({
 
                   <template v-if="detail.metadata.kind === 'music'">
                     <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{ formatDuration(detail.metadata.data.duration_secs) }}
+                      {{ formatDuration(detail.metadata.data.duration_secs, '—') }}
                     </span>
                     <span
                       v-if="detail.metadata.data.bit_rate_kbps"
@@ -604,7 +606,7 @@ defineExpose({
                     @click="triggerArtworkUpload('cover')"
                   >
                     <LuUpload class="h-3 w-3" />
-                    <span>{{ detail.entry.media_kind === 'comic' ? '单话封面' : txt.actions.uploadCover }}</span>
+                    <span>{{ detail.entry.media_kind === 'comic' ? '单话封面' : t('tool.actions.uploadCover') }}</span>
                   </button>
 
                   <button
@@ -752,7 +754,7 @@ defineExpose({
                   @click="emit('openRename', detail.entry)"
                 >
                   <LuFileSignature class="h-3 w-3" />
-                  <span>{{ detail.entry.completeness.is_organized ? '已归档' : '整理归档' }}</span>
+                  <span>{{ detail.entry.completeness.is_organized ? t('tool.inspector.organized') : t('tool.inspector.organize') }}</span>
                 </button>
 
                 <button
@@ -810,7 +812,7 @@ defineExpose({
           class="flex shrink-0 flex-wrap items-center justify-between gap-2 bg-[var(--md-sys-color-surface-container)]/75 px-4 py-3"
         >
           <span class="hidden text-[11px] text-[var(--md-sys-color-on-surface-variant)] sm:inline">
-            ⌘S 保存 · ⌘↵ 下一项
+            {{ t('tool.inspector.shortcutsHint') }}
           </span>
 
           <div class="ml-auto flex items-center gap-2">
@@ -818,11 +820,11 @@ defineExpose({
               type="button"
               :disabled="!canSaveMetadata || saving"
               class="md-btn md-btn-sm md-btn-text md-state"
-              title="保存元数据并按默认模板重命名归档"
+              :title="t('tool.inspector.saveAndArchiveTitle')"
               @click="saveMetadata(true, false)"
             >
               <LuFileSignature class="h-3.5 w-3.5" />
-              <span>保存并归档</span>
+              <span>{{ t('tool.inspector.saveAndArchive') }}</span>
             </button>
 
             <button
@@ -832,7 +834,7 @@ defineExpose({
               class="md-btn md-btn-sm md-btn-tonal md-state"
               @click="saveMetadata(false, true)"
             >
-              <span>保存并下一项</span>
+              <span>{{ t('tool.inspector.saveAndNext') }}</span>
             </button>
 
             <button
@@ -843,7 +845,7 @@ defineExpose({
             >
               <LuRefreshCw v-if="saving" class="h-3.5 w-3.5 animate-spin" />
               <LuSave v-else class="h-3.5 w-3.5" />
-              <span>{{ saving ? txt.actions.saving : txt.actions.save }}</span>
+              <span>{{ saving ? t('tool.actions.saving') : t('tool.actions.save') }}</span>
             </button>
           </div>
         </div>

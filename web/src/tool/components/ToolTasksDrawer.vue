@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuBan,
@@ -22,7 +23,6 @@ import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSheet from '@/components/ui/MdSheet.vue'
 import type { MediaKind } from '@/types/api'
-import { useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem, type ToolTaskEntry } from '../tasks'
 
 type TaskStatusFilter = 'all' | 'active' | 'completed' | 'failed'
@@ -57,7 +57,7 @@ const emit = defineEmits<{
   openBookEditor: [payload: InspectTaskItemPayload]
 }>()
 
-const txt = useToolText()
+const { t } = useI18n()
 const taskStore = useToolTaskStore()
 const statusFilter = ref<TaskStatusFilter>('all')
 const expandedTaskIds = ref<Set<string>>(new Set())
@@ -189,7 +189,6 @@ const EMPTY_SUB_VIEW: TaskSubView = {
 
 const taskSubViewMap = computed<Map<string, TaskSubView>>(() => {
   const map = new Map<string, TaskSubView>()
-  const t = txt.value.tasks
   for (const task of filteredTasks.value) {
     const list = task.subItems
     if (!list || list.length === 0) continue
@@ -235,15 +234,15 @@ const taskSubViewMap = computed<Map<string, TaskSubView>>(() => {
       filteredItems = list.filter((it) => it.status === 'failed' || it.status === 'cancelled')
     }
     const filterPills: Array<{ id: SubItemFilter; label: string }> = [
-      { id: 'all', label: `${t.filterAll} (${counts.total})` },
+      { id: 'all', label: `${t('tool.tasks.filterAll')} (${counts.total})` },
     ]
     if (running + queued > 0) {
-      filterPills.push({ id: 'running', label: `${t.filterActive} (${running + queued})` })
+      filterPills.push({ id: 'running', label: `${t('tool.tasks.filterActive')} (${running + queued})` })
     }
-    filterPills.push({ id: 'matched', label: `${t.statusMatched} (${matched})` })
-    filterPills.push({ id: 'unmatched', label: `${t.statusUnmatched} (${unmatched})` })
+    filterPills.push({ id: 'matched', label: `${t('tool.tasks.statusMatched')} (${matched})` })
+    filterPills.push({ id: 'unmatched', label: `${t('tool.tasks.statusUnmatched')} (${unmatched})` })
     if (failed > 0) {
-      filterPills.push({ id: 'failed', label: `${t.statusFailed} (${failed})` })
+      filterPills.push({ id: 'failed', label: `${t('tool.tasks.statusFailed')} (${failed})` })
     }
     map.set(task.id, { counts, runningItems, filteredItems, filterPills })
   }
@@ -338,8 +337,8 @@ function formatElapsed(task: ToolTaskEntry): string {
 <template>
   <MdSheet
     :open="open"
-    :title="txt.tasks.title"
-    :subtitle="txt.tasks.subtitle"
+    :title="t('tool.tasks.title')"
+    :subtitle="t('tool.tasks.subtitle')"
     size="lg"
     @close="emit('close')"
   >
@@ -349,10 +348,10 @@ function formatElapsed(task: ToolTaskEntry): string {
           <MdSegmentedButton
             v-model="statusFilter"
             :options="[
-              { value: 'all', label: `${txt.tasks.filterAll} (${taskStore.persistentTasks.length})` },
-              { value: 'active', label: `${txt.tasks.filterActive} (${taskStore.activeCount})` },
-              { value: 'completed', label: txt.tasks.filterCompleted },
-              { value: 'failed', label: txt.tasks.filterFailed },
+              { value: 'all', label: `${t('tool.tasks.filterAll')} (${taskStore.persistentTasks.length})` },
+              { value: 'active', label: `${t('tool.tasks.filterActive')} (${taskStore.activeCount})` },
+              { value: 'completed', label: t('tool.tasks.filterCompleted') },
+              { value: 'failed', label: t('tool.tasks.filterFailed') },
             ]"
             size="sm"
             show-check
@@ -366,7 +365,7 @@ function formatElapsed(task: ToolTaskEntry): string {
           @click="taskStore.clearCompleted()"
         >
           <LuTrash2 class="h-3.5 w-3.5" />
-          <span>{{ txt.tasks.clearCompleted }}</span>
+          <span>{{ t('tool.tasks.clearCompleted') }}</span>
         </button>
       </div>
     </template>
@@ -378,9 +377,9 @@ function formatElapsed(task: ToolTaskEntry): string {
         class="rounded-[24px] bg-[var(--md-sys-color-surface-container)] py-16 text-center"
       >
         <LuClock class="mx-auto mb-3 h-7 w-7 text-[var(--md-sys-color-on-surface-variant)]" />
-        <p class="text-sm font-semibold">{{ txt.tasks.emptyTitle }}</p>
+        <p class="text-sm font-semibold">{{ t('tool.tasks.emptyTitle') }}</p>
         <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          {{ txt.tasks.emptyDesc }}
+          {{ t('tool.tasks.emptyDesc') }}
         </p>
       </div>
 
@@ -431,12 +430,12 @@ function formatElapsed(task: ToolTaskEntry): string {
                   >
                     {{
                       task.status === 'running'
-                        ? txt.tasks.statusRunning
+                        ? t('tool.tasks.statusRunning')
                         : task.status === 'queued'
-                          ? txt.tasks.statusQueued
+                          ? t('tool.tasks.statusQueued')
                           : task.status === 'failed'
-                            ? txt.tasks.statusFailed
-                            : txt.tasks.filterCompleted
+                            ? t('tool.tasks.statusFailed')
+                            : t('tool.tasks.filterCompleted')
                     }}
                   </span>
                   <span
@@ -449,10 +448,10 @@ function formatElapsed(task: ToolTaskEntry): string {
                     v-if="task.concurrency && task.concurrency > 1"
                     class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
                   >
-                    {{ txt.tasks.concurrency.replace('{n}', String(task.concurrency)) }}
+                    {{ t('tool.tasks.concurrency', { n: task.concurrency }) }}
                   </span>
                   <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                    {{ formatTime(task.startedAt) }} · {{ txt.tasks.elapsed }} {{ formatElapsed(task) }}
+                    {{ formatTime(task.startedAt) }} · {{ t('tool.tasks.elapsed') }} {{ formatElapsed(task) }}
                   </span>
                 </div>
 
@@ -472,34 +471,34 @@ function formatElapsed(task: ToolTaskEntry): string {
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-success-container)]"
                   >
                     <LuCheckCircle2 class="h-3 w-3" />
-                    <span>{{ txt.tasks.statusMatched }} {{ getTaskSubView(task.id).counts.matched }}</span>
+                    <span>{{ t('tool.tasks.statusMatched') }} {{ getTaskSubView(task.id).counts.matched }}</span>
                   </span>
                   <span
                     v-if="getTaskSubView(task.id).counts.running > 0"
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-primary-container)]"
                   >
                     <LuLoader2 class="h-3 w-3 animate-spin" />
-                    <span>{{ txt.tasks.filterActive }} {{ getTaskSubView(task.id).counts.running }}</span>
+                    <span>{{ t('tool.tasks.filterActive') }} {{ getTaskSubView(task.id).counts.running }}</span>
                   </span>
                   <span
                     v-if="getTaskSubView(task.id).counts.queued > 0"
                     class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface-variant)]"
                   >
-                    {{ txt.tasks.statusQueued }} {{ getTaskSubView(task.id).counts.queued }}
+                    {{ t('tool.tasks.statusQueued') }} {{ getTaskSubView(task.id).counts.queued }}
                   </span>
                   <span
                     v-if="getTaskSubView(task.id).counts.unmatched > 0"
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-warning-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-warning-container)]"
                   >
                     <LuAlertCircle class="h-3 w-3" />
-                    <span>{{ txt.tasks.statusUnmatched }} {{ getTaskSubView(task.id).counts.unmatched }}</span>
+                    <span>{{ t('tool.tasks.statusUnmatched') }} {{ getTaskSubView(task.id).counts.unmatched }}</span>
                   </span>
                   <span
                     v-if="getTaskSubView(task.id).counts.failed > 0"
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-error-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-error-container)]"
                   >
                     <LuAlertCircle class="h-3 w-3" />
-                    <span>{{ txt.tasks.statusFailed }} {{ getTaskSubView(task.id).counts.failed }}</span>
+                    <span>{{ t('tool.tasks.statusFailed') }} {{ getTaskSubView(task.id).counts.failed }}</span>
                   </span>
                 </div>
 
@@ -521,7 +520,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                   v-if="task.status === 'running' && getTaskSubView(task.id).runningItems.length > 0"
                   class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--md-sys-color-primary)]"
                 >
-                  <span class="font-semibold">{{ txt.tasks.runningNow }}:</span>
+                  <span class="font-semibold">{{ t('tool.tasks.runningNow') }}:</span>
                   <span
                     v-for="rItem in getTaskSubView(task.id).runningItems"
                     :key="rItem.relPath"
@@ -543,7 +542,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                 @click="taskStore.cancelTask(task.id)"
               >
                 <LuBan class="h-3.5 w-3.5" />
-                <span>{{ txt.tasks.cancel }}</span>
+                <span>{{ t('tool.tasks.cancel') }}</span>
               </button>
 
               <!-- Review & Edit ALL completed results (Works even when 100% matched!) -->
@@ -555,7 +554,7 @@ function formatElapsed(task: ToolTaskEntry): string {
               >
                 <LuSlidersHorizontal class="h-3.5 w-3.5" />
                 <span>
-                  {{ txt.tasks.reviewAllResults.replace('{count}', String(task.processed)) }}
+                  {{ t('tool.tasks.reviewAllResults', { count: task.processed }) }}
                 </span>
               </button>
 
@@ -566,7 +565,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                 @click="reviewTaskUnmatched(task)"
               >
                 <LuColumns3 class="h-3.5 w-3.5" />
-                <span>{{ txt.tasks.reviewUnmatched }}</span>
+                <span>{{ t('tool.tasks.reviewUnmatched') }}</span>
               </button>
 
               <button
@@ -576,7 +575,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                 @click="taskStore.retryTaskFailedOrUnmatched(task.id)"
               >
                 <LuRotateCcw class="h-3.5 w-3.5" />
-                <span>{{ txt.tasks.retryUnfinished }}</span>
+                <span>{{ t('tool.tasks.retryUnfinished') }}</span>
               </button>
 
               <button
@@ -585,7 +584,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                 class="md-btn md-btn-sm md-btn-outlined md-state"
                 @click="toggleExpand(task.id)"
               >
-                <span>{{ txt.tasks.details }} ({{ task.subItems.length }})</span>
+                <span>{{ t('tool.tasks.details') }} ({{ task.subItems.length }})</span>
                 <LuChevronUp v-if="expandedTaskIds.has(task.id)" class="h-3.5 w-3.5" />
                 <LuChevronDown v-else class="h-3.5 w-3.5" />
               </button>
@@ -594,7 +593,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                 v-if="task.status !== 'running' && task.status !== 'queued'"
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-error)]"
-                :title="txt.tasks.removeRecord"
+                :title="t('tool.tasks.removeRecord')"
                 @click="taskStore.removeTask(task.id)"
               >
                 <LuTrash2 class="h-3.5 w-3.5" />
@@ -646,7 +645,7 @@ function formatElapsed(task: ToolTaskEntry): string {
             v-if="getTaskSubView(task.id).filteredItems.length === 0"
             class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
           >
-            {{ txt.tasks.noSubItemsInFilter }}
+            {{ t('tool.tasks.noSubItemsInFilter') }}
           </div>
 
           <div
@@ -687,7 +686,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                         : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
                     "
                   >
-                    {{ sub.hasCover ? txt.tasks.badgeHasCover : txt.tasks.badgeNoCover }}
+                    {{ sub.hasCover ? t('tool.tasks.badgeHasCover') : t('tool.tasks.badgeNoCover') }}
                   </span>
                   <span
                     v-if="sub.hasSummary !== undefined"
@@ -698,7 +697,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                         : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
                     "
                   >
-                    {{ sub.hasSummary ? txt.tasks.badgeHasSummary : txt.tasks.badgeNoSummary }}
+                    {{ sub.hasSummary ? t('tool.tasks.badgeHasSummary') : t('tool.tasks.badgeNoSummary') }}
                   </span>
                   <span
                     v-if="sub.hasTags !== undefined"
@@ -709,7 +708,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                         : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
                     "
                   >
-                    {{ sub.hasTags ? txt.tasks.badgeHasTags : txt.tasks.badgeNoTags }}
+                    {{ sub.hasTags ? t('tool.tasks.badgeHasTags') : t('tool.tasks.badgeNoTags') }}
                   </span>
                 </div>
               </div>
@@ -718,7 +717,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                 <span
                   v-if="typeof sub.confidence === 'number'"
                   class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
-                  title="自动匹配置信度"
+                  :title="t('tool.tasks.confidenceTooltip')"
                 >
                   {{ sub.confidence }}%
                 </span>
@@ -728,21 +727,21 @@ function formatElapsed(task: ToolTaskEntry): string {
                   class="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--md-sys-color-success)]"
                 >
                   <LuCheckCircle2 class="h-3.5 w-3.5" />
-                  <span>{{ txt.tasks.statusMatched }}</span>
+                  <span>{{ t('tool.tasks.statusMatched') }}</span>
                 </span>
                 <span
                   v-else-if="sub.status === 'unmatched'"
                   class="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--md-sys-color-warning)]"
                 >
                   <LuAlertCircle class="h-3.5 w-3.5" />
-                  <span>{{ txt.tasks.statusUnmatched }}</span>
+                  <span>{{ t('tool.tasks.statusUnmatched') }}</span>
                 </span>
                 <span
                   v-else-if="sub.status === 'running'"
                   class="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--md-sys-color-primary)]"
                 >
                   <LuLoader2 class="h-3.5 w-3.5 animate-spin" />
-                  <span>{{ txt.tasks.statusRunning }}</span>
+                  <span>{{ t('tool.tasks.statusRunning') }}</span>
                 </span>
                 <span
                   v-else-if="sub.status === 'failed'"
@@ -750,16 +749,16 @@ function formatElapsed(task: ToolTaskEntry): string {
                   :title="sub.error"
                 >
                   <LuAlertCircle class="h-3.5 w-3.5 shrink-0" />
-                  <span class="truncate">{{ sub.error || txt.tasks.statusFailed }}</span>
+                  <span class="truncate">{{ sub.error || t('tool.tasks.statusFailed') }}</span>
                 </span>
                 <span
                   v-else-if="sub.status === 'cancelled'"
                   class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
                 >
-                  {{ txt.tasks.statusCancelled }}
+                  {{ t('tool.tasks.statusCancelled') }}
                 </span>
                 <span v-else class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                  {{ txt.tasks.statusQueued }}
+                  {{ t('tool.tasks.statusQueued') }}
                 </span>
 
                 <!-- Direct Post-Task Edit Controls for Each Item -->
@@ -773,7 +772,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                     @click="inspectSubItem(sub)"
                   >
                     <LuPencil class="h-3 w-3" />
-                    <span>{{ txt.tasks.editMetadata }}</span>
+                    <span>{{ t('tool.tasks.editMetadata') }}</span>
                   </button>
 
                   <button
@@ -783,7 +782,7 @@ function formatElapsed(task: ToolTaskEntry): string {
                     @click="openSubItemBookEditor(sub)"
                   >
                     <LuBookOpen class="h-3 w-3" />
-                    <span>{{ txt.tasks.editBookContent }}</span>
+                    <span>{{ t('tool.tasks.editBookContent') }}</span>
                   </button>
                 </div>
               </div>

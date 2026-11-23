@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuChevronDown,
   LuChevronRight,
@@ -11,7 +12,6 @@ import {
 import type { MediaKind } from '@/types/api'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
-import { useToolText } from '../i18n'
 import type { ManagedRootDto } from '../types'
 
 const props = defineProps<{
@@ -34,7 +34,7 @@ const emit = defineEmits<{
   selectRoot: [rootId: string]
 }>()
 
-const txt = useToolText()
+const { t } = useI18n()
 const rootsFolded = ref(false)
 const asideRef = ref<HTMLElement | null>(null)
 const escapeStack = useEscapeStack()
@@ -58,7 +58,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
     ref="asideRef"
     :role="mobileMenuOpen ? 'dialog' : undefined"
     :aria-modal="mobileMenuOpen ? 'true' : undefined"
-    :aria-label="txt.brand"
+    :aria-label="t('tool.brand')"
     class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-surface-container transition-[width,transform] duration-200 ease-standard select-none sm:static"
     :class="[
       mobileMenuOpen
@@ -110,7 +110,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
           class="text-label-medium truncate"
           :class="activeNav === 'home' ? 'text-on-surface' : 'text-on-surface-variant'"
         >
-          {{ txt.nav.home }}
+          {{ t('tool.nav.home') }}
         </span>
       </button>
 
@@ -135,7 +135,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
             activeNav === 'items' && !activeRootId ? 'text-on-surface' : 'text-on-surface-variant'
           "
         >
-          {{ txt.nav.items }}
+          {{ t('tool.nav.items') }}
         </span>
       </button>
 
@@ -144,8 +144,8 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
       <button
         type="button"
         class="md-icon-btn md-state"
-        :title="txt.roots.title"
-        :aria-label="txt.roots.title"
+        :title="t('tool.roots.title')"
+        :aria-label="t('tool.roots.title')"
         @click="emit('openSettingsRoots')"
       >
         <LuHardDrive class="h-5 w-5" aria-hidden="true" />
@@ -168,7 +168,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
         @click="emit('navigatePrimary', 'home')"
       >
         <LuHome class="h-5 w-5 shrink-0" aria-hidden="true" />
-        <span class="truncate">{{ txt.nav.home }}</span>
+        <span class="truncate">{{ t('tool.nav.home') }}</span>
       </button>
 
       <button
@@ -182,7 +182,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
         @click="emit('navigatePrimary', 'items')"
       >
         <LuLibrary class="h-5 w-5 shrink-0" aria-hidden="true" />
-        <span class="flex-1 truncate text-left">{{ txt.nav.items }}</span>
+        <span class="flex-1 truncate text-left">{{ t('tool.nav.items') }}</span>
         <span class="text-label-medium font-mono tabular-nums opacity-80">{{ totalItems }}</span>
       </button>
 
@@ -196,13 +196,13 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
           >
             <LuChevronRight v-if="rootsFolded" class="h-4 w-4 shrink-0" aria-hidden="true" />
             <LuChevronDown v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span class="truncate">{{ txt.roots.title }}</span>
+            <span class="truncate">{{ t('tool.roots.title') }}</span>
           </button>
           <button
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state"
-            :title="txt.roots.add"
-            :aria-label="txt.roots.add"
+            :title="t('tool.roots.add')"
+            :aria-label="t('tool.roots.add')"
             @click="emit('openSettingsRoots')"
           >
             <LuFolderPlus class="h-4 w-4" aria-hidden="true" />
@@ -217,7 +217,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
             @click="emit('openSettingsRoots')"
           >
             <LuFolderPlus class="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-            <span>{{ txt.roots.add }}</span>
+            <span>{{ t('tool.roots.add') }}</span>
           </button>
 
           <button

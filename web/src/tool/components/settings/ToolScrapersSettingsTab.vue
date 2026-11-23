@@ -13,8 +13,8 @@ import MdSelect from '@/components/ui/MdSelect.vue'
 import MdSwitch from '@/components/ui/MdSwitch.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
+import { formatBytes } from '@/utils/format'
 import { toolApi } from '../../api'
-import { formatBytes } from '../../i18n'
 import type {
   ProviderConfigOverrideDto,
   ProviderStatusDto,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuAlertCircle, LuLock, LuRefreshCw, LuWrench } from 'vue-icons-plus/lu'
 import AppDialogHost from '@/components/ui/AppDialogHost.vue'
 import MdButton from '@/components/ui/MdButton.vue'
@@ -10,14 +11,13 @@ import MdTextField from '@/components/ui/MdTextField.vue'
 import { useThemeStore } from '@/stores/theme'
 import { toolApi } from './api'
 import ToolWorkspace from './components/ToolWorkspace.vue'
-import { useToolText } from './i18n'
 import { useToolTaskStore } from './tasks'
 import type { ToolStatusDto } from './types'
 
 // Initialize MD3 theme & dark/light class immediately
 useThemeStore()
 const taskStore = useToolTaskStore()
-const txt = useToolText()
+const { t } = useI18n()
 
 const booting = ref(true)
 const bootError = ref<string | null>(null)
@@ -93,8 +93,8 @@ onBeforeUnmount(() => {
     v-if="booting"
     class="safe-px safe-py text-body-small flex min-h-dvh w-screen items-center justify-center gap-2.5 bg-surface-container text-on-surface-variant"
   >
-    <MdCircularProgress :size="20" :aria-label="txt.boot.connecting" />
-    <span>{{ txt.boot.connecting }}</span>
+    <MdCircularProgress :size="20" :aria-label="t('tool.boot.connecting')" />
+    <span>{{ t('tool.boot.connecting') }}</span>
   </div>
 
   <!-- Connection Error / Retry State -->
@@ -110,13 +110,13 @@ onBeforeUnmount(() => {
           <LuAlertCircle class="h-5 w-5" />
         </div>
         <div>
-          <h1 class="text-title-medium text-on-surface">{{ txt.boot.failedTitle }}</h1>
-          <p class="text-label-small text-on-surface-variant">{{ txt.brand }}</p>
+          <h1 class="text-title-medium text-on-surface">{{ t('tool.boot.failedTitle') }}</h1>
+          <p class="text-label-small text-on-surface-variant">{{ t('tool.brand') }}</p>
         </div>
       </div>
 
       <p class="text-body-small text-on-surface-variant">
-        {{ txt.boot.failedDesc }}
+        {{ t('tool.boot.failedDesc') }}
       </p>
 
       <div
@@ -128,7 +128,7 @@ onBeforeUnmount(() => {
       </div>
 
       <MdButton variant="filled" block :icon="LuRefreshCw" @click="fetchStatus()">
-        {{ txt.boot.retry }}
+        {{ t('tool.boot.retry') }}
       </MdButton>
     </MdCard>
   </div>
@@ -147,13 +147,13 @@ onBeforeUnmount(() => {
             <LuWrench class="h-5 w-5" />
           </div>
           <div>
-            <h1 class="text-title-medium text-on-surface">{{ txt.unlock.title }}</h1>
+            <h1 class="text-title-medium text-on-surface">{{ t('tool.unlock.title') }}</h1>
             <p class="text-label-small text-on-surface-variant">v{{ status.version }}</p>
           </div>
         </div>
 
         <p class="text-body-small text-on-surface-variant">
-          {{ txt.unlock.subtitle }}
+          {{ t('tool.unlock.subtitle') }}
         </p>
 
         <div
@@ -168,8 +168,8 @@ onBeforeUnmount(() => {
           v-model="passwordInput"
           type="password"
           :leading-icon="LuLock"
-          :placeholder="txt.unlock.placeholder"
-          :aria-label="txt.unlock.placeholder"
+          :placeholder="t('tool.unlock.placeholder')"
+          :aria-label="t('tool.unlock.placeholder')"
           autofocus
         />
 
@@ -180,7 +180,7 @@ onBeforeUnmount(() => {
           :loading="unlocking"
           :disabled="!passwordInput.trim()"
         >
-          {{ txt.unlock.submit }}
+          {{ t('tool.unlock.submit') }}
         </MdButton>
       </form>
     </MdCard>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuArrowRight,
@@ -17,9 +18,9 @@ import {
 import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { MediaKind } from '@/types/api'
+import { formatBytes } from '@/utils/format'
 import { buildArtworkUrl } from '../api'
 import { isEntryComplete, type ToolCompletenessFilter } from '../completeness'
-import { formatBytes, useToolText } from '../i18n'
 import type {
   DirectorySnapshot,
   ManagedRootDto,
@@ -53,16 +54,24 @@ const emit = defineEmits<{
   refreshDir: []
 }>()
 
-const txt = useToolText()
-const domainLabels = computed(() => txt.value.domainLabels[props.activeDomain])
+const { t } = useI18n()
+const domainLabels = computed(() => {
+  const dom = props.activeDomain
+  return {
+    missingCover: t(`tool.domainLabels.${dom}.missingCover`),
+    missingSummary: t(`tool.domainLabels.${dom}.missingSummary`),
+    emptyRootsTitle: t(`tool.domainLabels.${dom}.emptyRootsTitle`),
+    emptyRootsDesc: t(`tool.domainLabels.${dom}.emptyRootsDesc`),
+  }
+})
 
 const scopeSubtitle = computed(() => {
   if (!props.activeRootId && props.domainRoots.length > 1) {
-    return `已汇总 ${props.domainRoots.length} 个挂载目录`
+    return t('tool.home.scopeMultiRoot', { count: props.domainRoots.length })
   }
   const name = props.snapshot?.root_name || props.domainRoots[0]?.name || '—'
   const rel = props.snapshot?.current_rel_path
-  return `当前挂载目录：${name}${rel ? ` / ${rel}` : ''}`
+  return t('tool.home.scopeCurrentRoot', { name: `${name}${rel ? ` / ${rel}` : ''}` })
 })
 
 const completionPct = computed(() => {
@@ -105,7 +114,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
         @click="emit('openSettings', 'roots')"
       >
         <LuFolderPlus class="h-4 w-4" />
-        <span>{{ txt.roots.add }}</span>
+        <span>{{ t('tool.roots.add') }}</span>
       </button>
     </div>
 
@@ -113,10 +122,10 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
       <!-- Top Header & Actions -->
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-[var(--md-sys-color-on-surface)]">
-            {{ txt.domains[activeDomain] }}概览
+          <h1 class="text-xl font-semibold tracking-tight text-on-surface">
+            {{ t('tool.home.overviewTitle', { domain: t(`tool.domains.${activeDomain}`) }) }}
           </h1>
-          <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          <p class="mt-0.5 text-xs text-on-surface-variant">
             {{ scopeSubtitle }}
           </p>
         </div>
@@ -128,22 +137,22 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             v-if="incompleteFiles.length > 0"
             type="button"
             class="md-btn md-btn-sm md-btn-filled md-state"
-            title="按「本地已有信息 → 高优先级源 → 低优先级源」顺序自动添加后台刮削任务"
-            @click="emit('scrapeFiles', incompleteFiles, '待补齐项')"
+            :title="t('tool.home.scrapeIncompleteTitle')"
+            @click="emit('scrapeFiles', incompleteFiles, t('tool.filters.incomplete'))"
           >
             <LuSparkles class="h-3.5 w-3.5" />
-            <span>刮削待补齐项 ({{ incompleteFiles.length }})</span>
+            <span>{{ t('tool.home.scrapeIncomplete', { count: incompleteFiles.length }) }}</span>
           </button>
 
           <button
             v-if="unorganizedFiles.length > 0"
             type="button"
             class="md-btn md-btn-sm md-btn-tonal md-state"
-            title="按默认命名模板批量整理归档尚未归档的条目（自动跳过已归档条目）"
+            :title="t('tool.home.batchRenameTitle')"
             @click="emit('openRenameAll')"
           >
             <LuFileSignature class="h-3.5 w-3.5" />
-            <span>{{ txt.actions.batchRename }} ({{ unorganizedFiles.length }})</span>
+            <span>{{ t('tool.actions.batchRename') }} ({{ unorganizedFiles.length }})</span>
           </button>
         </div>
       </div>
@@ -156,11 +165,11 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           @click="emit('openItems', 'all')"
         >
           <div>
-            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ txt.cards.totalFiles }}</div>
+            <div class="text-xs text-on-surface-variant">{{ t('tool.cards.totalFiles') }}</div>
             <div class="mt-1 text-2xl font-semibold tracking-tight">{{ stats.total }}</div>
           </div>
           <div
-            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary-container text-on-primary-container"
           >
             <LuBookOpen v-if="activeDomain === 'book'" class="h-5 w-5" />
             <LuLayers v-else-if="activeDomain === 'comic'" class="h-5 w-5" />
@@ -175,16 +184,16 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           @click="emit('openItems', 'complete')"
         >
           <div>
-            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ txt.cards.completeFiles }}</div>
+            <div class="text-xs text-on-surface-variant">{{ t('tool.cards.completeFiles') }}</div>
             <div class="mt-1 flex items-baseline gap-1.5">
-              <span class="text-2xl font-semibold tracking-tight text-[var(--md-sys-color-success)]">
+              <span class="text-2xl font-semibold tracking-tight text-success">
                 {{ stats.complete }}
               </span>
-              <span class="font-mono text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ completionPct }}%</span>
+              <span class="font-mono text-xs text-on-surface-variant">{{ completionPct }}%</span>
             </div>
           </div>
           <div
-            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-success-container text-on-success-container"
           >
             <LuCheckCircle2 class="h-5 w-5" />
           </div>
@@ -196,13 +205,13 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           @click="emit('openItems', 'missing_cover')"
         >
           <div>
-            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ domainLabels.missingCover }}</div>
-            <div class="mt-1 text-2xl font-semibold tracking-tight text-[var(--md-sys-color-warning)]">
+            <div class="text-xs text-on-surface-variant">{{ domainLabels.missingCover }}</div>
+            <div class="mt-1 text-2xl font-semibold tracking-tight text-warning">
               {{ stats.missingCover }}
             </div>
           </div>
           <div
-            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-warning-container text-on-warning-container"
           >
             <LuImage class="h-5 w-5" />
           </div>
@@ -214,13 +223,13 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           @click="emit('openItems', 'missing_summary')"
         >
           <div>
-            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ domainLabels.missingSummary }}</div>
-            <div class="mt-1 text-2xl font-semibold tracking-tight text-[var(--md-sys-color-primary)]">
+            <div class="text-xs text-on-surface-variant">{{ domainLabels.missingSummary }}</div>
+            <div class="mt-1 text-2xl font-semibold tracking-tight text-primary">
               {{ stats.missingSummary }}
             </div>
           </div>
           <div
-            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-secondary-container text-on-secondary-container"
           >
             <LuFileText class="h-5 w-5" />
           </div>
@@ -231,7 +240,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
       <section class="md-card-filled space-y-2.5 p-5">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-semibold text-on-surface">元信息完整率</span>
+            <span class="text-xs font-semibold text-on-surface">{{ t('tool.home.completenessTitle') }}</span>
             <span
               class="rounded-full bg-primary-container px-2.5 py-0.5 font-mono text-[11px] font-semibold text-on-primary-container"
             >
@@ -239,14 +248,19 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             </span>
           </div>
           <span class="text-[11px] text-on-surface-variant">
-            齐全 {{ stats.complete }} 项 · 待补齐 {{ stats.incomplete }} 项 · 缺标签/NFO
-            {{ stats.missingTag }} 项
+            {{
+              t('tool.home.completenessSummary', {
+                complete: stats.complete,
+                incomplete: stats.incomplete,
+                missingTag: stats.missingTag,
+              })
+            }}
           </span>
         </div>
         <MdLinearProgress
           :value="completionPct"
           tone="success"
-          aria-label="元信息完整率"
+          :aria-label="t('tool.home.completenessTitle')"
         />
       </section>
 
@@ -254,12 +268,16 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
       <section class="space-y-3">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <h2 class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-              {{ incompleteFiles.length > 0 ? '待补齐元信息条目' : '全部条目元信息已齐全' }}
+            <h2 class="text-sm font-semibold text-on-surface">
+              {{
+                incompleteFiles.length > 0
+                  ? t('tool.home.pendingHeading')
+                  : t('tool.home.allCompleteHeading')
+              }}
             </h2>
             <span
               v-if="incompleteFiles.length > 0"
-              class="rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
+              class="rounded-full bg-warning-container px-2 py-0.5 font-mono text-[11px] font-semibold text-on-warning-container"
             >
               {{ incompleteFiles.length }}
             </span>
@@ -269,20 +287,16 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             class="md-btn md-btn-sm md-btn-text md-state"
             @click="emit('openItems', incompleteFiles.length > 0 ? 'incomplete' : 'all')"
           >
-            <span>进入条目列表</span>
+            <span>{{ t('tool.home.enterItems') }}</span>
             <LuArrowRight class="h-3.5 w-3.5" />
           </button>
         </div>
 
         <div
           v-if="previewIncomplete.length === 0"
-          class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="rounded-[24px] bg-surface-container-low py-10 text-center text-xs text-on-surface-variant"
         >
-          {{
-            stats.total === 0
-              ? '当前挂载目录下暂无受支持的媒体文件'
-              : '所有媒体文件的封面、简介与标签均已完备'
-          }}
+          {{ stats.total === 0 ? t('tool.home.emptyNoMedia') : t('tool.home.emptyAllReady') }}
         </div>
 
         <div
@@ -340,28 +354,33 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             <div class="hidden shrink-0 items-center gap-1.5 sm:flex">
               <span
                 v-if="!file.completeness.has_cover"
-                class="rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-warning-container)]"
+                class="rounded-full bg-warning-container px-2 py-0.5 text-[10px] font-medium text-on-warning-container"
               >
-                缺图
+                {{ t('tool.home.badgeMissingCover') }}
               </span>
               <span
                 v-if="!file.completeness.has_summary_or_lyrics"
-                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+                class="rounded-full bg-surface-container-high px-2 py-0.5 text-[10px] font-medium text-on-surface-variant"
               >
-                {{ file.media_kind === 'music' ? '缺歌词' : '缺简介' }}
+                {{
+                  file.media_kind === 'music'
+                    ? t('tool.home.badgeMissingLyrics')
+                    : t('tool.home.badgeMissingSummary')
+                }}
               </span>
               <span
                 v-if="!file.completeness.has_nfo_or_tag_block"
-                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+                class="rounded-full bg-surface-container-high px-2 py-0.5 text-[10px] font-medium text-on-surface-variant"
               >
-                缺标签
+                {{ t('tool.home.badgeMissingTag') }}
               </span>
             </div>
 
             <button
               type="button"
-              class="md-icon-btn md-icon-btn-sm md-state shrink-0 text-[var(--md-sys-color-primary)]"
-              title="快速刮削此条目"
+              class="md-icon-btn md-icon-btn-sm md-state shrink-0 text-primary"
+              :title="t('tool.home.quickScrapeItem')"
+              :aria-label="t('tool.home.quickScrapeItem')"
               @click="emit('scrapeFiles', [file], file.display_title)"
             >
               <LuSparkles class="h-4 w-4" />

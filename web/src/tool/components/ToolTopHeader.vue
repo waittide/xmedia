@@ -20,7 +20,6 @@ import MdBadge from '@/components/ui/MdBadge.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
-import { useToolText } from '../i18n'
 import { useToolTaskStore } from '../tasks'
 import type { ToolStatusDto } from '../types'
 
@@ -47,14 +46,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const txt = useToolText()
 const themeStore = useThemeStore()
 const taskStore = useToolTaskStore()
 
 const activeTaskPillLabel = computed<string>(() => {
   const task = taskStore.activeTask
   if (!task) return ''
-  const verb = task.kind === 'scrape' ? '刮削中' : task.kind === 'rename' ? '重命名中' : '扫描中'
+  const verb =
+    task.kind === 'scrape'
+      ? t('tool.header.verbScrape')
+      : task.kind === 'rename'
+        ? t('tool.header.verbRename')
+        : t('tool.header.verbScan')
   if (task.total !== null && task.total > 0) {
     return `${verb} ${task.processed}/${task.total}`
   }
@@ -66,12 +69,12 @@ const activeTaskPillLabel = computed<string>(() => {
 
 const taskButtonTooltip = computed<string>(() => {
   if (taskStore.activeTask) {
-    return `${taskStore.activeTask.title} · 点击展开任务抽屉`
+    return t('tool.header.taskActiveTooltip', { title: taskStore.activeTask.title })
   }
   if (taskStore.unresolvedCount > 0) {
-    return `后台任务 · ${taskStore.unresolvedCount} 项待手动刮削或重试`
+    return t('tool.header.taskUnresolvedTooltip', { count: taskStore.unresolvedCount })
   }
-  return txt.value.tasks.title
+  return t('tool.tasks.title')
 })
 
 const searchInputRef = ref<HTMLInputElement | null>(null)
@@ -110,8 +113,8 @@ defineExpose({ focusSearch })
       <button
         type="button"
         class="md-icon-btn md-state"
-        :title="isCompact ? '展开导航栏' : '收起为图标导航栏'"
-        :aria-label="isCompact ? '展开导航栏' : '收起为图标导航栏'"
+        :title="isCompact ? t('tool.nav.expandSidebar') : t('tool.nav.collapseSidebar')"
+        :aria-label="isCompact ? t('tool.nav.expandSidebar') : t('tool.nav.collapseSidebar')"
         @click="emit('toggleSidebar')"
       >
         <LuPanelLeftOpen v-if="isCompact" class="h-5 w-5" />
@@ -124,16 +127,16 @@ defineExpose({ focusSearch })
         @click="emit('navigateHome')"
       >
         <div
-          class="flex h-9 w-9 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
+          class="flex h-9 w-9 items-center justify-center rounded-2xl bg-primary-container text-on-primary-container"
         >
           <LuWrench class="h-[18px] w-[18px]" />
         </div>
         <div class="hidden lg:block">
-          <div class="text-sm leading-tight font-semibold tracking-tight text-[var(--md-sys-color-on-surface)]">
-            {{ txt.brand }}
+          <div class="text-sm leading-tight font-semibold tracking-tight text-on-surface">
+            {{ t('tool.brand') }}
           </div>
-          <div class="text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ txt.brandSub }}
+          <div class="text-[10px] text-on-surface-variant">
+            {{ t('tool.brandSub') }}
           </div>
         </div>
       </button>
@@ -184,11 +187,11 @@ defineExpose({ focusSearch })
     <div class="flex shrink-0 items-center gap-1">
       <span
         v-if="status && !status.ffmpeg.ffprobe_available"
-        class="hidden items-center gap-1.5 rounded-full bg-[var(--md-sys-color-warning-container)] px-3 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-warning-container)] sm:inline-flex"
-        title="系统未检测到 ffprobe，视频编码/分辨率/音轨与字幕流详情探测将受限"
+        class="hidden items-center gap-1.5 rounded-full bg-warning-container px-3 py-1 text-[11px] font-medium text-on-warning-container sm:inline-flex"
+        :title="t('tool.header.noFfprobeTooltip')"
       >
         <LuAlertTriangle class="h-3.5 w-3.5" />
-        <span>无 ffprobe</span>
+        <span>{{ t('tool.header.noFfprobe') }}</span>
       </span>
 
       <button
@@ -196,7 +199,7 @@ defineExpose({ focusSearch })
         class="md-icon-btn md-state"
         :class="
           themeStore.themeMode === 'system'
-            ? 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)]'
+            ? 'bg-surface-container-high text-on-surface'
             : ''
         "
         :title="themeModeTooltip"
@@ -212,12 +215,12 @@ defineExpose({ focusSearch })
         v-if="status?.requires_password"
         type="button"
         class="md-btn md-btn-sm md-btn-tonal md-state"
-        :title="txt.actions.lock"
-        :aria-label="txt.actions.lock"
+        :title="t('tool.actions.lock')"
+        :aria-label="t('tool.actions.lock')"
         @click="emit('lock')"
       >
         <LuLock class="h-3.5 w-3.5" />
-        <span class="hidden sm:inline">{{ txt.actions.lock }}</span>
+        <span class="hidden sm:inline">{{ t('tool.actions.lock') }}</span>
       </button>
 
       <!-- Persistent Task Progress Pill / Drawer Toggle -->

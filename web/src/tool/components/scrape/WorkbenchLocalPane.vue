@@ -13,8 +13,8 @@ import {
   LuUpload,
 } from 'vue-icons-plus/lu'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import { formatBytes, formatDuration } from '@/utils/format'
 import { entryCompositeKey } from '../../completeness'
-import { formatBytes, formatDuration } from '../../i18n'
 import type { MediaFileDetail } from '../../types'
 import InspectorBookForm from '../inspector/InspectorBookForm.vue'
 import InspectorComicForm from '../inspector/InspectorComicForm.vue'
@@ -284,7 +284,7 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
                 v-if="detail.metadata.data.duration_secs"
                 class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
               >
-                {{ formatDuration(detail.metadata.data.duration_secs) }}
+                {{ formatDuration(detail.metadata.data.duration_secs, '—') }}
               </span>
               <span
                 v-if="detail.metadata.data.bit_rate_kbps"
