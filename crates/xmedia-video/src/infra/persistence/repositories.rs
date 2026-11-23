@@ -1037,34 +1037,6 @@ impl VideoSourceRepository for ToastyVideoSourceRepository {
         Ok(())
     }
 
-    async fn update_existing(&self, source: &VideoSourceRecord) -> DomainResult<bool> {
-        let mut db = self.db.clone();
-        let Some(mut rec) = VideoSourceRecordModel::filter_by_id(source.id)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        else {
-            return Ok(false);
-        };
-        rec.update()
-            .name(source.name.clone())
-            .source_url(source.source_url.clone())
-            .group_name(source.group_name.clone())
-            .enabled(source.enabled)
-            .weight(source.weight)
-            .source_type(source.source_type)
-            .raw_json(source.raw_json.clone())
-            .runtime_state(toasty::Json(source.runtime_state.clone()))
-            .last_test_ok(source.last_test_ok)
-            .last_test_msg(source.last_test_msg.clone())
-            .updated_at(source.updated_at)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(true)
-    }
-
     async fn update_metadata_if_exists(
         &self,
         id: Uuid,

@@ -84,7 +84,6 @@ pub trait VideoSourceRepository: Send + Sync {
     async fn list_all(&self) -> DomainResult<Vec<VideoSourceRecord>>;
     async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<VideoSourceRecord>>;
     async fn save(&self, source: &VideoSourceRecord) -> DomainResult<()>;
-    async fn update_existing(&self, source: &VideoSourceRecord) -> DomainResult<bool>;
     async fn update_metadata_if_exists(
         &self,
         id: Uuid,

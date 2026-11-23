@@ -100,7 +100,6 @@ pub trait ComicSourceRepository: Send + Sync {
     async fn list_all(&self) -> DomainResult<Vec<ComicSourceRecord>>;
     async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<ComicSourceRecord>>;
     async fn save(&self, source: &ComicSourceRecord) -> DomainResult<()>;
-    async fn update_existing(&self, source: &ComicSourceRecord) -> DomainResult<bool>;
     async fn update_metadata_if_exists(
         &self,
         id: Uuid,

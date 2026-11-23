@@ -7,7 +7,8 @@ use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
-    format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
+    format_test_failure_summary, format_timeout_step, merge_diagnostics,
+    merge_runtime_state_with_base, summarize_steps_outcome,
 };
 
 use crate::source::hls::{
@@ -22,7 +23,6 @@ use super::dto::{
     VideoSourceTestInput, VideoSourceTestMode, VideoSourceTestPayload, VideoSourceTestReportDto,
     VideoSourceTestStepDto,
 };
-use super::sources::merge_runtime_state_with_base;
 use super::{CancelOnDrop, SOURCE_TEST_TOTAL_TIMEOUT, VideoOnlineService};
 
 impl VideoOnlineService {

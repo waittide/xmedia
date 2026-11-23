@@ -1,3 +1,4 @@
+pub mod concurrency;
 pub mod crud;
 pub mod http;
 pub mod js_runtime;

@@ -78,8 +78,6 @@ pub trait BookSourceRepository: Send + Sync {
     async fn list_all(&self) -> DomainResult<Vec<BookSourceRecord>>;
     async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<BookSourceRecord>>;
     async fn save(&self, source: &BookSourceRecord) -> DomainResult<()>;
-    /// Updates an existing source row without resurrecting a deleted record.
-    async fn update_existing(&self, source: &BookSourceRecord) -> DomainResult<bool>;
     /// Updates mutable metadata columns (and optionally `runtime_state.variable`) without
     /// overwriting `login_info`, `cookies`, `cache`, or test status columns.
     async fn update_metadata_if_exists(

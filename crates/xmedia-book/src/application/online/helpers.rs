@@ -1,13 +1,16 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use md5::{Digest, Md5};
 use tokio::sync::Notify;
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
+pub(super) use xmedia_source::concurrency::{
+    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
+};
 
 use crate::source::model::{ConcurrentRateSpec, OnlineChapterContent};
 use crate::source::packager::PackChapterInput;
@@ -15,62 +18,6 @@ use crate::source::tracked_store::write_atomic;
 
 use super::dto::{DownloadJobStatus, OnlineDownloadJobDto};
 use super::{DEFAULT_DOWNLOAD_CONCURRENCY, DEFAULT_DOWNLOAD_MIN_INTERVAL_MS};
-
-pub(super) struct CancelOnDrop {
-    flag: Arc<AtomicBool>,
-    armed: bool,
-}
-
-impl CancelOnDrop {
-    pub(super) fn new(flag: Arc<AtomicBool>) -> Self {
-        Self { flag, armed: true }
-    }
-
-    pub(super) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            self.flag.store(true, Ordering::Relaxed);
-        }
-    }
-}
-
-pub(super) struct CancelTasksOnDrop {
-    entries: Vec<(Arc<AtomicBool>, tokio::task::AbortHandle)>,
-    armed: bool,
-}
-
-impl CancelTasksOnDrop {
-    pub(super) fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-            armed: true,
-        }
-    }
-
-    pub(super) fn push(&mut self, flag: Arc<AtomicBool>, abort: tokio::task::AbortHandle) {
-        self.entries.push((flag, abort));
-    }
-
-    pub(super) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelTasksOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            for (flag, abort) in &self.entries {
-                flag.store(true, Ordering::Relaxed);
-                abort.abort();
-            }
-        }
-    }
-}
 
 pub(super) struct StoredDownloadJob {
     pub(super) dto: OnlineDownloadJobDto,
@@ -213,24 +160,6 @@ pub(super) struct ChapterFetchOptions {
     pub(super) force_refresh: bool,
     pub(super) include_logs: bool,
     pub(super) allow_shared_cache_write: bool,
-}
-
-pub(super) type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
-
-pub(super) fn get_or_insert_weak_lock<K: Eq + std::hash::Hash>(
-    map: &AsyncLockMap<K>,
-    key: K,
-) -> Arc<tokio::sync::Mutex<()>> {
-    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = guard.get(&key).and_then(Weak::upgrade) {
-        return existing;
-    }
-    if guard.len() > 256 {
-        guard.retain(|_, w| w.strong_count() > 0);
-    }
-    let lock = Arc::new(tokio::sync::Mutex::new(()));
-    guard.insert(key, Arc::downgrade(&lock));
-    lock
 }
 
 pub(crate) fn validate_safe_cover_image(

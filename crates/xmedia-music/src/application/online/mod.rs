@@ -7,13 +7,15 @@ mod sources;
 mod tracked;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use uuid::Uuid;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::repository::LibraryRepository;
+pub(super) use xmedia_source::concurrency::{
+    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
+};
 use xmedia_source::model::ConcurrentRateSpec;
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
@@ -32,80 +34,6 @@ pub(super) const SEARCH_MAX_CONCURRENCY: usize = 16;
 pub(super) const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const TRACK_INFO_OP_TIMEOUT: Duration = Duration::from_secs(45);
 pub(super) const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
-
-pub(super) struct CancelOnDrop {
-    flag: Arc<AtomicBool>,
-    armed: bool,
-}
-
-impl CancelOnDrop {
-    pub(super) fn new(flag: Arc<AtomicBool>) -> Self {
-        Self { flag, armed: true }
-    }
-
-    pub(super) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            self.flag.store(true, Ordering::Relaxed);
-        }
-    }
-}
-
-pub(super) struct CancelTasksOnDrop {
-    entries: Vec<(Arc<AtomicBool>, tokio::task::AbortHandle)>,
-    armed: bool,
-}
-
-impl CancelTasksOnDrop {
-    pub(super) fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-            armed: true,
-        }
-    }
-
-    pub(super) fn push(&mut self, flag: Arc<AtomicBool>, abort: tokio::task::AbortHandle) {
-        self.entries.push((flag, abort));
-    }
-
-    pub(super) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelTasksOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            for (flag, abort) in &self.entries {
-                flag.store(true, Ordering::Relaxed);
-                abort.abort();
-            }
-        }
-    }
-}
-
-pub(super) type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
-
-pub(super) fn get_or_insert_weak_lock<K: Eq + std::hash::Hash + Clone>(
-    map: &AsyncLockMap<K>,
-    key: K,
-) -> Arc<tokio::sync::Mutex<()>> {
-    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.len() > 256 {
-        guard.retain(|_, weak| weak.strong_count() > 0);
-    }
-    if let Some(existing) = guard.get(&key).and_then(Weak::upgrade) {
-        return existing;
-    }
-    let created = Arc::new(tokio::sync::Mutex::new(()));
-    guard.insert(key, Arc::downgrade(&created));
-    created
-}
 
 #[derive(Clone)]
 pub struct MusicTrackingDeps {
