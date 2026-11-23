@@ -10,7 +10,7 @@ import {
   type OnlineItemMetadataInput,
   type TrackedItemRef,
 } from '@/sources'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 import VideoPlayerShell, { type VideoPlayerEpisodeItem } from '../components/VideoPlayerShell.vue'
 import {
   buildOnlineVideoDetailRoute,
@@ -47,7 +47,7 @@ interface ResolvedOnlineVideoSubtitle extends OnlineVideoSubtitle {
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const themeStore = useThemeStore()
+const preferencesStore = usePreferencesStore()
 const musicPlayerStore = usePlayerStore()
 
 const shellRef = ref<InstanceType<typeof VideoPlayerShell> | null>(null)
@@ -69,7 +69,7 @@ const currentPlayUrl = ref('')
 const playResult = ref<OnlineVideoPlayResponseDto | null>(null)
 const activeStreamType = ref<'hls' | 'mp4'>('mp4')
 const selectedSubtitleIdx = ref<string>('off')
-const playbackRate = ref<number>(themeStore.video.playback_rate || 1.0)
+const playbackRate = ref<number>(preferencesStore.video.playback_rate || 1.0)
 
 const loadingStream = ref(true)
 const isBuffering = ref(false)
@@ -687,7 +687,7 @@ function seekTo(targetSecs: number): void {
 function onPlaybackRateChange(rate: number): void {
   playbackRate.value = rate
   if (videoEl.value) videoEl.value.playbackRate = rate
-  themeStore.updateVideoPreferences({ playback_rate: rate })
+  preferencesStore.updateVideoPreferences({ playback_rate: rate })
 }
 
 function setVolume(val: number): void {
@@ -757,7 +757,7 @@ function onVideoEnded(): void {
   isBuffering.value = false
   setVideoMediaSessionState('paused')
   reportOnlineProgress({ immediate: true, completed: true })
-  if (themeStore.video.autoplay_next && hasNextEpisode.value) {
+  if (preferencesStore.video.autoplay_next && hasNextEpisode.value) {
     goToNextEpisode()
   }
 }

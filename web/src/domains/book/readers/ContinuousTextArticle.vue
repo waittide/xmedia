@@ -11,7 +11,7 @@ import {
 import { MediaErrorState } from '@/components/domain'
 import { MdButton, MdCircularProgress, MdIconButton } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 import { resolveFontStack } from '@/utils/format'
 import type { ContinuousChapterSection } from './useContinuousChapterReader'
 
@@ -59,15 +59,15 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const themeStore = useThemeStore()
+const preferencesStore = usePreferencesStore()
 
 const scrollContainerRef = ref<HTMLElement | null>(null)
 
-const fontFamilyStyle = computed(() => resolveFontStack(themeStore.reader.font_family))
+const fontFamilyStyle = computed(() => resolveFontStack(preferencesStore.reader.font_family))
 
-const fontSizePx = computed(() => themeStore.reader.font_size || 18)
-const lineHeightVal = computed(() => themeStore.reader.line_height || 1.85)
-const maxWidthPx = computed(() => Math.max(520, 920 - (themeStore.reader.margin_px || 48) * 2))
+const fontSizePx = computed(() => preferencesStore.reader.font_size || 18)
+const lineHeightVal = computed(() => preferencesStore.reader.line_height || 1.85)
+const maxWidthPx = computed(() => Math.max(520, 920 - (preferencesStore.reader.margin_px || 48) * 2))
 
 const articleStyle = computed(() => ({
   maxWidth: `${maxWidthPx.value}px`,

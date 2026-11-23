@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { AppSlider, MdSegmentedButton, type SegmentedOption } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 
 withDefaults(
   defineProps<{
@@ -14,7 +14,7 @@ withDefaults(
 )
 
 const { t } = useI18n()
-const themeStore = useThemeStore()
+const preferencesStore = usePreferencesStore()
 
 const flowOptions = computed<SegmentedOption<'paginated' | 'scrolled'>[]>(() => [
   { value: 'paginated', label: t('reader.paginated') },
@@ -35,11 +35,11 @@ const fontOptions = computed<SegmentedOption<string>[]>(() => [
         {{ t('reader.flowMode') }}
       </label>
       <MdSegmentedButton
-        :model-value="themeStore.reader.flow"
+        :model-value="preferencesStore.reader.flow"
         :options="flowOptions"
         size="sm"
         full-width
-        @update:model-value="(v) => themeStore.updateReaderPreferences({ flow: v })"
+        @update:model-value="(v) => preferencesStore.updateReaderPreferences({ flow: v })"
       />
     </div>
 
@@ -48,11 +48,11 @@ const fontOptions = computed<SegmentedOption<string>[]>(() => [
         {{ t('reader.fontFamily') }}
       </label>
       <MdSegmentedButton
-        :model-value="themeStore.reader.font_family"
+        :model-value="preferencesStore.reader.font_family"
         :options="fontOptions"
         size="sm"
         full-width
-        @update:model-value="(v) => themeStore.updateReaderPreferences({ font_family: v })"
+        @update:model-value="(v) => preferencesStore.updateReaderPreferences({ font_family: v })"
       />
     </div>
 
@@ -60,16 +60,16 @@ const fontOptions = computed<SegmentedOption<string>[]>(() => [
       <div class="flex items-center justify-between">
         <span class="text-label-medium text-on-surface-variant">{{ t('reader.fontSize') }}</span>
         <span class="text-label-medium font-mono tabular-nums text-on-surface">
-          {{ themeStore.reader.font_size }} px
+          {{ preferencesStore.reader.font_size }} px
         </span>
       </div>
       <AppSlider
-        :model-value="themeStore.reader.font_size"
+        :model-value="preferencesStore.reader.font_size"
         :min="14"
         :max="30"
         :step="1"
         :aria-label="t('reader.fontSize')"
-        @update:model-value="(v) => themeStore.updateReaderPreferences({ font_size: v })"
+        @update:model-value="(v) => preferencesStore.updateReaderPreferences({ font_size: v })"
       />
     </div>
 
@@ -77,16 +77,16 @@ const fontOptions = computed<SegmentedOption<string>[]>(() => [
       <div class="flex items-center justify-between">
         <span class="text-label-medium text-on-surface-variant">{{ t('reader.lineHeight') }}</span>
         <span class="text-label-medium font-mono tabular-nums text-on-surface">
-          {{ themeStore.reader.line_height.toFixed(2) }}
+          {{ preferencesStore.reader.line_height.toFixed(2) }}
         </span>
       </div>
       <AppSlider
-        :model-value="themeStore.reader.line_height"
+        :model-value="preferencesStore.reader.line_height"
         :min="1.3"
         :max="2.4"
         :step="0.05"
         :aria-label="t('reader.lineHeight')"
-        @update:model-value="(v) => themeStore.updateReaderPreferences({ line_height: v })"
+        @update:model-value="(v) => preferencesStore.updateReaderPreferences({ line_height: v })"
       />
     </div>
 
@@ -94,16 +94,16 @@ const fontOptions = computed<SegmentedOption<string>[]>(() => [
       <div class="flex items-center justify-between">
         <span class="text-label-medium text-on-surface-variant">{{ t('reader.margin') }}</span>
         <span class="text-label-medium font-mono tabular-nums text-on-surface">
-          {{ themeStore.reader.margin_px }} px
+          {{ preferencesStore.reader.margin_px }} px
         </span>
       </div>
       <AppSlider
-        :model-value="themeStore.reader.margin_px"
+        :model-value="preferencesStore.reader.margin_px"
         :min="16"
         :max="120"
         :step="8"
         :aria-label="t('reader.margin')"
-        @update:model-value="(v) => themeStore.updateReaderPreferences({ margin_px: v })"
+        @update:model-value="(v) => preferencesStore.updateReaderPreferences({ margin_px: v })"
       />
     </div>
   </div>

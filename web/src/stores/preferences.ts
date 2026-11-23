@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -151,6 +151,9 @@ export const usePreferencesStore = defineStore('preferences', () => {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', flushSyncOnPageHide)
+    onScopeDispose(() => {
+      window.removeEventListener('pagehide', flushSyncOnPageHide)
+    })
   }
 
   function persistAndSync(): void {

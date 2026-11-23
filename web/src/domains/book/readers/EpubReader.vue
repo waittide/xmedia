@@ -7,6 +7,7 @@ import { MdCircularProgress, MdIconButton } from '@/components/ui'
 import { api } from '@/domains/book/api'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import type { ReadingLocation } from '@/domains/book/types'
+import { usePreferencesStore } from '@/stores/preferences'
 import { useThemeStore } from '@/stores/theme'
 import { resolveFontStack } from '@/utils/format'
 
@@ -41,6 +42,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const preferencesStore = usePreferencesStore()
 const themeStore = useThemeStore()
 
 const mountEl = ref<HTMLElement | null>(null)
@@ -143,7 +145,7 @@ function writeCachedLocations(key: string, serialized: string): void {
 function applyRenditionTheme(): void {
   if (!rendition) return
   const scheme = themeStore.activeScheme
-  const r = themeStore.reader
+  const r = preferencesStore.reader
   const verticalPad = r.flow === 'scrolled' ? 64 : 16
   rendition.themes.default({
     body: {
@@ -169,7 +171,7 @@ function handleRenditionClick(...args: unknown[]): void {
   const sel = doc?.getSelection?.()
   if (sel && sel.toString().trim().length > 0) return
 
-  if (themeStore.reader.flow !== 'paginated') {
+  if (preferencesStore.reader.flow !== 'paginated') {
     emit('toggle-hud')
     return
   }
@@ -198,7 +200,7 @@ function handleRenditionTouchStart(...args: unknown[]): void {
 }
 
 function handleRenditionTouchEnd(...args: unknown[]): void {
-  if (themeStore.reader.flow !== 'paginated') return
+  if (preferencesStore.reader.flow !== 'paginated') return
   const ev = args[0] as TouchEvent | undefined
   const touch = ev?.changedTouches?.[0]
   if (!touch) return
@@ -231,7 +233,7 @@ async function mountRendition(target?: string): Promise<void> {
   const seq = ++renderSeq
   destroyRendition()
 
-  const isScrolled = themeStore.reader.flow === 'scrolled'
+  const isScrolled = preferencesStore.reader.flow === 'scrolled'
   const localRendition = book.renderTo(mountEl.value, {
     width: '100%',
     height: '100%',
@@ -502,10 +504,10 @@ onMounted(() => {
 watch(
   () => [
     themeStore.activeScheme,
-    themeStore.reader.font_family,
-    themeStore.reader.font_size,
-    themeStore.reader.line_height,
-    themeStore.reader.margin_px,
+    preferencesStore.reader.font_family,
+    preferencesStore.reader.font_size,
+    preferencesStore.reader.line_height,
+    preferencesStore.reader.margin_px,
   ],
   () => {
     applyRenditionTheme()
@@ -513,7 +515,7 @@ watch(
 )
 
 watch(
-  () => themeStore.reader.flow,
+  () => preferencesStore.reader.flow,
   () => {
     if (!book || !mountEl.value || loading.value) return
     const resumeTarget = lastKnownCfi || props.initialLocation?.locator || undefined
@@ -555,7 +557,7 @@ onBeforeUnmount(() => {
     <div ref="mountEl" class="h-full w-full max-w-5xl" />
 
     <!-- Subtle Desktop Edge Page-Turn Controls (hidden on mobile & when HUD is idle) -->
-    <template v-if="themeStore.reader.flow === 'paginated' && !loading && !errorMsg">
+    <template v-if="preferencesStore.reader.flow === 'paginated' && !loading && !errorMsg">
       <div
         class="pointer-events-none fixed inset-y-0 left-3 hidden items-center transition-opacity duration-200 ease-standard sm:flex"
         :class="hudVisible ? 'opacity-100' : 'opacity-0'"

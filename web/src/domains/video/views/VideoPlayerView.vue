@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import Hls from 'hls.js'
 import type { SelectOption } from '@/components/ui'
 import { usePlayerStore } from '@/domains/music/player'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 import { formatDuration } from '@/utils/format'
 import {
   api,
@@ -40,7 +40,7 @@ interface ResolvedTrackedSubtitle extends OnlineVideoSubtitle {
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const themeStore = useThemeStore()
+const preferencesStore = usePreferencesStore()
 const musicPlayerStore = usePlayerStore()
 const videoStore = useVideoStore()
 
@@ -51,10 +51,10 @@ const detail = ref<VideoDetailDto | null>(null)
 const trackedPlayResult = ref<TrackedVideoPlayResponseDto | null>(null)
 const trackedStreamType = ref<'hls' | 'mp4'>('mp4')
 const siblingVideos = ref<VideoSummaryDto[]>([])
-const quality = ref<VideoQualityProfile>(themeStore.video.default_quality || 'auto')
+const quality = ref<VideoQualityProfile>(preferencesStore.video.default_quality || 'auto')
 const selectedAudioStream = ref<number | null>(null)
 const selectedSubtitleId = ref<string>('off')
-const playbackRate = ref<number>(themeStore.video.playback_rate || 1.0)
+const playbackRate = ref<number>(preferencesStore.video.playback_rate || 1.0)
 
 const loadingVideo = ref(true)
 const isBuffering = ref(false)
@@ -655,7 +655,7 @@ function onQualityChange(val: string): void {
   const next = val as VideoQualityProfile
   if (next === quality.value) return
   quality.value = next
-  themeStore.updateVideoPreferences({ default_quality: next })
+  preferencesStore.updateVideoPreferences({ default_quality: next })
   loadStreamAt(currentTimeSecs.value, isPlaying.value)
 }
 
@@ -675,7 +675,7 @@ function onSubtitleChange(val: string): void {
 function onPlaybackRateChange(rate: number): void {
   playbackRate.value = rate
   if (videoEl.value) videoEl.value.playbackRate = rate
-  themeStore.updateVideoPreferences({ playback_rate: rate })
+  preferencesStore.updateVideoPreferences({ playback_rate: rate })
 }
 
 function setVolume(val: number): void {
@@ -754,7 +754,7 @@ function onVideoEnded(): void {
   isBuffering.value = false
   setVideoMediaSessionState('paused')
   void persistProgress(true, { bumpCatalog: true })
-  if (themeStore.video.autoplay_next && nextEpisodeId.value) {
+  if (preferencesStore.video.autoplay_next && nextEpisodeId.value) {
     navigateToVideo(nextEpisodeId.value)
   }
 }

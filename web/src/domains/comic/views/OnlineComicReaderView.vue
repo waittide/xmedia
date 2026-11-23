@@ -25,12 +25,12 @@ import {
   type TrackedItemRef,
 } from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const theme = useThemeStore()
+const preferences = usePreferencesStore()
 const snackbar = useSnackbarStore()
 
 const ctx = ref<OnlineComicReaderContextStorage | null>(null)
@@ -46,11 +46,11 @@ const loading = ref(true)
 const loadError = ref<string | null>(null)
 const hasContent = ref(false)
 
-const readerMode = ref<ReaderMode>(theme.comic.default_reader_mode)
-const fitMode = ref<ReaderFitMode>(theme.comic.default_fit_mode)
-const offsetCoverPage = ref<boolean>(theme.comic.offset_cover_page)
-const dimImages = ref<boolean>(theme.comic.dim_images_in_dark)
-const webtoonWidth = ref<number>(theme.comic.webtoon_width)
+const readerMode = ref<ReaderMode>(preferences.comic.default_reader_mode)
+const fitMode = ref<ReaderFitMode>(preferences.comic.default_fit_mode)
+const offsetCoverPage = ref<boolean>(preferences.comic.offset_cover_page)
+const dimImages = ref<boolean>(preferences.comic.dim_images_in_dark)
+const webtoonWidth = ref<number>(preferences.comic.webtoon_width)
 
 let initSeq = 0
 let loadSeq = 0
@@ -101,17 +101,17 @@ function saveReaderCtxToStorage(next: OnlineComicReaderContextStorage): void {
 function mapDirectionToReaderMode(dir: ComicReadingDirection | null | undefined): ReaderMode {
   if (dir === 'webtoon') return 'webtoon'
   if (dir === 'ltr') {
-    return theme.comic.default_reader_mode === 'ltr_double' ? 'ltr_double' : 'ltr_single'
+    return preferences.comic.default_reader_mode === 'ltr_double' ? 'ltr_double' : 'ltr_single'
   }
   if (dir === 'rtl') return 'rtl_double'
-  return theme.comic.default_reader_mode
+  return preferences.comic.default_reader_mode
 }
 
 function hydratePreferencesFromTheme(dir?: ComicReadingDirection | null): void {
-  fitMode.value = theme.comic.default_fit_mode
-  offsetCoverPage.value = theme.comic.offset_cover_page
-  dimImages.value = theme.comic.dim_images_in_dark
-  webtoonWidth.value = theme.comic.webtoon_width
+  fitMode.value = preferences.comic.default_fit_mode
+  offsetCoverPage.value = preferences.comic.offset_cover_page
+  dimImages.value = preferences.comic.dim_images_in_dark
+  webtoonWidth.value = preferences.comic.webtoon_width
   if (!userOverrodeMode) {
     readerMode.value = mapDirectionToReaderMode(dir)
   }
@@ -796,7 +796,7 @@ watch(
     :offset-cover-page="offsetCoverPage"
     :dim-images="dimImages"
     :webtoon-width="webtoonWidth"
-    :preload-pages="theme.comic.preload_pages"
+    :preload-pages="preferences.comic.preload_pages"
     :loading="loading"
     :load-error="loadError"
     :has-content="hasContent"

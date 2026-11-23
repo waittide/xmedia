@@ -8,7 +8,7 @@ import {
 } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 import { api, buildCoverUrl, buildStreamUrl, canPlayFormatNatively } from './api'
 import { useMusicI18n } from './i18n'
 import {
@@ -152,7 +152,7 @@ function isOnlineItemExpired(item: OnlineQueueItem): boolean {
 }
 
 export const usePlayerStore = defineStore('player', () => {
-  const themeStore = useThemeStore()
+  const preferencesStore = usePreferencesStore()
   const { t: tMusic, ensureLocale: ensureMusicLocale } = useMusicI18n()
   void ensureMusicLocale()
   const audio = new Audio()
@@ -366,11 +366,11 @@ export const usePlayerStore = defineStore('player', () => {
   const bufferedPercent = computed<number>(() => Math.round(bufferedRatio.value * 100))
 
   const transcodeProfile = computed<TranscodeProfile>(
-    () => themeStore.playback.transcode_profile,
+    () => preferencesStore.playback.transcode_profile,
   )
-  const playMode = computed<PlayMode>(() => themeStore.playback.play_mode)
-  const volume = computed<number>(() => themeStore.playback.volume)
-  const muted = computed<boolean>(() => themeStore.playback.muted)
+  const playMode = computed<PlayMode>(() => preferencesStore.playback.play_mode)
+  const volume = computed<number>(() => preferencesStore.playback.volume)
+  const muted = computed<boolean>(() => preferencesStore.playback.muted)
 
   const qualitySummary = computed<string>(() => {
     const item = currentItem.value
@@ -944,7 +944,7 @@ export const usePlayerStore = defineStore('player', () => {
       copy[i] = copy[j]!
       copy[j] = tmp
     }
-    themeStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
+    preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
     playQueue(copy, 0)
   }
 
@@ -968,7 +968,7 @@ export const usePlayerStore = defineStore('player', () => {
       copy[i] = copy[j]!
       copy[j] = tmp
     }
-    themeStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
+    preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
     playOnlineTracks(copy, 0)
   }
 
@@ -1092,7 +1092,7 @@ export const usePlayerStore = defineStore('player', () => {
       copy[i] = copy[j]!
       copy[j] = tmp
     }
-    themeStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
+    preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
     playRemoteSongs(sourceId, sourceName, copy, 0, 0)
   }
 
@@ -1321,7 +1321,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (next === transcodeProfile.value) return
     const resumeSecs = currentTimeSecs.value
     const wasPlaying = isPlaying.value
-    themeStore.updatePlaybackPreferences({ transcode_profile: next })
+    preferencesStore.updatePlaybackPreferences({ transcode_profile: next })
     if (currentItem.value?.kind === 'local') {
       void loadAndPlayCurrent(resumeSecs, wasPlaying)
     }
@@ -1339,19 +1339,19 @@ export const usePlayerStore = defineStore('player', () => {
     const order: PlayMode[] = ['sequence', 'loop_one', 'shuffle']
     const idx = order.indexOf(playMode.value)
     const next = order[(idx + 1) % order.length]!
-    themeStore.updatePlaybackPreferences({ play_mode: next })
+    preferencesStore.updatePlaybackPreferences({ play_mode: next })
   }
 
   function setVolume(nextVol: number): void {
     const clamped = Math.max(0, Math.min(1, nextVol))
-    themeStore.updatePlaybackPreferences({
+    preferencesStore.updatePlaybackPreferences({
       volume: clamped,
       muted: clamped === 0 ? true : false,
     })
   }
 
   function toggleMute(): void {
-    themeStore.updatePlaybackPreferences({ muted: !muted.value })
+    preferencesStore.updatePlaybackPreferences({ muted: !muted.value })
   }
 
   function moveQueueItem(fromIndex: number, toIndex: number): void {

@@ -41,7 +41,7 @@ import { formatProgressPercentValue } from '@/domains/book/utils/bookVm'
 import { itemRoute, libraryRoute } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 
 const EpubReader = defineAsyncComponent(() => import('@/domains/book/readers/EpubReader.vue'))
 const TxtReader = defineAsyncComponent(() => import('@/domains/book/readers/TxtReader.vue'))
@@ -76,7 +76,7 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
-const themeStore = useThemeStore()
+const preferencesStore = usePreferencesStore()
 const snackbarStore = useSnackbarStore()
 
 const bookId = computed(() => String(route.params.id ?? ''))
@@ -112,7 +112,7 @@ const isPdf = computed(() => Boolean(book.value && !book.value.online_tracking &
 const isPaginatedEpub = computed(
   () =>
     Boolean(book.value && !book.value.online_tracking && book.value.format === 'epub') &&
-    themeStore.reader.flow === 'paginated',
+    preferencesStore.reader.flow === 'paginated',
 )
 
 const centerTapMode = computed<ImmersiveTapMode>(() =>

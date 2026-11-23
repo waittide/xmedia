@@ -19,13 +19,13 @@ import type {
 } from '@/domains/comic/types'
 import { itemRoute, libraryRoute, playRoute } from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
-const theme = useThemeStore()
+const preferences = usePreferencesStore()
 const sidebarStore = useSidebarStore()
 const snackbar = useSnackbarStore()
 
@@ -251,7 +251,7 @@ function toggleOffsetCover(val: boolean): void {
 
 function toggleDimImages(val: boolean): void {
   dimImages.value = val
-  theme.updateComicPreferences({ dim_images_in_dark: val })
+  preferences.updateComicPreferences({ dim_images_in_dark: val })
 }
 
 function handleWebtoonWidthCommit(val: number): void {

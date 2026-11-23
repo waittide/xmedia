@@ -1,5 +1,5 @@
-import { computed, ref, watch } from 'vue'
-import { defineStore, storeToRefs } from 'pinia'
+import { computed, onScopeDispose, ref, watch } from 'vue'
+import { defineStore } from 'pinia'
 import {
   applyMd3Theme,
   DEFAULT_SEED_COLOR,
@@ -45,8 +45,12 @@ export const useThemeStore = defineStore('theme', () => {
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   const prefersDark = ref<boolean>(mediaQuery.matches)
-  mediaQuery.addEventListener('change', (ev) => {
+  const onPrefersDarkChange = (ev: MediaQueryListEvent): void => {
     prefersDark.value = ev.matches
+  }
+  mediaQuery.addEventListener('change', onPrefersDarkChange)
+  onScopeDispose(() => {
+    mediaQuery.removeEventListener('change', onPrefersDarkChange)
   })
 
   const isDark = computed<boolean>(() => {
@@ -127,9 +131,6 @@ export const useThemeStore = defineStore('theme', () => {
 
   setAppLocale(locale.value)
 
-  // Lightweight compatibility pass-through proxies to usePreferencesStore()
-  const { reader, comic, playback, video } = storeToRefs(preferencesStore)
-
   return {
     themeMode,
     seedColor,
@@ -142,14 +143,5 @@ export const useThemeStore = defineStore('theme', () => {
     setSeedColor,
     resetSeedColor,
     setLocale,
-    // Compatibility pass-throughs for existing consumers
-    reader,
-    comic,
-    playback,
-    video,
-    updateReaderPreferences: preferencesStore.updateReaderPreferences,
-    updateComicPreferences: preferencesStore.updateComicPreferences,
-    updatePlaybackPreferences: preferencesStore.updatePlaybackPreferences,
-    updateVideoPreferences: preferencesStore.updateVideoPreferences,
   }
 })
