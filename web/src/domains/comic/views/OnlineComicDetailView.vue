@@ -626,7 +626,7 @@ async function handleTrackToLibrary(): Promise<void> {
           variant="tonal"
           size="sm"
           :icon="LuSettings2"
-          :to="{ path: '/settings/sources', query: { domain: 'comic' } }"
+          :to="{ path: '/comic/settings', query: { tab: 'sources' } }"
         >
           {{ t('online.manageSourcesBtn') }}
         </MdButton>

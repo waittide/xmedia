@@ -540,7 +540,7 @@ watch(
           variant="tonal"
           size="sm"
           :icon="LuSettings2"
-          :to="{ path: '/settings/sources', query: { domain: 'video' } }"
+          :to="{ path: '/video/settings', query: { tab: 'sources' } }"
         >
           {{ t('detail.manageSources') }}
         </MdButton>

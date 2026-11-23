@@ -742,7 +742,7 @@ function onRemoteSourceSelect(nextId: string): void {
 }
 
 function goRemoteSettings(): void {
-  void router.push({ path: '/settings/sources', query: { domain: 'comic', kind: 'remote' } })
+  void router.push({ path: '/comic/settings', query: { tab: 'sources', kind: 'remote' } })
 }
 
 function mergedItemKey(item: MediaItemVM, idx: number): string {

@@ -19,9 +19,11 @@ import { DOMAIN_ICONS } from './sections'
 const props = withDefaults(
   defineProps<{
     anchorHash?: string
+    domain?: MediaKind
   }>(),
   {
     anchorHash: '',
+    domain: undefined,
   },
 )
 
@@ -31,7 +33,14 @@ const { t: comicT } = useComicI18n()
 const authStore = useAuthStore()
 const prefsStore = usePreferencesStore()
 
-const enabledDomains = computed<MediaKind[]>(() => authStore.enabledModules)
+const enabledDomains = computed<MediaKind[]>(() =>
+  props.domain ? [props.domain] : authStore.enabledModules,
+)
+
+function showDomain(kind: MediaKind): boolean {
+  if (props.domain) return props.domain === kind && authStore.hasModule(kind)
+  return authStore.hasModule(kind)
+}
 
 const activeAnchorDomain = computed<MediaKind | null>(() => {
   const clean = props.anchorHash.replace(/^#/, '')
@@ -108,7 +117,7 @@ watch(
   <div class="flex flex-col gap-5">
     <!-- Quick anchor chips across enabled domains -->
     <div
-      v-if="enabledDomains.length > 1"
+      v-if="!domain && enabledDomains.length > 1"
       class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
     >
       <MdChip
@@ -125,7 +134,7 @@ watch(
 
     <!-- #book: Book Reader Defaults -->
     <MdCard
-      v-if="authStore.hasModule('book')"
+      v-if="showDomain('book')"
       id="book"
       as="section"
       variant="outlined"
@@ -221,7 +230,7 @@ watch(
 
     <!-- #comic: Comic Reader Defaults -->
     <MdCard
-      v-if="authStore.hasModule('comic')"
+      v-if="showDomain('comic')"
       id="comic"
       as="section"
       variant="outlined"
@@ -294,7 +303,7 @@ watch(
 
     <!-- #music: Music Playback Defaults (Bookmarks removed per §3.4) -->
     <MdCard
-      v-if="authStore.hasModule('music')"
+      v-if="showDomain('music')"
       id="music"
       as="section"
       variant="outlined"
@@ -336,7 +345,7 @@ watch(
 
     <!-- #video: Video Playback Defaults -->
     <MdCard
-      v-if="authStore.hasModule('video')"
+      v-if="showDomain('video')"
       id="video"
       as="section"
       variant="outlined"

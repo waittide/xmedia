@@ -34,9 +34,11 @@ import { DOMAIN_ICONS } from './sections'
 const props = withDefaults(
   defineProps<{
     filterDomain?: 'all' | MediaKind
+    lockedDomain?: MediaKind
   }>(),
   {
     filterDomain: 'all',
+    lockedDomain: undefined,
   },
 )
 
@@ -53,6 +55,10 @@ const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
 const snackbarStore = useSnackbarStore()
 
+const effectiveFilterDomain = computed<'all' | MediaKind>(
+  () => props.lockedDomain ?? props.filterDomain,
+)
+
 const allLibraries = ref<CoreLibraryDto[]>([])
 const loading = ref(false)
 const scanningId = ref<string | null>(null)
@@ -61,7 +67,8 @@ const scanningAll = ref(false)
 // Add Library Dialog state
 const addDialogOpen = ref(false)
 const libKind = ref<MediaKind>(
-  props.filterDomain !== 'all' ? props.filterDomain : domainStore.activeDomain,
+  props.lockedDomain ??
+    (props.filterDomain !== 'all' ? props.filterDomain : domainStore.activeDomain),
 )
 const libName = ref('')
 const libPath = ref('')
@@ -91,8 +98,8 @@ const countsByDomain = computed<Record<MediaKind, number>>(() => {
 })
 
 const filteredLibraries = computed(() => {
-  if (props.filterDomain === 'all') return enabledLibraries.value
-  return enabledLibraries.value.filter((l) => l.media_kind === props.filterDomain)
+  if (effectiveFilterDomain.value === 'all') return enabledLibraries.value
+  return enabledLibraries.value.filter((l) => l.media_kind === effectiveFilterDomain.value)
 })
 
 const hasLocalMountInView = computed(() =>
@@ -129,6 +136,15 @@ watch(
   },
 )
 
+watch(
+  () => props.lockedDomain,
+  (next) => {
+    if (next) {
+      libKind.value = next
+    }
+  },
+)
+
 function inferNameFromPath(pathStr: string): string {
   const clean = pathStr.trim().replace(/[\\/]+$/, '')
   if (!clean) return ''
@@ -139,11 +155,12 @@ function inferNameFromPath(pathStr: string): string {
 function openAddDialog(): void {
   dialogError.value = ''
   libKind.value =
-    props.filterDomain !== 'all'
+    props.lockedDomain ??
+    (props.filterDomain !== 'all'
       ? props.filterDomain
       : authStore.hasModule(domainStore.activeDomain)
         ? domainStore.activeDomain
-        : (enabledDomains.value[0] ?? 'book')
+        : (enabledDomains.value[0] ?? 'book'))
   libName.value = ''
   libPath.value = ''
   scanNow.value = true
@@ -301,11 +318,14 @@ function formatScanStatus(lib: CoreLibraryDto): string {
   <div v-else class="flex flex-col gap-5">
     <!-- Filter Chips + Action Bar -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5">
+      <div
+        v-if="!lockedDomain"
+        class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
+      >
         <MdChip
           variant="filter"
           :label="`${t('admin.libraryFilterAll')} (${enabledLibraries.length})`"
-          :selected="filterDomain === 'all'"
+          :selected="effectiveFilterDomain === 'all'"
           @click="emit('update:filterDomain', 'all')"
         />
         <MdChip
@@ -315,9 +335,17 @@ function formatScanStatus(lib: CoreLibraryDto): string {
           hide-check
           :icon="DOMAIN_ICONS[kind]"
           :label="`${t(`app.domains.${kind}`)} (${countsByDomain[kind]})`"
-          :selected="filterDomain === kind"
-          @click="emit('update:filterDomain', filterDomain === kind ? 'all' : kind)"
+          :selected="effectiveFilterDomain === kind"
+          @click="emit('update:filterDomain', effectiveFilterDomain === kind ? 'all' : kind)"
         />
+      </div>
+      <div v-else class="min-w-0">
+        <h2 class="text-title-medium text-on-surface">
+          {{ t('settings.navDomainLibraries') }}
+        </h2>
+        <p class="text-body-small text-on-surface-variant">
+          {{ t('admin.mountLibraryDesc') }}
+        </p>
       </div>
 
       <div class="flex shrink-0 items-center gap-2">
@@ -369,6 +397,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
           <div class="min-w-0 flex-1 space-y-1">
             <div class="flex flex-wrap items-center gap-2">
               <span
+                v-if="!lockedDomain"
                 class="text-label-small inline-flex shrink-0 items-center gap-1 rounded-corner-full bg-secondary-container px-2.5 py-0.5 text-on-secondary-container"
               >
                 <component :is="DOMAIN_ICONS[lib.media_kind]" class="h-3 w-3" />
@@ -464,7 +493,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
           {{ dialogError }}
         </div>
 
-        <div>
+        <div v-if="!lockedDomain">
           <label class="text-label-medium mb-1.5 block text-on-surface-variant">
             {{ t('admin.libraryKind') }}
           </label>

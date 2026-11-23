@@ -145,7 +145,7 @@ const resolvedRecentSeeAll = computed<RouteLocationRaw>(
 )
 
 const resolvedAddLibraryTo = computed<RouteLocationRaw>(
-  () => props.addLibraryTo ?? { path: '/settings/libraries', query: { domain: props.domain } },
+  () => props.addLibraryTo ?? { path: `/${props.domain}/settings`, query: { tab: 'libraries' } },
 )
 
 const resolvedExploreOnlineTo = computed<RouteLocationRaw>(

@@ -218,7 +218,7 @@ export default {
     searchingBtn: '搜索中…',
     sourceScopeLabel: '音乐源：',
     allSourcesCount: '全部 ({count})',
-    emptySourcesHint: '当前没有已启用的音乐源，请先在「设置 → 数据源 → 音乐」导入并启用音乐源。',
+    emptySourcesHint: '当前没有已启用的音乐源，请先在「音乐 → 设置 → 来源」导入并启用音乐源。',
     sourcesLoadFailed: '加载音乐源列表失败',
     retry: '重试',
     goToSettings: '前往设置',

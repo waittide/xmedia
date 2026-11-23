@@ -237,7 +237,7 @@ defineExpose({
     :show-favorite-on-cards="true"
     :has-more="browse.activeHasMore.value"
     :loading-more="browse.activeLoadingMore.value"
-    :settings-to="{ path: '/settings/sources', query: { domain: 'comic' } }"
+    :settings-to="{ path: '/comic/settings', query: { tab: 'sources' } }"
     :idle-hint="t('online.exploreEmpty')"
     @update:keyword="browse.setKeyword($event)"
     @search-submit="browse.submitSearch()"

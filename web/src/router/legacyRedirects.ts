@@ -7,6 +7,7 @@ import type {
   RouteRecordRaw,
 } from 'vue-router'
 import { useAppClientStore } from '@/stores/appServers'
+import { useDomainStore } from '@/stores/domain'
 import { isMediaKind } from '@/sources/routes'
 import type { MediaKind } from '@/types/api'
 
@@ -272,9 +273,18 @@ function buildOnlineScopeRedirect(domain: MediaKind, query: LocationQuery): Rout
   return { path: `/${domain}/library`, query: next }
 }
 
+function resolveFallbackDomain(raw?: string | null): MediaKind {
+  if (raw && isMediaKind(raw)) return raw
+  try {
+    return useDomainStore().activeDomain
+  } catch {
+    return 'book'
+  }
+}
+
 /**
- * Maps legacy `/settings?tab=...&domain=...` query parameters to the new
- * single-level `/settings/:section` route (§1.4 & D6).
+ * Maps legacy `/settings?tab=...&domain=...` query parameters to either global
+ * `/settings/:section` or the target domain's `/:domain/settings?tab=...`.
  */
 export function migrateSettingsLocation(
   query: LocationQuery,
@@ -282,9 +292,9 @@ export function migrateSettingsLocation(
 ): RouteLocationRaw {
   const rawTab = readSingle(query, ['tab'])
   const rawDomain = readSingle(query, ['domain'])
-  const domain: MediaKind | null = isMediaKind(rawDomain) ? rawDomain : null
+  const domain = resolveFallbackDomain(rawDomain)
 
-  if (rawTab === 'general') {
+  if (rawTab === 'general' || rawTab === 'about') {
     return { path: '/settings/about' }
   }
 
@@ -298,33 +308,29 @@ export function migrateSettingsLocation(
     rawTab === 'reader' ||
     rawTab === 'playback'
   ) {
-    return domain
-      ? { path: '/settings/playback', hash: `#${domain}` }
-      : { path: '/settings/playback' }
+    return { path: `/${domain}/settings` }
   }
 
   if (rawTab === 'domain-protocols' || rawTab === 'protocols' || rawTab === 'opds') {
     const isStandalone = options?.isStandaloneApp ?? useAppClientStore().isStandaloneApp
     if (isStandalone && (domain === 'book' || domain === 'comic' || domain === 'music')) {
       return {
-        path: '/settings/sources',
-        query: { domain, kind: 'remote' },
+        path: `/${domain}/settings`,
+        query: { tab: 'sources', kind: 'remote' },
       }
     }
-    return { path: '/settings/about', hash: '#protocols' }
+    return { path: `/${domain}/settings`, query: { tab: 'protocols' } }
   }
 
   if (rawTab === 'domain-datasources' || rawTab === 'datasources' || rawTab === 'sources') {
-    // D6: legacy datasources deep links open with advanced mode enabled (E2E F12 compatibility)
-    const nextQuery: LocationQueryRaw = { advanced: '1' }
-    if (domain) nextQuery.domain = domain
-    return { path: '/settings/sources', query: nextQuery }
+    const nextQuery: LocationQueryRaw = { tab: 'sources', advanced: '1' }
+    const kind = readSingle(query, ['kind'])
+    if (kind) nextQuery.kind = kind
+    return { path: `/${domain}/settings`, query: nextQuery }
   }
 
   if (rawTab === 'domain-libraries' || rawTab === 'libraries') {
-    return domain
-      ? { path: '/settings/libraries', query: { domain } }
-      : { path: '/settings/libraries' }
+    return { path: `/${domain}/settings`, query: { tab: 'libraries' } }
   }
 
   // `appearance` or unrecognized/omitted tab
@@ -614,21 +620,48 @@ export const legacyRedirectRoutes: RouteRecordRaw[] = [
     }),
   },
 
-  // 5. Legacy remote & settings aliases
+  // 5. Legacy remote & domain-settings aliases
+  {
+    path: '/settings/playback',
+    redirect: (to) => {
+      const hashDomain = to.hash.replace(/^#/, '')
+      const domain = resolveFallbackDomain(
+        readSingle(to.query, ['domain']) || hashDomain || null,
+      )
+      return { path: `/${domain}/settings` }
+    },
+  },
+  {
+    path: '/settings/libraries',
+    redirect: (to) => {
+      const domain = resolveFallbackDomain(readSingle(to.query, ['domain']))
+      return { path: `/${domain}/settings`, query: { tab: 'libraries' } }
+    },
+  },
+  {
+    path: '/settings/sources',
+    redirect: (to) => {
+      const domain = resolveFallbackDomain(readSingle(to.query, ['domain']))
+      const query: LocationQueryRaw = { tab: 'sources' }
+      const adv = readSingle(to.query, ['advanced'])
+      if (adv) query.advanced = adv
+      const kind = readSingle(to.query, ['kind'])
+      if (kind) query.kind = kind
+      return { path: `/${domain}/settings`, query }
+    },
+  },
   {
     path: '/remote',
     redirect: (to) => {
       const rawTab = readSingle(to.query, ['tab'])
       const rawDomain = readSingle(to.query, ['domain'])
-      const query: LocationQueryRaw = { kind: 'remote' }
+      let domain = resolveFallbackDomain(rawDomain)
       if (rawTab === 'subsonic') {
-        query.domain = 'music'
+        domain = 'music'
       } else if (rawTab === 'opds') {
-        query.domain = 'book'
-      } else if (isMediaKind(rawDomain)) {
-        query.domain = rawDomain
+        domain = 'book'
       }
-      return { path: '/settings/sources', query }
+      return { path: `/${domain}/settings`, query: { tab: 'sources', kind: 'remote' } }
     },
   },
   // Note: `/settings` legacy `?tab=` redirects are handled by `resolveLegacySettingsRedirect`

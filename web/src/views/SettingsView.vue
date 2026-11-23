@@ -1,75 +1,30 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { LuAlertCircle, LuArrowLeft, LuChevronRight } from 'vue-icons-plus/lu'
 import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
 import SettingsAccountTab from '@/components/settings/SettingsAccountTab.vue'
-import SettingsDomainDataSourcesTab from '@/components/settings/SettingsDomainDataSourcesTab.vue'
-import SettingsDomainGeneralTab from '@/components/settings/SettingsDomainGeneralTab.vue'
 import SettingsGeneralTab from '@/components/settings/SettingsGeneralTab.vue'
-import SettingsLibrariesTab from '@/components/settings/SettingsLibrariesTab.vue'
 import SettingsUsersTab from '@/components/settings/SettingsUsersTab.vue'
 import { useSettingsI18n } from '@/components/settings/i18nHelper'
 import {
   hasExplicitSectionInRoute,
-  isLegacyDatasourcesDeepLink,
-  readSingleQuery,
-  resolveDomainFromQuery,
   resolveSectionFromRoute,
   SETTINGS_SECTIONS,
-  SOURCES_ADVANCED_STORAGE_KEY,
   type SettingsSection,
   type SettingsSectionDef,
 } from '@/components/settings/sections'
 import { MdCard, MdIconButton } from '@/components/ui'
-import { isMediaKind } from '@/sources'
-import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
-import { useDomainStore } from '@/stores/domain'
-import type { MediaKind } from '@/types/api'
 
 const { t, tr } = useSettingsI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
-const domainStore = useDomainStore()
-const appClientStore = useAppClientStore()
 
 const visibleSections = computed<SettingsSectionDef[]>(() =>
   SETTINGS_SECTIONS.filter((item) => !item.adminOnly || authStore.isAdmin),
 )
-
-function readStoredAdvanced(): boolean {
-  try {
-    return localStorage.getItem(SOURCES_ADVANCED_STORAGE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function writeStoredAdvanced(val: boolean): void {
-  try {
-    localStorage.setItem(SOURCES_ADVANCED_STORAGE_KEY, val ? '1' : '0')
-  } catch {
-    // ignore storage errors
-  }
-}
-
-function resolveAdvancedFromRoute(): boolean {
-  const rawAdv = readSingleQuery(route.query, 'advanced')
-  if (rawAdv === '1' || rawAdv === 'true') return true
-  if (rawAdv === '0' || rawAdv === 'false') return false
-  if (isLegacyDatasourcesDeepLink(route)) return true
-  return readStoredAdvanced()
-}
-
-function resolveLibraryFilterFromRoute(): 'all' | MediaKind {
-  const rawDomain = readSingleQuery(route.query, 'domain')
-  if (isMediaKind(rawDomain) && authStore.hasModule(rawDomain)) {
-    return rawDomain
-  }
-  return 'all'
-}
 
 function supportsSectionPath(): boolean {
   return router
@@ -77,15 +32,7 @@ function supportsSectionPath(): boolean {
     .some((r) => r.path.includes('/settings/:section') || r.name === 'settings-appearance')
 }
 
-const initialResolved = resolveSectionFromRoute(route, appClientStore.isStandaloneApp)
-const activeSection = ref<SettingsSection>(initialResolved.section)
-const activeAnchorHash = ref<string>(initialResolved.derivedHash)
-const activeFocusKind = ref<string>(initialResolved.derivedKind)
-const activeSourcesDomain = ref<MediaKind>(
-  resolveDomainFromQuery(route, authStore.enabledModules, domainStore.activeDomain),
-)
-const libraryFilterDomain = ref<'all' | MediaKind>(resolveLibraryFilterFromRoute())
-const sourcesAdvanced = ref<boolean>(resolveAdvancedFromRoute())
+const activeSection = ref<SettingsSection>(resolveSectionFromRoute(route))
 const mobileShowDetail = ref<boolean>(hasExplicitSectionInRoute(route))
 const errorMsg = ref('')
 
@@ -101,61 +48,17 @@ function sectionSummary(item: SettingsSectionDef): string {
   return tr(item.summaryKey, item.summaryZh, item.summaryEn)
 }
 
-function syncRoute(
-  section: SettingsSection,
-  opts?: {
-    domain?: MediaKind | 'all'
-    advanced?: boolean
-    kind?: string
-    hash?: string
-  },
-): void {
+function syncRoute(section: SettingsSection): void {
   const usePathMode = supportsSectionPath()
-  const query: LocationQueryRaw = {}
-  if (!usePathMode) {
-    query.tab = section === 'sources' && opts?.advanced ? 'domain-datasources' : section
-  }
-
-  if (section === 'sources') {
-    const dom =
-      opts?.domain && opts.domain !== 'all' ? opts.domain : activeSourcesDomain.value
-    query.domain = dom
-    const adv = opts?.advanced ?? sourcesAdvanced.value
-    if (adv) query.advanced = '1'
-    if (opts?.kind) query.kind = opts.kind
-  } else if (section === 'libraries') {
-    const dom = opts?.domain ?? libraryFilterDomain.value
-    if (dom && dom !== 'all') {
-      query.domain = dom
-    }
-  }
-
   const targetPath = usePathMode ? `/settings/${section}` : '/settings'
-  const hash = opts?.hash ?? ''
   void router.replace({
     path: targetPath,
-    query: Object.keys(query).length > 0 ? query : undefined,
-    hash: hash || undefined,
+    query: usePathMode ? undefined : { tab: section },
   })
 }
 
 function applyRouteState(): void {
-  const resolved = resolveSectionFromRoute(route, appClientStore.isStandaloneApp)
-  activeSection.value = resolved.section
-  activeAnchorHash.value = resolved.derivedHash
-  activeFocusKind.value = resolved.derivedKind
-
-  if (resolved.section === 'sources') {
-    activeSourcesDomain.value = resolveDomainFromQuery(
-      route,
-      authStore.enabledModules,
-      domainStore.activeDomain,
-    )
-    sourcesAdvanced.value = resolveAdvancedFromRoute()
-  } else if (resolved.section === 'libraries') {
-    libraryFilterDomain.value = resolveLibraryFilterFromRoute()
-  }
-
+  activeSection.value = resolveSectionFromRoute(route)
   mobileShowDetail.value = hasExplicitSectionInRoute(route)
 }
 
@@ -164,7 +67,7 @@ onMounted(() => {
 })
 
 watch(
-  () => [route.params.section, route.query.tab, route.query.domain, route.query.advanced, route.query.kind, route.hash] as const,
+  () => [route.params.section, route.query.tab] as const,
   () => {
     applyRouteState()
   },
@@ -172,13 +75,8 @@ watch(
 
 function selectSection(section: SettingsSection): void {
   activeSection.value = section
-  activeAnchorHash.value = ''
-  activeFocusKind.value = ''
   mobileShowDetail.value = true
   errorMsg.value = ''
-  if (section === 'sources') {
-    sourcesAdvanced.value = readStoredAdvanced()
-  }
   syncRoute(section)
 }
 
@@ -186,25 +84,6 @@ function handleMobileBack(): void {
   mobileShowDetail.value = false
   errorMsg.value = ''
   void router.replace({ path: '/settings' })
-}
-
-function handleSourcesDomainChange(nextDomain: MediaKind): void {
-  activeSourcesDomain.value = nextDomain
-  errorMsg.value = ''
-  syncRoute('sources', { domain: nextDomain, advanced: sourcesAdvanced.value })
-}
-
-function handleSourcesAdvancedChange(nextAdvanced: boolean): void {
-  sourcesAdvanced.value = nextAdvanced
-  writeStoredAdvanced(nextAdvanced)
-  errorMsg.value = ''
-  syncRoute('sources', { domain: activeSourcesDomain.value, advanced: nextAdvanced })
-}
-
-function handleLibrariesFilterChange(nextFilter: 'all' | MediaKind): void {
-  libraryFilterDomain.value = nextFilter
-  errorMsg.value = ''
-  syncRoute('libraries', { domain: nextFilter })
 }
 </script>
 
@@ -327,42 +206,14 @@ function handleLibrariesFilterChange(nextFilter: 'all' | MediaKind): void {
           <AppearanceSettingsPanel />
         </div>
 
-        <!-- 2. Reading & Playback (4 anchored domain sections) -->
-        <SettingsDomainGeneralTab
-          v-else-if="activeSection === 'playback'"
-          :anchor-hash="activeAnchorHash"
-        />
-
-        <!-- 3. Media Libraries (All enabled domains on one page) -->
-        <SettingsLibrariesTab
-          v-else-if="activeSection === 'libraries'"
-          :filter-domain="libraryFilterDomain"
-          @update:filter-domain="handleLibrariesFilterChange"
-          @error="errorMsg = $event"
-        />
-
-        <!-- 4. Sources (Online Sources + Standalone Remote Servers + Advanced toggle) -->
-        <SettingsDomainDataSourcesTab
-          v-else-if="activeSection === 'sources'"
-          :domain="activeSourcesDomain"
-          :advanced="sourcesAdvanced"
-          :focus-kind="activeFocusKind"
-          @update:domain="handleSourcesDomainChange"
-          @update:advanced="handleSourcesAdvancedChange"
-          @error="errorMsg = $event"
-        />
-
-        <!-- 5. Account & Security -->
+        <!-- 2. Account & Security -->
         <div v-else-if="activeSection === 'account'" class="flex flex-col gap-5">
           <SettingsAccountTab @error="errorMsg = $event" />
           <SettingsUsersTab v-if="authStore.isAdmin" @error="errorMsg = $event" />
         </div>
 
-        <!-- 6. About & Exposed Protocols -->
-        <SettingsGeneralTab
-          v-else-if="activeSection === 'about'"
-          :anchor-hash="activeAnchorHash"
-        />
+        <!-- 3. About & System Info -->
+        <SettingsGeneralTab v-else-if="activeSection === 'about'" />
       </div>
     </div>
   </div>

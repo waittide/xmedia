@@ -665,7 +665,7 @@ function handleRemoteSourceChange(nextSourceId: string): void {
 }
 
 function goRemoteSettings(): void {
-  void router.push({ path: '/settings/sources', query: { domain: 'book', kind: 'remote' } })
+  void router.push({ path: '/book/settings', query: { tab: 'sources', kind: 'remote' } })
 }
 
 function triggerRefetch(): void {

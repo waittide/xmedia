@@ -54,6 +54,7 @@ export default {
     library: '资源',
     discover: '发现',
     history: '历史',
+    domainSettings: '设置',
     browseOnlineSources: '浏览在线数据源',
     showMore: '展开其余 {count} 项',
     showLess: '收起',

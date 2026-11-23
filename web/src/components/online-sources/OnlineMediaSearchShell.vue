@@ -134,7 +134,7 @@ const resolvedIsAdmin = computed(() =>
 )
 
 const resolvedSettingsTo = computed<RouteLocationRaw>(
-  () => props.settingsTo ?? { path: '/settings/sources', query: { domain: props.domain } },
+  () => props.settingsTo ?? { path: `/${props.domain}/settings`, query: { tab: 'sources' } },
 )
 
 const resolvedAspect = computed<MediaItemCardAspect>(() => {

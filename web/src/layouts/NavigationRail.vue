@@ -2,7 +2,7 @@
 import type { Component } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { LuLayers, LuSettings } from 'vue-icons-plus/lu'
+import { LuLayers } from 'vue-icons-plus/lu'
 import type { MediaKind } from '@/types/api'
 
 export interface DomainNavTab {
@@ -27,7 +27,7 @@ const { t } = useI18n()
 <template>
   <nav
     :aria-label="t('nav.navigation')"
-    class="safe-py safe-pl hidden w-20 shrink-0 flex-col items-center justify-between border-r border-outline-variant bg-surface-container py-3 select-none md:flex"
+    class="safe-py safe-pl hidden w-20 shrink-0 flex-col items-center border-r border-outline-variant bg-surface-container py-3 select-none md:flex"
   >
     <div class="flex w-full flex-col items-center gap-3">
       <!-- Subtle brand mark -->
@@ -71,30 +71,5 @@ const { t } = useI18n()
         </span>
       </button>
     </div>
-
-    <!-- Settings destination pinned to rail bottom -->
-    <RouterLink
-      to="/settings"
-      data-nav="settings"
-      :aria-current="isSettingsRoute ? 'page' : undefined"
-      class="group flex w-full flex-col items-center gap-1 py-1 outline-none"
-    >
-      <span
-        class="md-state flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
-        :class="
-          isSettingsRoute
-            ? 'bg-secondary-container text-on-secondary-container'
-            : 'text-on-surface-variant group-hover:text-on-surface'
-        "
-      >
-        <LuSettings class="h-5 w-5 shrink-0" aria-hidden="true" />
-      </span>
-      <span
-        class="text-label-medium max-w-[72px] truncate"
-        :class="isSettingsRoute ? 'text-on-surface' : 'text-on-surface-variant'"
-      >
-        {{ t('nav.settings') }}
-      </span>
-    </RouterLink>
   </nav>
 </template>

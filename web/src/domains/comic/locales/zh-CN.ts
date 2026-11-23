@@ -258,7 +258,7 @@ export default {
     sourceFilterLabel: '漫画源范围：',
     allSources: '全部漫画源',
     allSourcesCount: '全部 ({count})',
-    noEnabledSources: '当前没有已启用的在线漫画源，请先在「设置 → 数据源 → 漫画」导入并启用漫画源。',
+    noEnabledSources: '当前没有已启用的在线漫画源，请先在「漫画 → 设置 → 来源」导入并启用漫画源。',
     sourcesLoadFailed: '加载在线漫画源列表失败',
     goSettings: '前往设置',
     exploreTitle: '发现推荐',

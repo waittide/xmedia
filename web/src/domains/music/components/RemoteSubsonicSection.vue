@@ -360,7 +360,7 @@ defineExpose({
         <MdButton
           variant="tonal"
           :icon="LuSettings2"
-          :to="{ path: '/settings/sources', query: { domain: 'music', kind: 'remote' } }"
+          :to="{ path: '/music/settings', query: { tab: 'sources', kind: 'remote' } }"
         >
           {{ t('common.manageSources') }}
         </MdButton>

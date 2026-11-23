@@ -15,15 +15,29 @@ interface ProtocolEndpointRow {
   url: string
 }
 
-const { t } = useSettingsI18n()
+const props = withDefaults(
+  defineProps<{
+    domain?: MediaKind
+  }>(),
+  {
+    domain: undefined,
+  },
+)
+
+const { t, tr } = useSettingsI18n()
 const authStore = useAuthStore()
 const { copiedKey, copyText } = useCopyFeedback()
 
 const originUrl = computed(() => window.location.origin)
 
+function includeDomain(kind: MediaKind): boolean {
+  if (props.domain) return props.domain === kind && authStore.hasModule(kind)
+  return authStore.hasModule(kind)
+}
+
 const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
   const rows: ProtocolEndpointRow[] = []
-  if (authStore.hasModule('book')) {
+  if (includeDomain('book')) {
     rows.push(
       {
         key: 'book12',
@@ -39,7 +53,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       },
     )
   }
-  if (authStore.hasModule('comic')) {
+  if (includeDomain('comic')) {
     rows.push({
       key: 'comicPse',
       domain: 'comic',
@@ -47,7 +61,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       url: `${originUrl.value}/opds/comic/v1.2`,
     })
   }
-  if (authStore.hasModule('music')) {
+  if (includeDomain('music')) {
     rows.push(
       {
         key: 'subServer',
@@ -63,7 +77,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       },
     )
   }
-  if (authStore.hasModule('video')) {
+  if (includeDomain('video')) {
     rows.push({
       key: 'videoJellyfin',
       domain: 'video',
@@ -128,7 +142,25 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
     </ul>
 
     <div
-      v-if="authStore.hasModule('music')"
+      v-if="includeDomain('book') || includeDomain('comic')"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
+    >
+      <span class="text-label-medium text-on-surface">
+        {{ tr('settings.opdsAuthModes', 'OPDS 认证', 'OPDS Auth') }}:
+      </span>
+      <span class="text-on-surface-variant">
+        {{
+          tr(
+            'settings.opdsAuthModesVal',
+            'HTTP Basic（账户密码）或 API Key（支持本地与已入库追更资源）',
+            'HTTP Basic (password) or API Key (serves local and tracked online items)',
+          )
+        }}
+      </span>
+    </div>
+
+    <div
+      v-if="includeDomain('music')"
       class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
     >
       <span class="text-label-medium text-on-surface">
@@ -140,7 +172,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
     </div>
 
     <div
-      v-if="authStore.hasModule('video')"
+      v-if="includeDomain('video')"
       class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
     >
       <span class="text-label-medium text-on-surface">

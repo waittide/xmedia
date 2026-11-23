@@ -4,24 +4,15 @@ import {
   LuBookOpen,
   LuClapperboard,
   LuDisc3,
-  LuGlobe,
   LuInfo,
   LuKeyRound,
   LuLayers,
-  LuLibrary,
   LuPalette,
-  LuSlidersHorizontal,
 } from 'vue-icons-plus/lu'
 import { isMediaKind } from '@/sources'
 import type { MediaKind } from '@/types/api'
 
-export type SettingsSection =
-  | 'appearance'
-  | 'playback'
-  | 'libraries'
-  | 'sources'
-  | 'account'
-  | 'about'
+export type SettingsSection = 'appearance' | 'account' | 'about'
 
 export interface SettingsSectionDef {
   id: SettingsSection
@@ -50,41 +41,6 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
     testId: 'appearance',
   },
   {
-    id: 'playback',
-    labelKey: 'settings.navPlayback',
-    labelZh: '阅读与播放',
-    labelEn: 'Reading & Playback',
-    summaryKey: 'settings.summaryPlayback',
-    summaryZh: '书籍、漫画、音乐与视频默认体验',
-    summaryEn: 'Reader, comic, audio, and video defaults',
-    icon: LuSlidersHorizontal,
-    testId: 'playback',
-  },
-  {
-    id: 'libraries',
-    labelKey: 'settings.navLibraries',
-    labelZh: '媒体库',
-    labelEn: 'Libraries',
-    summaryKey: 'settings.summaryLibraries',
-    summaryZh: '挂载文件夹、扫描与库管理',
-    summaryEn: 'Mounted folders, scanning, and libraries',
-    icon: LuLibrary,
-    adminOnly: true,
-    testId: 'libraries',
-  },
-  {
-    id: 'sources',
-    labelKey: 'settings.navSources',
-    labelZh: '来源',
-    labelEn: 'Sources',
-    summaryKey: 'settings.summarySources',
-    summaryZh: '在线数据源与远程服务器配置',
-    summaryEn: 'Online data sources and remote servers',
-    icon: LuGlobe,
-    adminOnly: true,
-    testId: 'sources',
-  },
-  {
     id: 'account',
     labelKey: 'settings.navAccountSecurity',
     labelZh: '用户与安全',
@@ -101,8 +57,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
     labelZh: '关于',
     labelEn: 'About',
     summaryKey: 'settings.summaryAbout',
-    summaryZh: '版本、FFmpeg 状态与对外协议地址',
-    summaryEn: 'Version, FFmpeg status, and protocol endpoints',
+    summaryZh: '版本、已启用媒体域与 FFmpeg 状态',
+    summaryEn: 'Version, enabled domains, and FFmpeg status',
     icon: LuInfo,
     testId: 'about',
   },
@@ -142,70 +98,20 @@ export function hasExplicitSectionInRoute(route: RouteLocationNormalizedLoaded):
 
 export function resolveSectionFromRoute(
   route: RouteLocationNormalizedLoaded,
-  isStandaloneApp: boolean,
-): { section: SettingsSection; derivedHash: string; derivedKind: string } {
+): SettingsSection {
   const paramSection = typeof route.params.section === 'string' ? route.params.section : ''
   if (isSettingsSection(paramSection)) {
-    return {
-      section: paramSection,
-      derivedHash: route.hash,
-      derivedKind: readSingleQuery(route.query, 'kind'),
-    }
+    return paramSection
   }
 
   const rawTab = readSingleQuery(route.query, 'tab')
-  const rawDomain = readSingleQuery(route.query, 'domain')
-  const domain = isMediaKind(rawDomain) ? rawDomain : null
-
   if (rawTab === 'general' || rawTab === 'about') {
-    return { section: 'about', derivedHash: route.hash, derivedKind: '' }
+    return 'about'
   }
-
   if (rawTab === 'account' || rawTab === 'profile' || rawTab === 'users') {
-    return { section: 'account', derivedHash: route.hash, derivedKind: '' }
+    return 'account'
   }
-
-  if (
-    rawTab === 'playback' ||
-    rawTab === 'domain-general' ||
-    rawTab === 'preferences' ||
-    rawTab === 'reader'
-  ) {
-    return {
-      section: 'playback',
-      derivedHash: route.hash || (domain ? `#${domain}` : ''),
-      derivedKind: '',
-    }
-  }
-
-  if (rawTab === 'domain-protocols' || rawTab === 'protocols' || rawTab === 'opds') {
-    if (isStandaloneApp && (domain === 'book' || domain === 'comic' || domain === 'music')) {
-      return {
-        section: 'sources',
-        derivedHash: route.hash,
-        derivedKind: 'remote',
-      }
-    }
-    return {
-      section: 'about',
-      derivedHash: route.hash || '#protocols',
-      derivedKind: '',
-    }
-  }
-
-  if (rawTab === 'sources' || rawTab === 'domain-datasources' || rawTab === 'datasources') {
-    return {
-      section: 'sources',
-      derivedHash: route.hash,
-      derivedKind: readSingleQuery(route.query, 'kind'),
-    }
-  }
-
-  if (rawTab === 'libraries' || rawTab === 'domain-libraries') {
-    return { section: 'libraries', derivedHash: route.hash, derivedKind: '' }
-  }
-
-  return { section: 'appearance', derivedHash: route.hash, derivedKind: '' }
+  return 'appearance'
 }
 
 export function resolveDomainFromQuery(
@@ -221,9 +127,4 @@ export function resolveDomainFromQuery(
     return fallbackDomain
   }
   return enabledModules[0] ?? 'book'
-}
-
-export function isLegacyDatasourcesDeepLink(route: RouteLocationNormalizedLoaded): boolean {
-  const rawTab = readSingleQuery(route.query, 'tab')
-  return rawTab === 'domain-datasources' || rawTab === 'datasources'
 }

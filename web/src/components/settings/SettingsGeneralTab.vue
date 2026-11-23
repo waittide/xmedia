@@ -1,21 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, watch } from 'vue'
+import { computed } from 'vue'
 import { LuAlertCircle, LuCheckCircle2, LuHardDrive, LuLayers } from 'vue-icons-plus/lu'
 import { MdCard } from '@/components/ui'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
-import SettingsDomainProtocolsTab from './SettingsDomainProtocolsTab.vue'
 import { useSettingsI18n } from './i18nHelper'
 import { DOMAIN_ICONS } from './sections'
-
-const props = withDefaults(
-  defineProps<{
-    anchorHash?: string
-  }>(),
-  {
-    anchorHash: '',
-  },
-)
 
 const { t, tr } = useSettingsI18n()
 const authStore = useAuthStore()
@@ -23,27 +13,6 @@ const appClientStore = useAppClientStore()
 
 const displayVersion = computed(
   () => authStore.capabilities?.version || appClientStore.appVersion || '0.1.0',
-)
-
-function scrollToProtocolsIfNeeded(smooth: boolean): void {
-  if (props.anchorHash.replace(/^#/, '') !== 'protocols') return
-  void nextTick(() => {
-    document.getElementById('protocols')?.scrollIntoView({
-      behavior: smooth ? 'smooth' : 'auto',
-      block: 'start',
-    })
-  })
-}
-
-onMounted(() => {
-  scrollToProtocolsIfNeeded(false)
-})
-
-watch(
-  () => props.anchorHash,
-  () => {
-    scrollToProtocolsIfNeeded(true)
-  },
 )
 </script>
 
@@ -133,8 +102,5 @@ watch(
         </span>
       </div>
     </MdCard>
-
-    <!-- Exposed Open Protocol Endpoints (#protocols) -->
-    <SettingsDomainProtocolsTab />
   </div>
 </template>

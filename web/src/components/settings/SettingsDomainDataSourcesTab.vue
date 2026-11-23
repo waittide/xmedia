@@ -35,10 +35,12 @@ const props = withDefaults(
     domain: MediaKind
     advanced?: boolean
     focusKind?: string
+    hideDomainSelector?: boolean
   }>(),
   {
     advanced: false,
     focusKind: '',
+    hideDomainSelector: false,
   },
 )
 
@@ -189,6 +191,7 @@ watch(
     <!-- Single-row domain chips + Progressive disclosure "Advanced" switch -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div
+        v-if="!hideDomainSelector"
         role="group"
         :aria-label="tr('settings.sourceDomainFilter', '按域筛选来源', 'Filter sources by domain')"
         class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
@@ -203,6 +206,20 @@ watch(
           :selected="domain === kind"
           @click="emit('update:domain', kind)"
         />
+      </div>
+      <div v-else class="min-w-0">
+        <h2 class="text-title-medium text-on-surface">
+          {{ t('settings.navDomainDataSources') }}
+        </h2>
+        <p class="text-body-small text-on-surface-variant">
+          {{
+            tr(
+              'settings.summarySources',
+              '在线数据源与远程服务器配置',
+              'Online data sources and remote servers',
+            )
+          }}
+        </p>
       </div>
 
       <MdSwitch

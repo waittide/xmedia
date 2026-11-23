@@ -218,7 +218,7 @@ export default {
     searchingBtn: 'Searching…',
     sourceScopeLabel: 'Sources:',
     allSourcesCount: 'All ({count})',
-    emptySourcesHint: 'No enabled music sources found. Import and enable sources in Settings → Data Sources → Music.',
+    emptySourcesHint: 'No enabled music sources found. Import and enable sources in Music → Settings → Sources.',
     sourcesLoadFailed: 'Failed to load music sources',
     retry: 'Retry',
     goToSettings: 'Open Settings',

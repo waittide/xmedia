@@ -44,7 +44,7 @@ import NavigationBar from './NavigationBar.vue'
 import NavigationRail, { type DomainNavTab } from './NavigationRail.vue'
 
 interface SecondaryTab {
-  key: 'home' | 'library' | 'discover' | 'history'
+  key: 'home' | 'library' | 'discover' | 'history' | 'settings'
   label: string
   icon: Component
   active: boolean
@@ -142,11 +142,13 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
 
   const isHome = route.path === `/${d}`
   const isHistory = route.path === `/${d}/history`
+  const isDomainSettings = route.path.startsWith(`/${d}/settings`)
   const isDiscover =
     route.path === `/${d}/discover` || (scope === 'online' && !name.includes('detail'))
   const isLibrary =
     !isHome &&
     !isHistory &&
+    !isDomainSettings &&
     !isDiscover &&
     (route.path.startsWith(`/${d}/library`) ||
       name === 'book-catalog' ||
@@ -189,6 +191,13 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
       icon: LuHistory,
       active: isHistory,
       to: `/${d}/history`,
+    },
+    {
+      key: 'settings',
+      label: tr('nav.domainSettings', '设置', 'Settings'),
+      icon: LuSettings,
+      active: isDomainSettings,
+      to: `/${d}/settings`,
     },
   ]
 })

@@ -54,6 +54,7 @@ export default {
     library: 'Resources',
     discover: 'Discover',
     history: 'History',
+    domainSettings: 'Settings',
     browseOnlineSources: 'Browse Online Sources',
     showMore: 'Show {count} more',
     showLess: 'Show less',

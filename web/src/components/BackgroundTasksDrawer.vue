@@ -170,7 +170,7 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
       metaText,
       errorText,
       progress,
-      targetRoute: `/settings?tab=domain-libraries&domain=${sc.media_kind}`,
+      targetRoute: `/${sc.media_kind}/settings?tab=libraries`,
       canCancel: false,
       canRetry: false,
       canDelete: false,

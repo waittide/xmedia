@@ -147,6 +147,12 @@ export const router = createRouter({
           meta: { domain: 'book' as MediaKind },
         },
         {
+          path: 'book/settings',
+          name: 'book-settings',
+          component: () => import('@/views/DomainSettingsView.vue'),
+          meta: { domain: 'book' as MediaKind },
+        },
+        {
           // Placeholder until Wave 4B introduces a dedicated online book detail view
           path: 'book/item/online',
           name: 'book-online-detail',
@@ -191,6 +197,12 @@ export const router = createRouter({
           meta: { domain: 'comic' as MediaKind },
         },
         {
+          path: 'comic/settings',
+          name: 'comic-settings',
+          component: () => import('@/views/DomainSettingsView.vue'),
+          meta: { domain: 'comic' as MediaKind },
+        },
+        {
           path: 'comic/item/online',
           name: 'comic-online-detail',
           component: () => import('@/domains/comic/views/OnlineComicDetailView.vue'),
@@ -220,6 +232,12 @@ export const router = createRouter({
           path: 'music/history',
           name: 'music-history',
           component: () => import('@/views/DomainHistoryView.vue'),
+          meta: { domain: 'music' as MediaKind },
+        },
+        {
+          path: 'music/settings',
+          name: 'music-settings',
+          component: () => import('@/views/DomainSettingsView.vue'),
           meta: { domain: 'music' as MediaKind },
         },
         {
@@ -263,6 +281,12 @@ export const router = createRouter({
           meta: { domain: 'video' as MediaKind },
         },
         {
+          path: 'video/settings',
+          name: 'video-settings',
+          component: () => import('@/views/DomainSettingsView.vue'),
+          meta: { domain: 'video' as MediaKind },
+        },
+        {
           path: 'video/item/online',
           name: 'video-online-detail',
           component: () => import('@/domains/video/views/OnlineVideoDetailView.vue'),
@@ -294,7 +318,7 @@ export const router = createRouter({
           },
         },
         {
-          path: 'settings/:section(appearance|playback|libraries|sources|account|about)',
+          path: 'settings/:section(appearance|account|about)',
           name: 'settings-section',
           component: () => import('@/views/SettingsView.vue'),
         },

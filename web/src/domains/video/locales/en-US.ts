@@ -207,7 +207,7 @@ export default {
     sourceFilterLabel: 'Sources:',
     allSources: 'All Sources',
     allSourcesCount: 'All ({count})',
-    noEnabledSources: 'No online video sources enabled. Import and enable sources in Settings → Data Sources → Video.',
+    noEnabledSources: 'No online video sources enabled. Import and enable sources in Video → Settings → Sources.',
     sourcesLoadFailed: 'Failed to load online video sources',
     goSettings: 'Go to Settings',
     categoriesTitle: 'Categories',
