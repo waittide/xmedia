@@ -8,9 +8,6 @@ import {
   LuLibrary,
   LuPlay,
   LuRefreshCw,
-  LuRotateCcw,
-  LuSettings2,
-  LuTrash2,
 } from 'vue-icons-plus/lu'
 import {
   MediaDetailTemplate,
@@ -43,11 +40,8 @@ import {
   libraryRoute,
   parseItemRef,
   playRoute,
-  useOnlineItemState,
-  type OnlineItemMetadataInput,
   type TrackedItemRef,
 } from '@/sources'
-import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 
@@ -55,7 +49,6 @@ const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
-const auth = useAuthStore()
 const snackbar = useSnackbarStore()
 const sidebarStore = useSidebarStore()
 const uploadStore = useUploadStore()
@@ -136,102 +129,29 @@ function hydrateParams(): { sourceId: string; comicUrl: string } {
   return { sourceId, comicUrl }
 }
 
-const trackedRef = computed<TrackedItemRef | null>(() => {
-  if (!resolvedSourceId.value || !resolvedComicUrl.value) return null
-  return {
-    scope: 'online',
-    domain: 'comic',
-    sourceId: resolvedSourceId.value,
-    ref: resolvedComicUrl.value,
-    hints: {
-      title: displayTitle.value,
-      cover: displayCoverUrl.value || undefined,
-      author: rawAuthor.value || undefined,
-    },
-  }
-})
-
 const displayTitle = computed(
-  () =>
-    detail.value?.title ||
-    onlineState.record.value?.title ||
-    fallbackCtx.value?.title ||
-    resolvedComicUrl.value ||
-    'Comic',
+  () => detail.value?.title || fallbackCtx.value?.title || resolvedComicUrl.value || 'Comic',
 )
 
-const rawAuthor = computed(
-  () =>
-    detail.value?.author ||
-    onlineState.record.value?.subtitle ||
-    fallbackCtx.value?.author ||
-    '',
-)
+const rawAuthor = computed(() => detail.value?.author || fallbackCtx.value?.author || '')
 
 const displayAuthor = computed(() => rawAuthor.value || t('online.unknownAuthor'))
 
-const displaySummary = computed(
-  () =>
-    detail.value?.intro ||
-    onlineState.record.value?.intro ||
-    fallbackCtx.value?.intro ||
-    null,
-)
+const displaySummary = computed(() => detail.value?.intro || fallbackCtx.value?.intro || null)
 
 const displayCoverUrl = computed(() =>
   resolveOnlineComicCoverUrl(
     detail.value?.proxy_cover_url,
-    detail.value?.cover_url ?? onlineState.record.value?.coverUrl ?? fallbackCtx.value?.coverUrl,
+    detail.value?.cover_url ?? fallbackCtx.value?.coverUrl,
     resolvedSourceId.value,
   ),
 )
 
-const displayDirection = computed<ComicReadingDirection>(() => {
-  const extraDir = onlineState.record.value?.extra?.reading_direction
-  const storedDir: ComicReadingDirection | undefined =
-    extraDir === 'rtl' || extraDir === 'ltr' || extraDir === 'webtoon' ? extraDir : undefined
-  return detail.value?.reading_direction || fallbackCtx.value?.readingDirection || storedDir || 'rtl'
-})
-
-const onlineMeta = computed<OnlineItemMetadataInput>(() => {
-  const tocUrl =
-    detail.value?.toc_url ||
-    fallbackCtx.value?.tocUrl ||
-    (typeof onlineState.record.value?.extra?.toc_url === 'string'
-      ? onlineState.record.value.extra.toc_url
-      : '')
-  return {
-    title: displayTitle.value,
-    subtitle: rawAuthor.value || null,
-    coverUrl:
-      detail.value?.cover_url ??
-      fallbackCtx.value?.coverUrl ??
-      onlineState.record.value?.coverUrl ??
-      null,
-    intro: displaySummary.value,
-    kind: detail.value?.kind ?? onlineState.record.value?.kind ?? null,
-    extra: {
-      toc_url: tocUrl || undefined,
-      reading_direction: displayDirection.value,
-      source_name:
-        resolvedSourceName.value || onlineState.record.value?.sourceName || undefined,
-    },
-  }
-})
-
-const onlineState = useOnlineItemState(trackedRef, onlineMeta)
-
-const effectiveSourceName = computed(
-  () => resolvedSourceName.value || onlineState.record.value?.sourceName || '',
+const displayDirection = computed<ComicReadingDirection>(
+  () => detail.value?.reading_direction || fallbackCtx.value?.readingDirection || 'rtl',
 )
 
-const availabilityWarning = computed<string | null>(() => {
-  if (!onlineState.blocked.value) return null
-  if (onlineState.availability.value === 'source_missing') {
-    return t('online.sourceMissingWarning')
-  }
-  return t('online.sourceDisabledWarning')
-})
+const effectiveSourceName = computed(() => resolvedSourceName.value)
 
 const directionLabel = computed(() => {
   if (displayDirection.value === 'ltr') return t('series.directionLtr')
@@ -247,7 +167,7 @@ const heroSubtitle = computed(() => {
 })
 
 const kindTags = computed<MediaDetailTag[]>(() => {
-  const raw = detail.value?.kind || onlineState.record.value?.kind
+  const raw = detail.value?.kind
   if (!raw) return []
   return raw
     .split(/[,，|/]/)
@@ -288,61 +208,6 @@ const displayedChapters = computed(() => {
   return base.filter((ch) => ch.title.toLowerCase().includes(q))
 })
 
-const savedProgress = computed(() => onlineState.progress.value)
-
-const resumeChapter = computed<OnlineComicChapter | null>(() => {
-  const prog = savedProgress.value
-  if (!prog || readableChapters.value.length === 0) return null
-  if (prog.unitKey) {
-    const byUrl = readableChapters.value.find((ch) => ch.url === prog.unitKey)
-    if (byUrl) return byUrl
-  }
-  if (prog.unitIndex !== undefined && prog.unitIndex >= 0) {
-    const byIdx = chapters.value[prog.unitIndex]
-    if (byIdx && !byIdx.is_volume && byIdx.url) return byIdx
-  }
-  return null
-})
-
-const resumePage = computed<number>(() => {
-  const pos = savedProgress.value?.position
-  if (pos !== undefined && Number.isFinite(pos) && pos >= 1) {
-    return Math.floor(pos)
-  }
-  return 1
-})
-
-const progressPercent = computed<number | null>(() => {
-  const ratio = onlineState.record.value?.progressRatio
-  if (ratio !== null && ratio !== undefined && Number.isFinite(ratio) && ratio > 0) {
-    return Math.min(100, Math.max(1, Math.round(ratio * 100)))
-  }
-  return null
-})
-
-const progressLabel = computed(() => {
-  const prog = savedProgress.value
-  if (!prog) return ''
-  const title = prog.unitTitle || resumeChapter.value?.title || ''
-  if (prog.duration && prog.duration > 0 && prog.position > 0) {
-    const pageStr = t('online.continueOnlinePage', {
-      page: Math.floor(prog.position),
-      total: Math.floor(prog.duration),
-    })
-    return title ? `${title} · ${pageStr}` : pageStr
-  }
-  return title
-})
-
-const primaryActionLabel = computed(() => {
-  if (resumeChapter.value) {
-    return t('online.continueOnlineChapter', {
-      chapter: resumeChapter.value.title || `#${resumeChapter.value.index + 1}`,
-    })
-  }
-  return t('series.startReading')
-})
-
 const backRoute = computed(() =>
   libraryRoute('comic', {
     scope: 'online',
@@ -350,12 +215,6 @@ const backRoute = computed(() =>
     sourceId: fallbackCtx.value?.returnSourceId || null,
   }),
 )
-
-// When source is blocked (disabled/missing), show stored record metadata + warning banner instead of error wall
-const effectiveError = computed<string | null>(() => {
-  if (onlineState.blocked.value && onlineState.record.value) return null
-  return errorMessage.value
-})
 
 async function loadDetail(): Promise<void> {
   const { sourceId, comicUrl } = hydrateParams()
@@ -455,7 +314,7 @@ watch(
 )
 
 function openChapter(ch: OnlineComicChapter, initialPage = 1): void {
-  if (onlineState.blocked.value || ch.is_volume || !ch.url?.trim() || !resolvedSourceId.value) return
+  if (ch.is_volume || !ch.url?.trim() || !resolvedSourceId.value) return
   const idxByUrlAndIndex = chapters.value.findIndex(
     (c) => c.url === ch.url && c.index === ch.index,
   )
@@ -521,32 +380,14 @@ function openChapter(ch: OnlineComicChapter, initialPage = 1): void {
 }
 
 function handlePrimaryRead(): void {
-  if (onlineState.blocked.value) return
-  if (resumeChapter.value) {
-    openChapter(resumeChapter.value, resumePage.value)
-    return
-  }
   const first = readableChapters.value[0] ?? chapters.value[0]
   if (first) {
     openChapter(first, 1)
   }
 }
 
-async function handleClearProgress(): Promise<void> {
-  await onlineState.clearProgress()
-  snackbar.show({ message: t('online.progressCleared') })
-}
-
-async function handleRemoveTracking(): Promise<void> {
-  await onlineState.remove()
-  snackbar.show({ message: t('online.removedFromTracking') })
-  if (onlineState.blocked.value) {
-    await router.replace(backRoute.value)
-  }
-}
-
 async function handleTrackToLibrary(): Promise<void> {
-  if (!auth.isAdmin || trackingBusy.value || !resolvedSourceId.value || !resolvedComicUrl.value) {
+  if (trackingBusy.value || !resolvedSourceId.value || !resolvedComicUrl.value) {
     return
   }
   trackingBusy.value = true
@@ -591,56 +432,25 @@ async function handleTrackToLibrary(): Promise<void> {
       :show-back="true"
       :back-label="t('online.backToSearch')"
       :back-to="backRoute"
-      :progress-percent="progressPercent"
-      :progress-label="progressLabel"
-      :primary-action-label="primaryActionLabel"
+      :primary-action-label="t('series.startReading')"
       :primary-action-icon="LuPlay"
-      :primary-action-disabled="onlineState.blocked.value || readableChapters.length === 0"
+      :primary-action-disabled="readableChapters.length === 0"
       :secondary-action-label="
-        auth.isAdmin && detail && !onlineState.blocked.value
-          ? trackingBusy
-            ? t('online.trackingBtn')
-            : t('online.trackToLibraryBtn')
-          : ''
+        detail ? (trackingBusy ? t('online.trackingBtn') : t('online.trackToLibraryBtn')) : ''
       "
       :secondary-action-icon="LuLibrary"
       :secondary-action-disabled="trackingBusy"
-      :show-favorite="Boolean(trackedRef)"
-      :favorite="onlineState.favorite.value"
-      :favorite-loading="onlineState.loading.value"
+      :show-favorite="false"
       :description="displaySummary"
       :tags="kindTags"
       :specs="detailSpecs"
       :specs-title="t('series.specsTitle')"
-      :loading="loading && !detail && !onlineState.record.value"
-      :error="effectiveError"
-      :availability-warning="availabilityWarning"
+      :loading="loading && !detail"
+      :error="errorMessage"
       @primary-action="handlePrimaryRead"
       @secondary-action="handleTrackToLibrary"
-      @toggle-favorite="onlineState.toggleFavorite()"
       @retry="loadDetail"
     >
-      <template v-if="availabilityWarning" #warning-actions>
-        <MdButton
-          v-if="auth.isAdmin"
-          variant="tonal"
-          size="sm"
-          :icon="LuSettings2"
-          :to="{ path: '/comic/settings', query: { tab: 'sources' } }"
-        >
-          {{ t('online.manageSourcesBtn') }}
-        </MdButton>
-        <MdButton
-          v-if="onlineState.record.value"
-          variant="text"
-          size="sm"
-          :icon="LuTrash2"
-          @click="handleRemoveTracking"
-        >
-          {{ t('online.removeRecordBtn') }}
-        </MdButton>
-      </template>
-
       <template v-if="resolvedSourceId && resolvedComicUrl" #overflow-menu="{ close }">
         <MdMenuItem
           :label="globalT('common.refresh')"
@@ -650,31 +460,10 @@ async function handleTrackToLibrary(): Promise<void> {
             loadDetail()
           "
         />
-        <MdMenuItem
-          v-if="savedProgress"
-          :label="t('online.clearProgressBtn')"
-          :icon="LuRotateCcw"
-          @select="
-            close();
-            handleClearProgress()
-          "
-        />
-      </template>
-
-      <template v-if="onlineState.record.value" #overflow-danger="{ close }">
-        <MdMenuItem
-          :label="t('online.removeRecordBtn')"
-          :icon="LuTrash2"
-          destructive
-          @select="
-            close();
-            handleRemoveTracking()
-          "
-        />
       </template>
 
       <!-- Chapters Section -->
-      <section v-if="!onlineState.blocked.value" class="space-y-4">
+      <section class="space-y-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex items-center gap-2.5">
             <h2 class="text-title-large text-on-surface">
@@ -731,9 +520,8 @@ async function handleTrackToLibrary(): Promise<void> {
               :badge="ch.is_volume ? t('online.volumeBadge') : `#${ch.index + 1}`"
               :title="ch.title"
               :meta-text="ch.update_time || ''"
-              :active="resumeChapter?.url === ch.url"
-              :disabled="ch.is_volume || !ch.url || onlineState.blocked.value"
-              @open="openChapter(ch, resumeChapter?.url === ch.url ? resumePage : 1)"
+              :disabled="ch.is_volume || !ch.url"
+              @open="openChapter(ch, 1)"
             />
           </div>
         </MdCard>

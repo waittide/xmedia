@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { LuLibrary } from 'vue-icons-plus/lu'
+import { MdButton } from '@/components/ui'
+import { api } from '@/domains/comic/api'
 import ComicReaderShell, {
   type ComicReaderChapterItem,
 } from '@/domains/comic/components/ComicReaderShell.vue'
@@ -14,24 +18,28 @@ import {
   type OnlineComicPageDto,
   type OnlineComicReaderContextStorage,
 } from '@/domains/comic/onlineApi'
+import { useSidebarStore } from '@/domains/comic/store'
 import type { ReaderFitMode, ReaderMode } from '@/domains/comic/types'
 import {
   itemRoute,
   libraryRoute,
   parseItemRef,
   playRoute,
-  useOnlineItemState,
-  type OnlineItemMetadataInput,
   type TrackedItemRef,
 } from '@/sources'
-import { useSnackbarStore } from '@/stores/snackbar'
 import { usePreferencesStore } from '@/stores/preferences'
+import { useSnackbarStore } from '@/stores/snackbar'
+import { useUploadStore } from '@/stores/uploads'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const preferences = usePreferencesStore()
 const snackbar = useSnackbarStore()
+const sidebarStore = useSidebarStore()
+const uploadStore = useUploadStore()
+const trackingBusy = ref(false)
 
 const ctx = ref<OnlineComicReaderContextStorage | null>(null)
 const chapters = ref<OnlineComicChapter[]>([])
@@ -194,42 +202,6 @@ function hydrateContextFromRoute(): OnlineComicReaderContextStorage | null {
   }
 }
 
-// Persistent online reading progress via `/api/v1/comic/online/items`
-const trackedRef = computed<TrackedItemRef | null>(() => {
-  const c = ctx.value
-  if (!c?.sourceId || !c.comicUrl) return null
-  return {
-    scope: 'online',
-    domain: 'comic',
-    sourceId: c.sourceId,
-    ref: c.comicUrl,
-    hints: {
-      title: c.title,
-      cover: c.coverUrl ?? undefined,
-      author: c.author,
-    },
-  }
-})
-
-const onlineMeta = computed<OnlineItemMetadataInput>(() => {
-  const c = ctx.value
-  return {
-    title: c?.title || activeSourceName.value || c?.comicUrl || 'Comic',
-    subtitle: c?.author || null,
-    coverUrl: c?.coverUrl ?? null,
-    extra: {
-      toc_url: c?.tocUrl || undefined,
-      reading_direction: activeDirection.value || c?.readingDirection || undefined,
-      source_name: activeSourceName.value || c?.sourceName || undefined,
-    },
-  }
-})
-
-const onlineState = useOnlineItemState(trackedRef, onlineMeta, {
-  autoLoad: false,
-  progressDebounceMs: 2500,
-})
-
 const readableChapterIndices = computed<number[]>(() => {
   const result: number[] = []
   chapters.value.forEach((ch, idx) => {
@@ -306,48 +278,60 @@ function getPageSrc(pageNum: number): string {
 
 let lastReportedPage: { page: number; reachedEnd: boolean } | null = null
 
-function buildCurrentComicProgress(): {
-  unitIndex: number
-  unitKey: string
-  unitTitle: string
-  position: number
-  duration: number
-  totalUnits?: number
-  completed: boolean
-} | null {
-  if (!trackedRef.value || !activeChapterUrl.value || pages.value.length === 0 || !lastReportedPage) {
-    return null
-  }
-  const unitTitle =
-    currentChapterObj.value?.title ||
-    ctx.value?.chapterTitle ||
-    `#${activeChapterIndex.value + 1}`
-  const isFinalChapter = chapters.value.length > 0 && nextChapterIndex.value === null
-  return {
-    unitIndex: activeChapterIndex.value,
-    unitKey: activeChapterUrl.value,
-    unitTitle,
-    position: lastReportedPage.page,
-    duration: pages.value.length,
-    totalUnits: chapters.value.length > 0 ? chapters.value.length : undefined,
-    completed: lastReportedPage.reachedEnd && isFinalChapter,
-  }
-}
-
 function handlePageChange(payload: {
   page: number
   highestInSpread: number
   reachedEnd: boolean
 }): void {
+  // Ephemeral preview: track current page in memory only for seamless transfer on explicit "入库".
   lastReportedPage = { page: payload.page, reachedEnd: payload.reachedEnd }
-  const pos = buildCurrentComicProgress()
-  if (!pos) return
-  onlineState.saveProgress(pos)
 }
 
-function flushComicProgressOnPageHide(): void {
-  const pos = buildCurrentComicProgress()
-  onlineState.flushProgressKeepalive(pos ?? undefined)
+async function handleTrackFromReader(): Promise<void> {
+  const c = ctx.value
+  if (!c?.sourceId || !c.comicUrl || trackingBusy.value) return
+  trackingBusy.value = true
+  try {
+    const created = await onlineComicApi.trackOnlineComic({
+      source_id: c.sourceId,
+      comic_url: c.comicUrl,
+      toc_url: c.tocUrl || null,
+      title: c.title || null,
+      author: c.author || null,
+      cover_url: c.coverUrl ?? null,
+      reading_direction: activeDirection.value || c.readingDirection || null,
+    })
+    uploadStore.notifyCatalogChanged()
+    void sidebarStore.refresh()
+    const currentPage = Math.max(1, Math.floor(lastReportedPage?.page ?? initialPage.value ?? 1))
+    const matchedChapter =
+      created.chapters.find(
+        (ch) =>
+          ch.online_tracking?.chapter_url &&
+          ch.online_tracking.chapter_url === activeChapterUrl.value,
+      ) ??
+      created.chapters[activeChapterIndex.value] ??
+      created.chapters[0]
+    snackbar.show({ message: t('online.trackedToLibraryToast') })
+    if (matchedChapter) {
+      await api.updateProgress(matchedChapter.id, currentPage, false).catch(() => {})
+      await router.replace(
+        playRoute(
+          { scope: 'local', domain: 'comic', id: matchedChapter.id },
+          { position: currentPage },
+        ),
+      )
+    } else {
+      await router.replace(itemRoute({ scope: 'local', domain: 'comic', id: created.series.id }))
+    }
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    trackingBusy.value = false
+  }
 }
 
 async function hydrateChaptersInBackground(
@@ -542,13 +526,6 @@ async function initReader(): Promise<void> {
   activeChapterUrl.value = hydrated.chapterUrl
   hydratePreferencesFromTheme(activeDirection.value)
 
-  // Hydrate persisted online progress (chapter + page) so reload/resume restores position
-  const savedSnap = hydrated.comicUrl
-    ? await onlineState.refresh(false).catch(() => null)
-    : null
-  if (unmounted || runInitSeq !== initSeq) return
-
-  const savedProg = savedSnap?.progress ?? null
   const explicitPage = parseExplicitPageQuery()
 
   if (!hydrated.chapterUrl && hydrated.comicUrl) {
@@ -581,37 +558,13 @@ async function initReader(): Promise<void> {
       activeSourceName.value = detailRes.source_name || activeSourceName.value
       activeDirection.value = detailRes.detail.reading_direction || activeDirection.value
 
-      let targetChapter: OnlineComicChapter | null = null
-      let resumePage = explicitPage ?? 1
-
-      if (savedProg?.unitKey) {
-        const bySavedUrl = loadedChapters.find(
-          (c) => !c.is_volume && c.url === savedProg.unitKey,
-        )
-        if (bySavedUrl) {
-          targetChapter = bySavedUrl
-          if (!explicitPage && savedProg.position >= 1) {
-            resumePage = Math.floor(savedProg.position)
-          }
-        }
-      }
-      if (!targetChapter && savedProg?.unitIndex !== undefined) {
-        const bySavedIdx = loadedChapters[savedProg.unitIndex]
-        if (bySavedIdx && !bySavedIdx.is_volume && bySavedIdx.url) {
-          targetChapter = bySavedIdx
-          if (!explicitPage && savedProg.position >= 1) {
-            resumePage = Math.floor(savedProg.position)
-          }
-        }
-      }
-      if (!targetChapter) {
-        targetChapter =
-          (loadedChapters[hydrated.chapterIndex] &&
-          !loadedChapters[hydrated.chapterIndex]!.is_volume &&
-          loadedChapters[hydrated.chapterIndex]!.url
-            ? loadedChapters[hydrated.chapterIndex]!
-            : loadedChapters.find((c) => !c.is_volume && Boolean(c.url?.trim()))) ?? null
-      }
+      const resumePage = explicitPage ?? 1
+      const targetChapter: OnlineComicChapter | null =
+        (loadedChapters[hydrated.chapterIndex] &&
+        !loadedChapters[hydrated.chapterIndex]!.is_volume &&
+        loadedChapters[hydrated.chapterIndex]!.url
+          ? loadedChapters[hydrated.chapterIndex]!
+          : loadedChapters.find((c) => !c.is_volume && Boolean(c.url?.trim()))) ?? null
 
       if (!targetChapter) {
         loading.value = false
@@ -619,7 +572,7 @@ async function initReader(): Promise<void> {
         return
       }
 
-      const resolvedIdx = loadedChapters.findIndex((c) => c.url === targetChapter!.url)
+      const resolvedIdx = loadedChapters.findIndex((c) => c.url === targetChapter.url)
       ctx.value = {
         ...hydrated,
         sourceName: activeSourceName.value,
@@ -646,16 +599,7 @@ async function initReader(): Promise<void> {
     return
   }
 
-  let resolvedInitialPage = explicitPage ?? 1
-  if (
-    !explicitPage &&
-    savedProg &&
-    savedProg.position >= 1 &&
-    (savedProg.unitKey === hydrated.chapterUrl ||
-      (savedProg.unitKey === undefined && savedProg.unitIndex === hydrated.chapterIndex))
-  ) {
-    resolvedInitialPage = Math.floor(savedProg.position)
-  }
+  const resolvedInitialPage = explicitPage ?? 1
 
   await openChapter(hydrated.chapterUrl, hydrated.chapterIndex, resolvedInitialPage, false)
   if (!unmounted && runInitSeq === initSeq && chapters.value.length === 0 && hydrated.comicUrl) {
@@ -666,8 +610,6 @@ async function initReader(): Promise<void> {
 function switchChapterByIndex(targetIdx: number): void {
   const target = chapters.value[targetIdx]
   if (!target || target.is_volume || !target.url?.trim() || !ctx.value) return
-
-  void onlineState.flushPendingProgress()
 
   const refObj: TrackedItemRef = {
     scope: 'online',
@@ -741,7 +683,6 @@ function handleRetry(): void {
 }
 
 function handleBack(): void {
-  void onlineState.flushPendingProgress()
   if (ctx.value?.sourceId && ctx.value?.comicUrl) {
     void router.push(
       itemRoute({
@@ -763,13 +704,11 @@ function handleBack(): void {
 
 onMounted(() => {
   unmounted = false
-  window.addEventListener('pagehide', flushComicProgressOnPageHide)
   void initReader()
 })
 
 onBeforeUnmount(() => {
   unmounted = true
-  window.removeEventListener('pagehide', flushComicProgressOnPageHide)
   initSeq += 1
   loadSeq += 1
   detailSeq += 1
@@ -777,7 +716,6 @@ onBeforeUnmount(() => {
   pageAbortController = null
   detailAbortController?.abort()
   detailAbortController = null
-  void onlineState.flushPendingProgress()
 })
 
 watch(
@@ -835,6 +773,19 @@ watch(
     @back="handleBack"
     @retry="handleRetry"
   >
+    <template #toolbar-actions>
+      <MdButton
+        v-if="ctx?.sourceId && ctx?.comicUrl"
+        variant="tonal"
+        size="sm"
+        :icon="LuLibrary"
+        :loading="trackingBusy"
+        @click="handleTrackFromReader"
+      >
+        {{ globalT('pool.bindBtn') }}
+      </MdButton>
+    </template>
+
     <template #header-meta>
       <span
         v-if="activeSourceName"

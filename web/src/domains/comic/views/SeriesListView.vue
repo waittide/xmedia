@@ -16,7 +16,7 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu'
-import { DomainLibraryTemplate, MediaItemCard } from '@/components/domain'
+import { DomainLibraryTemplate, DomainPoolSection, MediaItemCard } from '@/components/domain'
 import RemoteOpdsBrowser from '@/components/remote/RemoteOpdsBrowser.vue'
 import {
   MdButton,
@@ -47,7 +47,6 @@ import type {
 import { seriesToMediaItemVM } from '@/domains/comic/utils/mappers'
 import {
   libraryRoute,
-  onlineItemsApi,
   playRoute,
   useMergedShelf,
   useSourceFilter,
@@ -113,11 +112,10 @@ const showRemoteScope = computed(
 )
 
 const activeTab = computed<LibraryTab>(() => {
+  if (scope.value !== 'local') return 'all'
   const raw = firstQuery(['tab'])
   if (raw && (VALID_TABS as readonly string[]).includes(raw)) {
-    const tab = raw as LibraryTab
-    if (scope.value !== 'local' && tab === 'collections') return 'all'
-    return tab
+    return raw as LibraryTab
   }
   if (props.presetMode === 'continue') return 'continue'
   if (props.presetMode === 'favorites') return 'favorites'
@@ -184,10 +182,11 @@ const isCollectionsView = computed(
   () => scope.value === 'local' && activeTab.value === 'collections',
 )
 const isMergedTab = computed(
-  () => activeTab.value === 'continue' || activeTab.value === 'favorites',
+  () => scope.value === 'local' && (activeTab.value === 'continue' || activeTab.value === 'favorites'),
 )
-const isOnlineBrowseView = computed(() => scope.value === 'online' && activeTab.value === 'all')
-const isRemoteBrowseView = computed(() => scope.value === 'remote' && activeTab.value === 'all')
+const isPoolBrowseView = computed(() => scope.value === 'pool')
+const isOnlineBrowseView = computed(() => scope.value === 'online')
+const isRemoteBrowseView = computed(() => scope.value === 'remote')
 
 const hasLocalFilterOverrides = computed(
   () =>
@@ -245,17 +244,16 @@ const shelfNameInput = ref('')
 const shelfDescInput = ref('')
 const savingShelf = ref(false)
 
-const tabs = computed<MdTabItem<LibraryTab>[]>(() => {
-  const base: MdTabItem<LibraryTab>[] = [
-    { value: 'all', label: t('library.tabAll') },
-    { value: 'continue', label: t('library.tabContinue') },
-    { value: 'favorites', label: t('library.tabFavorites') },
-  ]
-  if (scope.value === 'local') {
-    base.push({ value: 'collections', label: t('library.tabCollections') })
-  }
-  return base
-})
+const tabs = computed<MdTabItem<LibraryTab>[]>(() =>
+  scope.value === 'local'
+    ? [
+        { value: 'all', label: t('library.tabAll') },
+        { value: 'continue', label: t('library.tabContinue') },
+        { value: 'favorites', label: t('library.tabFavorites') },
+        { value: 'collections', label: t('library.tabCollections') },
+      ]
+    : [],
+)
 
 const viewOptions = computed<Array<{ value: ComicBrowseView; label: string }>>(() => [
   { value: 'items', label: t('library.viewItems') },
@@ -406,7 +404,7 @@ const headerTitle = computed(() => {
 })
 
 const headerCount = computed<number | null>(() => {
-  if (isOnlineBrowseView.value || isRemoteBrowseView.value) return null
+  if (isPoolBrowseView.value || isOnlineBrowseView.value || isRemoteBrowseView.value) return null
   if (isMergedTab.value) return mergedShelf.items.value.length
   if (isCollectionsView.value) return filteredShelves.value.length
   if (isTaxonomyView.value) return taxonomyItems.value.length
@@ -414,21 +412,21 @@ const headerCount = computed<number | null>(() => {
 })
 
 const templateLoading = computed(() => {
-  if (isOnlineBrowseView.value || isRemoteBrowseView.value) return false
+  if (isPoolBrowseView.value || isOnlineBrowseView.value || isRemoteBrowseView.value) return false
   if (isMergedTab.value) return mergedShelf.loading.value && mergedShelf.items.value.length === 0
   if (isCollectionsView.value || isTaxonomyView.value) return sidebarStore.loading
   return localLoading.value
 })
 
 const templateError = computed(() => {
-  if (isOnlineBrowseView.value || isRemoteBrowseView.value) return null
+  if (isPoolBrowseView.value || isOnlineBrowseView.value || isRemoteBrowseView.value) return null
   if (isMergedTab.value) return mergedShelf.error.value
   if (isLocalItemsView.value) return localError.value
   return null
 })
 
 const templateEmpty = computed(() => {
-  if (isOnlineBrowseView.value || isRemoteBrowseView.value) return false
+  if (isPoolBrowseView.value || isOnlineBrowseView.value || isRemoteBrowseView.value) return false
   if (isMergedTab.value) {
     return mergedShelf.items.value.length === 0 && filteredBookmarks.value.length === 0
   }
@@ -610,17 +608,21 @@ async function toggleLocalSeriesFavorite(series: SeriesSummaryDto): Promise<void
   }
 }
 
-async function handleMergedClearProgress(item: MediaItemVM): Promise<void> {
-  if (item.ref.scope === 'local') return
+async function handleUnbindLocalSeries(series: SeriesSummaryDto): Promise<void> {
+  const ok = await dialogStore.confirm({
+    title: globalT('pool.unbindConfirmTitle'),
+    message: series.online_tracking
+      ? globalT('pool.unbindOnlineConfirmMessage', { title: series.title })
+      : globalT('pool.unbindConfirmMessage', { title: series.title }),
+    danger: true,
+    confirmText: globalT('pool.unbindBtn'),
+  })
+  if (!ok) return
   try {
-    const lookup = await onlineItemsApi.lookup('comic', [
-      { source_kind: item.ref.scope, source_id: item.ref.sourceId, item_key: item.ref.ref },
-    ])
-    const hit = lookup.items[0]
-    if (!hit) return
-    await onlineItemsApi.clearProgress('comic', hit.id)
-    snackbarStore.show({ message: t('online.progressCleared') })
-    await mergedShelf.refresh()
+    await api.unbindItem(series.id)
+    snackbarStore.show(globalT('pool.unboundToast'))
+    upload.notifyCatalogChanged()
+    await Promise.allSettled([sidebarStore.refresh(), fetchLocalSeries()])
   } catch (err) {
     snackbarStore.show({
       message: err instanceof Error ? err.message : String(err),
@@ -629,23 +631,9 @@ async function handleMergedClearProgress(item: MediaItemVM): Promise<void> {
   }
 }
 
-async function handleMergedRemoveTracking(item: MediaItemVM): Promise<void> {
-  if (item.ref.scope === 'local') return
-  try {
-    const lookup = await onlineItemsApi.lookup('comic', [
-      { source_kind: item.ref.scope, source_id: item.ref.sourceId, item_key: item.ref.ref },
-    ])
-    const hit = lookup.items[0]
-    if (!hit) return
-    await onlineItemsApi.delete('comic', hit.id)
-    snackbarStore.show({ message: t('online.removedFromTracking') })
-    await mergedShelf.refresh()
-  } catch (err) {
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  }
+function handlePoolChanged(): void {
+  upload.notifyCatalogChanged()
+  void sidebarStore.refresh()
 }
 
 async function handleDeleteBookmark(bm: ComicBookmarkItemDto): Promise<void> {
@@ -812,7 +800,11 @@ onMounted(async () => {
       :show-remote-scope="showRemoteScope"
       :search-query="searchInput"
       :search-placeholder="
-        isOnlineBrowseView ? t('online.searchPlaceholder') : globalT('common.searchComic')
+        isOnlineBrowseView
+          ? t('online.searchPlaceholder')
+          : isPoolBrowseView
+            ? globalT('pool.searchPlaceholder', { domain: globalT('app.domains.comic') })
+            : globalT('common.searchComic')
       "
       :show-search="!isRemoteBrowseView"
       :tabs="tabs"
@@ -1016,9 +1008,17 @@ onMounted(async () => {
       </template>
 
       <!-- Main Slot Content -->
+      <!-- 0. Pool Scope -->
+      <DomainPoolSection
+        v-if="isPoolBrowseView"
+        domain="comic"
+        :search-query="searchInput"
+        @changed="handlePoolChanged"
+      />
+
       <!-- 1. Online Scope: OnlineMediaSearchShell (single search box lives in DomainLibraryTemplate) -->
       <OnlineComicSearchSection
-        v-if="isOnlineBrowseView"
+        v-else-if="isOnlineBrowseView"
         ref="onlineSearchRef"
         :keyword="queryFromRoute"
         :initial-source-id="activeSourceId"
@@ -1064,26 +1064,7 @@ onMounted(async () => {
             cover-style="book"
             :fallback-icon="LuBookOpen"
             :prefer-play-route="activeTab === 'continue'"
-          >
-            <template v-if="item.ref.scope !== 'local'" #menu="{ close }">
-              <MdMenuItem
-                v-if="activeTab === 'continue'"
-                :label="t('library.clearProgress')"
-                @select="
-                  close();
-                  handleMergedClearProgress(item)
-                "
-              />
-              <MdMenuItem
-                :label="t('library.removeTracking')"
-                destructive
-                @select="
-                  close();
-                  handleMergedRemoveTracking(item)
-                "
-              />
-            </template>
-          </MediaItemCard>
+          />
         </div>
 
         <!-- Bookmarks Section inside Continue Tab (§1.4 `/comic/bookmarks` → `/comic/library?tab=continue`) -->
@@ -1272,7 +1253,19 @@ onMounted(async () => {
           :show-favorite="seriesList[idx]?.is_favorite"
           :favorite="seriesList[idx]?.is_favorite ? true : undefined"
           @toggle-favorite="seriesList[idx] && toggleLocalSeriesFavorite(seriesList[idx]!)"
-        />
+        >
+          <template v-if="seriesList[idx]" #menu="{ close }">
+            <MdMenuItem
+              :icon="LuX"
+              :label="globalT('pool.unbindBtn')"
+              destructive
+              @select="
+                close();
+                handleUnbindLocalSeries(seriesList[idx]!)
+              "
+            />
+          </template>
+        </MediaItemCard>
       </div>
     </DomainLibraryTemplate>
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuBookMarked,
   LuDownload,
@@ -10,7 +11,7 @@ import {
   LuSlidersHorizontal,
 } from 'vue-icons-plus/lu'
 import { ImmersiveMediaTemplate } from '@/components/domain'
-import { MdIconButton, MdMenu, MdMenuItem, MdTextField } from '@/components/ui'
+import { MdButton, MdIconButton, MdMenu, MdMenuItem, MdTextField } from '@/components/ui'
 import BookSourceSwitchDialog from '@/domains/book/components/BookSourceSwitchDialog.vue'
 import OnlineDownloadModal from '@/domains/book/components/OnlineDownloadModal.vue'
 import ReaderTypographyPanel from '@/domains/book/components/ReaderTypographyPanel.vue'
@@ -19,6 +20,7 @@ import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import ContinuousTextArticle from '@/domains/book/readers/ContinuousTextArticle.vue'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 
 const articleRef = ref<InstanceType<typeof ContinuousTextArticle> | null>(null)
 const contentScrollRef = computed<HTMLElement | null>(
@@ -130,8 +132,19 @@ function handleRetryPrimary(): void {
     :escape-to-exit="true"
     @back="handleBackToCatalog"
   >
-    <!-- Top HUD Right Controls (4 controls + built-in Back = 5 total) -->
+    <!-- Top HUD Right Controls -->
     <template #header-controls>
+      <MdButton
+        v-if="readerCtx"
+        variant="tonal"
+        size="sm"
+        :icon="LuBookMarked"
+        :loading="savingShelf"
+        @click="handleSaveToShelf"
+      >
+        {{ globalT('pool.bindBtn') }}
+      </MdButton>
+
       <MdIconButton
         size="sm"
         variant="standard"
@@ -165,13 +178,6 @@ function handleRetryPrimary(): void {
           />
         </template>
 
-        <MdMenuItem
-          v-if="readerCtx && !readerCtx.shelfId"
-          :icon="LuBookMarked"
-          :label="t('online.saveToLibrary')"
-          :disabled="savingShelf"
-          @select="handleSaveToShelf"
-        />
         <MdMenuItem
           :icon="LuRefreshCw"
           :label="t('online.refreshChapter')"

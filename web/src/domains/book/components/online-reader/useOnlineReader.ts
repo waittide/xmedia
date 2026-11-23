@@ -110,27 +110,18 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     }
   }
 
-  function persistReadingProgress(pos: number, title: string, immediate = false): void {
+  function persistReadingProgress(pos: number, _title: string, immediate = false): void {
     const ctx = readerCtx.value
     if (!ctx || unmounted) return
     if (pos === lastPersistedPos && !immediate) return
 
+    // Ephemeral trial preview: keep position only in URL & sessionStorage until explicitly added to library.
     const commit = () => {
       const curCtx = readerCtx.value
       if (!curCtx || unmounted) return
       lastPersistedPos = pos
       curCtx.currentChapterIndex = pos
       syncContextToUrlAndStorage(curCtx)
-      if (curCtx.shelfId) {
-        void onlineBookApi
-          .updateShelfBook(curCtx.shelfId, {
-            current_chapter_index: pos,
-            current_chapter_title: title,
-            total_chapters: chapters.value.length,
-            last_chapter: chapters.value[chapters.value.length - 1]?.title ?? null,
-          })
-          .catch(() => {})
-      }
     }
 
     clearProgressSyncTimer()
@@ -385,38 +376,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       }
     }
 
-    if (!readerCtx.value && shelfIdQuery) {
-      if (storedCtx && storedCtx.shelfId === shelfIdQuery) {
-        readerCtx.value = storedCtx
-      } else {
-        try {
-          const shelf = await onlineBookApi.listShelf()
-          if (unmounted) return
-          const found = shelf.find((b) => b.id === shelfIdQuery)
-          if (found) {
-            readerCtx.value = {
-              shelfId: found.id,
-              sourceId: found.source_id,
-              sourceName: found.source_name,
-              name: found.name,
-              author: found.author,
-              bookUrl: found.book_url,
-              tocUrl: found.toc_url,
-              coverUrl: found.cover_url,
-              intro: found.intro,
-              currentChapterIndex:
-                Number.isFinite(parsedChapter) && parsedChapter >= 0
-                  ? parsedChapter
-                  : found.current_chapter_index,
-            }
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    if (!readerCtx.value && storedCtx && !shelfIdQuery) {
+    if (!readerCtx.value && storedCtx) {
       readerCtx.value = storedCtx
     }
 
@@ -519,15 +479,6 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
           throw new Error(t('online.switchSourceNoReadable'))
         }
         targetPos = firstReadable
-      }
-
-      if (nextCtx.shelfId) {
-        await onlineBookApi.updateShelfBook(nextCtx.shelfId, {
-          source_id: nextCtx.sourceId,
-          book_url: nextCtx.bookUrl,
-          toc_url: nextCtx.tocUrl,
-        })
-        if (unmounted) return
       }
 
       tocSeq += 1

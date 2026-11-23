@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
 import OnlineMediaSearchShell from '@/components/online-sources/OnlineMediaSearchShell.vue'
 import {
   useOnlineSearchBrowse,
@@ -18,13 +16,7 @@ import {
   onlineSearchItemToTrackedRef,
   saveOnlineComicContext,
 } from '@/domains/comic/utils/mappers'
-import {
-  onlineItemsApi,
-  sanitizeCoverUrlForApi,
-  seedOnlineItemStateCache,
-  type MediaItemVM,
-} from '@/sources'
-import { useSnackbarStore } from '@/stores/snackbar'
+import type { MediaItemVM } from '@/sources'
 
 const props = withDefaults(
   defineProps<{
@@ -44,10 +36,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
-const snackbar = useSnackbarStore()
 
-const togglingKeys = ref(new Set<string>())
 let cachedInitialExplore: {
   sourceId: string
   res: OnlineComicExploreResponseDto
@@ -149,59 +138,6 @@ function handleSelectItem(vm: MediaItemVM): void {
   })
 }
 
-async function applyFavorite(vm: MediaItemVM, nextFavorite: boolean, showUndo: boolean): Promise<void> {
-  if (vm.ref.scope !== 'online') return
-  const lockKey = `${vm.ref.sourceId}:${vm.ref.ref}`
-  if (togglingKeys.value.has(lockKey)) return
-  const nextLock = new Set(togglingKeys.value)
-  nextLock.add(lockKey)
-  togglingKeys.value = nextLock
-
-  const raw = findRawItem(vm)
-  try {
-    const saved = await onlineItemsApi.upsert('comic', {
-      source_kind: 'online',
-      source_id: vm.ref.sourceId,
-      item_key: vm.ref.ref,
-      title: raw?.title || vm.title,
-      subtitle: raw?.author || vm.ref.hints?.author || null,
-      cover_url: sanitizeCoverUrlForApi(raw?.cover_url ?? vm.ref.hints?.cover ?? null),
-      intro: raw?.intro ?? null,
-      kind: raw?.kind ?? null,
-      extra: {
-        source_name: raw?.source_name || vm.badge?.source || undefined,
-      },
-      favorite: nextFavorite,
-    })
-    seedOnlineItemStateCache([saved])
-
-    if (!nextFavorite && showUndo) {
-      snackbar.show({
-        message: globalT('common.removedFromFavorites'),
-        actionLabel: globalT('common.undo'),
-        onAction: async () => {
-          await applyFavorite(vm, true, false)
-        },
-      })
-    }
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    const cleaned = new Set(togglingKeys.value)
-    cleaned.delete(lockKey)
-    togglingKeys.value = cleaned
-  }
-}
-
-async function handleToggleFavorite(vm: MediaItemVM): Promise<void> {
-  if (vm.ref.scope !== 'online') return
-  const currentFav = browse.itemStates.isFavorite(vm.ref)
-  await applyFavorite(vm, !currentFav, true)
-}
-
 defineExpose({
   submitSearch: (kw?: string) => browse.submitSearch(kw),
   clearSearch: () => browse.clearSearch(),
@@ -233,7 +169,7 @@ defineExpose({
     :item-states="browse.itemStates"
     item-aspect="poster"
     item-cover-style="book"
-    :show-favorite-on-cards="true"
+    :show-favorite-on-cards="false"
     :has-more="browse.activeHasMore.value"
     :loading-more="browse.activeLoadingMore.value"
     :settings-to="{ path: '/comic/settings', query: { tab: 'sources' } }"
@@ -249,6 +185,5 @@ defineExpose({
     @retry-search="browse.retrySearch()"
     @load-more="browse.loadMore()"
     @select-item="handleSelectItem"
-    @toggle-favorite="handleToggleFavorite"
   />
 </template>

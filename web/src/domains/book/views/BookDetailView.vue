@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   LuBookmark,
@@ -16,6 +17,7 @@ import {
   LuRefreshCw,
   LuRepeat,
   LuTrash2,
+  LuX,
 } from 'vue-icons-plus/lu'
 import {
   MediaDetailTemplate,
@@ -48,6 +50,7 @@ import { useThemeStore } from '@/stores/theme'
 import { formatBytes } from '@/utils/format'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -492,6 +495,38 @@ function closeTrackedDownloadModal(): void {
   }
 }
 
+const unbindingBook = ref(false)
+
+async function handleUnbindBook(): Promise<void> {
+  if (!book.value || unbindingBook.value) return
+  const targetId = book.value.id
+  const targetTitle = book.value.metadata.title
+  const isOnline = Boolean(book.value.online_tracking)
+  const confirmed = await dialogStore.confirm({
+    title: globalT('pool.unbindConfirmTitle'),
+    message: isOnline
+      ? globalT('pool.unbindOnlineConfirmMessage', { title: targetTitle })
+      : globalT('pool.unbindConfirmMessage', { title: targetTitle }),
+    danger: true,
+    confirmText: globalT('pool.unbindBtn'),
+  })
+  if (!confirmed) return
+  unbindingBook.value = true
+  try {
+    await api.unbindItem(targetId)
+    snackbarStore.show(globalT('pool.unboundToast'))
+    await Promise.all([catalogStore.refreshSidebarData(), catalogStore.fetchBooks()])
+    await router.replace(libraryRoute('book'))
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    unbindingBook.value = false
+  }
+}
+
 async function handleDeleteBook(): Promise<void> {
   if (!book.value || deletingBook.value) return
   const targetId = book.value.id
@@ -705,17 +740,7 @@ function openBookmarkInReader(bm: Bookmark): void {
           @select="triggerFileDownload"
         />
 
-        <template v-if="book.online_tracking && authStore.isAdmin">
-          <MdMenuItem
-            :icon="LuRepeat"
-            :label="t('online.switchSource')"
-            @select="switchSourceOpen = true"
-          />
-          <MdMenuItem
-            :icon="LuCloud"
-            :label="t('online.cacheChapters')"
-            @select="openTrackedBatchDownload"
-          />
+        <template v-if="book.online_tracking">
           <MdMenuItem
             :icon="LuRefreshCw"
             :label="t('online.refreshToc')"
@@ -729,6 +754,18 @@ function openBookmarkInReader(bm: Bookmark): void {
             :disabled="syncingEpub"
             @select="handleSyncTrackedEpub"
           />
+          <template v-if="authStore.isAdmin">
+            <MdMenuItem
+              :icon="LuRepeat"
+              :label="t('online.switchSource')"
+              @select="switchSourceOpen = true"
+            />
+            <MdMenuItem
+              :icon="LuCloud"
+              :label="t('online.cacheChapters')"
+              @select="openTrackedBatchDownload"
+            />
+          </template>
         </template>
 
         <template v-if="authStore.isAdmin">
@@ -745,8 +782,16 @@ function openBookmarkInReader(bm: Bookmark): void {
         </template>
       </template>
 
-      <template v-if="book && authStore.isAdmin" #overflow-danger>
+      <template v-if="book" #overflow-danger>
         <MdMenuItem
+          :icon="LuX"
+          :label="globalT('pool.unbindBtn')"
+          :disabled="unbindingBook"
+          destructive
+          @select="handleUnbindBook"
+        />
+        <MdMenuItem
+          v-if="authStore.isAdmin"
           :icon="LuTrash2"
           :label="t('detail.deleteBook')"
           :disabled="deletingBook"

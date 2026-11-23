@@ -18,6 +18,7 @@ import {
   LuRefreshCw,
   LuTrash2,
   LuUpload,
+  LuX,
 } from 'vue-icons-plus/lu'
 import {
   MediaDetailTemplate,
@@ -584,8 +585,31 @@ async function handleCacheAllChapters(): Promise<void> {
   }
 }
 
+async function handleUnbindSeries(): Promise<void> {
+  if (!detail.value) return
+  const s = detail.value.series
+  const ok = await dialog.confirm({
+    title: globalT('pool.unbindConfirmTitle'),
+    message: isTrackedSeries.value
+      ? globalT('pool.unbindOnlineConfirmMessage', { title: s.title })
+      : globalT('pool.unbindConfirmMessage', { title: s.title }),
+    danger: true,
+    confirmText: globalT('pool.unbindBtn'),
+  })
+  if (!ok) return
+  try {
+    await api.unbindItem(s.id)
+    snackbar.show(globalT('pool.unboundToast'))
+    upload.notifyCatalogChanged()
+    await sidebarStore.refresh()
+    await router.replace(libraryRoute('comic'))
+  } catch (err) {
+    showError(err)
+  }
+}
+
 async function handleCacheChapter(ch: ChapterItemDto): Promise<void> {
-  if (!auth.isAdmin || cachingChapterIds.value.has(ch.id)) return
+  if (cachingChapterIds.value.has(ch.id)) return
   const next = new Set(cachingChapterIds.value)
   next.add(ch.id)
   cachingChapterIds.value = next
@@ -691,7 +715,7 @@ async function handleCacheChapter(ch: ChapterItemDto): Promise<void> {
       </template>
 
       <template v-if="detail" #overflow-menu="{ close }">
-        <template v-if="auth.isAdmin && isTrackedSeries">
+        <template v-if="isTrackedSeries">
           <MdMenuItem
             :label="
               refreshingTrackedToc ? t('online.refreshingTrackedToc') : t('online.refreshTrackedToc')
@@ -761,8 +785,18 @@ async function handleCacheChapter(ch: ChapterItemDto): Promise<void> {
         />
       </template>
 
-      <template v-if="detail && auth.isAdmin" #overflow-danger="{ close }">
+      <template v-if="detail" #overflow-danger="{ close }">
         <MdMenuItem
+          :label="globalT('pool.unbindBtn')"
+          :icon="LuX"
+          destructive
+          @select="
+            close();
+            handleUnbindSeries()
+          "
+        />
+        <MdMenuItem
+          v-if="auth.isAdmin"
           :label="t('series.deleteSeries')"
           :icon="LuTrash2"
           destructive
@@ -885,7 +919,7 @@ async function handleCacheChapter(ch: ChapterItemDto): Promise<void> {
               >
                 <template #menu="{ close }">
                   <MdMenuItem
-                    v-if="auth.isAdmin && ch.online_tracking && !ch.online_tracking.cached"
+                    v-if="ch.online_tracking && !ch.online_tracking.cached"
                     :label="t('online.cacheChapterBtn')"
                     :icon="LuDownload"
                     :disabled="cachingChapterIds.has(ch.id)"
