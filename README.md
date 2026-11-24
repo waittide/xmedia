@@ -24,14 +24,15 @@ xmedia/
 ## Build & Run
 
 ```bash
-# 1. Build unified frontend SPA
+# 1. Build unified frontend SPAs (main workspace + xmedia-tool workbench)
 cd web
 pnpm install
 pnpm run build
+pnpm run build:tool
 cd ..
 
-# 2. Build all-in-one single binary (embeds web/dist via rust-embed)
-cargo build --release -p xmedia
+# 2. Build all-in-one server & tool binaries (embed web/dist & web/dist-tool via rust-embed)
+cargo build --release -p xmedia -p xmedia-tool
 
 # Optional: build a tailored subset of media domains via Cargo features
 cargo build --release -p xmedia --no-default-features --features book,music
@@ -46,11 +47,12 @@ cargo build --release -p xmedia --no-default-features --features book,music
 | --- | --- | --- | --- |
 | `--bind` | `XMEDIA_BIND` | `0.0.0.0:8090` | HTTP listen address |
 | `--data-dir` | `XMEDIA_DATA_DIR` | `./data` | Managed uploads, covers/thumbnails, and default SQLite directory |
-| `--database-url` | `XMEDIA_DATABASE_URL` | `sqlite:<data_dir>/xmedia.db` | Supports `sqlite:...`, `postgresql://...`, and `mysql://...` |
-| `--secret` | `XMEDIA_SECRET` | *(dev default)* | Master secret for JWT signing and Subsonic token encryption |
+| `--database-url` | `XMEDIA_DATABASE_URL` | `sqlite:<data_dir>/xmedia.db` | SQLite by default; `postgresql://...` / `mysql://...` require `--features db-postgres` / `db-mysql` |
+| `--secret` | `XMEDIA_SECRET` | *(auto-generated)* | Master secret for JWT/Subsonic encryption (auto-generated and persisted to `<data_dir>/.secret` if omitted) |
 | `--jwt-ttl-secs` | `XMEDIA_JWT_TTL_SECS` | `604800` | Session token validity in seconds |
 | `--ffmpeg-bin` | `XMEDIA_FFMPEG_BIN` | `ffmpeg` | Path to `ffmpeg` (auto-discovers sibling `ffprobe`) |
 | `--web-dir` | `XMEDIA_WEB_DIR` | *(none)* | Optional external `web/dist` override |
+| `--cors-allow-origin` | `XMEDIA_CORS_ALLOW_ORIGINS` | *(same-origin)* | Optional allowed CORS origin(s); repeatable CLI flag or comma-separated env var |
 
 ## Open Client Protocols
 
@@ -58,4 +60,4 @@ cargo build --release -p xmedia --no-default-features --features book,music
 - **Books OPDS 2.0 (JSON)**: `http://<host>:8090/opds/book/v2`
 - **Comics OPDS 1.2 + PSE 1.1 Page Streaming**: `http://<host>:8090/opds/comic/v1.2`
 - **Music OpenSubsonic 1.16.1**: `http://<host>:8090` (mounts `/rest/*` for Symfonium, Feishin, Supersonic, Amperfy, etc.)
-- **Video Jellyfin-Compatible API**: `http://<host>:8090` (for Infuse, SenPlayer, Swiftfin, etc.)
+- **Video Jellyfin-Compatible API**: `http://<host>:8090/jellyfin` (for Infuse, SenPlayer, Swiftfin, etc.)
