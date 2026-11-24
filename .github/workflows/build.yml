@@ -767,33 +767,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PROJ="$(ls -d gen/apple/*.xcodeproj | head -n 1)"
-          SCHEME="$(xcodebuild -list -project "$PROJ" | awk '/Schemes:/{f=1;next} f && NF{gsub(/^[ \t]+/,""); print; exit}')"
-          echo "Building iOS project=${PROJ}, scheme=${SCHEME}"
-          xcodebuild \
-            -project "$PROJ" \
-            -scheme "$SCHEME" \
-            -configuration release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath gen/apple/build-ci \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            ENABLE_USER_SCRIPT_SANDBOXING=NO \
-            build 2>&1 | tee tauri-ios.log || {
-              echo "::error::$(grep -E 'error:|BUILD FAILED|panicked at' tauri-ios.log | tail -n 15 | tr '\n' ' ' | cut -c1-1500)"
-              exit 1
-            }
+          cargo tauri ios build --ci --no-sign --target aarch64 2>&1 | tee tauri-ios.log || {
+            echo "::error::$(tail -n 30 tauri-ios.log | tr '\n' ' ' | cut -c1-1500)"
+            exit 1
+          }
 
-          app_bundle="$(find gen/apple/build-ci/Build/Products/release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)"
-          test -d "$app_bundle"
-          mkdir -p ../../dist-out /tmp/ipa-stage/Payload
-          cp -R "$app_bundle" /tmp/ipa-stage/Payload/
-          (cd /tmp/ipa-stage && zip -qry "$GITHUB_WORKSPACE/dist-out/xmedia-app-ios-aarch64-unsigned.ipa" Payload)
+          ipa_file="$(find gen/apple/build -type f -name '*.ipa' | head -n 1 || true)"
+          if [ -z "$ipa_file" ]; then
+            echo "::error::Expected unsigned IPA under gen/apple/build not found"
+            find gen/apple/build -maxdepth 4 || true
+            exit 1
+          fi
+          mkdir -p ../../dist-out
+          cp "$ipa_file" ../../dist-out/xmedia-app-ios-aarch64-unsigned.ipa
           ls -lh ../../dist-out/xmedia-app-ios-aarch64-unsigned.ipa
 
       - name: Upload iOS IPA artifact
