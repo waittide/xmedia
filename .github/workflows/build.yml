@@ -1,0 +1,278 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-binaries-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build-web:
+    name: Build Web SPAs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Build xmedia & xmedia-tool web bundles
+        run: |
+          pnpm --dir web run build
+          pnpm --dir web run build:tool
+
+      - name: Upload frontend dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: |
+            web/dist
+            web/dist-tool
+          if-no-files-found: error
+          retention-days: 1
+
+  build-binaries:
+    name: Build (${{ matrix.name }})
+    needs: build-web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux
+            archive: tar.gz
+            ext: ""
+          - name: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux-cross-arm64
+            archive: tar.gz
+            ext: ""
+          - name: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+            platform: windows
+            archive: zip
+            ext: ".exe"
+          - name: macos-aarch64
+            target: aarch64-apple-darwin
+            os: macos-latest
+            platform: macos
+            archive: tar.gz
+            ext: ""
+          - name: macos-x86_64
+            target: x86_64-apple-darwin
+            os: macos-latest
+            platform: macos
+            archive: tar.gz
+            ext: ""
+          - name: android-aarch64
+            target: aarch64-linux-android
+            os: ubuntu-latest
+            platform: android
+            archive: tar.gz
+            ext: ""
+          - name: ios-aarch64
+            target: aarch64-apple-ios
+            os: macos-latest
+            platform: ios
+            archive: tar.gz
+            ext: ""
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built web bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web
+
+      - name: Verify embedded frontend assets
+        shell: bash
+        run: |
+          test -f web/dist/index.html
+          test -f web/dist-tool/tool.html
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Setup Linux ARM64 cross-compiler
+        if: matrix.platform == 'linux-cross-arm64'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
+          {
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup macOS deployment target
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+
+      - name: Setup Android NDK and libclang
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev clang
+
+          NDK_ROOT="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
+          if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+            NDK_ROOT="$(ls -d /usr/local/lib/android/sdk/ndk/* 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+            echo "::error::Android NDK not found on runner"
+            exit 1
+          fi
+
+          NDK_TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          ANDROID_API="24"
+          LIBCLANG_SO="$(find /usr/lib/llvm-* /usr/lib/x86_64-linux-gnu -maxdepth 2 -name 'libclang.so*' 2>/dev/null | head -n 1)"
+          if [ -z "$LIBCLANG_SO" ]; then
+            echo "::error::libclang.so not found after installing libclang-dev"
+            exit 1
+          fi
+          LIBCLANG_DIR="$(dirname "$LIBCLANG_SO")"
+          echo "Using Android NDK: ${NDK_ROOT} (API ${ANDROID_API}), libclang: ${LIBCLANG_DIR}"
+          {
+            echo "ANDROID_NDK_HOME=${NDK_ROOT}"
+            echo "CC_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang"
+            echo "CXX_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++"
+            echo "AR_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/llvm-ar"
+            echo "RANLIB_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/llvm-ranlib"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang"
+            echo "LIBCLANG_PATH=${LIBCLANG_DIR}"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=${NDK_TOOLCHAIN}/sysroot -isystem ${NDK_TOOLCHAIN}/sysroot/usr/include/aarch64-linux-android -D__ANDROID_API__=${ANDROID_API}"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup iOS SDK and libclang
+        if: matrix.platform == 'ios'
+        shell: bash
+        run: |
+          IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          XCODE_LIBCLANG="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          echo "Using iOS SDK: ${IOS_SDK}"
+          {
+            echo "IPHONEOS_DEPLOYMENT_TARGET=15.0"
+            echo "LIBCLANG_PATH=${XCODE_LIBCLANG}"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios=--target=arm64-apple-ios15.0 -isysroot ${IOS_SDK}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build xmedia and xmedia-tool
+        shell: bash
+        run: cargo build --release --target "${{ matrix.target }}" -p xmedia -p xmedia-tool
+
+      - name: Package binaries (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          for bin in xmedia xmedia-tool; do
+            src="target/${{ matrix.target }}/release/${bin}${{ matrix.ext }}"
+            test -f "$src"
+            file "$src" || true
+            ls -lh "$src"
+            stage="dist-stage/${bin}-${{ matrix.name }}"
+            mkdir -p "$stage"
+            cp "$src" "$stage/"
+            cp LICENSE "$stage/"
+            tar -C "$stage" -czf "dist-out/${bin}-${{ matrix.name }}.tar.gz" .
+          done
+
+      - name: Package binaries (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "dist-out" | Out-Null
+          foreach ($bin in @("xmedia", "xmedia-tool")) {
+            $src = "target/${{ matrix.target }}/release/${bin}${{ matrix.ext }}"
+            if (-not (Test-Path $src)) {
+              throw "Expected binary not found: $src"
+            }
+            Get-Item $src | Select-Object Name, Length
+            $stage = "dist-stage/${bin}-${{ matrix.name }}"
+            New-Item -ItemType Directory -Force -Path $stage | Out-Null
+            Copy-Item $src -Destination $stage
+            Copy-Item "LICENSE" -Destination $stage
+            Compress-Archive -Path "$stage/*" -DestinationPath "dist-out/${bin}-${{ matrix.name }}.zip" -Force
+          }
+
+      - name: Upload packaged binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.name }}
+          path: dist-out/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build-binaries
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate SHA256 checksums
+        working-directory: release-assets
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*

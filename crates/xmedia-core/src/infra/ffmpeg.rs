@@ -1,17 +1,28 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::ffi::OsString;
 use std::path::Path;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::Stdio;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::time::Duration;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::io::AsyncReadExt;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::process::Command;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::sync::mpsc;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tracing::debug;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_FFPROBE_STDOUT_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_FFMPEG_FRAME_STDOUT_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_FFMPEG_SUBTITLE_STDOUT_BYTES: usize = 32 * 1024 * 1024;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -76,6 +87,7 @@ use crate::application::dto::FfmpegStatusDto;
 use crate::application::ports::ByteChunkStream;
 use crate::domain::error::{DomainError, DomainResult};
 pub use crate::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::infra::stream::MpscByteStream;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -498,12 +510,14 @@ impl Default for FfmpegToolkit {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
 struct RawFfprobeOutput {
     format: Option<RawFfprobeFormat>,
     streams: Option<Vec<RawFfprobeStream>>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
 struct RawFfprobeFormat {
     format_name: Option<String>,
@@ -511,6 +525,7 @@ struct RawFfprobeFormat {
     bit_rate: Option<String>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
 struct RawFfprobeStream {
     index: Option<u32>,
@@ -523,12 +538,14 @@ struct RawFfprobeStream {
     tags: Option<RawFfprobeTags>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
 struct RawFfprobeDisposition {
     default: Option<i32>,
     attached_pic: Option<i32>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize)]
 struct RawFfprobeTags {
     language: Option<String>,
