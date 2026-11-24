@@ -1247,6 +1247,20 @@ export async function runTier3(context = {}) {
             null;
           assert.ok(localVideoId, 'Expected uploaded_videos[0].id from /api/v1/video/upload');
 
+          // Bind pooled uploads into member's personal library
+          await member.failLoudlyRequest('POST', '/api/v1/comic/bindings', {
+            body: { item_ids: [localSeriesId] },
+            expectedStatus: 200,
+          });
+          await member.failLoudlyRequest('POST', '/api/v1/music/bindings', {
+            body: { item_ids: [localTrackId] },
+            expectedStatus: 200,
+          });
+          await member.failLoudlyRequest('POST', '/api/v1/video/bindings', {
+            body: { item_ids: [localVideoId] },
+            expectedStatus: 200,
+          });
+
           // 2. Interleave local reads & online searches
           const [localComicList, onlineComicRes] = await Promise.all([
             member.failLoudlyRequest('GET', '/api/v1/comic/series', { expectedStatus: 200 }),

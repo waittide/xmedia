@@ -1416,8 +1416,11 @@ function buildTier1Cases() {
           '/settings?tab=domain-datasources&domain=comic',
         );
         try {
-          await cdp.waitForSelector('[data-settings-tab="sources"]', { visible: true });
+          await cdp.waitForSelector('[data-domain-settings-tab="sources"], [data-settings-tab="sources"]', {
+            visible: true,
+          });
           await clickButtonMatching(cdp, [/导入|import/i]);
+          await clickButtonMatching(cdp, [/粘贴|paste/i], { rootSelector: '[role="menu"]' });
           await cdp.waitForSelector('textarea', { visible: true });
           await cdp.type('textarea', JSON.stringify(comics.xkcd));
           await clickButtonMatching(cdp, [/确认导入|导入|submit|import/i], {
@@ -2092,6 +2095,13 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Mock Wandering Earth/]);
           await clickButtonMatching(cdp, [/第1集/]);
           await cdp.waitForSelector('video', { visible: true });
+          const deadline = Date.now() + 10000;
+          while (
+            Date.now() < deadline &&
+            !cdp.networkRequests.some((r) => r.url.includes('/api/v1/video/online/hls-proxy'))
+          ) {
+            await new Promise((r) => setTimeout(r, 80));
+          }
           await cdp.waitForFn(
             `Boolean(document.querySelector('video') && !document.querySelector('video').error)`,
             { timeoutMs: 10000 },
@@ -2126,6 +2136,13 @@ function buildTier1Cases() {
           await cdp.waitForSelector('video', { visible: true });
           await clickButtonMatching(cdp, [/选集|episodes/i]);
           await clickButtonMatching(cdp, [/第2集/], { rootSelector: '[role="dialog"]' });
+          const ep2Deadline = Date.now() + 10000;
+          while (
+            Date.now() < ep2Deadline &&
+            !cdp.networkRequests.some((r) => r.url.includes('ep2'))
+          ) {
+            await new Promise((r) => setTimeout(r, 80));
+          }
           await cdp.waitForFn(
             `Boolean(document.querySelector('video') && !document.querySelector('video').error)`,
             { timeoutMs: 10000 },
@@ -2334,7 +2351,7 @@ function buildTier1Cases() {
       domain: 'nonreg',
       title: 'Local library non-regression: upload, list, and stream/read across comic, music, video, book',
       async run(ctx) {
-        // 1. Comic CBZ upload & read
+        // 1. Comic CBZ upload, per-user pool isolation, binding & read
         const cbzBuf = buildMinimalZip([{ name: '001.png', data: MOCK_PNG_BYTES }]);
         const comicForm = buildMultipartForm([
           { filename: 'nonreg_comic.cbz', contentType: 'application/zip', data: cbzBuf },
@@ -2345,65 +2362,98 @@ function buildTier1Cases() {
           expectedStatus: 201,
         });
         assert.ok(upComic.json.uploaded.length === 1);
+        const uploadedSeriesId = upComic.json.uploaded[0].series_id;
+        const adminComicSeries = (
+          await ctx.admin.failLoudlyRequest('GET', '/api/v1/comic/series', { expectedStatus: 200 })
+        ).json;
+        assert.ok(adminComicSeries.some((s) => s.id === uploadedSeriesId));
+        await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/bindings', {
+          body: { item_ids: [uploadedSeriesId] },
+          expectedStatus: 200,
+        });
         const comicSeries = (
           await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/series', { expectedStatus: 200 })
         ).json;
-        assert.ok(comicSeries.length >= 1);
+        assert.ok(comicSeries.some((s) => s.id === uploadedSeriesId));
 
-        // 2. Music MP3 upload & stream
+        // 2. Music MP3 upload, binding & stream
         const musicForm = buildMultipartForm([
           { filename: 'nonreg_track.mp3', contentType: 'audio/mpeg', data: MOCK_MP3_BYTES },
         ]);
-        await ctx.admin.failLoudlyRequest('POST', '/api/v1/music/upload', {
+        const upMusic = await ctx.admin.failLoudlyRequest('POST', '/api/v1/music/upload', {
           headers: { 'Content-Type': musicForm.contentType },
           body: musicForm.body,
           expectedStatus: 201,
         });
+        const uploadedTrackId =
+          upMusic.json?.uploaded_tracks?.[0]?.id ||
+          upMusic.json?.tracks?.[0]?.id ||
+          upMusic.json?.uploaded?.[0]?.id;
+        assert.ok(uploadedTrackId, 'Expected uploaded track id from /api/v1/music/upload');
+        await ctx.member.failLoudlyRequest('POST', '/api/v1/music/bindings', {
+          body: { item_ids: [uploadedTrackId] },
+          expectedStatus: 200,
+        });
         const tracksRes = (
           await ctx.member.failLoudlyRequest('GET', '/api/v1/music/tracks', { expectedStatus: 200 })
         ).json;
-        assert.ok(tracksRes.items.length >= 1);
+        assert.ok(tracksRes.items.some((t) => t.id === uploadedTrackId));
         const streamTrack = await ctx.member.failLoudlyRequest(
           'GET',
-          `/api/v1/music/tracks/${tracksRes.items[0].id}/stream`,
+          `/api/v1/music/tracks/${uploadedTrackId}/stream`,
           { expectedStatus: 200 },
         );
         assertMp3(streamTrack.buffer, 'local music stream');
 
-        // 3. Video MP4 upload & stream
+        // 3. Video MP4 upload, binding & stream
         const videoForm = buildMultipartForm([
           { filename: 'nonreg_video.mp4', contentType: 'video/mp4', data: MOCK_MP4_BYTES },
         ]);
-        await ctx.admin.failLoudlyRequest('POST', '/api/v1/video/upload', {
+        const upVideo = await ctx.admin.failLoudlyRequest('POST', '/api/v1/video/upload', {
           headers: { 'Content-Type': videoForm.contentType },
           body: videoForm.body,
           expectedStatus: 201,
         });
+        const uploadedVideoId =
+          upVideo.json?.uploaded_videos?.[0]?.id ||
+          upVideo.json?.videos?.[0]?.id ||
+          upVideo.json?.uploaded?.[0]?.id;
+        assert.ok(uploadedVideoId, 'Expected uploaded video id from /api/v1/video/upload');
+        await ctx.member.failLoudlyRequest('POST', '/api/v1/video/bindings', {
+          body: { item_ids: [uploadedVideoId] },
+          expectedStatus: 200,
+        });
         const videos = (
           await ctx.member.failLoudlyRequest('GET', '/api/v1/video/videos', { expectedStatus: 200 })
         ).json;
-        assert.ok(videos.length >= 1);
+        assert.ok(videos.some((v) => v.id === uploadedVideoId));
         const streamVid = await ctx.member.failLoudlyRequest(
           'GET',
-          `/api/v1/video/videos/${videos[0].id}/stream`,
+          `/api/v1/video/videos/${uploadedVideoId}/stream`,
           { expectedStatus: 200 },
         );
         assertMp4(streamVid.buffer, 'local video stream');
 
-        // 4. Book TXT upload & read chapter
+        // 4. Book TXT upload, binding & read chapter
         const txtContent = Buffer.from('Chapter 1\n\nHello xmedia non-regression book.', 'utf8');
         const bookForm = buildMultipartForm([
           { filename: 'nonreg_book.txt', contentType: 'text/plain', data: txtContent },
         ]);
-        await ctx.admin.failLoudlyRequest('POST', '/api/v1/book/books/upload', {
+        const upBook = await ctx.admin.failLoudlyRequest('POST', '/api/v1/book/books/upload', {
           headers: { 'Content-Type': bookForm.contentType },
           body: bookForm.body,
           expectedStatus: 201,
         });
+        const uploadedBookId = upBook.json?.uploaded?.[0]?.id;
+        assert.ok(uploadedBookId, 'Expected uploaded book id from /api/v1/book/books/upload');
+        await ctx.member.failLoudlyRequest('POST', '/api/v1/book/bindings', {
+          body: { item_ids: [uploadedBookId] },
+          expectedStatus: 200,
+        });
         const booksRes = (
           await ctx.member.failLoudlyRequest('GET', '/api/v1/book/books', { expectedStatus: 200 })
         ).json;
-        assert.ok(booksRes.items.length >= 1);
+        assert.ok(booksRes.items.some((b) => b.id === uploadedBookId));
       },
     },
     {

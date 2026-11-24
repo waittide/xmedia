@@ -1399,6 +1399,7 @@ function buildTier2Cases() {
         );
         try {
           await clickButtonMatching(cdp, [/导入|import/i]);
+          await clickButtonMatching(cdp, [/粘贴|paste/i], { rootSelector: '[role="menu"]' });
           await cdp.waitForSelector('textarea', { visible: true });
           await cdp.type('textarea', '{not valid json');
           await clickButtonMatching(cdp, [/确认导入|导入|submit|import/i], {
@@ -1661,7 +1662,9 @@ function buildTier2Cases() {
               expectedStatus: 200,
             });
             await cdp.goto(`${ctx.baseUrl}/settings?tab=domain-datasources&domain=comic`);
-            await cdp.waitForSelector('[data-settings-tab="sources"]', { visible: true });
+            await cdp.waitForSelector('[data-domain-settings-tab="sources"], [data-settings-tab="sources"]', {
+              visible: true,
+            });
             const rawKeyLeak = await cdp.evalJs(`(() => {
               const txt = document.body.innerText;
               const m = txt.match(/\\b(settings|comic|music|video|onlineSources)\\.[a-zA-Z0-9_]+\\b/);
@@ -1718,7 +1721,7 @@ function buildTier2Cases() {
         );
         try {
           await clickButtonMatching(cdp, [/在线|online/i]);
-          await clickButtonMatching(cdp, [/本地|local/i]);
+          await clickButtonMatching(cdp, [/我的库|本地|my library|local/i]);
           await clickButtonMatching(cdp, [/在线|online/i]);
           await cdp.waitForFn(`location.search.includes('scope=online')`, { timeoutMs: 6000 });
           cdp.assertNoErrors('T2-F13-02');
@@ -3450,13 +3453,16 @@ function buildTier2Cases() {
           expectedStatus: 200,
         });
         const bookId = tracked.json.id;
-        const toc = await ctx.member.failLoudlyRequest(
+        // Private per-user isolation: another user cannot access admin's tracked online book directly
+        const crossUserToc = await ctx.member.request('GET', `/api/v1/book/books/${bookId}/online/toc`);
+        assert.equal(crossUserToc.status, 404, 'Other users must not read another user tracked online book');
+        const toc = await ctx.admin.failLoudlyRequest(
           'GET',
           `/api/v1/book/books/${bookId}/online/toc`,
           { expectedStatus: 200 },
         );
         assert.ok(toc.json.chapters.length >= 2);
-        const ch = await ctx.member.failLoudlyRequest(
+        const ch = await ctx.admin.failLoudlyRequest(
           'GET',
           `/api/v1/book/books/${bookId}/online/chapter/0`,
           { expectedStatus: 200 },
@@ -3479,7 +3485,12 @@ function buildTier2Cases() {
           body: comicForm.body,
           expectedStatus: 201,
         });
+        const seriesId = upComic.json.uploaded[0].series_id;
         const chapterId = upComic.json.uploaded[0].chapter_id;
+        await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/bindings', {
+          body: { item_ids: [seriesId] },
+          expectedStatus: 200,
+        });
 
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,

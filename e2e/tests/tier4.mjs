@@ -571,12 +571,9 @@ export async function runTier4(context = {}) {
             { timeoutMs: 10000, label: 'Comic data sources manager rendered in Settings' },
           );
 
-          // Open paste JSON import box and import cookieGated source
-          await clickButtonByText(cdp, ['粘贴', '新建', 'Paste', 'Import JSON', '导入 JSON'], {
-            timeoutMs: 8000,
-          }).catch(async () => {
-            await clickButtonByText(cdp, ['导入', 'Import'], { timeoutMs: 8000 });
-          });
+          // Open Import dropdown -> Paste JSON box and import cookieGated source
+          await clickButtonByText(cdp, ['导入', 'Import'], { timeoutMs: 8000 });
+          await clickButtonByText(cdp, ['粘贴', 'Paste'], { timeoutMs: 8000 });
 
           await cdp.waitForSelector('textarea', { visible: true, timeoutMs: 8000 });
           await cdp.type('textarea', JSON.stringify(edgeMocks.cookieGated));
@@ -759,6 +756,24 @@ export async function runTier4(context = {}) {
             vUp.json?.uploaded?.[0]?.id ||
             null;
           assert.ok(videoId, 'Expected uploaded_videos[0].id from /api/v1/video/upload');
+
+          // Bind pooled items into member's personal library for OPDS/Subsonic/stream verification
+          await member.failLoudlyRequest('POST', '/api/v1/book/bindings', {
+            body: { item_ids: [bookId] },
+            expectedStatus: 200,
+          });
+          await member.failLoudlyRequest('POST', '/api/v1/comic/bindings', {
+            body: { item_ids: [seriesId] },
+            expectedStatus: 200,
+          });
+          await member.failLoudlyRequest('POST', '/api/v1/music/bindings', {
+            body: { item_ids: [trackId] },
+            expectedStatus: 200,
+          });
+          await member.failLoudlyRequest('POST', '/api/v1/video/bindings', {
+            body: { item_ids: [videoId] },
+            expectedStatus: 200,
+          });
 
           // Verify legacy xmedia-book online search + OPDS + OpenSubsonic + new domains
           const bookOnlineSearch = await member.failLoudlyRequest(
