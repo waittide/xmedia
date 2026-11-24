@@ -18,6 +18,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  TAURI_CLI_VERSION: "2.12.6"
 
 jobs:
   build-web:
@@ -42,7 +43,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm --dir web install --frozen-lockfile
 
-      - name: Build xmedia & xmedia-tool web bundles
+      - name: Build xmedia-server & xmedia-tool web bundles
         run: |
           pnpm --dir web run build
           pnpm --dir web run build:tool
@@ -58,7 +59,7 @@ jobs:
           retention-days: 1
 
   build-binaries:
-    name: Build (${{ matrix.name }})
+    name: Build CLI (${{ matrix.name }})
     needs: build-web
     runs-on: ${{ matrix.os }}
     strategy:
@@ -132,7 +133,7 @@ jobs:
       - name: Restore Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.name }}
+          key: cli-${{ matrix.name }}
 
       - name: Setup Linux ARM64 cross-compiler
         if: matrix.platform == 'linux-cross-arm64'
@@ -225,11 +226,11 @@ jobs:
             echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios=--target=arm64-apple-ios15.0 -isysroot ${IOS_SDK}"
           } >> "$GITHUB_ENV"
 
-      - name: Build xmedia and xmedia-tool
+      - name: Build xmedia-server and xmedia-tool
         shell: bash
         run: |
           set -o pipefail
-          cargo build --release --target "${{ matrix.target }}" -p xmedia -p xmedia-tool 2>&1 | tee cargo-build.log || {
+          cargo build --release --target "${{ matrix.target }}" --bin xmedia-server --bin xmedia-tool 2>&1 | tee cargo-build.log || {
             echo "::error::$(grep -E 'error(\[|:)|panicked at|fatal error|undefined reference|ld\.lld' cargo-build.log | tail -n 12 | tr '\n' ' ' | cut -c1-1500)"
             exit 1
           }
@@ -240,7 +241,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-out
-          for bin in xmedia xmedia-tool; do
+          for bin in xmedia-server xmedia-tool; do
             src="target/${{ matrix.target }}/release/${bin}${{ matrix.ext }}"
             test -f "$src"
             file "$src" || true
@@ -258,7 +259,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path "dist-out" | Out-Null
-          foreach ($bin in @("xmedia", "xmedia-tool")) {
+          foreach ($bin in @("xmedia-server", "xmedia-tool")) {
             $src = "target/${{ matrix.target }}/release/${bin}${{ matrix.ext }}"
             if (-not (Test-Path $src)) {
               throw "Expected binary not found: $src"
@@ -271,23 +272,558 @@ jobs:
             Compress-Archive -Path "$stage/*" -DestinationPath "dist-out/${bin}-${{ matrix.name }}.zip" -Force
           }
 
-      - name: Upload packaged binaries
+      - name: Upload packaged CLI binaries
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.name }}
           path: dist-out/*
           if-no-files-found: error
 
+  build-tauri-desktop:
+    name: Build App (${{ matrix.name }})
+    needs: build-web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            platform: linux
+            cli_asset: cargo-tauri-x86_64-unknown-linux-gnu.tgz
+          - name: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            platform: linux
+            cli_asset: cargo-tauri-aarch64-unknown-linux-gnu.tgz
+          - name: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+            platform: windows
+            cli_asset: cargo-tauri-x86_64-pc-windows-msvc.zip
+          - name: macos-aarch64
+            target: aarch64-apple-darwin
+            os: macos-latest
+            platform: macos
+            cli_asset: cargo-tauri-aarch64-apple-darwin.zip
+          - name: macos-x86_64
+            target: x86_64-apple-darwin
+            os: macos-latest
+            platform: macos
+            cli_asset: cargo-tauri-aarch64-apple-darwin.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built web bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web
+
+      - name: Verify embedded frontend assets
+        shell: bash
+        run: test -f web/dist/index.html
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/xmedia-app -> target"
+          key: tauri-${{ matrix.name }}
+
+      - name: Install Linux Tauri system dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            rpm
+
+      - name: Setup macOS deployment target
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+
+      - name: Install prebuilt cargo-tauri (Unix)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cargo/bin" /tmp/tauri-cli
+          url="https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v${TAURI_CLI_VERSION}/${{ matrix.cli_asset }}"
+          curl -fsSL --retry 3 --retry-delay 2 "$url" -o "/tmp/tauri-cli/${{ matrix.cli_asset }}"
+          if [[ "${{ matrix.cli_asset }}" == *.tgz ]]; then
+            tar -xzf "/tmp/tauri-cli/${{ matrix.cli_asset }}" -C /tmp/tauri-cli
+          else
+            unzip -qo "/tmp/tauri-cli/${{ matrix.cli_asset }}" -d /tmp/tauri-cli
+          fi
+          bin_path="$(find /tmp/tauri-cli -type f -name 'cargo-tauri' | head -n 1)"
+          test -n "$bin_path"
+          install -m 0755 "$bin_path" "$HOME/.cargo/bin/cargo-tauri"
+          cargo tauri --version
+
+      - name: Install prebuilt cargo-tauri (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dest = Join-Path $env:USERPROFILE ".cargo\bin"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $tmp = Join-Path $env:RUNNER_TEMP "tauri-cli"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $zipPath = Join-Path $tmp "${{ matrix.cli_asset }}"
+          $url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v$($env:TAURI_CLI_VERSION)/${{ matrix.cli_asset }}"
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
+          $bin = Get-ChildItem -Path $tmp -Recurse -Filter "cargo-tauri.exe" | Select-Object -First 1
+          if (-not $bin) { throw "cargo-tauri.exe not found in archive" }
+          Copy-Item $bin.FullName -Destination (Join-Path $dest "cargo-tauri.exe") -Force
+          cargo tauri --version
+
+      - name: Disable beforeBuildCommand in CI workspace (uses downloaded web-dist)
+        shell: bash
+        run: |
+          node -e '
+          const fs = require("fs");
+          const p = "apps/xmedia-app/tauri.conf.json";
+          const data = JSON.parse(fs.readFileSync(p, "utf8"));
+          data.build.beforeBuildCommand = "";
+          fs.writeFileSync(p, JSON.stringify(data, null, 2) + "\n");
+          '
+
+      - name: Build Tauri app (Linux)
+        if: matrix.platform == 'linux'
+        working-directory: apps/xmedia-app
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          NO_STRIP: "true"
+        run: |
+          set -o pipefail
+          cargo tauri build --target "${{ matrix.target }}" --bundles deb,rpm,appimage 2>&1 | tee tauri-build.log || {
+            echo "::error::$(grep -E 'error(\[|:)|Error|failed|panicked at' tauri-build.log | tail -n 15 | tr '\n' ' ' | cut -c1-1500)"
+            exit 1
+          }
+
+      - name: Build Tauri app (macOS)
+        if: matrix.platform == 'macos'
+        working-directory: apps/xmedia-app
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo tauri build --target "${{ matrix.target }}" --bundles dmg 2>&1 | tee tauri-build.log || {
+            echo "::error::$(grep -E 'error(\[|:)|Error|failed|panicked at' tauri-build.log | tail -n 15 | tr '\n' ' ' | cut -c1-1500)"
+            exit 1
+          }
+
+      - name: Build Tauri app (Windows)
+        if: matrix.platform == 'windows'
+        working-directory: apps/xmedia-app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo tauri build --target "${{ matrix.target }}" --bundles msi,nsis
+
+      - name: Collect Tauri desktop bundles (Unix)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          bundle_root="apps/xmedia-app/target/${{ matrix.target }}/release/bundle"
+          if [ "${{ matrix.platform }}" = "linux" ]; then
+            deb="$(find "$bundle_root/deb" -maxdepth 2 -name '*.deb' | head -n 1)"
+            rpm="$(find "$bundle_root/rpm" -maxdepth 2 -name '*.rpm' | head -n 1)"
+            appimage="$(find "$bundle_root/appimage" -maxdepth 2 -name '*.AppImage' | head -n 1)"
+            test -n "$deb" && cp "$deb" "dist-out/xmedia-app-${{ matrix.name }}.deb"
+            test -n "$rpm" && cp "$rpm" "dist-out/xmedia-app-${{ matrix.name }}.rpm"
+            test -n "$appimage" && cp "$appimage" "dist-out/xmedia-app-${{ matrix.name }}.AppImage"
+          elif [ "${{ matrix.platform }}" = "macos" ]; then
+            dmg="$(find "$bundle_root/dmg" -maxdepth 2 -name '*.dmg' | head -n 1)"
+            test -n "$dmg"
+            cp "$dmg" "dist-out/xmedia-app-${{ matrix.name }}.dmg"
+          fi
+          ls -lh dist-out/
+
+      - name: Collect Tauri desktop bundles (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "dist-out" | Out-Null
+          $bundleRoot = "apps/xmedia-app/target/${{ matrix.target }}/release/bundle"
+          $msi = Get-ChildItem -Path (Join-Path $bundleRoot "msi") -Filter "*.msi" | Select-Object -First 1
+          $exe = Get-ChildItem -Path (Join-Path $bundleRoot "nsis") -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $msi) { throw "Expected MSI bundle not found" }
+          if (-not $exe) { throw "Expected NSIS setup.exe bundle not found" }
+          Copy-Item $msi.FullName -Destination "dist-out/xmedia-app-${{ matrix.name }}.msi"
+          Copy-Item $exe.FullName -Destination "dist-out/xmedia-app-${{ matrix.name }}-setup.exe"
+          Get-ChildItem dist-out | Select-Object Name, Length
+
+      - name: Upload Tauri desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-${{ matrix.name }}
+          path: dist-out/*
+          if-no-files-found: error
+
+  build-tauri-android:
+    name: Build App (android-aarch64)
+    needs: build-web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built web bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web
+
+      - name: Verify embedded frontend assets
+        shell: bash
+        run: test -f web/dist/index.html
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/xmedia-app -> target"
+          key: tauri-android-aarch64
+
+      - name: Install prebuilt cargo-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cargo/bin" /tmp/tauri-cli
+          asset="cargo-tauri-x86_64-unknown-linux-gnu.tgz"
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v${TAURI_CLI_VERSION}/${asset}" \
+            -o "/tmp/tauri-cli/${asset}"
+          tar -xzf "/tmp/tauri-cli/${asset}" -C /tmp/tauri-cli
+          bin_path="$(find /tmp/tauri-cli -type f -name 'cargo-tauri' | head -n 1)"
+          test -n "$bin_path"
+          install -m 0755 "$bin_path" "$HOME/.cargo/bin/cargo-tauri"
+          cargo tauri --version
+
+      - name: Setup Android SDK, NDK and libclang
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev clang
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          NDK_ROOT="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
+          if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+            NDK_ROOT="$(ls -d "${SDK_ROOT}/ndk/"* 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+            echo "::error::Android NDK not found on runner"
+            exit 1
+          fi
+
+          NDK_TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          ANDROID_API="24"
+
+          NDK_LIBCLANG_SO="$(find "${NDK_TOOLCHAIN}/lib" "${NDK_TOOLCHAIN}/lib64" -maxdepth 2 -name 'libclang.so*' 2>/dev/null | head -n 1 || true)"
+          if [ -n "$NDK_LIBCLANG_SO" ] && [ -x "${NDK_TOOLCHAIN}/bin/clang" ] \
+             && python3 -c "import ctypes, sys; ctypes.CDLL(sys.argv[1])" "$NDK_LIBCLANG_SO" 2>/dev/null; then
+            LIBCLANG_DIR="$(dirname "$NDK_LIBCLANG_SO")"
+            BINDGEN_CLANG_PATH="${NDK_TOOLCHAIN}/bin/clang"
+          else
+            BINDGEN_CLANG_PATH="$(command -v clang)"
+            CLANG_MAJOR="$("${BINDGEN_CLANG_PATH}" -dumpversion | cut -d. -f1)"
+            LIBCLANG_DIR="/usr/lib/llvm-${CLANG_MAJOR}/lib"
+            if [ -z "$(find "${LIBCLANG_DIR}" -maxdepth 1 -name 'libclang.so*' 2>/dev/null || true)" ]; then
+              echo "::error::matching libclang.so for clang ${CLANG_MAJOR} not found in ${LIBCLANG_DIR}"
+              exit 1
+            fi
+          fi
+
+          RESOURCE_DIR="$("${BINDGEN_CLANG_PATH}" -print-resource-dir)"
+          BINDGEN_ARGS="--target=aarch64-linux-android${ANDROID_API} --sysroot=${NDK_TOOLCHAIN}/sysroot -resource-dir=${RESOURCE_DIR}"
+          echo "Using Android SDK: ${SDK_ROOT}, NDK: ${NDK_ROOT} (API ${ANDROID_API})"
+          echo "Using libclang: ${LIBCLANG_DIR}, clang: ${BINDGEN_CLANG_PATH}, resource-dir: ${RESOURCE_DIR}"
+          printf '#include <stdbool.h>\n#include <stdio.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <stddef.h>\n#include <inttypes.h>\n#include <limits.h>\n' \
+            | "${BINDGEN_CLANG_PATH}" -fsyntax-only -xc ${BINDGEN_ARGS} -
+
+          {
+            echo "ANDROID_HOME=${SDK_ROOT}"
+            echo "ANDROID_SDK_ROOT=${SDK_ROOT}"
+            echo "ANDROID_NDK_HOME=${NDK_ROOT}"
+            echo "NDK_HOME=${NDK_ROOT}"
+            echo "CC_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang"
+            echo "CXX_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++"
+            echo "AR_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/llvm-ar"
+            echo "RANLIB_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/llvm-ranlib"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang"
+            echo "LIBCLANG_PATH=${LIBCLANG_DIR}"
+            echo "CLANG_PATH=${BINDGEN_CLANG_PATH}"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=${BINDGEN_ARGS}"
+          } >> "$GITHUB_ENV"
+
+      - name: Initialize Android project and enable loopback cleartext
+        working-directory: apps/xmedia-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c '
+          import json, pathlib
+          p = pathlib.Path("tauri.conf.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          data["build"]["beforeBuildCommand"] = ""
+          p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          '
+          cargo tauri android init --ci
+          python3 -c '
+          import pathlib
+          p = pathlib.Path("gen/android/app/src/main/AndroidManifest.xml")
+          txt = p.read_text(encoding="utf-8")
+          if "usesCleartextTraffic" not in txt:
+              txt = txt.replace("<application", "<application\n        android:usesCleartextTraffic=\"true\"", 1)
+              p.write_text(txt, encoding="utf-8")
+          '
+
+      - name: Build Android APK (aarch64)
+        working-directory: apps/xmedia-app
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo tauri android build --apk --target aarch64 2>&1 | tee tauri-android.log || {
+            echo "::error::$(grep -E 'error(\[|:)|Error|FAILURE|FAILED|panicked at' tauri-android.log | tail -n 15 | tr '\n' ' ' | cut -c1-1500)"
+            exit 1
+          }
+
+      - name: Align and sign Android APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out /tmp/apk-sign
+          raw_apk="$(find apps/xmedia-app/gen/android/app/build/outputs/apk -type f -name '*arm64*release*.apk' | head -n 1 || true)"
+          if [ -z "$raw_apk" ]; then
+            raw_apk="$(find apps/xmedia-app/gen/android/app/build/outputs/apk -type f -name '*release*.apk' | head -n 1)"
+          fi
+          test -n "$raw_apk"
+          echo "Found raw APK: ${raw_apk}"
+
+          build_tools="$(ls -d "${ANDROID_HOME}/build-tools/"* | sort -V | tail -n 1)"
+          aligned_apk="/tmp/apk-sign/aligned.apk"
+          "${build_tools}/zipalign" -f -p 4 "$raw_apk" "$aligned_apk"
+
+          keystore="/tmp/apk-sign/release.keystore"
+          if [ -n "${ANDROID_KEYSTORE_BASE64}" ]; then
+            printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "$keystore"
+            ks_pass="${ANDROID_KEYSTORE_PASSWORD}"
+            key_alias="${ANDROID_KEY_ALIAS}"
+            key_pass="${ANDROID_KEY_PASSWORD:-$ks_pass}"
+          else
+            ks_pass="xmedia-ci-keystore"
+            key_alias="xmedia"
+            key_pass="$ks_pass"
+            keytool -genkeypair -v \
+              -keystore "$keystore" \
+              -storepass "$ks_pass" \
+              -keypass "$key_pass" \
+              -alias "$key_alias" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=XMedia, O=XMedia, L=Internet, C=US"
+          fi
+
+          out_apk="dist-out/xmedia-app-android-aarch64.apk"
+          "${build_tools}/apksigner" sign \
+            --ks "$keystore" \
+            --ks-pass "pass:${ks_pass}" \
+            --ks-key-alias "$key_alias" \
+            --key-pass "pass:${key_pass}" \
+            --out "$out_apk" \
+            "$aligned_apk"
+          "${build_tools}/apksigner" verify "$out_apk"
+          ls -lh "$out_apk"
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-android-aarch64
+          path: dist-out/*
+          if-no-files-found: error
+
+  build-tauri-ios:
+    name: Build App (ios-aarch64)
+    needs: build-web
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built web bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web
+
+      - name: Verify embedded frontend assets
+        shell: bash
+        run: test -f web/dist/index.html
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/xmedia-app -> target"
+          key: tauri-ios-aarch64
+
+      - name: Install prebuilt cargo-tauri and xcodegen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cargo/bin" /tmp/tauri-cli
+          asset="cargo-tauri-aarch64-apple-darwin.zip"
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v${TAURI_CLI_VERSION}/${asset}" \
+            -o "/tmp/tauri-cli/${asset}"
+          unzip -qo "/tmp/tauri-cli/${asset}" -d /tmp/tauri-cli
+          bin_path="$(find /tmp/tauri-cli -type f -name 'cargo-tauri' | head -n 1)"
+          test -n "$bin_path"
+          install -m 0755 "$bin_path" "$HOME/.cargo/bin/cargo-tauri"
+          cargo tauri --version
+          command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Setup iOS SDK and libclang
+        shell: bash
+        run: |
+          set -euo pipefail
+          IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          XCODE_LIBCLANG="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          XCODE_CLANG="$(xcrun --find clang)"
+          echo "Using iOS SDK: ${IOS_SDK}, clang: ${XCODE_CLANG}"
+          {
+            echo "IPHONEOS_DEPLOYMENT_TARGET=15.0"
+            echo "LIBCLANG_PATH=${XCODE_LIBCLANG}"
+            echo "CLANG_PATH=${XCODE_CLANG}"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios=--target=arm64-apple-ios15.0 -isysroot ${IOS_SDK}"
+          } >> "$GITHUB_ENV"
+
+      - name: Initialize iOS project and enable local networking
+        working-directory: apps/xmedia-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c '
+          import json, pathlib
+          p = pathlib.Path("tauri.conf.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          data["build"]["beforeBuildCommand"] = ""
+          p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          '
+          cargo tauri ios init --ci
+          for plist in gen/apple/*/Info.plist; do
+            test -f "$plist"
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsLocalNetworking" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$plist"
+          done
+
+      - name: Build unsigned iOS IPA (aarch64)
+        working-directory: apps/xmedia-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJ="$(ls -d gen/apple/*.xcodeproj | head -n 1)"
+          SCHEME="$(xcodebuild -list -project "$PROJ" | awk '/Schemes:/{f=1;next} f && NF{gsub(/^[ \t]+/,""); print; exit}')"
+          echo "Building iOS project=${PROJ}, scheme=${SCHEME}"
+          xcodebuild \
+            -project "$PROJ" \
+            -scheme "$SCHEME" \
+            -configuration release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath gen/apple/build-ci \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            build 2>&1 | tee tauri-ios.log || {
+              echo "::error::$(grep -E 'error:|BUILD FAILED|panicked at' tauri-ios.log | tail -n 15 | tr '\n' ' ' | cut -c1-1500)"
+              exit 1
+            }
+
+          app_bundle="$(find gen/apple/build-ci/Build/Products/release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)"
+          test -d "$app_bundle"
+          mkdir -p ../../dist-out /tmp/ipa-stage/Payload
+          cp -R "$app_bundle" /tmp/ipa-stage/Payload/
+          (cd /tmp/ipa-stage && zip -qry "$GITHUB_WORKSPACE/dist-out/xmedia-app-ios-aarch64-unsigned.ipa" Payload)
+          ls -lh ../../dist-out/xmedia-app-ios-aarch64-unsigned.ipa
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-ios-aarch64
+          path: dist-out/*
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: build-binaries
+    needs:
+      - build-binaries
+      - build-tauri-desktop
+      - build-tauri-android
+      - build-tauri-ios
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Download all platform binaries
+      - name: Download all CLI binaries
         uses: actions/download-artifact@v4
         with:
           pattern: binaries-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Download all Tauri app artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tauri-*
           merge-multiple: true
           path: release-assets
 
@@ -297,7 +833,22 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Create GitHub Release
+      - name: Remove legacy xmedia-* assets on existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            for asset in $(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name'); do
+              if [[ "$asset" =~ ^xmedia-(linux|windows|macos|android|ios)- ]]; then
+                echo "Deleting legacy asset: $asset"
+                gh release delete-asset "$TAG" "$asset" --repo "${{ github.repository }}" --yes || true
+              fi
+            done
+          fi
+
+      - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
