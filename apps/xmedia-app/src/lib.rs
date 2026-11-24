@@ -106,6 +106,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window.navigate(external_url)?;
             } else {
+                #[allow(unused_mut)]
                 let mut builder = tauri::WebviewWindowBuilder::new(
                     app,
                     "main",
