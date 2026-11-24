@@ -6,6 +6,7 @@ import {
   LuFolderOpen,
   LuLibrary,
   LuLock,
+  LuPencil,
   LuPlus,
   LuRefreshCw,
   LuTrash2,
@@ -75,6 +76,13 @@ const libPath = ref('')
 const scanNow = ref(true)
 const mounting = ref(false)
 const dialogError = ref('')
+
+// Rename Library Dialog state
+const renameDialogOpen = ref(false)
+const renameTarget = ref<CoreLibraryDto | null>(null)
+const renameValue = ref('')
+const renaming = ref(false)
+const renameError = ref('')
 
 const enabledDomains = computed<MediaKind[]>(() => authStore.enabledModules)
 
@@ -246,6 +254,42 @@ async function handleScanAll(): Promise<void> {
     emit('error', err instanceof Error ? err.message : String(err))
   } finally {
     scanningAll.value = false
+  }
+}
+
+function openRenameDialog(lib: CoreLibraryDto): void {
+  renameTarget.value = lib
+  renameValue.value = lib.name
+  renameError.value = ''
+  renameDialogOpen.value = true
+}
+
+async function handleRenameLibrary(): Promise<void> {
+  const target = renameTarget.value
+  if (!target || renaming.value) return
+  renameError.value = ''
+  emit('error', '')
+  const trimmed = renameValue.value.trim()
+  if (!trimmed) {
+    renameError.value = t('admin.libraryNamePlaceholder')
+    return
+  }
+  if (trimmed === target.name) {
+    renameDialogOpen.value = false
+    return
+  }
+  renaming.value = true
+  try {
+    const updated = await api.renameLibrary(target.id, trimmed)
+    renameDialogOpen.value = false
+    renameTarget.value = null
+    eventsStore.bumpDomain(updated.media_kind)
+    await refreshAdminLibraries()
+    snackbarStore.show(t('admin.libraryRenamedMsg', { name: updated.name }))
+  } catch (err) {
+    renameError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    renaming.value = false
   }
 }
 
@@ -432,8 +476,9 @@ function formatScanStatus(lib: CoreLibraryDto): string {
             </p>
           </div>
 
-          <div v-if="lib.kind.type === 'local_mount'" class="flex shrink-0 items-center gap-1.5">
+          <div class="flex shrink-0 items-center gap-1.5">
             <MdButton
+              v-if="lib.kind.type === 'local_mount'"
               variant="tonal"
               size="sm"
               :icon="LuRefreshCw"
@@ -444,6 +489,15 @@ function formatScanStatus(lib: CoreLibraryDto): string {
             </MdButton>
 
             <MdIconButton
+              size="sm"
+              :icon="LuPencil"
+              :tooltip="t('admin.renameLibrary')"
+              :aria-label="t('admin.renameLibrary')"
+              @click="openRenameDialog(lib)"
+            />
+
+            <MdIconButton
+              v-if="lib.kind.type === 'local_mount'"
               size="sm"
               :icon="LuTrash2"
               :tooltip="t('admin.deleteLibrary')"
@@ -527,6 +581,66 @@ function formatScanStatus(lib: CoreLibraryDto): string {
           :disabled="!libPath.trim()"
         >
           {{ scanNow ? t('admin.mountAndScanBtn') : t('admin.mountOnlyBtn') }}
+        </MdButton>
+      </template>
+    </MdDialog>
+
+    <!-- Rename Library Dialog -->
+    <MdDialog
+      :open="renameDialogOpen"
+      :title="t('admin.renameLibraryTitle')"
+      :subtitle="t('admin.renameLibraryDesc')"
+      size="sm"
+      @close="!renaming && (renameDialogOpen = false)"
+    >
+      <template #icon>
+        <LuPencil class="h-5 w-5" />
+      </template>
+
+      <form
+        id="settings-rename-library-form"
+        class="flex flex-col gap-4 py-1"
+        @submit.prevent="handleRenameLibrary"
+      >
+        <div
+          v-if="renameError"
+          role="alert"
+          class="text-body-small rounded-corner-md bg-error-container px-3.5 py-2.5 text-on-error-container"
+        >
+          {{ renameError }}
+        </div>
+
+        <p
+          v-if="renameTarget?.kind.type === 'local_mount'"
+          class="text-body-small truncate rounded-corner-md bg-surface-container px-3.5 py-2 font-mono text-on-surface-variant"
+          :title="renameTarget.kind.root_path"
+        >
+          {{ renameTarget.kind.root_path }}
+        </p>
+
+        <MdTextField
+          v-model="renameValue"
+          required
+          autofocus
+          :maxlength="128"
+          :disabled="renaming"
+          :label="t('admin.libraryName')"
+          :placeholder="t('admin.libraryNamePlaceholder')"
+        />
+      </form>
+
+      <template #footer>
+        <MdButton variant="text" :disabled="renaming" @click="renameDialogOpen = false">
+          {{ t('common.cancel') }}
+        </MdButton>
+        <MdButton
+          type="submit"
+          form="settings-rename-library-form"
+          variant="filled"
+          :loading="renaming"
+          :disabled="!renameValue.trim()"
+        >
+          {{ t('common.save') }}
         </MdButton>
       </template>
     </MdDialog>
