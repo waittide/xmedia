@@ -2,7 +2,7 @@
 import type { Component } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { LuLayers } from 'vue-icons-plus/lu'
+import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 
 export interface DomainNavTab {
@@ -22,6 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const themeStore = useThemeStore()
 </script>
 
 <template>
@@ -30,13 +31,18 @@ const { t } = useI18n()
     class="safe-py safe-pl hidden w-20 shrink-0 flex-col items-center bg-surface-container py-3 select-none sm:flex"
   >
     <div class="flex w-full flex-col items-center gap-3">
-      <!-- Subtle brand mark -->
+      <!-- Brand mark -->
       <RouterLink
         :to="'/' + activeDomain"
         :aria-label="t('app.name')"
-        class="md-state md-touch-target mb-1 flex h-10 w-10 items-center justify-center rounded-corner-md bg-primary-container text-on-primary-container"
+        class="md-state md-touch-target mb-1 flex h-10 w-10 items-center justify-center rounded-corner-md"
       >
-        <LuLayers class="h-5 w-5" aria-hidden="true" />
+        <img
+          :src="themeStore.appIconSrc"
+          alt=""
+          aria-hidden="true"
+          class="h-10 w-10 select-none"
+        />
       </RouterLink>
 
       <!-- Top-level 4-domain destinations -->

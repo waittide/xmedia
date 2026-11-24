@@ -369,6 +369,14 @@ export default {
       red: 'Red',
       pink: 'Pink',
     },
+    appIconTitle: 'App Icon',
+    appIconHint: 'Instantly switches the browser favicon, in-app mark, and desktop window icon',
+    icons: {
+      cobalt: 'Cobalt Wings',
+      porcelain: 'Porcelain Wings',
+      obsidian: 'Obsidian Wings',
+      monolith: 'Cobalt Fold',
+    },
   },
   settings: {
     title: 'Settings',
@@ -378,7 +386,7 @@ export default {
     navAccount: 'Account',
     navAccountSecurity: 'Account & Security',
     navAbout: 'About',
-    summaryAppearance: 'Theme mode, color palette, and language',
+    summaryAppearance: 'Theme mode, color palette, app icon, and language',
     summaryAccount: 'Profile, password, API Key, and users',
     summaryAbout: 'Version, enabled domains, and FFmpeg status',
     summarySources: 'Online data sources and remote servers',

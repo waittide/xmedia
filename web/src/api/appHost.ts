@@ -273,6 +273,12 @@ export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
 export const appHostApi = {
   probe: probeAppHost,
 
+  setAppIcon: (icon: string) =>
+    requestAppJson<{ icon: string }>('/icon', {
+      method: 'PUT',
+      body: JSON.stringify({ icon }),
+    }),
+
   fetchAutoSession: () => requestAppJson<AuthSessionDto>('/auto-session', { method: 'POST' }),
 
   listRemoteSources: () =>

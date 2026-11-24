@@ -110,6 +110,16 @@ fn sanitize_seed_color(raw: &str) -> Option<String> {
     Some(format!("#{}", expanded.to_ascii_lowercase()))
 }
 
+/// Normalizes an optional app icon preset id; `None` represents the default (`cobalt`).
+fn sanitize_app_icon(raw: &str) -> Option<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "porcelain" => Some("porcelain".to_string()),
+        "obsidian" => Some("obsidian".to_string()),
+        "monolith" => Some("monolith".to_string()),
+        _ => None,
+    }
+}
+
 fn clamp_finite(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value.clamp(min, max)
@@ -402,6 +412,9 @@ pub struct UserPreferences {
     /// Single MD3 seed color (`#rrggbb`); `None` means the client default seed.
     #[serde(default)]
     pub seed_color: Option<String>,
+    /// Optional icon variant id (`porcelain` | `obsidian` | `monolith`); `None` means default (`cobalt`).
+    #[serde(default)]
+    pub app_icon: Option<String>,
     #[serde(default)]
     pub locale: Locale,
     #[serde(default)]
@@ -418,6 +431,7 @@ impl UserPreferences {
     /// Clamps and sanitizes all preference values into safe bounds.
     pub fn normalize(&mut self) {
         self.seed_color = self.seed_color.as_deref().and_then(sanitize_seed_color);
+        self.app_icon = self.app_icon.as_deref().and_then(sanitize_app_icon);
         self.book.normalize();
         self.comic.normalize();
         self.music.normalize();
@@ -629,6 +643,34 @@ mod tests {
             prefs.seed_color = Some(invalid.into());
             prefs.normalize();
             assert_eq!(prefs.seed_color, None, "{invalid} should be rejected");
+        }
+    }
+
+    #[test]
+    fn app_icon_is_sanitized() {
+        let mut prefs = UserPreferences {
+            app_icon: Some(" Porcelain ".into()),
+            ..Default::default()
+        };
+        prefs.normalize();
+        assert_eq!(prefs.app_icon.as_deref(), Some("porcelain"));
+
+        for valid in ["obsidian", "MONOLITH"] {
+            prefs.app_icon = Some(valid.into());
+            prefs.normalize();
+            assert_eq!(
+                prefs.app_icon.as_deref(),
+                Some(valid.to_ascii_lowercase().as_str())
+            );
+        }
+
+        for fallback in ["cobalt", "COBALT", "../evil", "", "unknown"] {
+            prefs.app_icon = Some(fallback.into());
+            prefs.normalize();
+            assert_eq!(
+                prefs.app_icon, None,
+                "{fallback} should normalize to default None"
+            );
         }
     }
 }

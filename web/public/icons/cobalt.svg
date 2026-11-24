@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="sq">
+      <path d="M 312 48 L 712 48 C 890 48, 976 134, 976 312 L 976 712 C 976 890, 890 976, 712 976 L 312 976 C 134 976, 48 890, 48 712 L 48 312 C 48 134, 134 48, 312 48 Z" />
+    </clipPath>
+
+    <linearGradient id="bg" x1="15%" y1="5%" x2="85%" y2="95%">
+      <stop offset="0%" stop-color="#2260E6" />
+      <stop offset="100%" stop-color="#0E3085" />
+    </linearGradient>
+
+    <linearGradient id="rim" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.34" />
+      <stop offset="50%" stop-color="#FFFFFF" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="#93C5FD" stop-opacity="0.16" />
+    </linearGradient>
+
+    <linearGradient id="rightWing" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#CBE8FF" stop-opacity="0.90" />
+      <stop offset="100%" stop-color="#93C5FD" stop-opacity="0.62" />
+    </linearGradient>
+
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#07184A" flood-opacity="0.30" />
+    </filter>
+  </defs>
+
+  <g clip-path="url(#sq)">
+    <rect x="48" y="48" width="928" height="928" fill="url(#bg)" />
+  </g>
+  <path
+    d="M 312 48 L 712 48 C 890 48, 976 134, 976 312 L 976 712 C 976 890, 890 976, 712 976 L 312 976 C 134 976, 48 890, 48 712 L 48 312 C 48 134, 134 48, 312 48 Z"
+    fill="none"
+    stroke="url(#rim)"
+    stroke-width="4"
+  />
+
+  <g filter="url(#shadow)">
+    <path
+      d="M 244 268
+         L 346 268
+         C 364 268, 381 277, 391 292
+         L 492 486
+         C 500 502, 500 522, 492 538
+         L 391 732
+         C 381 747, 364 756, 346 756
+         L 244 756
+         C 217 756, 202 725, 217 703
+         L 336 512
+         L 217 321
+         C 202 299, 217 268, 244 268
+         Z"
+      fill="#FFFFFF"
+    />
+    <path
+      d="M 780 268
+         C 807 268, 822 299, 807 321
+         L 688 512
+         L 807 703
+         C 822 725, 807 756, 780 756
+         L 678 756
+         C 660 756, 643 747, 633 732
+         L 532 538
+         C 524 522, 524 502, 532 486
+         L 633 292
+         C 643 277, 660 268, 678 268
+         Z"
+      fill="url(#rightWing)"
+    />
+  </g>
+</svg>

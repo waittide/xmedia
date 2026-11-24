@@ -605,6 +605,7 @@ jobs:
           p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
           '
           cargo tauri android init --ci
+          cargo tauri icon icons/icon.png
           python3 -c '
           import pathlib
           p = pathlib.Path("gen/android/app/src/main/AndroidManifest.xml")
@@ -755,6 +756,7 @@ jobs:
           p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
           '
           cargo tauri ios init --ci
+          cargo tauri icon icons/icon-ios.png --ios-color "#1646B5"
           for plist in gen/apple/*/Info.plist; do
             test -f "$plist"
             /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$plist" 2>/dev/null || true

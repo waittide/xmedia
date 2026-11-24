@@ -2,14 +2,16 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { LuAlertCircle, LuEye, LuEyeOff, LuLayers } from 'vue-icons-plus/lu'
+import { LuAlertCircle, LuEye, LuEyeOff } from 'vue-icons-plus/lu'
 import ThemePopover from '@/components/ThemePopover.vue'
 import { MdButton, MdCard, MdIconButton, MdTextField } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 
 const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
+const themeStore = useThemeStore()
 
 const username = ref('')
 const password = ref('')
@@ -36,11 +38,12 @@ async function onSubmit(): Promise<void> {
     <header class="safe-pt safe-px">
       <div class="flex items-center justify-between px-6 py-4">
         <div class="flex items-center gap-2.5">
-          <div
-            class="flex h-10 w-10 items-center justify-center rounded-corner-lg bg-primary text-on-primary shadow-elevation-1"
-          >
-            <LuLayers class="h-5 w-5" />
-          </div>
+          <img
+            :src="themeStore.appIconSrc"
+            alt=""
+            aria-hidden="true"
+            class="h-10 w-10 shrink-0 select-none"
+          />
           <span class="text-title-medium tracking-tight">{{ t('app.name') }}</span>
         </div>
         <ThemePopover show-language />

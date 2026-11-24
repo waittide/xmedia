@@ -32,6 +32,16 @@ pub struct AppHealthResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct AppIconResponse {
+    pub icon: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetAppIconRequest {
+    pub icon: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RemoteSourcesListResponse {
     pub sources: Vec<RemoteSourceSummaryDto>,
 }

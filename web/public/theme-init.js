@@ -15,6 +15,13 @@ try {
       mt.content = '#1d2023'
     }
   }
+  var icon = typeof p.app_icon === 'string' ? p.app_icon.trim().toLowerCase() : ''
+  if (icon === 'porcelain' || icon === 'obsidian' || icon === 'monolith' || icon === 'cobalt') {
+    var fav = document.getElementById('app-favicon')
+    if (fav) {
+      fav.setAttribute('href', '/icons/' + icon + '.svg')
+    }
+  }
 } catch (e) {
   // ignore storage/media errors
 }

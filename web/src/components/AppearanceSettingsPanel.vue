@@ -5,6 +5,7 @@ import { LuCheck, LuMonitor, LuMoon, LuRotateCw, LuSun } from 'vue-icons-plus/lu
 import AppColorPicker from '@/components/ui/AppColorPicker.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import { useThemeStore } from '@/stores/theme'
+import { APP_ICON_PRESETS } from '@/theme/appIcons'
 import {
   chooseContrastText,
   normalizeHex,
@@ -145,6 +146,59 @@ function onHexInputChange(raw: string): void {
         class="md-input text-body-small h-9 w-28 font-mono"
         @change="onHexInputChange(($event.target as HTMLInputElement).value)"
       />
+    </div>
+  </section>
+
+  <!-- App Icon -->
+  <section class="md-card-outlined p-6">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="text-title-small text-on-surface">
+          {{ t('theme.appIconTitle') }}
+        </h2>
+        <p class="text-body-small mt-0.5 text-on-surface-variant">
+          {{ t('theme.appIconHint') }}
+        </p>
+      </div>
+      <button
+        v-if="themeStore.appIcon !== null"
+        type="button"
+        class="md-btn md-btn-sm md-btn-text"
+        @click="themeStore.resetAppIcon()"
+      >
+        <LuRotateCw class="h-3.5 w-3.5" />
+        <span>{{ t('theme.resetDefaults') }}</span>
+      </button>
+    </div>
+
+    <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <button
+        v-for="preset in APP_ICON_PRESETS"
+        :key="preset.id"
+        type="button"
+        :aria-pressed="themeStore.effectiveAppIcon === preset.id"
+        class="md-state relative flex cursor-pointer flex-col items-center gap-2.5 rounded-corner-md border px-3 py-4 text-center transition-colors duration-150 ease-standard"
+        :class="
+          themeStore.effectiveAppIcon === preset.id
+            ? 'border-primary bg-secondary-container text-on-secondary-container'
+            : 'border-outline-variant bg-surface-container-low text-on-surface hover:border-outline'
+        "
+        @click="themeStore.setAppIcon(preset.id)"
+      >
+        <span
+          v-if="themeStore.effectiveAppIcon === preset.id"
+          class="absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-corner-full bg-primary text-on-primary"
+        >
+          <LuCheck class="h-3 w-3 stroke-[2.5]" />
+        </span>
+        <img
+          :src="preset.src"
+          alt=""
+          aria-hidden="true"
+          class="h-14 w-14 shrink-0 select-none"
+        />
+        <span class="text-label-medium">{{ t(`theme.icons.${preset.id}`) }}</span>
+      </button>
     </div>
   </section>
 </template>

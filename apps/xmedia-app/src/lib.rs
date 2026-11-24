@@ -1,3 +1,4 @@
+pub mod app_icon;
 pub mod gateway;
 pub mod local_engine;
 pub mod opds_client;
@@ -94,10 +95,26 @@ pub fn run() {
             let dist_dir = external_dist_dir_from_env();
 
             let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-            let gateway: RunningGateway = tauri::async_runtime::block_on(gateway::start_gateway(
-                bind_addr, data_dir, dist_dir,
-            ))?;
+            #[cfg(desktop)]
+            let icon_applier: Option<app_icon::IconApplier> = {
+                let handle = app.handle().clone();
+                Some(std::sync::Arc::new(move |variant| {
+                    app_icon::apply_desktop_window_icon(&handle, variant);
+                }))
+            };
+            #[cfg(not(desktop))]
+            let icon_applier: Option<app_icon::IconApplier> = None;
+
+            let gateway: RunningGateway =
+                tauri::async_runtime::block_on(gateway::start_gateway_with_icon_applier(
+                    bind_addr,
+                    data_dir,
+                    dist_dir,
+                    icon_applier,
+                ))?;
             let gateway_url = gateway.url.clone();
+            #[cfg(desktop)]
+            let initial_icon = gateway.current_app_icon();
             tracing::info!(url = %gateway_url, "started Tauri standalone local loopback gateway");
 
             app.manage(GatewayLifecycleState(Mutex::new(Some(gateway))));
@@ -122,6 +139,11 @@ pub fn run() {
                         .center();
                 }
                 builder.build()?;
+            }
+
+            #[cfg(desktop)]
+            if initial_icon != app_icon::AppIconVariant::default() {
+                app_icon::apply_desktop_window_icon(app.handle(), initial_icon);
             }
 
             Ok(())

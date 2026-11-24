@@ -46,6 +46,7 @@ export interface VideoPlaybackPreferences {
 export interface UserPreferences {
   theme_mode: ThemeMode
   seed_color?: string | null
+  app_icon?: string | null
   locale: LocaleCode
   book: ReaderPreferences
   comic: ComicReaderPreferences

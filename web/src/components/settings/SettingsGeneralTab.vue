@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuAlertCircle, LuCheckCircle2, LuHardDrive, LuLayers } from 'vue-icons-plus/lu'
+import { LuAlertCircle, LuCheckCircle2 } from 'vue-icons-plus/lu'
 import { MdCard } from '@/components/ui'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { DOMAIN_ICONS } from './sections'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
 const appClientStore = useAppClientStore()
+const themeStore = useThemeStore()
 
 const displayVersion = computed(
   () => authStore.capabilities?.version || appClientStore.appVersion || '0.1.0',
@@ -22,12 +24,12 @@ const displayVersion = computed(
     <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3.5">
-          <div
-            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
-          >
-            <LuHardDrive v-if="appClientStore.isStandaloneApp" class="h-5 w-5" />
-            <LuLayers v-else class="h-5 w-5" />
-          </div>
+          <img
+            :src="themeStore.appIconSrc"
+            alt=""
+            aria-hidden="true"
+            class="h-11 w-11 shrink-0 select-none"
+          />
           <div>
             <h2 class="text-title-medium text-on-surface">
               {{

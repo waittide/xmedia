@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="sq">
+      <path d="M 312 48 L 712 48 C 890 48, 976 134, 976 312 L 976 712 C 976 890, 890 976, 712 976 L 312 976 C 134 976, 48 890, 48 712 L 48 312 C 48 134, 134 48, 312 48 Z" />
+    </clipPath>
+
+    <linearGradient id="bg" x1="15%" y1="5%" x2="85%" y2="95%">
+      <stop offset="0%" stop-color="#2260E6" />
+      <stop offset="100%" stop-color="#0E3085" />
+    </linearGradient>
+
+    <linearGradient id="rim" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.34" />
+      <stop offset="50%" stop-color="#FFFFFF" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="#93C5FD" stop-opacity="0.16" />
+    </linearGradient>
+
+    <linearGradient id="strokeBack" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E0F2FE" stop-opacity="0.72" />
+      <stop offset="100%" stop-color="#93C5FD" stop-opacity="0.46" />
+    </linearGradient>
+
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#07184A" flood-opacity="0.32" />
+    </filter>
+    <filter id="cross" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#091D54" flood-opacity="0.30" />
+    </filter>
+  </defs>
+
+  <g clip-path="url(#sq)">
+    <rect x="48" y="48" width="928" height="928" fill="url(#bg)" />
+  </g>
+  <path
+    d="M 312 48 L 712 48 C 890 48, 976 134, 976 312 L 976 712 C 976 890, 890 976, 712 976 L 312 976 C 134 976, 48 890, 48 712 L 48 312 C 48 134, 134 48, 312 48 Z"
+    fill="none"
+    stroke="url(#rim)"
+    stroke-width="4"
+  />
+
+  <g filter="url(#shadow)">
+    <path
+      d="M 278 264
+         L 376 264
+         C 394 264, 411 273, 422 288
+         L 764 710
+         C 780 730, 766 760, 740 760
+         L 642 760
+         C 624 760, 607 751, 596 736
+         L 254 314
+         C 238 294, 252 264, 278 264
+         Z"
+      fill="url(#strokeBack)"
+    />
+  </g>
+
+  <g filter="url(#cross)">
+    <path
+      d="M 648 264
+         L 746 264
+         C 772 264, 786 294, 770 314
+         L 428 736
+         C 417 751, 400 760, 382 760
+         L 284 760
+         C 258 760, 244 730, 260 710
+         L 602 288
+         C 613 273, 630 264, 648 264
+         Z"
+      fill="#FFFFFF"
+    />
+  </g>
+</svg>

@@ -1,5 +1,13 @@
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { appHostApi } from '@/api/appHost'
+import {
+  appIconUrl,
+  applyDocumentFavicon,
+  DEFAULT_APP_ICON,
+  resolveStoredAppIcon,
+  type AppIconId,
+} from '@/theme/appIcons'
 import {
   applyMd3Theme,
   DEFAULT_SEED_COLOR,
@@ -11,6 +19,7 @@ import {
   type ThemeMode,
 } from '@/theme/md3'
 import { i18n, setAppLocale } from '@/i18n'
+import { useAppClientStore } from '@/stores/appServers'
 import {
   readStoredPreferencesRaw,
   usePreferencesStore,
@@ -23,16 +32,19 @@ function loadInitialVisualPrefs(): VisualPreferencesSnapshot {
   return {
     theme_mode: normalizeThemeMode(parsed.theme_mode),
     seed_color: resolveSeedColor(parsed.seed_color),
+    app_icon: resolveStoredAppIcon(parsed.app_icon),
     locale: parsed.locale ?? ((i18n.global.locale.value as LocaleCode) || 'zh-CN'),
   }
 }
 
 export const useThemeStore = defineStore('theme', () => {
   const preferencesStore = usePreferencesStore()
+  const appClientStore = useAppClientStore()
   const initial = loadInitialVisualPrefs()
 
   const themeMode = ref<ThemeMode>(initial.theme_mode)
   const seedColor = ref<string | null>(initial.seed_color ?? null)
+  const appIcon = ref<AppIconId | null>(resolveStoredAppIcon(initial.app_icon))
   const locale = ref<LocaleCode>(initial.locale)
 
   // Register visual snapshot getter with preferences store so domain/layout changes
@@ -40,6 +52,7 @@ export const useThemeStore = defineStore('theme', () => {
   preferencesStore.registerVisualProvider(() => ({
     theme_mode: themeMode.value,
     seed_color: seedColor.value,
+    app_icon: appIcon.value,
     locale: locale.value,
   }))
 
@@ -60,6 +73,10 @@ export const useThemeStore = defineStore('theme', () => {
   })
 
   const effectiveSeedColor = computed<string>(() => seedColor.value ?? DEFAULT_SEED_COLOR)
+
+  const effectiveAppIcon = computed<AppIconId>(() => appIcon.value ?? DEFAULT_APP_ICON)
+
+  const appIconSrc = computed<string>(() => appIconUrl(effectiveAppIcon.value))
 
   const activeSchemePair = computed(() => generateMd3Schemes(effectiveSeedColor.value))
 
@@ -87,6 +104,7 @@ export const useThemeStore = defineStore('theme', () => {
   function hydrateFromUser(prefs: UserPreferences): void {
     themeMode.value = normalizeThemeMode(prefs.theme_mode)
     seedColor.value = resolveSeedColor(prefs.seed_color)
+    appIcon.value = resolveStoredAppIcon(prefs.app_icon)
     locale.value = prefs.locale
 
     preferencesStore.hydrateDomainPreferences(prefs)
@@ -115,6 +133,16 @@ export const useThemeStore = defineStore('theme', () => {
     applyVisualChange()
   }
 
+  function setAppIcon(next: AppIconId | null): void {
+    appIcon.value = resolveStoredAppIcon(next)
+    preferencesStore.persistAndSync()
+  }
+
+  function resetAppIcon(): void {
+    appIcon.value = null
+    preferencesStore.persistAndSync()
+  }
+
   function setLocale(next: LocaleCode): void {
     locale.value = next
     setAppLocale(locale.value)
@@ -129,12 +157,30 @@ export const useThemeStore = defineStore('theme', () => {
     { immediate: true },
   )
 
+  let lastSyncedStandaloneIcon: AppIconId | null = null
+  watch(
+    [effectiveAppIcon, () => appClientStore.isStandaloneApp],
+    ([iconId, isStandalone]) => {
+      applyDocumentFavicon(iconId)
+      if (isStandalone && iconId !== lastSyncedStandaloneIcon) {
+        lastSyncedStandaloneIcon = iconId
+        void appHostApi.setAppIcon(iconId).catch(() => {
+          // Non-fatal: favicon and in-app brand icon are already updated.
+        })
+      }
+    },
+    { immediate: true },
+  )
+
   setAppLocale(locale.value)
 
   return {
     themeMode,
     seedColor,
     effectiveSeedColor,
+    appIcon,
+    effectiveAppIcon,
+    appIconSrc,
     locale,
     isDark,
     activeScheme,
@@ -142,6 +188,8 @@ export const useThemeStore = defineStore('theme', () => {
     setThemeMode,
     setSeedColor,
     resetSeedColor,
+    setAppIcon,
+    resetAppIcon,
     setLocale,
   }
 })

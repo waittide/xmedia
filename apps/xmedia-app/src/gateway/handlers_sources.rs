@@ -6,11 +6,12 @@ use axum::response::{IntoResponse, Response};
 use url::Url;
 
 use super::dto::{
-    AppHealthResponse, MutatedRemoteSourceResponse, RemoteSourcesListResponse,
-    TestRemoteSourceRequest, TestRemoteSourceResponse, app_error, mark_source_ok,
-    store_error_response, with_app_headers,
+    AppHealthResponse, AppIconResponse, MutatedRemoteSourceResponse, RemoteSourcesListResponse,
+    SetAppIconRequest, TestRemoteSourceRequest, TestRemoteSourceResponse, app_error,
+    mark_source_ok, store_error_response, with_app_headers,
 };
 use super::{APP_HEADER_NAME, APP_HEADER_VALUE, StandaloneGatewayState};
+use crate::app_icon::AppIconVariant;
 use crate::remote_sources::{
     CreateRemoteSourceInput, RemoteProtocol, UpdateRemoteSourceInput, is_same_origin,
     normalize_remote_url,
@@ -36,6 +37,44 @@ pub(super) async fn app_health(State(state): State<StandaloneGatewayState>) -> R
         })
         .into_response(),
     )
+}
+
+pub(super) async fn get_app_icon(State(state): State<StandaloneGatewayState>) -> Response {
+    with_app_headers(
+        Json(AppIconResponse {
+            icon: state.app_icon.current().as_str().to_string(),
+        })
+        .into_response(),
+    )
+}
+
+pub(super) async fn set_app_icon(
+    State(state): State<StandaloneGatewayState>,
+    Json(input): Json<SetAppIconRequest>,
+) -> Response {
+    let Some(variant) = AppIconVariant::parse(&input.icon) else {
+        return app_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_icon",
+            "Icon must be one of: cobalt, porcelain, obsidian, monolith",
+        );
+    };
+    match state.app_icon.set(variant) {
+        Ok(saved) => with_app_headers(
+            Json(AppIconResponse {
+                icon: saved.as_str().to_string(),
+            })
+            .into_response(),
+        ),
+        Err(err) => {
+            tracing::error!(error = %err, "failed to persist standalone app icon");
+            app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                "Failed to persist app icon preference",
+            )
+        }
+    }
 }
 
 pub(super) async fn app_auto_session(

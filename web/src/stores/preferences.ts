@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
+import { resolveStoredAppIcon } from '@/theme/appIcons'
 import { normalizeThemeMode, resolveSeedColor } from '@/theme/md3'
 import type {
   ComicReaderPreferences,
@@ -17,7 +18,7 @@ export const PREFS_STORAGE_KEY = 'xmedia.preferences'
 
 export type VisualPreferencesSnapshot = Pick<
   UserPreferences,
-  'theme_mode' | 'seed_color' | 'locale'
+  'theme_mode' | 'seed_color' | 'app_icon' | 'locale'
 >
 
 export const DEFAULT_BOOK_PREFS: ReaderPreferences = {
@@ -70,6 +71,7 @@ function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
   return {
     theme_mode: normalizeThemeMode(parsed.theme_mode),
     seed_color: resolveSeedColor(parsed.seed_color),
+    app_icon: resolveStoredAppIcon(parsed.app_icon),
     locale: (parsed.locale ?? (localStorage.getItem('xmedia.locale') as LocaleCode | null)) || 'zh-CN',
   }
 }

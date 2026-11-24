@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="sq">
+      <path d="M 312 48 L 712 48 C 890 48, 976 134, 976 312 L 976 712 C 976 890, 890 976, 712 976 L 312 976 C 134 976, 48 890, 48 712 L 48 312 C 48 134, 134 48, 312 48 Z" />
+    </clipPath>
+
+    <linearGradient id="bg" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#EBF0F8" />
+    </linearGradient>
+
+    <linearGradient id="cobaltL" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB" />
+      <stop offset="100%" stop-color="#143EA8" />
+    </linearGradient>
+
+    <linearGradient id="skyR" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#60A5FA" />
+    </linearGradient>
+
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#1E3A8A" flood-opacity="0.14" />
+    </filter>
+  </defs>
+
+  <g clip-path="url(#sq)">
+    <rect x="48" y="48" width="928" height="928" fill="url(#bg)" />
+  </g>
+  <path
+    d="M 312 48 L 712 48 C 890 48, 976 134, 976 312 L 976 712 C 976 890, 890 976, 712 976 L 312 976 C 134 976, 48 890, 48 712 L 48 312 C 48 134, 134 48, 312 48 Z"
+    fill="none"
+    stroke="#CBD5E1"
+    stroke-opacity="0.72"
+    stroke-width="4"
+  />
+
+  <g filter="url(#shadow)">
+    <path
+      d="M 244 268
+         L 346 268
+         C 364 268, 381 277, 391 292
+         L 492 486
+         C 500 502, 500 522, 492 538
+         L 391 732
+         C 381 747, 364 756, 346 756
+         L 244 756
+         C 217 756, 202 725, 217 703
+         L 336 512
+         L 217 321
+         C 202 299, 217 268, 244 268
+         Z"
+      fill="url(#cobaltL)"
+    />
+    <path
+      d="M 780 268
+         C 807 268, 822 299, 807 321
+         L 688 512
+         L 807 703
+         C 822 725, 807 756, 780 756
+         L 678 756
+         C 660 756, 643 747, 633 732
+         L 532 538
+         C 524 522, 524 502, 532 486
+         L 633 292
+         C 643 277, 660 268, 678 268
+         Z"
+      fill="url(#skyR)"
+    />
+  </g>
+</svg>

@@ -369,6 +369,14 @@ export default {
       red: '绯红',
       pink: '莓粉',
     },
+    appIconTitle: '应用图标',
+    appIconHint: '即时切换浏览器标签页、应用内徽标与桌面窗口图标',
+    icons: {
+      cobalt: '钴蓝双翼',
+      porcelain: '瓷白双翼',
+      obsidian: '深空双翼',
+      monolith: '钴蓝折带',
+    },
   },
   settings: {
     title: '系统设置',
@@ -378,7 +386,7 @@ export default {
     navAccount: '账号',
     navAccountSecurity: '用户与安全',
     navAbout: '关于',
-    summaryAppearance: '主题模式、动态配色与语言',
+    summaryAppearance: '主题模式、动态配色、应用图标与语言',
     summaryAccount: '个人资料、密码、API Key 与成员管理',
     summaryAbout: '版本、已启用媒体域与 FFmpeg 状态',
     summarySources: '在线数据源与远程服务器配置',

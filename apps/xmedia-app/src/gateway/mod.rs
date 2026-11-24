@@ -18,13 +18,14 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::app_icon::{AppIconStore, AppIconVariant, IconApplier};
 use crate::local_engine::LocalEngine;
 use crate::opds_client::OpdsClient;
 use crate::remote_sources::{RemoteSourceStore, SharedRemoteSourceStore};
 use crate::subsonic_client::SubsonicClient;
 
 pub use dto::{
-    AppHealthResponse, MutatedRemoteSourceResponse, RemoteSourcesListResponse,
+    AppHealthResponse, AppIconResponse, MutatedRemoteSourceResponse, RemoteSourcesListResponse,
     SubsonicAlbumsResponse, TestRemoteSourceRequest, TestRemoteSourceResponse,
 };
 
@@ -38,6 +39,7 @@ pub struct StandaloneGatewayState {
     pub local_engine: LocalEngine,
     pub sources: SharedRemoteSourceStore,
     pub sources_write_lock: Arc<Mutex<()>>,
+    pub app_icon: AppIconStore,
     pub opds: OpdsClient,
     pub subsonic: SubsonicClient,
     pub local_gateway_url: String,
@@ -48,6 +50,7 @@ impl StandaloneGatewayState {
     pub fn new(
         local_engine: LocalEngine,
         sources: SharedRemoteSourceStore,
+        app_icon: AppIconStore,
         local_gateway_url: String,
         expected_port: u16,
     ) -> anyhow::Result<Self> {
@@ -73,6 +76,7 @@ impl StandaloneGatewayState {
             local_engine,
             sources,
             sources_write_lock: Arc::new(Mutex::new(())),
+            app_icon,
             opds,
             subsonic,
             local_gateway_url,
@@ -107,11 +111,16 @@ pub struct RunningGateway {
     pub addr: SocketAddr,
     pub url: String,
     pub local_engine: LocalEngine,
+    app_icon: AppIconStore,
     shutdown_tx: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl RunningGateway {
+    pub fn current_app_icon(&self) -> AppIconVariant {
+        self.app_icon.current()
+    }
+
     pub async fn shutdown(mut self) {
         self.shutdown_gracefully(Duration::from_secs(5)).await;
     }
@@ -141,6 +150,10 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
         .route("/_app", any(dto::app_not_found))
         .route("/_app/", any(dto::app_not_found))
         .route("/_app/health", get(handlers_sources::app_health))
+        .route(
+            "/_app/icon",
+            get(handlers_sources::get_app_icon).put(handlers_sources::set_app_icon),
+        )
         .route(
             "/_app/auto-session",
             post(handlers_sources::app_auto_session),
@@ -204,15 +217,30 @@ pub async fn start_gateway(
     data_dir: PathBuf,
     external_web_dir: Option<PathBuf>,
 ) -> anyhow::Result<RunningGateway> {
+    start_gateway_with_icon_applier(bind_addr, data_dir, external_web_dir, None).await
+}
+
+pub async fn start_gateway_with_icon_applier(
+    bind_addr: SocketAddr,
+    data_dir: PathBuf,
+    external_web_dir: Option<PathBuf>,
+    icon_applier: Option<IconApplier>,
+) -> anyhow::Result<RunningGateway> {
     let sources = RemoteSourceStore::open_shared(data_dir.join("remote_sources.json"))?;
+    let app_icon = AppIconStore::open(data_dir.join("app_icon.txt"), icon_applier);
     let (local_engine, xmedia_router) = LocalEngine::start(data_dir, external_web_dir).await?;
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;
     let url = format_gateway_url(addr);
 
-    let state =
-        StandaloneGatewayState::new(local_engine.clone(), sources, url.clone(), addr.port())?;
+    let state = StandaloneGatewayState::new(
+        local_engine.clone(),
+        sources,
+        app_icon.clone(),
+        url.clone(),
+        addr.port(),
+    )?;
     let router = build_gateway_router(state, xmedia_router);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -229,6 +257,7 @@ pub async fn start_gateway(
         addr,
         url,
         local_engine,
+        app_icon,
         shutdown_tx: Some(shutdown_tx),
         handle: Some(handle),
     })
@@ -263,13 +292,15 @@ pub async fn run_gateway_forever(
     external_web_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let sources = RemoteSourceStore::open_shared(data_dir.join("remote_sources.json"))?;
+    let app_icon = AppIconStore::open(data_dir.join("app_icon.txt"), None);
     let (local_engine, xmedia_router) = LocalEngine::start(data_dir, external_web_dir).await?;
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;
     let url = format_gateway_url(addr);
 
-    let state = StandaloneGatewayState::new(local_engine, sources, url.clone(), addr.port())?;
+    let state =
+        StandaloneGatewayState::new(local_engine, sources, app_icon, url.clone(), addr.port())?;
     let router = build_gateway_router(state, xmedia_router);
 
     tracing::info!(%url, "XMedia standalone local loopback gateway listening");
