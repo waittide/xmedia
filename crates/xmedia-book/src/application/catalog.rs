@@ -334,6 +334,22 @@ impl BookCatalogService {
         actor: &User,
         filter: CatalogSearchFilter,
     ) -> DomainResult<PagedResult<PoolBookSummaryDto>> {
+        let mut authors = filter.authors;
+        if let Some(single) = filter.author.and_then(|s| {
+            let t = s.trim().to_string();
+            (!t.is_empty()).then_some(t)
+        }) && !authors.iter().any(|a| a.eq_ignore_ascii_case(&single))
+        {
+            authors.push(single);
+        }
+        let mut tags = filter.tags;
+        if let Some(single) = filter.tag.and_then(|s| {
+            let t = s.trim().to_string();
+            (!t.is_empty()).then_some(t)
+        }) && !tags.iter().any(|t| t.eq_ignore_ascii_case(&single))
+        {
+            tags.push(single);
+        }
         let mut formats = filter.formats;
         if let Some(single) = filter.format
             && !formats.contains(&single)
@@ -352,8 +368,8 @@ impl BookCatalogService {
                 let t = s.trim().to_string();
                 (!t.is_empty()).then_some(t)
             }),
-            authors: filter.authors,
-            tags: filter.tags,
+            authors,
+            tags,
             tag_mode: filter.tag_mode,
             formats,
             library_ids,
@@ -447,19 +463,18 @@ impl BookCatalogService {
         self.readings
             .delete_by_user_and_book(target_user_id, book_id)
             .await?;
-        let (unbound, remaining_bindings) = self
+        let (unbound, remaining_bindings, deleted_from_pool) = self
             .bindings
-            .unbind(target_user_id, MediaKind::Book, book_id.0)
+            .unbind_with_gc(target_user_id, MediaKind::Book, book_id.0, || async {
+                if let Some(book) = self.books.find_by_id(book_id).await?
+                    && book.source.is_online_tracked()
+                {
+                    self.delete_book_without_bindings(book).await?;
+                    return Ok(true);
+                }
+                Ok(false)
+            })
             .await?;
-
-        let mut deleted_from_pool = false;
-        if remaining_bindings == 0
-            && let Some(book) = self.books.find_by_id(book_id).await?
-            && book.source.is_online_tracked()
-        {
-            self.delete_book_internal(book).await?;
-            deleted_from_pool = true;
-        }
 
         Ok(UnbindMediaItemResultDto {
             unbound,
@@ -520,7 +535,10 @@ impl BookCatalogService {
 
         book.update_metadata(meta)?;
         self.books.save(&book).await?;
-        self.get_book(Some(actor), book_id).await
+        let mut enriched = self.enrich_books(Some(actor), &[book]).await?;
+        enriched
+            .pop()
+            .ok_or_else(|| DomainError::NotFound(format!("book {book_id} not found")))
     }
 
     pub async fn batch_update_tags(
@@ -585,7 +603,10 @@ impl BookCatalogService {
         {
             let _ = self.storage.delete_cover(&old_key).await;
         }
-        self.get_book(Some(actor), book_id).await
+        let mut enriched = self.enrich_books(Some(actor), &[book]).await?;
+        enriched
+            .pop()
+            .ok_or_else(|| DomainError::NotFound(format!("book {book_id} not found")))
     }
 
     pub async fn delete_book(&self, actor: &User, book_id: BookId) -> DomainResult<()> {
@@ -595,10 +616,14 @@ impl BookCatalogService {
     }
 
     pub(crate) async fn delete_book_internal(&self, book: Book) -> DomainResult<()> {
-        let book_id = book.id;
         self.bindings
-            .delete_item_bindings(MediaKind::Book, book_id.0)
+            .delete_item_bindings(MediaKind::Book, book.id.0)
             .await?;
+        self.delete_book_without_bindings(book).await
+    }
+
+    pub(crate) async fn delete_book_without_bindings(&self, book: Book) -> DomainResult<()> {
+        let book_id = book.id;
         self.readings.delete_by_book(book_id).await?;
         self.books.delete(book_id).await?;
         if let Some(storage_key) = book.source.storage_key()

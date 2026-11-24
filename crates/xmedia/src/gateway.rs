@@ -29,7 +29,7 @@ use xmedia_core::application::dto::{
 };
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::ports::SystemEvent;
-use xmedia_core::domain::library::{LibraryId, MediaKind, ScanStatus};
+use xmedia_core::domain::library::{LibraryId, LibraryKind, MediaKind, ScanStatus};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{UserId, UserPreferences};
 use xmedia_core::http::{
@@ -339,24 +339,40 @@ async fn delete_user(
     Ok(Json(OkResponse { ok: true }))
 }
 
+fn redact_library_for_non_admin(lib: &mut LibraryDto) {
+    if let LibraryKind::LocalMount { root_path } = &mut lib.kind {
+        root_path.clear();
+    }
+}
+
 async fn list_libraries(
     State(state): State<GatewayState>,
-    CoreWebAuth(_user): CoreWebAuth,
+    CoreWebAuth(user): CoreWebAuth,
     Query(q): Query<LibraryFilterParams>,
 ) -> ApiResult<Json<Vec<LibraryDto>>> {
     let kind = match q.media_kind.as_deref() {
         Some(raw) if !raw.trim().is_empty() => Some(MediaKind::parse(raw)?),
         _ => None,
     };
-    Ok(Json(state.libraries.list_libraries(kind).await?))
+    let mut libs = state.libraries.list_libraries(kind).await?;
+    if !user.role.is_admin() {
+        for lib in &mut libs {
+            redact_library_for_non_admin(lib);
+        }
+    }
+    Ok(Json(libs))
 }
 
 async fn get_library(
     State(state): State<GatewayState>,
-    CoreWebAuth(_user): CoreWebAuth,
+    CoreWebAuth(user): CoreWebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<LibraryDto>> {
-    Ok(Json(state.libraries.get_library(LibraryId(id)).await?))
+    let mut lib = state.libraries.get_library(LibraryId(id)).await?;
+    if !user.role.is_admin() {
+        redact_library_for_non_admin(&mut lib);
+    }
+    Ok(Json(lib))
 }
 
 async fn create_library(

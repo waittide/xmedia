@@ -111,23 +111,22 @@ impl ComicCatalogService {
         requested_user_id: Option<Uuid>,
     ) -> DomainResult<UnbindMediaItemResultDto> {
         let target_user_id = MediaBindingService::resolve_target_user_id(actor, requested_user_id)?;
-        let series = self.series.find_by_id(series_id).await?;
-        let (unbound, remaining_bindings) = self
+        let (unbound, remaining_bindings, deleted_from_pool) = self
             .bindings
-            .unbind(target_user_id, MediaKind::Comic, series_id.0)
+            .unbind_with_gc(target_user_id, MediaKind::Comic, series_id.0, || async {
+                if let Some(s) = self.series.find_by_id(series_id).await?
+                    && s.online_tracking().is_some()
+                {
+                    self.delete_series_without_bindings(s).await?;
+                    return Ok(true);
+                }
+                Ok(false)
+            })
             .await?;
-        if unbound {
+        if unbound && !deleted_from_pool {
             self.reading
                 .delete_by_user_and_series(target_user_id, series_id)
                 .await?;
-        }
-        let mut deleted_from_pool = false;
-        if remaining_bindings == 0
-            && let Some(s) = series
-            && s.online_tracking().is_some()
-        {
-            self.delete_series_internal(s).await?;
-            deleted_from_pool = true;
         }
         Ok(UnbindMediaItemResultDto {
             unbound,
@@ -137,6 +136,13 @@ impl ComicCatalogService {
     }
 
     pub(super) async fn delete_series_internal(&self, series: Series) -> DomainResult<()> {
+        self.bindings
+            .delete_item_bindings(MediaKind::Comic, series.id.0)
+            .await?;
+        self.delete_series_without_bindings(series).await
+    }
+
+    pub(super) async fn delete_series_without_bindings(&self, series: Series) -> DomainResult<()> {
         let series_id = series.id;
         let lib = self.libraries.find_by_id(series.library_id).await?;
         let chapters = self.chapters.list_by_series(series_id).await?;
@@ -148,9 +154,6 @@ impl ComicCatalogService {
                 }
             }
         }
-        self.bindings
-            .delete_item_bindings(MediaKind::Comic, series_id.0)
-            .await?;
         self.reading.delete_by_series(series_id).await?;
         self.chapters.delete_by_series(series_id).await?;
         self.series.delete(series_id).await?;
@@ -423,6 +426,53 @@ impl ComicCatalogService {
     }
 
     async fn ensure_cover_accessible(&self, user: &User, cover_key: &str) -> DomainResult<()> {
+        // Resolve modern content-hashed cover keys against referencing series and chapters.
+        let all_series = self.series.list_all().await?;
+        let mut matched_pool = false;
+        let mut matched_tracked_series: Vec<SeriesId> = Vec::new();
+        for s in &all_series {
+            if s.cover_path.as_deref() == Some(cover_key) {
+                if s.online_tracking().is_some() {
+                    matched_tracked_series.push(s.id);
+                } else {
+                    matched_pool = true;
+                    break;
+                }
+            }
+        }
+        if matched_pool {
+            return Ok(());
+        }
+        if matched_tracked_series.is_empty() {
+            // Check chapters of tracked series (chapter thumbnails).
+            for s in &all_series {
+                if s.online_tracking().is_none() {
+                    continue;
+                }
+                let chapters = self.chapters.list_by_series(s.id).await?;
+                if chapters
+                    .iter()
+                    .any(|ch| ch.cover_path.as_deref() == Some(cover_key))
+                {
+                    matched_tracked_series.push(s.id);
+                }
+            }
+        }
+        if !matched_tracked_series.is_empty() {
+            let bound = self
+                .bindings
+                .list_bound_ids(user.id, MediaKind::Comic)
+                .await?;
+            if matched_tracked_series
+                .iter()
+                .any(|sid| bound.contains(&sid.0))
+            {
+                return Ok(());
+            }
+            return Err(DomainError::NotFound("cover not found".into()));
+        }
+
+        // Legacy filename prefix fallback.
         let base = cover_key.split('.').next().unwrap_or(cover_key);
         if let Some(rest) = base.strip_prefix("series_custom_") {
             if let Some((uuid_str, _)) = rest.split_once('_')

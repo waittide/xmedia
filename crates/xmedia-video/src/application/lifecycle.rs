@@ -575,7 +575,11 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
     }
 
     async fn count_library_items(&self, library_id: LibraryId) -> DomainResult<u64> {
-        self.catalog_repo.count_active_by_library(library_id).await
+        let videos = self.catalog_repo.list_videos_by_library(library_id).await?;
+        Ok(videos
+            .into_iter()
+            .filter(|v| !v.is_missing && !v.source.is_online_tracked())
+            .count() as u64)
     }
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
@@ -634,24 +638,29 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
             .delete_user_bindings_for_media(user_id, MediaKind::Video)
             .await?;
         for raw_id in unbound {
-            let remaining = self
-                .catalog_service
+            self.catalog_service
                 .bindings()
-                .count_bindings_for_item(MediaKind::Video, raw_id)
+                .gc_if_orphaned(MediaKind::Video, raw_id, || async {
+                    if let Some(show) = self.catalog_repo.find_show_by_id(ShowId(raw_id)).await? {
+                        if show.online_tracked_ref().is_some() {
+                            self.catalog_service
+                                .delete_show_without_bindings(show.id)
+                                .await?;
+                            return Ok(true);
+                        }
+                    } else if let Some(video) =
+                        self.catalog_repo.find_video_by_id(VideoId(raw_id)).await?
+                        && video.show_id.is_none()
+                        && video.source.is_online_tracked()
+                    {
+                        self.catalog_service
+                            .delete_video_without_bindings(video)
+                            .await?;
+                        return Ok(true);
+                    }
+                    Ok(false)
+                })
                 .await?;
-            if remaining != 0 {
-                continue;
-            }
-            if let Some(show) = self.catalog_repo.find_show_by_id(ShowId(raw_id)).await? {
-                if show.online_tracked_ref().is_some() {
-                    self.catalog_service.delete_show_internal(show.id).await?;
-                }
-            } else if let Some(video) = self.catalog_repo.find_video_by_id(VideoId(raw_id)).await?
-                && video.show_id.is_none()
-                && video.source.is_online_tracked()
-            {
-                self.catalog_service.delete_video_internal(video).await?;
-            }
         }
         Ok(())
     }

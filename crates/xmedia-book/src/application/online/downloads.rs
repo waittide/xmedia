@@ -680,6 +680,11 @@ impl BookOnlineService {
 
             match self.sync_tracked_epub(bid, true).await {
                 Ok(summary) => {
+                    if let Err(e) = self.catalog.bind_book_for_user(actor.id, summary.id).await {
+                        self.fail_job(job_id, started_at, format!("绑定书籍到个人库失败: {e}"))
+                            .await;
+                        return;
+                    }
                     imported_book_id = Some(summary.id.0);
                     file_size = summary.file_size;
                 }

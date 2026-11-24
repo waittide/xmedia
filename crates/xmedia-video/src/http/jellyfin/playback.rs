@@ -148,6 +148,7 @@ pub async fn handle_video_hls_master(
         .services
         .online
         .open_hls_proxy_for_tracked(
+            user,
             &play_res.stream_url,
             Some(source_id),
             range_header,
@@ -170,34 +171,61 @@ pub async fn handle_video_hls_master(
 
 pub async fn handle_video_hls_proxy(
     state: &VideoHttpState,
+    user: &User,
+    raw_item_id: &str,
     query: &JfQuery,
     headers: &HeaderMap,
     api_key: &str,
 ) -> DomainResult<Response> {
+    let uuid = Uuid::parse_str(raw_item_id.trim())
+        .map_err(|_| DomainError::NotFound("invalid item id".into()))?;
+    let video = state
+        .services
+        .catalog
+        .require_video_bound(user.id, VideoId(uuid))
+        .await?;
+    let tracking = video
+        .source
+        .online_tracking_info()
+        .ok_or_else(|| DomainError::NotFound("video is not an online tracked item".into()))?;
+    let bound_source_id = tracking.source_id;
+    if let Some(raw_sid) = query
+        .get("source_id")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let parsed_sid = Uuid::parse_str(raw_sid)
+            .map_err(|_| DomainError::Validation("invalid source_id parameter".into()))?;
+        if parsed_sid != bound_source_id {
+            return Err(DomainError::Forbidden(
+                "source_id does not match the bound video".into(),
+            ));
+        }
+    }
+
     let raw_url = query
         .get("url")
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| DomainError::Validation("missing url parameter".into()))?;
-    let source_id = query
-        .get("source_id")
-        .and_then(|s| Uuid::parse_str(s.trim()).ok());
     let range_header = headers.get(RANGE).and_then(|v| v.to_str().ok());
     let encoded_key = encode_query_component(api_key);
 
     match state
         .services
         .online
-        .open_hls_proxy_for_tracked(raw_url, source_id, range_header, |resolved| {
-            let mut out = format!("proxy?url={}", encode_query_component(resolved));
-            if let Some(sid) = source_id {
-                out.push_str("&source_id=");
-                out.push_str(&sid.to_string());
-            }
-            out.push_str("&api_key=");
-            out.push_str(&encoded_key);
-            out
-        })
+        .open_hls_proxy_for_tracked(
+            user,
+            raw_url,
+            Some(bound_source_id),
+            range_header,
+            |resolved| {
+                format!(
+                    "proxy?url={}&source_id={bound_source_id}&api_key={encoded_key}",
+                    encode_query_component(resolved)
+                )
+            },
+        )
         .await?
     {
         HlsProxyOutcome::Playlist(rewritten) => Ok(build_hls_playlist_response(rewritten)),
@@ -276,6 +304,11 @@ pub async fn handle_image(
     query: &JfQuery,
     authenticated_user: Option<&User>,
 ) -> DomainResult<Response> {
+    let tag_param = query.get("tag").map(str::trim).filter(|s| !s.is_empty());
+    if authenticated_user.is_none() && tag_param.is_none() {
+        return Err(DomainError::Unauthorized("authentication required".into()));
+    }
+
     let uuid = Uuid::parse_str(raw_item_id.trim())
         .map_err(|_| DomainError::NotFound("invalid item id".into()))?;
 
@@ -296,27 +329,36 @@ pub async fn handle_image(
         } else {
             (None, None, None)
         };
-    let poster_key = poster_key.ok_or_else(|| DomainError::NotFound("image not found".into()))?;
-
-    let tag_matches = query
-        .get("tag")
-        .is_some_and(|t| t.trim() == poster_key.as_str());
-    if !tag_matches {
-        let Some(user) = authenticated_user else {
+    let Some(poster_key) = poster_key else {
+        if authenticated_user.is_none() {
             return Err(DomainError::Unauthorized("authentication required".into()));
-        };
-        if let Some(vid) = online_tracked_video {
-            state
-                .services
-                .catalog
-                .require_video_bound(user.id, vid)
-                .await?;
-        } else if let Some(sid) = online_tracked_show {
-            state
-                .services
-                .catalog
-                .require_show_bound(user.id, sid)
-                .await?;
+        }
+        return Err(DomainError::NotFound("image not found".into()));
+    };
+
+    let tag_matches = tag_param.is_some_and(|t| t == poster_key.as_str());
+    match authenticated_user {
+        Some(user) => {
+            if let Some(vid) = online_tracked_video {
+                state
+                    .services
+                    .catalog
+                    .require_video_bound(user.id, vid)
+                    .await?;
+            } else if let Some(sid) = online_tracked_show {
+                state
+                    .services
+                    .catalog
+                    .require_show_bound(user.id, sid)
+                    .await?;
+            }
+        }
+        None => {
+            // Jellyfin clients (Infuse/Swiftfin) fetch images unauthenticated using the
+            // high-entropy content-hash `tag` returned by authenticated `/Items` responses.
+            if !tag_matches {
+                return Err(DomainError::Unauthorized("authentication required".into()));
+            }
         }
     }
 
@@ -327,7 +369,7 @@ pub async fn handle_image(
     let payload = state
         .services
         .catalog
-        .get_poster(&poster_key, max_size)
+        .get_poster(None, &poster_key, max_size)
         .await?;
     Ok(into_binary_cache_response(payload))
 }

@@ -952,6 +952,7 @@ impl VideoOnlineService {
 
     pub async fn open_hls_proxy_for_tracked<F>(
         &self,
+        actor: &User,
         raw_url: &str,
         source_id: Option<Uuid>,
         range_header: Option<&str>,
@@ -961,10 +962,34 @@ impl VideoOnlineService {
         F: FnMut(&str) -> String,
     {
         let source_headers = self
-            .resolve_internal_media_headers(source_id, raw_url)
-            .await;
+            .resolve_tracked_actor_media_headers(actor, source_id, raw_url)
+            .await?;
         self.open_hls_proxy_with_rewriter(raw_url, source_headers, range_header, rewrite_uri)
             .await
+    }
+
+    async fn resolve_tracked_actor_media_headers(
+        &self,
+        actor: &User,
+        source_id: Option<Uuid>,
+        target_url: &str,
+    ) -> DomainResult<HashMap<String, String>> {
+        let Some(sid) = source_id else {
+            return Ok(HashMap::new());
+        };
+        let rec = self.load_source_for_actor(actor, sid).await?;
+        let Ok(spec) = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json) else {
+            return Ok(HashMap::new());
+        };
+        let mut merged = spec.parse_media_header_map();
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
+            && spec.enabled_cookie_jar
+            && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)
+        {
+            merged.insert("Cookie".to_string(), cookie);
+        }
+        Ok(merged)
     }
 
     async fn open_hls_proxy_with_rewriter<F>(

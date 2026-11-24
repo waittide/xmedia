@@ -295,6 +295,12 @@ impl VideoOnlineService {
             .fetch_and_save_poster_best_effort(deps, input.source_id, detail.cover_url.as_deref())
             .await;
 
+        let track_lock = get_or_insert_weak_lock(
+            &self.track_locks,
+            (input.source_id, canonical_video_id.clone()),
+        );
+        let _track_guard = track_lock.lock().await;
+
         let now = Timestamp::now();
 
         if selected_group.episodes.len() == 1 {

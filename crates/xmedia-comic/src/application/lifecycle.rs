@@ -382,7 +382,11 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
     }
 
     async fn count_library_items(&self, library_id: LibraryId) -> DomainResult<u64> {
-        self.series.count_by_library(library_id).await
+        let series = self.series.list_by_library(library_id).await?;
+        Ok(series
+            .into_iter()
+            .filter(|s| s.online_tracking().is_none())
+            .count() as u64)
     }
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
@@ -415,23 +419,24 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             .await?;
         for raw_id in unbound_ids {
             let sid = SeriesId(raw_id);
-            let remaining = self
-                .bindings
-                .count_bindings_for_item(MediaKind::Comic, raw_id)
-                .await?;
-            if remaining == 0
-                && let Some(series) = self.series.find_by_id(sid).await?
-                && series.online_tracking().is_some()
-            {
-                for ch in self.chapters.list_by_series(sid).await? {
-                    if let Some(path) = ch.managed_file_path() {
-                        let _ = self.storage.delete_managed_file(&path).await;
+            self.bindings
+                .gc_if_orphaned(MediaKind::Comic, raw_id, || async {
+                    if let Some(series) = self.series.find_by_id(sid).await?
+                        && series.online_tracking().is_some()
+                    {
+                        for ch in self.chapters.list_by_series(sid).await? {
+                            if let Some(path) = ch.managed_file_path() {
+                                let _ = self.storage.delete_managed_file(&path).await;
+                            }
+                        }
+                        self.reading.delete_by_series(sid).await?;
+                        self.chapters.delete_by_series(sid).await?;
+                        self.series.delete(sid).await?;
+                        return Ok(true);
                     }
-                }
-                self.reading.delete_by_series(sid).await?;
-                self.chapters.delete_by_series(sid).await?;
-                self.series.delete(sid).await?;
-            }
+                    Ok(false)
+                })
+                .await?;
         }
         Ok(())
     }

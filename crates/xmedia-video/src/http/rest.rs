@@ -474,11 +474,15 @@ async fn upload_show_poster(
 
 async fn get_poster(
     State(state): State<VideoHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(key): Path<String>,
     Query(p): Query<PosterParams>,
 ) -> ApiResult<Response> {
-    let payload = state.services.catalog.get_poster(&key, p.size).await?;
+    let payload = state
+        .services
+        .catalog
+        .get_poster(Some(&user), &key, p.size)
+        .await?;
     Ok(into_binary_cache_response(payload))
 }
 

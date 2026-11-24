@@ -1665,6 +1665,62 @@ impl MusicCatalogService {
             }
         }
 
+        // Raw cover_key lookup (used by Web UI `buildCoverUrl(track.cover_key)`):
+        // enforce OnlineTracked isolation so private tracked covers are never leaked.
+        let libs = self.libraries.list_by_media(MediaKind::Music).await?;
+        let mut matched_pool = false;
+        let mut matched_tracked_tracks: Vec<TrackId> = Vec::new();
+        let mut tracked_album_ids: HashSet<AlbumId> = HashSet::new();
+        let mut album_to_tracked_tracks: HashMap<AlbumId, Vec<TrackId>> = HashMap::new();
+        for lib in libs {
+            let tracks = self.catalog.list_tracks_by_library(lib.id).await?;
+            for tr in tracks {
+                if tr.is_missing {
+                    continue;
+                }
+                if tr.cover_key.as_deref() == Some(clean) {
+                    if tr.source.is_online_tracked() {
+                        matched_tracked_tracks.push(tr.id);
+                    } else {
+                        matched_pool = true;
+                        break;
+                    }
+                }
+                if tr.source.is_online_tracked() {
+                    tracked_album_ids.insert(tr.album_id);
+                    album_to_tracked_tracks
+                        .entry(tr.album_id)
+                        .or_default()
+                        .push(tr.id);
+                }
+            }
+            if matched_pool {
+                break;
+            }
+        }
+        if !matched_pool && !tracked_album_ids.is_empty() {
+            let alb_ids: Vec<AlbumId> = tracked_album_ids.into_iter().collect();
+            for alb in self.catalog.find_albums_by_ids(&alb_ids).await? {
+                if alb.cover_key.as_deref() == Some(clean)
+                    && let Some(tids) = album_to_tracked_tracks.get(&alb.id)
+                {
+                    matched_tracked_tracks.extend(tids.iter().copied());
+                }
+            }
+        }
+        if !matched_pool && !matched_tracked_tracks.is_empty() {
+            let bound = self
+                .bindings
+                .list_bound_ids(actor.id, MediaKind::Music)
+                .await?;
+            if !matched_tracked_tracks
+                .iter()
+                .any(|tid| bound.contains(&tid.0))
+            {
+                return Err(DomainError::NotFound("cover art not found".into()));
+            }
+        }
+
         self.storage.read_cover(clean, max_size).await
     }
 }

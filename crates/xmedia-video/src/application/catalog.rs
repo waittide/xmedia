@@ -633,21 +633,24 @@ impl VideoCatalogService {
         let target_user_id = MediaBindingService::resolve_target_user_id(actor, requested_user_id)?;
 
         if let Some(show) = self.catalog.find_show_by_id(ShowId(raw_id)).await? {
-            let (unbound, remaining_bindings) = self
+            let (unbound, remaining_bindings, deleted_from_pool) = self
                 .bindings
-                .unbind(target_user_id, MediaKind::Video, show.id.0)
+                .unbind_with_gc(target_user_id, MediaKind::Video, show.id.0, || async {
+                    if let Some(fresh_show) = self.catalog.find_show_by_id(show.id).await?
+                        && fresh_show.online_tracked_ref().is_some()
+                    {
+                        self.delete_show_without_bindings(fresh_show.id).await?;
+                        return Ok(true);
+                    }
+                    Ok(false)
+                })
                 .await?;
-            if unbound {
+            if unbound && !deleted_from_pool {
                 let eps = self.catalog.list_episodes_by_show(show.id).await?;
                 let ep_ids: Vec<VideoId> = eps.into_iter().map(|e| e.id).collect();
                 self.watch
                     .delete_by_user_and_targets(target_user_id, &ep_ids, Some(show.id))
                     .await?;
-            }
-            let mut deleted_from_pool = false;
-            if remaining_bindings == 0 && show.online_tracked_ref().is_some() {
-                self.delete_show_internal(show.id).await?;
-                deleted_from_pool = true;
             }
             return Ok(UnbindMediaItemResultDto {
                 unbound,
@@ -658,11 +661,28 @@ impl VideoCatalogService {
 
         let video_opt = self.catalog.find_video_by_id(VideoId(raw_id)).await?;
         let canonical_id = video_opt.as_ref().map(video_binding_id).unwrap_or(raw_id);
-        let (unbound, remaining_bindings) = self
+        let (unbound, remaining_bindings, deleted_from_pool) = self
             .bindings
-            .unbind(target_user_id, MediaKind::Video, canonical_id)
+            .unbind_with_gc(target_user_id, MediaKind::Video, canonical_id, || async {
+                if let Some(ref v) = video_opt {
+                    if let Some(sid) = v.show_id {
+                        if let Some(show) = self.catalog.find_show_by_id(sid).await?
+                            && show.online_tracked_ref().is_some()
+                        {
+                            self.delete_show_without_bindings(sid).await?;
+                            return Ok(true);
+                        }
+                    } else if let Some(fresh_v) = self.catalog.find_video_by_id(v.id).await?
+                        && fresh_v.source.is_online_tracked()
+                    {
+                        self.delete_video_without_bindings(fresh_v).await?;
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            })
             .await?;
-        if unbound {
+        if unbound && !deleted_from_pool {
             if let Some(ref v) = video_opt
                 && let Some(sid) = v.show_id
             {
@@ -675,22 +695,6 @@ impl VideoCatalogService {
                 self.watch
                     .delete_by_user_and_targets(target_user_id, &[VideoId(canonical_id)], None)
                     .await?;
-            }
-        }
-        let mut deleted_from_pool = false;
-        if remaining_bindings == 0
-            && let Some(v) = video_opt
-        {
-            if let Some(sid) = v.show_id {
-                if let Some(show) = self.catalog.find_show_by_id(sid).await?
-                    && show.online_tracked_ref().is_some()
-                {
-                    self.delete_show_internal(sid).await?;
-                    deleted_from_pool = true;
-                }
-            } else if v.source.is_online_tracked() {
-                self.delete_video_internal(v).await?;
-                deleted_from_pool = true;
             }
         }
         Ok(UnbindMediaItemResultDto {
@@ -977,6 +981,23 @@ impl VideoCatalogService {
     pub(crate) async fn delete_video_internal(&self, item: VideoItem) -> DomainResult<()> {
         let video_id = item.id;
         let old_show_id = item.show_id;
+        let deleted_show_id = self.delete_video_inner(item, true).await?;
+        let _ = (video_id, old_show_id, deleted_show_id);
+        Ok(())
+    }
+
+    pub(crate) async fn delete_video_without_bindings(&self, item: VideoItem) -> DomainResult<()> {
+        self.delete_video_inner(item, false).await?;
+        Ok(())
+    }
+
+    async fn delete_video_inner(
+        &self,
+        item: VideoItem,
+        delete_bindings: bool,
+    ) -> DomainResult<Option<ShowId>> {
+        let video_id = item.id;
+        let old_show_id = item.show_id;
         for key in item.source.managed_file_keys() {
             let _ = self.storage.delete_managed_file(key).await;
         }
@@ -985,17 +1006,21 @@ impl VideoCatalogService {
         self.catalog.recompute_show_aggregates().await?;
         let deleted_show_id = if let Some(sid) = old_show_id {
             if self.catalog.find_show_by_id(sid).await?.is_none() {
-                self.bindings
-                    .delete_item_bindings(MediaKind::Video, sid.0)
-                    .await?;
+                if delete_bindings {
+                    self.bindings
+                        .delete_item_bindings(MediaKind::Video, sid.0)
+                        .await?;
+                }
                 Some(sid)
             } else {
                 None
             }
         } else {
-            self.bindings
-                .delete_item_bindings(MediaKind::Video, video_id.0)
-                .await?;
+            if delete_bindings {
+                self.bindings
+                    .delete_item_bindings(MediaKind::Video, video_id.0)
+                    .await?;
+            }
             None
         };
         self.watch
@@ -1004,10 +1029,10 @@ impl VideoCatalogService {
         self.events.publish(SystemEvent::MediaChanged {
             media_kind: MediaKind::Video,
         });
-        Ok(())
+        Ok(deleted_show_id)
     }
 
-    pub(crate) async fn delete_show_internal(&self, show_id: ShowId) -> DomainResult<()> {
+    pub(crate) async fn delete_show_without_bindings(&self, show_id: ShowId) -> DomainResult<()> {
         let episodes = self.catalog.list_episodes_by_show(show_id).await?;
         let mut ep_ids = Vec::with_capacity(episodes.len());
         for ep in episodes {
@@ -1017,9 +1042,6 @@ impl VideoCatalogService {
             ep_ids.push(ep.id);
             self.catalog.delete_video(ep.id).await?;
         }
-        self.bindings
-            .delete_item_bindings(MediaKind::Video, show_id.0)
-            .await?;
         self.watch
             .delete_library_references(&ep_ids, &[show_id])
             .await?;
@@ -1212,9 +1234,54 @@ impl VideoCatalogService {
 
     pub async fn get_poster(
         &self,
+        actor: Option<&User>,
         key: &str,
         max_size: Option<u32>,
     ) -> DomainResult<BinaryPayload> {
+        if let Some(user) = actor {
+            let videos = self
+                .catalog
+                .list_videos(&VideoQueryFilter::default())
+                .await?;
+            let shows = self.catalog.list_shows(&ShowQueryFilter::default()).await?;
+
+            let mut matched_pool = false;
+            let mut matched_tracked_binding_ids: Vec<Uuid> = Vec::new();
+            for v in &videos {
+                if v.poster_key.as_deref() == Some(key) {
+                    if v.source.is_online_tracked() {
+                        matched_tracked_binding_ids.push(video_binding_id(v));
+                    } else {
+                        matched_pool = true;
+                        break;
+                    }
+                }
+            }
+            if !matched_pool {
+                for s in &shows {
+                    if s.poster_key.as_deref() == Some(key) {
+                        if s.online_tracked_ref().is_some() {
+                            matched_tracked_binding_ids.push(s.id.0);
+                        } else {
+                            matched_pool = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !matched_pool && !matched_tracked_binding_ids.is_empty() {
+                let bound = self
+                    .bindings
+                    .list_bound_ids(user.id, MediaKind::Video)
+                    .await?;
+                if !matched_tracked_binding_ids
+                    .iter()
+                    .any(|id| bound.contains(id))
+                {
+                    return Err(DomainError::NotFound("poster not found".into()));
+                }
+            }
+        }
         self.storage.read_poster(key, max_size).await
     }
 

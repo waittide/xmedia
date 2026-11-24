@@ -182,6 +182,75 @@ impl MediaBindingService {
         Ok((deleted, remaining))
     }
 
+    /// Atomically removes `(user_id, media_kind, item_id)` and, if no bindings remain,
+    /// invokes `gc_if_orphaned` while still holding `write_lock` so no concurrent bind
+    /// can interleave before orphan cleanup completes.
+    ///
+    /// Callers must NOT invoke write methods on this `MediaBindingService` inside
+    /// `gc_if_orphaned` (the binding count is already guaranteed to be 0).
+    pub async fn unbind_with_gc<F, Fut>(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+        gc_if_orphaned: F,
+    ) -> DomainResult<(bool, u64, bool)>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = DomainResult<bool>>,
+    {
+        let _guard = self.write_lock.lock().await;
+        let deleted = self
+            .repo
+            .delete_binding(user_id, media_kind, item_id)
+            .await?;
+        let remaining = self
+            .repo
+            .count_bindings_for_item(media_kind, item_id)
+            .await?;
+        let gc_deleted = if remaining == 0 {
+            gc_if_orphaned().await?
+        } else {
+            false
+        };
+        if (deleted || gc_deleted)
+            && let Some(ref ev) = self.events
+        {
+            ev.publish(SystemEvent::MediaChanged { media_kind });
+        }
+        Ok((deleted, remaining, gc_deleted))
+    }
+
+    /// Re-checks under `write_lock` that `item_id` still has zero bindings and, if so,
+    /// invokes `gc_if_orphaned` atomically before releasing the lock.
+    ///
+    /// Callers must NOT invoke write methods on this `MediaBindingService` inside
+    /// `gc_if_orphaned`.
+    pub async fn gc_if_orphaned<F, Fut>(
+        &self,
+        media_kind: MediaKind,
+        item_id: Uuid,
+        gc_if_orphaned: F,
+    ) -> DomainResult<bool>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = DomainResult<bool>>,
+    {
+        let _guard = self.write_lock.lock().await;
+        let remaining = self
+            .repo
+            .count_bindings_for_item(media_kind, item_id)
+            .await?;
+        if remaining != 0 {
+            return Ok(false);
+        }
+        let gc_deleted = gc_if_orphaned().await?;
+        if gc_deleted && let Some(ref ev) = self.events {
+            ev.publish(SystemEvent::MediaChanged { media_kind });
+        }
+        Ok(gc_deleted)
+    }
+
     pub async fn delete_item_bindings(
         &self,
         media_kind: MediaKind,

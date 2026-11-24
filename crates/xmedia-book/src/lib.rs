@@ -89,27 +89,28 @@ pub fn init_book_module_with_bindings(
     let storage = Arc::new(LocalBookStorage::new(data_dir)?);
     let scanner = Arc::new(LocalBookScanner);
 
-    let lifecycle = Arc::new(BookDomainLifecycle::new(
+    let catalog = Arc::new(BookCatalogService::new(
+        books.clone(),
         libraries_repo.clone(),
+        readings.clone(),
+        bindings.clone(),
+        parser.clone(),
+        storage.clone(),
+    ));
+
+    let lifecycle = Arc::new(BookDomainLifecycle::new(
+        libraries_repo,
         books.clone(),
         readings.clone(),
         online_shelves.clone(),
         bindings.clone(),
+        catalog.clone(),
         scanner,
-        parser.clone(),
-        storage.clone(),
+        parser,
+        storage,
         events,
     ));
     library_service.register_lifecycle(lifecycle);
-
-    let catalog = Arc::new(BookCatalogService::new(
-        books.clone(),
-        libraries_repo,
-        readings.clone(),
-        bindings.clone(),
-        parser,
-        storage,
-    ));
     let reading = Arc::new(BookReadingService::new(readings, books, bindings));
     let engine = source::BookSourceEngine::new(
         source::http::HttpClientConfig {

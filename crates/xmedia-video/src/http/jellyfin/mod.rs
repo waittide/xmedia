@@ -449,7 +449,8 @@ async fn dispatch_jellyfin_inner(
             playback::handle_video_hls_master(state, &user, &raw_slice[1], headers, &api_key).await
         }
         (&Method::GET | &Method::HEAD, ["videos", _, "hls", "proxy"]) => {
-            playback::handle_video_hls_proxy(state, &query, headers, &api_key).await
+            playback::handle_video_hls_proxy(state, &user, &raw_slice[1], &query, headers, &api_key)
+                .await
         }
 
         // Subtitles

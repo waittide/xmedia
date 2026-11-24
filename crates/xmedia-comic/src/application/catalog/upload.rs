@@ -127,6 +127,11 @@ impl ComicCatalogService {
                     "target series belongs to a read-only local library".into(),
                 ));
             }
+            if existing.online_tracking().is_some() {
+                return Err(DomainError::Validation(
+                    "cannot upload local archives into an online tracked series".into(),
+                ));
+            }
             return Ok(existing);
         }
 
@@ -145,10 +150,9 @@ impl ComicCatalogService {
             .unwrap_or_else(|| parsed.clean_title.clone());
 
         let all_series = self.series.list_by_library(managed_lib.id).await?;
-        if let Some(existing) = all_series
-            .into_iter()
-            .find(|s| s.title.eq_ignore_ascii_case(desired_title.trim()))
-        {
+        if let Some(existing) = all_series.into_iter().find(|s| {
+            s.online_tracking().is_none() && s.title.eq_ignore_ascii_case(desired_title.trim())
+        }) {
             Ok(existing)
         } else {
             let folder_slug = sanitize_folder_name(&desired_title);

@@ -238,6 +238,11 @@ impl UserRepository for ToastyUserRepository {
             .exec(&mut db)
             .await
             .map_err(|e| online_item_err("purge user", e))?;
+        UserMediaBindingModel::filter_by_user_id(id.0)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("purge user bindings failed: {e}")))?;
         UserModel::filter_by_id(id.0)
             .delete()
             .exec(&mut db)

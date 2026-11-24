@@ -10,6 +10,7 @@ use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::UserId;
 
+use crate::application::catalog::BookCatalogService;
 use crate::application::ports::{BookParserPort, BookScannerPort, BookStoragePort};
 use crate::domain::book::{Book, BookId, BookSource};
 use crate::domain::repository::{BookReadingRepository, BookRepository, OnlineShelfRepository};
@@ -20,6 +21,7 @@ pub struct BookDomainLifecycle {
     readings: Arc<dyn BookReadingRepository>,
     online_shelves: Arc<dyn OnlineShelfRepository>,
     bindings: Arc<MediaBindingService>,
+    catalog: Arc<BookCatalogService>,
     scanner: Arc<dyn BookScannerPort>,
     parser: Arc<dyn BookParserPort>,
     storage: Arc<dyn BookStoragePort>,
@@ -34,6 +36,7 @@ impl BookDomainLifecycle {
         readings: Arc<dyn BookReadingRepository>,
         online_shelves: Arc<dyn OnlineShelfRepository>,
         bindings: Arc<MediaBindingService>,
+        catalog: Arc<BookCatalogService>,
         scanner: Arc<dyn BookScannerPort>,
         parser: Arc<dyn BookParserPort>,
         storage: Arc<dyn BookStoragePort>,
@@ -45,6 +48,7 @@ impl BookDomainLifecycle {
             readings,
             online_shelves,
             bindings,
+            catalog,
             scanner,
             parser,
             storage,
@@ -326,7 +330,11 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
     }
 
     async fn count_library_items(&self, library_id: LibraryId) -> DomainResult<u64> {
-        self.books.count_by_library(library_id).await
+        let books = self.books.list_by_library(library_id).await?;
+        Ok(books
+            .into_iter()
+            .filter(|b| !b.is_missing && !b.source.is_online_tracked())
+            .count() as u64)
     }
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
@@ -356,23 +364,17 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
             .delete_user_bindings_for_media(user_id, MediaKind::Book)
             .await?;
         for raw_id in unbound_ids {
-            let remaining = self
-                .bindings
-                .count_bindings_for_item(MediaKind::Book, raw_id)
+            self.bindings
+                .gc_if_orphaned(MediaKind::Book, raw_id, || async {
+                    if let Some(book) = self.books.find_by_id(BookId(raw_id)).await?
+                        && book.source.is_online_tracked()
+                    {
+                        self.catalog.delete_book_without_bindings(book).await?;
+                        return Ok(true);
+                    }
+                    Ok(false)
+                })
                 .await?;
-            if remaining == 0
-                && let Some(book) = self.books.find_by_id(BookId(raw_id)).await?
-                && book.source.is_online_tracked()
-            {
-                self.readings.delete_by_book(book.id).await?;
-                self.books.delete(book.id).await?;
-                if let Some(storage_key) = book.source.storage_key() {
-                    let _ = self.storage.delete_managed_book(storage_key).await;
-                }
-                if let Some(cover_key) = &book.cover_key {
-                    let _ = self.storage.delete_cover(cover_key).await;
-                }
-            }
         }
         Ok(())
     }

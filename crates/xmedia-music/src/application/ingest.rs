@@ -334,23 +334,22 @@ impl MusicIngestService {
         requested_user_id: Option<Uuid>,
     ) -> DomainResult<UnbindMediaItemResultDto> {
         let target_user_id = MediaBindingService::resolve_target_user_id(actor, requested_user_id)?;
-        let track = self.catalog_repo.find_track_by_id(track_id).await?;
-        let (unbound, remaining_bindings) = self
+        let (unbound, remaining_bindings, deleted_from_pool) = self
             .bindings
-            .unbind(target_user_id, MediaKind::Music, track_id.0)
+            .unbind_with_gc(target_user_id, MediaKind::Music, track_id.0, || async {
+                if let Some(tr) = self.catalog_repo.find_track_by_id(track_id).await?
+                    && tr.source.is_online_tracked()
+                {
+                    self.delete_track_without_bindings(tr).await?;
+                    return Ok(true);
+                }
+                Ok(false)
+            })
             .await?;
-        if unbound {
+        if unbound && !deleted_from_pool {
             self.collections
                 .delete_by_user_and_track(target_user_id, track_id)
                 .await?;
-        }
-        let mut deleted_from_pool = false;
-        if remaining_bindings == 0
-            && let Some(tr) = track
-            && tr.source.is_online_tracked()
-        {
-            self.delete_track_internal(tr).await?;
-            deleted_from_pool = true;
         }
         Ok(UnbindMediaItemResultDto {
             unbound,
@@ -360,14 +359,18 @@ impl MusicIngestService {
     }
 
     async fn delete_track_internal(&self, track: Track) -> DomainResult<()> {
+        self.bindings
+            .delete_item_bindings(MediaKind::Music, track.id.0)
+            .await?;
+        self.delete_track_without_bindings(track).await
+    }
+
+    async fn delete_track_without_bindings(&self, track: Track) -> DomainResult<()> {
         let track_id = track.id;
         for key in track.source.managed_file_keys() {
             let _ = self.storage.delete_managed_file(key).await;
         }
 
-        self.bindings
-            .delete_item_bindings(MediaKind::Music, track_id.0)
-            .await?;
         self.catalog_repo.delete_track(track_id).await?;
         self.catalog_repo.recompute_catalog_aggregates().await?;
 
@@ -836,7 +839,11 @@ impl MediaDomainLifecycle for MusicIngestService {
     }
 
     async fn count_library_items(&self, library_id: LibraryId) -> DomainResult<u64> {
-        self.catalog_repo.count_tracks_by_library(library_id).await
+        let tracks = self.catalog_repo.list_tracks_by_library(library_id).await?;
+        Ok(tracks
+            .into_iter()
+            .filter(|t| !t.is_missing && !t.source.is_online_tracked())
+            .count() as u64)
     }
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
@@ -915,16 +922,17 @@ impl MediaDomainLifecycle for MusicIngestService {
             .await?;
         for raw_id in unbound_ids {
             let tid = TrackId(raw_id);
-            let remaining = self
-                .bindings
-                .count_bindings_for_item(MediaKind::Music, raw_id)
+            self.bindings
+                .gc_if_orphaned(MediaKind::Music, raw_id, || async {
+                    if let Some(track) = self.catalog_repo.find_track_by_id(tid).await?
+                        && track.source.is_online_tracked()
+                    {
+                        self.delete_track_without_bindings(track).await?;
+                        return Ok(true);
+                    }
+                    Ok(false)
+                })
                 .await?;
-            if remaining == 0
-                && let Some(track) = self.catalog_repo.find_track_by_id(tid).await?
-                && track.source.is_online_tracked()
-            {
-                self.delete_track_internal(track).await?;
-            }
         }
         Ok(())
     }

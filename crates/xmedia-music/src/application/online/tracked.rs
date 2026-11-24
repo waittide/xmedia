@@ -434,6 +434,16 @@ impl MusicOnlineService {
         let _src_rec = self.load_source_for_actor(actor, input.source_id).await?;
         let item_id = canonical_item_id(&input);
 
+        let track_lock =
+            get_or_insert_weak_lock(&self.track_locks, (input.source_id, item_id.clone()));
+        let _track_guard = track_lock.lock().await;
+
+        let fresh_existing = deps
+            .catalog_repo
+            .list_tracks_by_library(managed_lib_id)
+            .await?;
+        *existing_tracks = fresh_existing;
+
         if let Some(existing) = existing_tracks.iter().find(|tr| {
             matches!(
                 &tr.source,
