@@ -6,7 +6,7 @@ Self-contained, zero-dependency **Node.js `v26.13.0` ESM** E2E test infrastructu
 
 - **Node.js** `>= 26` (uses built-in `fetch`, `WebSocket`, `node:test`, `node:zlib`, `node:http`)
 - **Chromium** at `/usr/sbin/chromium` (overridable via `XMEDIA_CHROMIUM_BIN`)
-- **`xmedia` binary** (`cargo build --bin xmedia`, or `--xmedia-bin <path>` / `XMEDIA_BIN`)
+- **`xmedia-server` binary** (`cargo build --bin xmedia-server`, or `--xmedia-bin <path>` / `XMEDIA_BIN`)
 - **Built Web UI** (`cd web && pnpm run build` -> `web/dist`, or `--web-dir <path>` / `XMEDIA_WEB_DIR`)
 
 Zero `npm install` or third-party packages are needed in `e2e/`.

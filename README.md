@@ -38,7 +38,10 @@ cargo build --release -p xmedia -p xmedia-tool
 cargo build --release -p xmedia --no-default-features --features book,music
 
 # 3. Start server (default http://0.0.0.0:8090, SQLite in ./data/xmedia.db)
-./target/release/xmedia
+./target/release/xmedia-server
+
+# Optional: build standalone desktop/mobile Tauri v2 client (apps/xmedia-app)
+cd apps/xmedia-app && cargo tauri build
 ```
 
 ## Configuration (CLI / Environment Variables)

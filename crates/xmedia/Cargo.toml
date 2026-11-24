@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "xmedia"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xmedia-server"
+path = "src/main.rs"
+
 [features]
 default = ["book", "comic", "music", "video"]
 book = ["dep:xmedia-book"]

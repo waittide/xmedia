@@ -89,6 +89,8 @@ export function resolveXMediaBinary(explicitPath = null) {
   const candidates = [
     explicitPath,
     process.env.XMEDIA_BIN,
+    path.join(REPO_ROOT, 'target/debug/xmedia-server'),
+    path.join(REPO_ROOT, 'target/release/xmedia-server'),
     path.join(REPO_ROOT, 'target/debug/xmedia'),
     path.join(REPO_ROOT, 'target/release/xmedia'),
   ].filter(Boolean);
@@ -100,8 +102,8 @@ export function resolveXMediaBinary(explicitPath = null) {
   }
 
   throw new Error(
-    `xmedia binary not found. Checked: ${candidates.join(', ')}. ` +
-      'Build it with `cargo build --bin xmedia` or pass --xmedia-bin <path>.',
+    `xmedia-server binary not found. Checked: ${candidates.join(', ')}. ` +
+      'Build it with `cargo build --bin xmedia-server` or pass --xmedia-bin <path>.',
   );
 }
 
