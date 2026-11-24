@@ -427,9 +427,16 @@ async function handleUnbindCurrent(close?: () => void): Promise<void> {
     mode.value === 'movie' ? movieDetail.value?.video.id : showDetail.value?.show.id
   const title = displayTitle.value
   if (!targetId) return
+  const isOnline =
+    mode.value === 'movie'
+      ? Boolean(movieDetail.value?.video.online_tracking)
+      : Boolean(showDetail.value?.show.online_tracking)
   const ok = await dialogStore.confirm({
-    title: globalT('pool.unbindBtn'),
-    message: globalT('pool.unbindConfirm', { title }),
+    title: globalT('pool.unbindConfirmTitle'),
+    message: isOnline
+      ? globalT('pool.unbindOnlineConfirmMessage', { title })
+      : globalT('pool.unbindConfirmMessage', { title }),
+    confirmText: globalT('pool.unbindBtn'),
     danger: true,
   })
   if (!ok) return

@@ -165,9 +165,13 @@ async function handleUnbindAlbum(close?: () => void): Promise<void> {
   close?.()
   const cur = detail.value
   if (!cur || cur.tracks.length === 0) return
+  const isOnline = cur.tracks.some((tr) => Boolean(tr.online_tracking))
   const ok = await dialogStore.confirm({
-    title: globalT('pool.unbindBtn'),
-    message: globalT('pool.unbindConfirm', { title: cur.album.title }),
+    title: globalT('pool.unbindConfirmTitle'),
+    message: isOnline
+      ? globalT('pool.unbindOnlineConfirmMessage', { title: cur.album.title })
+      : globalT('pool.unbindConfirmMessage', { title: cur.album.title }),
+    confirmText: globalT('pool.unbindBtn'),
     danger: true,
   })
   if (!ok) return

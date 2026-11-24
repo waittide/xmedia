@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -385,7 +385,14 @@ function selectLibrary(id: string | null): void {
   void fetchPool()
 }
 
-function openBoundItem(id: string): void {
+function openBoundItem(id: string, kind?: 'movie' | 'show'): void {
+  if (props.domain === 'video' && kind === 'movie') {
+    void router.push({
+      path: `/video/item/${encodeURIComponent(id)}`,
+      query: { kind: 'movie' },
+    })
+    return
+  }
   void router.push(itemRoute({ scope: 'local', domain: props.domain, id }))
 }
 
@@ -418,6 +425,13 @@ watch(
 onMounted(() => {
   void loadMeta()
   void fetchPool()
+})
+
+onBeforeUnmount(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
 })
 </script>
 
@@ -876,7 +890,7 @@ onMounted(() => {
                     size="sm"
                     class="flex-1"
                     :icon="LuExternalLink"
-                    @click="openBoundItem(movie.id)"
+                    @click="openBoundItem(movie.id, 'movie')"
                   >
                     {{ t('pool.openLocalBtn') }}
                   </MdButton>

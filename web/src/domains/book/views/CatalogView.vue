@@ -1118,8 +1118,8 @@ function onUploadFilesChange(ev: Event): void {
           size="sm"
           :icon="LuRefreshCw"
           :loading="manualRefreshing"
-          :aria-label="t('common.refresh')"
-          :tooltip="t('common.refresh')"
+          :aria-label="globalT('common.refresh')"
+          :tooltip="globalT('common.refresh')"
           @click="handleRefresh"
         />
       </template>

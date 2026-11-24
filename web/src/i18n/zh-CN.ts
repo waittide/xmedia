@@ -39,6 +39,7 @@ export default {
     undo: '撤销',
     filter: '筛选',
     filters: '筛选条件',
+    sort: '排序',
     clearFilters: '清除筛选条件',
     moreActions: '更多操作',
     details: '详细信息',
@@ -166,6 +167,7 @@ export default {
     opdsNoDownload: '无可用格式',
     opdsDetailTitle: '书目详情',
     opdsFormats: '可导入格式',
+    subsonicTab: '远程 Subsonic',
     subsonicEmptySourcesTitle: '尚未配置 OpenSubsonic 源',
     subsonicEmptySourcesHint: '添加 Navidrome / Subsonic 等 OpenSubsonic 音乐服务以试听并导入本地库',
     subsonicAddBtn: '添加 OpenSubsonic 源',
@@ -250,6 +252,7 @@ export default {
     scopeAriaLabel: '内容来源切换',
   },
   pool: {
+    title: '资源池',
     allLibraries: '全部资源库',
     assignTargetLabel: '入库目标',
     assignSelf: '我自己（默认）',

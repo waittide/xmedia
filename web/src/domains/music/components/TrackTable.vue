@@ -200,8 +200,11 @@ async function editTrackTags(track: TrackDto): Promise<void> {
 
 async function confirmUnbindTrack(track: TrackDto): Promise<void> {
   const confirmed = await dialogStore.confirm({
-    title: globalT('pool.unbindBtn'),
-    message: globalT('pool.unbindConfirm', { title: track.title }),
+    title: globalT('pool.unbindConfirmTitle'),
+    message: track.online_tracking
+      ? globalT('pool.unbindOnlineConfirmMessage', { title: track.title })
+      : globalT('pool.unbindConfirmMessage', { title: track.title }),
+    confirmText: globalT('pool.unbindBtn'),
     danger: true,
   })
   if (!confirmed) return

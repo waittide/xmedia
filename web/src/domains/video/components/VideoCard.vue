@@ -160,9 +160,13 @@ async function handleConfirmUnbind(close: () => void): Promise<void> {
   close()
   const targetId = props.video.show_id || props.video.id
   const title = props.video.show_title || props.video.title
+  const isOnline = Boolean(props.video.online_tracking)
   const ok = await dialogStore.confirm({
-    title: globalT('pool.unbindBtn'),
-    message: globalT('pool.unbindConfirm', { title }),
+    title: globalT('pool.unbindConfirmTitle'),
+    message: isOnline
+      ? globalT('pool.unbindOnlineConfirmMessage', { title })
+      : globalT('pool.unbindConfirmMessage', { title }),
+    confirmText: globalT('pool.unbindBtn'),
     danger: true,
   })
   if (!ok) return

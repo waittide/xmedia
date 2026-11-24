@@ -39,6 +39,7 @@ export default {
     undo: 'Undo',
     filter: 'Filter',
     filters: 'Filters',
+    sort: 'Sort',
     clearFilters: 'Clear filters',
     moreActions: 'More actions',
     details: 'Details',
@@ -166,6 +167,7 @@ export default {
     opdsNoDownload: 'No format',
     opdsDetailTitle: 'Book Details',
     opdsFormats: 'Available Formats',
+    subsonicTab: 'Remote Subsonic',
     subsonicEmptySourcesTitle: 'No OpenSubsonic servers configured',
     subsonicEmptySourcesHint: 'Add a Navidrome or OpenSubsonic music server to preview tracks and import locally',
     subsonicAddBtn: 'Add OpenSubsonic Server',
@@ -250,6 +252,7 @@ export default {
     scopeAriaLabel: 'Content source',
   },
   pool: {
+    title: 'Pool',
     allLibraries: 'All libraries',
     assignTargetLabel: 'Assign to',
     assignSelf: 'Myself (default)',

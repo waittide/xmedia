@@ -142,11 +142,12 @@ const resolvedBrowsePoolTo = computed<RouteLocationRaw>(() =>
 const gridClass = computed(() => mediaGridClassFor(resolvedAspect.value))
 
 const skeletonCount = computed(() => (resolvedAspect.value === 'video' ? 8 : 12))
-const showSkeleton = useDelayedLoading(() => props.loading && !hasAnyContent.value)
 
 const hasAnyContent = computed(
   () => props.continueItems.length > 0 || props.recentItems.length > 0,
 )
+
+const showSkeleton = useDelayedLoading(() => props.loading && !hasAnyContent.value)
 
 const resolvedEmptyTitle = computed(() => {
   if (props.emptyTitle) return props.emptyTitle

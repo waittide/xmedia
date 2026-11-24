@@ -181,7 +181,7 @@ async function handleStart(): Promise<void> {
   starting.value = true
   try {
     const job = await onlineBookApi.startDownload({
-      book_id: props.target.bookId,
+      book_id: authStore.isAdmin ? props.target.bookId : undefined,
       source_id: props.target.sourceId,
       book_name: props.target.bookName,
       author: props.target.author,

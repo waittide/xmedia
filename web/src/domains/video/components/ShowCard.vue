@@ -82,8 +82,11 @@ async function handleToggleFavorite(): Promise<void> {
 async function handleUnbindShow(close: () => void): Promise<void> {
   close()
   const ok = await dialogStore.confirm({
-    title: globalT('pool.unbindBtn'),
-    message: globalT('pool.unbindConfirm', { title: props.show.title }),
+    title: globalT('pool.unbindConfirmTitle'),
+    message: props.show.online_tracking
+      ? globalT('pool.unbindOnlineConfirmMessage', { title: props.show.title })
+      : globalT('pool.unbindConfirmMessage', { title: props.show.title }),
+    confirmText: globalT('pool.unbindBtn'),
     danger: true,
   })
   if (!ok) return
