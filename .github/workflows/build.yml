@@ -159,6 +159,7 @@ jobs:
         if: matrix.platform == 'android'
         shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libclang-dev clang
 
@@ -173,13 +174,30 @@ jobs:
 
           NDK_TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
           ANDROID_API="24"
-          LIBCLANG_SO="$(find /usr/lib/llvm-* /usr/lib/x86_64-linux-gnu -maxdepth 2 -name 'libclang.so*' 2>/dev/null | head -n 1)"
-          if [ -z "$LIBCLANG_SO" ]; then
-            echo "::error::libclang.so not found after installing libclang-dev"
-            exit 1
+
+          # Pair libclang and clang from the exact same toolchain and verify dlopen before building.
+          NDK_LIBCLANG_SO="$(find "${NDK_TOOLCHAIN}/lib" "${NDK_TOOLCHAIN}/lib64" -maxdepth 2 -name 'libclang.so*' 2>/dev/null | head -n 1 || true)"
+          if [ -n "$NDK_LIBCLANG_SO" ] && [ -x "${NDK_TOOLCHAIN}/bin/clang" ] \
+             && python3 -c "import ctypes, sys; ctypes.CDLL(sys.argv[1])" "$NDK_LIBCLANG_SO" 2>/dev/null; then
+            LIBCLANG_DIR="$(dirname "$NDK_LIBCLANG_SO")"
+            BINDGEN_CLANG_PATH="${NDK_TOOLCHAIN}/bin/clang"
+          else
+            BINDGEN_CLANG_PATH="$(command -v clang)"
+            CLANG_MAJOR="$("${BINDGEN_CLANG_PATH}" -dumpversion | cut -d. -f1)"
+            LIBCLANG_DIR="/usr/lib/llvm-${CLANG_MAJOR}/lib"
+            if [ -z "$(find "${LIBCLANG_DIR}" -maxdepth 1 -name 'libclang.so*' 2>/dev/null || true)" ]; then
+              echo "::error::matching libclang.so for clang ${CLANG_MAJOR} not found in ${LIBCLANG_DIR}"
+              exit 1
+            fi
           fi
-          LIBCLANG_DIR="$(dirname "$LIBCLANG_SO")"
-          echo "Using Android NDK: ${NDK_ROOT} (API ${ANDROID_API}), libclang: ${LIBCLANG_DIR}"
+
+          RESOURCE_DIR="$("${BINDGEN_CLANG_PATH}" -print-resource-dir)"
+          BINDGEN_ARGS="--target=aarch64-linux-android${ANDROID_API} --sysroot=${NDK_TOOLCHAIN}/sysroot -resource-dir=${RESOURCE_DIR}"
+          echo "Using Android NDK: ${NDK_ROOT} (API ${ANDROID_API})"
+          echo "Using libclang: ${LIBCLANG_DIR}, clang: ${BINDGEN_CLANG_PATH}, resource-dir: ${RESOURCE_DIR}"
+          printf '#include <stdbool.h>\n#include <stdio.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <stddef.h>\n#include <inttypes.h>\n#include <limits.h>\n' \
+            | "${BINDGEN_CLANG_PATH}" -fsyntax-only -xc ${BINDGEN_ARGS} -
+
           {
             echo "ANDROID_NDK_HOME=${NDK_ROOT}"
             echo "CC_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang"
@@ -188,7 +206,8 @@ jobs:
             echo "RANLIB_aarch64_linux_android=${NDK_TOOLCHAIN}/bin/llvm-ranlib"
             echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${NDK_TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang"
             echo "LIBCLANG_PATH=${LIBCLANG_DIR}"
-            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=${NDK_TOOLCHAIN}/sysroot -isystem ${NDK_TOOLCHAIN}/sysroot/usr/include/aarch64-linux-android -D__ANDROID_API__=${ANDROID_API}"
+            echo "CLANG_PATH=${BINDGEN_CLANG_PATH}"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=${BINDGEN_ARGS}"
           } >> "$GITHUB_ENV"
 
       - name: Setup iOS SDK and libclang
@@ -197,16 +216,23 @@ jobs:
         run: |
           IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           XCODE_LIBCLANG="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
-          echo "Using iOS SDK: ${IOS_SDK}"
+          XCODE_CLANG="$(xcrun --find clang)"
+          echo "Using iOS SDK: ${IOS_SDK}, clang: ${XCODE_CLANG}"
           {
             echo "IPHONEOS_DEPLOYMENT_TARGET=15.0"
             echo "LIBCLANG_PATH=${XCODE_LIBCLANG}"
+            echo "CLANG_PATH=${XCODE_CLANG}"
             echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios=--target=arm64-apple-ios15.0 -isysroot ${IOS_SDK}"
           } >> "$GITHUB_ENV"
 
       - name: Build xmedia and xmedia-tool
         shell: bash
-        run: cargo build --release --target "${{ matrix.target }}" -p xmedia -p xmedia-tool
+        run: |
+          set -o pipefail
+          cargo build --release --target "${{ matrix.target }}" -p xmedia -p xmedia-tool 2>&1 | tee cargo-build.log || {
+            echo "::error::$(grep -E 'error(\[|:)|panicked at|fatal error|undefined reference|ld\.lld' cargo-build.log | tail -n 12 | tr '\n' ' ' | cut -c1-1500)"
+            exit 1
+          }
 
       - name: Package binaries (Unix)
         if: matrix.archive == 'tar.gz'
