@@ -299,10 +299,8 @@ onBeforeUnmount(() => {
 
     <!-- Top Region: Minimal MD3 Top App Bar + Domain Primary Tabs -->
     <div
-      class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-[background-color,box-shadow] duration-150 ease-standard select-none sm:col-start-2"
-      :class="
-        isContentScrolled ? 'bg-surface-container shadow-elevation-2' : 'bg-surface'
-      "
+      class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-colors duration-150 ease-standard select-none sm:col-start-2"
+      :class="isContentScrolled ? 'bg-surface-container' : 'bg-surface'"
     >
       <header class="flex h-16 items-center justify-between gap-3 px-4 md:px-6">
         <h1 class="text-title-large shrink-0 truncate text-on-surface">
@@ -444,19 +442,21 @@ onBeforeUnmount(() => {
           type="button"
           :data-nav="tab.key"
           :aria-current="tab.active ? 'page' : undefined"
-          class="md-state text-title-small relative inline-flex h-12 shrink-0 cursor-pointer items-center gap-2 px-4 whitespace-nowrap transition-colors duration-150 ease-standard"
+          class="md-state text-title-small relative inline-flex h-12 shrink-0 cursor-pointer items-center px-4 whitespace-nowrap transition-colors duration-150 ease-standard"
           :class="
             tab.active ? 'text-primary' : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="navigateTab(tab)"
         >
-          <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
-          <span>{{ tab.label }}</span>
-          <span
-            v-if="tab.active"
-            aria-hidden="true"
-            class="pointer-events-none absolute right-0.5 bottom-0 left-0.5 mx-auto h-[3px] min-w-12 rounded-t-[3px] bg-primary"
-          />
+          <span class="relative inline-flex h-full items-center gap-2">
+            <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+            <span>{{ tab.label }}</span>
+            <span
+              v-if="tab.active"
+              aria-hidden="true"
+              class="pointer-events-none absolute right-0 bottom-0 left-0 mx-auto h-[3px] min-w-6 rounded-t-[3px] bg-primary"
+            />
+          </span>
         </button>
       </nav>
     </div>

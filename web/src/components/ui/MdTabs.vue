@@ -88,8 +88,9 @@ function onKeydown(ev: KeyboardEvent, currentIndex: number): void {
       :aria-selected="modelValue === tab.value"
       :tabindex="modelValue === tab.value ? 0 : -1"
       :disabled="tab.disabled"
-      class="md-state text-title-small relative inline-flex h-12 shrink-0 cursor-pointer items-center justify-center gap-2 px-4 transition-colors duration-150 ease-standard outline-none select-none focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-secondary disabled:cursor-not-allowed disabled:opacity-38"
+      class="md-state text-title-small relative inline-flex h-12 cursor-pointer items-center justify-center px-4 transition-colors duration-150 ease-standard outline-none select-none focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-secondary disabled:cursor-not-allowed disabled:opacity-38"
       :class="[
+        scrollable ? 'shrink-0' : 'flex-1',
         modelValue === tab.value
           ? variant === 'primary'
             ? 'text-primary'
@@ -99,23 +100,30 @@ function onKeydown(ev: KeyboardEvent, currentIndex: number): void {
       @click="select(tab)"
       @keydown="onKeydown($event, idx)"
     >
-      <component :is="tab.icon" v-if="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
-      <span class="whitespace-nowrap">{{ tab.label }}</span>
-      <span
-        v-if="tab.badge !== undefined"
-        class="text-label-small rounded-corner-full bg-surface-container-highest px-1.5 py-0.5 tabular-nums text-on-surface-variant"
-      >
-        {{ tab.badge }}
+      <span class="relative inline-flex h-full items-center justify-center gap-2">
+        <component
+          :is="tab.icon"
+          v-if="tab.icon"
+          class="h-[18px] w-[18px] shrink-0"
+          aria-hidden="true"
+        />
+        <span class="whitespace-nowrap">{{ tab.label }}</span>
+        <span
+          v-if="tab.badge !== undefined"
+          class="text-label-small rounded-corner-full bg-surface-container-highest px-1.5 py-0.5 tabular-nums text-on-surface-variant"
+        >
+          {{ tab.badge }}
+        </span>
+        <span
+          v-if="modelValue === tab.value && variant === 'primary'"
+          aria-hidden="true"
+          class="pointer-events-none absolute right-0 bottom-0 left-0 mx-auto h-[3px] min-w-6 rounded-t-[3px] bg-primary"
+        />
       </span>
       <span
-        v-if="modelValue === tab.value"
+        v-if="modelValue === tab.value && variant === 'secondary'"
         aria-hidden="true"
-        class="pointer-events-none absolute bottom-0 bg-primary"
-        :class="
-          variant === 'primary'
-            ? 'right-0.5 left-0.5 mx-auto h-[3px] min-w-12 rounded-t-[3px]'
-            : 'right-0 left-0 h-[2px]'
-        "
+        class="pointer-events-none absolute right-0 bottom-0 left-0 h-[2px] bg-primary"
       />
     </button>
   </div>
