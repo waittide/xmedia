@@ -32,6 +32,7 @@ pub struct ComicCatalogService {
     pub(super) thumbnails: Arc<dyn ThumbnailGeneratorPort>,
     pub(super) storage: Arc<dyn ComicFileStoragePort>,
     pub(super) events: Arc<dyn RealtimeEventPort>,
+    managed_lib_lock: tokio::sync::Mutex<()>,
 }
 
 impl ComicCatalogService {
@@ -57,6 +58,7 @@ impl ComicCatalogService {
             thumbnails,
             storage,
             events,
+            managed_lib_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -197,7 +199,8 @@ impl ComicCatalogService {
         ))
     }
 
-    pub(super) async fn get_or_create_managed_library(&self) -> DomainResult<Library> {
+    pub(crate) async fn get_or_create_managed_library(&self) -> DomainResult<Library> {
+        let _guard = self.managed_lib_lock.lock().await;
         if let Some(existing) = self
             .libraries
             .find_managed_by_media(MediaKind::Comic)

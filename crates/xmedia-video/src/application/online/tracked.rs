@@ -41,12 +41,20 @@ use super::{CancelOnDrop, VideoOnlineService, VideoTrackingDeps, get_or_insert_w
 const MAX_TRACKED_VIDEO_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_HLS_SEGMENTS: usize = 10_000;
 
+async fn open_exclusive_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    opts.open(path).await
+}
+
 struct TempFileGuard {
     path: PathBuf,
 }
 
 impl TempFileGuard {
-    fn new(ext: &str) -> Self {
+    async fn create_exclusive(ext: &str) -> DomainResult<(Self, tokio::fs::File)> {
         let clean: String = ext
             .chars()
             .filter(|c| c.is_ascii_alphanumeric())
@@ -57,8 +65,22 @@ impl TempFileGuard {
         } else {
             clean
         };
-        let path = std::env::temp_dir().join(format!("xmedia-video-{}.{suffix}", Uuid::now_v7()));
-        Self { path }
+        for _ in 0..8 {
+            let path =
+                std::env::temp_dir().join(format!("xmedia-video-{}.{suffix}", Uuid::now_v7()));
+            match open_exclusive_temp_file(&path).await {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(DomainError::Storage(format!(
+                        "创建临时视频缓存文件失败: {e}"
+                    )));
+                }
+            }
+        }
+        Err(DomainError::Storage(
+            "创建独占临时视频缓存文件失败: 重试次数耗尽".into(),
+        ))
     }
 
     fn path(&self) -> &Path {
@@ -78,10 +100,25 @@ struct TempDirGuard {
 
 impl TempDirGuard {
     fn new() -> DomainResult<Self> {
-        let path = std::env::temp_dir().join(format!("xmedia-hls-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&path)
-            .map_err(|e| DomainError::Storage(format!("创建 HLS 临时目录失败: {e}")))?;
-        Ok(Self { path })
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        for _ in 0..8 {
+            let path = std::env::temp_dir().join(format!("xmedia-hls-{}", Uuid::now_v7()));
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(DomainError::Storage(format!("创建 HLS 临时目录失败: {e}")));
+                }
+            }
+        }
+        Err(DomainError::Storage(
+            "创建独占 HLS 临时目录失败: 重试次数耗尽".into(),
+        ))
     }
 
     fn path(&self) -> &Path {
@@ -868,10 +905,7 @@ impl VideoOnlineService {
         }
 
         let container = infer_container_from_url_and_ct(&final_url, header_ct.as_deref());
-        let temp = TempFileGuard::new(container.extension());
-        let mut file = tokio::fs::File::create(temp.path())
-            .await
-            .map_err(|e| DomainError::Storage(format!("创建临时视频缓存文件失败: {e}")))?;
+        let (temp, mut file) = TempFileGuard::create_exclusive(container.extension()).await?;
 
         let mut total_bytes: u64 = 0;
         if !prefix.is_empty() {
@@ -1001,7 +1035,7 @@ impl VideoOnlineService {
                 resp.status()
             )));
         }
-        let mut file = tokio::fs::File::create(dest_path)
+        let mut file = open_exclusive_temp_file(dest_path)
             .await
             .map_err(|e| DomainError::Storage(format!("创建 HLS 分片缓存失败: {e}")))?;
         while let Some(chunk) = resp
@@ -1071,11 +1105,22 @@ impl VideoOnlineService {
         .await?;
 
         let local_m3u8 = work_dir.path().join("index.m3u8");
-        tokio::fs::write(&local_m3u8, local_lines.join("\n"))
-            .await
-            .map_err(|e| DomainError::Storage(format!("写入本地 HLS 索引失败: {e}")))?;
+        {
+            let mut m3u8_file = open_exclusive_temp_file(&local_m3u8)
+                .await
+                .map_err(|e| DomainError::Storage(format!("创建本地 HLS 索引失败: {e}")))?;
+            m3u8_file
+                .write_all(local_lines.join("\n").as_bytes())
+                .await
+                .map_err(|e| DomainError::Storage(format!("写入本地 HLS 索引失败: {e}")))?;
+            m3u8_file
+                .flush()
+                .await
+                .map_err(|e| DomainError::Storage(format!("刷新本地 HLS 索引失败: {e}")))?;
+        }
 
-        let out_mp4 = TempFileGuard::new("mp4");
+        let (out_mp4, precreated) = TempFileGuard::create_exclusive("mp4").await?;
+        drop(precreated);
         deps.media_engine
             .remux_local_hls_to_mp4(&local_m3u8, out_mp4.path())
             .await?;
@@ -1654,5 +1699,35 @@ mod tests {
         assert!(joined.contains("URI=\"asset_00002.bin\""));
         assert!(joined.contains("seg_000001.ts"));
         assert!(!joined.contains("/etc/passwd"));
+    }
+
+    #[tokio::test]
+    async fn temp_file_and_dir_guards_use_exclusive_owner_only_permissions() {
+        let (file_guard, mut file) = TempFileGuard::create_exclusive("mp4").await.unwrap();
+        let file_path = file_guard.path().to_path_buf();
+        file.write_all(b"video-data").await.unwrap();
+        drop(file);
+        assert!(file_path.is_file());
+
+        let dup_err = open_exclusive_temp_file(&file_path).await.unwrap_err();
+        assert_eq!(dup_err.kind(), std::io::ErrorKind::AlreadyExists);
+
+        let dir_guard = TempDirGuard::new().unwrap();
+        let dir_path = dir_guard.path().to_path_buf();
+        assert!(dir_path.is_dir());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let f_mode = std::fs::metadata(&file_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(f_mode, 0o600);
+            let d_mode = std::fs::metadata(&dir_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(d_mode, 0o700);
+        }
+
+        drop(file_guard);
+        drop(dir_guard);
+        assert!(!file_path.exists());
+        assert!(!dir_path.exists());
     }
 }

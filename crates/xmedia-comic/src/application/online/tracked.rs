@@ -70,17 +70,7 @@ pub struct ComicCacheReportDto {
 
 impl ComicOnlineService {
     async fn ensure_managed_comic_library(&self) -> DomainResult<Library> {
-        if let Some(existing) = self
-            .libraries
-            .find_managed_by_media(MediaKind::Comic)
-            .await?
-        {
-            return Ok(existing);
-        }
-        let _ = self.storage.ensure_managed_root().await?;
-        let lib = Library::new_managed(MediaKind::Comic, MediaKind::Comic.default_managed_name())?;
-        self.libraries.save(&lib).await?;
-        Ok(lib)
+        self.catalog.get_or_create_managed_library().await
     }
 
     async fn fetch_pages_internal(

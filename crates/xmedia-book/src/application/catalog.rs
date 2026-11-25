@@ -38,6 +38,7 @@ pub struct BookCatalogService {
     bindings: Arc<MediaBindingService>,
     parser: Arc<dyn BookParserPort>,
     storage: Arc<dyn BookStoragePort>,
+    managed_lib_lock: tokio::sync::Mutex<()>,
     on_book_deleted: std::sync::RwLock<Option<BookDeletedHook>>,
 }
 
@@ -57,6 +58,7 @@ impl BookCatalogService {
             bindings,
             parser,
             storage,
+            managed_lib_lock: tokio::sync::Mutex::new(()),
             on_book_deleted: std::sync::RwLock::new(None),
         }
     }
@@ -136,19 +138,7 @@ impl BookCatalogService {
         .await
         .map_err(|e| DomainError::Storage(format!("book parse task failed: {e}")))??;
 
-        let managed_lib = match self
-            .libraries
-            .find_managed_by_media(MediaKind::Book)
-            .await?
-        {
-            Some(lib) => lib,
-            None => {
-                let lib =
-                    Library::new_managed(MediaKind::Book, MediaKind::Book.default_managed_name())?;
-                self.libraries.save(&lib).await?;
-                lib
-            }
-        };
+        let managed_lib = self.ensure_managed_library().await?;
 
         let book_id = BookId::new();
         let stored = self
@@ -642,6 +632,7 @@ impl BookCatalogService {
     }
 
     pub(crate) async fn ensure_managed_library(&self) -> DomainResult<Library> {
+        let _guard = self.managed_lib_lock.lock().await;
         match self
             .libraries
             .find_managed_by_media(MediaKind::Book)

@@ -40,6 +40,7 @@ pub struct MusicIngestService {
     scanner: Arc<dyn MusicScannerPort>,
     probe: Arc<dyn AudioMetadataProbePort>,
     events: Arc<dyn RealtimeEventPort>,
+    managed_lib_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MusicIngestService {
@@ -65,6 +66,7 @@ impl MusicIngestService {
             scanner,
             probe,
             events,
+            managed_lib_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -417,6 +419,7 @@ impl MusicIngestService {
     }
 
     pub(crate) async fn ensure_default_managed_library(&self) -> DomainResult<Library> {
+        let _guard = self.managed_lib_lock.lock().await;
         if let Some(existing) = self
             .libraries
             .find_managed_by_media(MediaKind::Music)

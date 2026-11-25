@@ -40,12 +40,20 @@ use super::{CancelOnDrop, MusicOnlineService, MusicTrackingDeps, get_or_insert_w
 const MAX_TRACKED_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BATCH_TRACK_COUNT: usize = 200;
 
+async fn open_exclusive_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    opts.open(path).await
+}
+
 struct TempFileGuard {
     path: PathBuf,
 }
 
 impl TempFileGuard {
-    fn new(ext: &str) -> Self {
+    async fn create_exclusive(ext: &str) -> DomainResult<(Self, tokio::fs::File)> {
         let clean_ext: String = ext
             .chars()
             .filter(|c| c.is_ascii_alphanumeric())
@@ -56,8 +64,22 @@ impl TempFileGuard {
         } else {
             clean_ext
         };
-        let path = std::env::temp_dir().join(format!("xmedia-music-{}.{suffix}", Uuid::now_v7()));
-        Self { path }
+        for _ in 0..8 {
+            let path =
+                std::env::temp_dir().join(format!("xmedia-music-{}.{suffix}", Uuid::now_v7()));
+            match open_exclusive_temp_file(&path).await {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(DomainError::Storage(format!(
+                        "创建临时音频缓存文件失败: {e}"
+                    )));
+                }
+            }
+        }
+        Err(DomainError::Storage(
+            "创建独占临时音频缓存文件失败: 重试次数耗尽".into(),
+        ))
     }
 
     fn path(&self) -> &Path {
@@ -373,10 +395,7 @@ impl MusicOnlineService {
             ));
         }
 
-        let temp = TempFileGuard::new(ext_hint);
-        let mut file = tokio::fs::File::create(temp.path())
-            .await
-            .map_err(|e| DomainError::Storage(format!("创建临时音频缓存文件失败: {e}")))?;
+        let (temp, mut file) = TempFileGuard::create_exclusive(ext_hint).await?;
 
         let mut total_bytes: u64 = 0;
         if !prefix.is_empty() {
@@ -1043,5 +1062,33 @@ impl MusicOnlineService {
             media_kind: MediaKind::Music,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn temp_file_guard_creates_exclusive_owner_only_temp_file_and_cleans_up() {
+        let (guard, mut file) = TempFileGuard::create_exclusive("mp3").await.unwrap();
+        let path = guard.path().to_path_buf();
+        file.write_all(b"audio-bytes").await.unwrap();
+        drop(file);
+        assert!(path.is_file());
+
+        // Exclusive open on an existing path must fail with AlreadyExists
+        let err = open_exclusive_temp_file(&path).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        drop(guard);
+        assert!(!path.exists());
     }
 }

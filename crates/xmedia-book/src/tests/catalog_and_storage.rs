@@ -715,3 +715,113 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
         new_png
     );
 }
+
+#[tokio::test]
+async fn concurrent_ensure_managed_library_creates_single_library() {
+    use async_trait::async_trait;
+    use xmedia_core::domain::error::DomainResult;
+    use xmedia_core::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
+    use xmedia_core::domain::repository::LibraryRepository;
+
+    use crate::application::catalog::BookCatalogService;
+    use crate::infra::parser::CompositeBookParser;
+    use crate::infra::persistence::repositories::{
+        ToastyBookReadingRepository, ToastyBookRepository,
+    };
+    use crate::infra::storage::LocalBookStorage;
+
+    struct SlowFindLibraryRepo {
+        inner: ToastyLibraryRepository,
+    }
+
+    #[async_trait]
+    impl LibraryRepository for SlowFindLibraryRepo {
+        async fn find_by_id(&self, id: LibraryId) -> DomainResult<Option<Library>> {
+            self.inner.find_by_id(id).await
+        }
+        async fn list_all(&self) -> DomainResult<Vec<Library>> {
+            self.inner.list_all().await
+        }
+        async fn list_by_media(&self, kind: MediaKind) -> DomainResult<Vec<Library>> {
+            self.inner.list_by_media(kind).await
+        }
+        async fn find_managed_by_media(&self, kind: MediaKind) -> DomainResult<Option<Library>> {
+            let found = self.inner.find_managed_by_media(kind).await?;
+            if found.is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Ok(found)
+        }
+        async fn save(&self, library: &Library) -> DomainResult<()> {
+            self.inner.save(library).await
+        }
+        async fn update_name(
+            &self,
+            id: LibraryId,
+            name: &str,
+            updated_at: jiff::Timestamp,
+        ) -> DomainResult<bool> {
+            self.inner.update_name(id, name, updated_at).await
+        }
+        async fn update_scan_state(
+            &self,
+            id: LibraryId,
+            scan_status: &ScanStatus,
+            last_scanned_at: Option<jiff::Timestamp>,
+            updated_at: jiff::Timestamp,
+        ) -> DomainResult<bool> {
+            self.inner
+                .update_scan_state(id, scan_status, last_scanned_at, updated_at)
+                .await
+        }
+        async fn delete(&self, id: LibraryId) -> DomainResult<()> {
+            self.inner.delete(id).await
+        }
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("managed_lib_mutex.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_book_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+    let libs_repo = Arc::new(SlowFindLibraryRepo {
+        inner: ToastyLibraryRepository::new(db.clone()),
+    });
+    let bindings = Arc::new(xmedia_core::application::bindings::MediaBindingService::new(
+        Arc::new(
+            xmedia_core::infra::persistence::repositories::ToastyUserMediaBindingRepository::new(
+                db.clone(),
+            ),
+        ),
+        None,
+    ));
+    let catalog = Arc::new(BookCatalogService::new(
+        Arc::new(ToastyBookRepository::new(db.clone())),
+        libs_repo.clone(),
+        Arc::new(ToastyBookReadingRepository::new(db)),
+        bindings,
+        Arc::new(CompositeBookParser),
+        Arc::new(LocalBookStorage::new(tmp.path()).unwrap()),
+    ));
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let c = Arc::clone(&catalog);
+        handles.push(tokio::spawn(async move {
+            c.ensure_managed_library().await.unwrap()
+        }));
+    }
+    let mut ids = Vec::new();
+    for h in handles {
+        ids.push(h.await.unwrap().id);
+    }
+    assert!(ids.windows(2).all(|w| w[0] == w[1]));
+    let all_libs = libs_repo.list_by_media(MediaKind::Book).await.unwrap();
+    assert_eq!(all_libs.len(), 1);
+}

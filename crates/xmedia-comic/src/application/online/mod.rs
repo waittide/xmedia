@@ -36,7 +36,6 @@ const COMIC_IMAGE_PROXY_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct ComicOnlineService {
     sources: Arc<dyn ComicSourceRepository>,
-    libraries: Arc<dyn LibraryRepository>,
     series: Arc<dyn SeriesRepository>,
     chapters: Arc<dyn ChapterRepository>,
     reading: Arc<dyn ComicReadingRepository>,
@@ -57,7 +56,7 @@ impl ComicOnlineService {
     #[allow(clippy::too_many_arguments)]
     pub fn with_engine(
         sources: Arc<dyn ComicSourceRepository>,
-        libraries: Arc<dyn LibraryRepository>,
+        _libraries: Arc<dyn LibraryRepository>,
         series: Arc<dyn SeriesRepository>,
         chapters: Arc<dyn ChapterRepository>,
         reading: Arc<dyn ComicReadingRepository>,
@@ -70,7 +69,6 @@ impl ComicOnlineService {
     ) -> Self {
         Self {
             sources,
-            libraries,
             series,
             chapters,
             reading,
