@@ -214,10 +214,7 @@ struct ScanSettlementGuard {
 impl Drop for ScanSettlementGuard {
     fn drop(&mut self) {
         {
-            let mut active = self
-                .active_scans
-                .lock()
-                .expect("active scans mutex poisoned");
+            let mut active = self.active_scans.lock().unwrap_or_else(|e| e.into_inner());
             if active
                 .get(&self.library_id)
                 .is_some_and(|entry| entry.scan_seq == self.scan_seq)
@@ -327,7 +324,7 @@ impl LibraryService {
     pub fn register_lifecycle(&self, handler: Arc<dyn MediaDomainLifecycle>) {
         self.lifecycles
             .write()
-            .expect("lifecycle registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(handler.media_kind(), handler);
     }
 
@@ -499,10 +496,7 @@ impl LibraryService {
         let cancelled_by_delete = Arc::new(AtomicBool::new(false));
         let done = Arc::new(tokio::sync::Notify::new());
         {
-            let mut active = self
-                .active_scans
-                .lock()
-                .expect("active scans mutex poisoned");
+            let mut active = self.active_scans.lock().unwrap_or_else(|e| e.into_inner());
             if active.contains_key(&lib.id) {
                 return Err(DomainError::Conflict(
                     "library scan is already in progress".into(),
@@ -612,10 +606,7 @@ impl LibraryService {
         });
 
         {
-            let mut active = self
-                .active_scans
-                .lock()
-                .expect("active scans mutex poisoned");
+            let mut active = self.active_scans.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(entry) = active.get_mut(&lib_id)
                 && entry.scan_seq == scan_seq
             {
@@ -643,10 +634,7 @@ impl LibraryService {
         }
 
         let removed_scan = {
-            let mut active = self
-                .active_scans
-                .lock()
-                .expect("active scans mutex poisoned");
+            let mut active = self.active_scans.lock().unwrap_or_else(|e| e.into_inner());
             active.remove(&id)
         };
         let was_scanning = lib.scan_status.is_scanning() || removed_scan.is_some();
@@ -676,10 +664,7 @@ impl LibraryService {
     }
 
     fn remove_active_scan_if_seq(&self, id: LibraryId, scan_seq: u64) {
-        let mut active = self
-            .active_scans
-            .lock()
-            .expect("active scans mutex poisoned");
+        let mut active = self.active_scans.lock().unwrap_or_else(|e| e.into_inner());
         if active
             .get(&id)
             .is_some_and(|entry| entry.scan_seq == scan_seq)
@@ -699,7 +684,7 @@ impl LibraryService {
     fn get_handler(&self, media_kind: MediaKind) -> Option<Arc<dyn MediaDomainLifecycle>> {
         self.lifecycles
             .read()
-            .expect("lifecycle registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&media_kind)
             .cloned()
     }

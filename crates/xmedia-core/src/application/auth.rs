@@ -213,18 +213,17 @@ impl AuthService {
             return;
         }
         let now = jsonwebtoken::get_current_timestamp();
-        if let Ok(mut guard) = self.revoked_jtis.write() {
-            guard.retain(|_, exp| *exp > now);
-            if guard.len() >= MAX_REVOKED_JTIS
-                && let Some(oldest_key) = guard
-                    .iter()
-                    .min_by_key(|(_, exp)| **exp)
-                    .map(|(k, _)| k.clone())
-            {
-                guard.remove(&oldest_key);
-            }
-            guard.insert(claims.jti, claims.exp);
+        let mut guard = self.revoked_jtis.write().unwrap_or_else(|e| e.into_inner());
+        guard.retain(|_, exp| *exp > now);
+        if guard.len() >= MAX_REVOKED_JTIS
+            && let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, exp)| **exp)
+                .map(|(k, _)| k.clone())
+        {
+            guard.remove(&oldest_key);
         }
+        guard.insert(claims.jti, claims.exp);
     }
 
     fn is_jti_revoked(&self, jti: &str) -> bool {
@@ -232,11 +231,8 @@ impl AuthService {
             return false;
         }
         let now = jsonwebtoken::get_current_timestamp();
-        if let Ok(guard) = self.revoked_jtis.read() {
-            guard.get(jti).is_some_and(|exp| *exp > now)
-        } else {
-            false
-        }
+        let guard = self.revoked_jtis.read().unwrap_or_else(|e| e.into_inner());
+        guard.get(jti).is_some_and(|exp| *exp > now)
     }
 
     pub fn token_ttl_seconds(&self) -> u64 {
@@ -639,7 +635,7 @@ impl AuthService {
         let handlers: Vec<Arc<dyn MediaDomainLifecycle>> = self
             .lifecycles
             .read()
-            .expect("lifecycle registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .cloned()
             .collect();
