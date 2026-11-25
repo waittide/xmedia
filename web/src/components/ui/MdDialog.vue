@@ -98,10 +98,10 @@ const resolvedWidthClass = computed(() => {
                   ]
             "
           >
-            <!-- MD3 Full-Screen Dialog Top App Bar -->
+            <!-- MD3 Full-Screen Dialog Top App Bar (tonal surface container without decorative border) -->
             <div
               v-if="fullscreen && !hideHeader"
-              class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-outline-variant bg-surface-container px-4 py-2"
+              class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 bg-surface-container px-4 py-2"
             >
               <div class="flex min-w-0 items-center gap-2">
                 <MdIconButton
@@ -219,7 +219,7 @@ const resolvedWidthClass = computed(() => {
               class="flex flex-wrap items-center gap-2 px-6"
               :class="[
                 fullscreen
-                  ? 'safe-px safe-pb border-t border-outline-variant bg-surface-container py-4'
+                  ? 'safe-px safe-pb bg-surface-container py-4'
                   : 'pt-3 pb-5',
                 footerAlign === 'end' ? 'justify-end' : 'justify-between',
               ]"

@@ -144,10 +144,8 @@ defineExpose({
                   <slot name="results" />
                 </div>
 
-                <div
-                  v-if="hasNonEmptyQuery && $slots['online-actions']"
-                  class="mt-3 border-t border-outline-variant pt-3"
-                >
+                <div v-if="hasNonEmptyQuery && $slots['online-actions']" class="mt-3">
+                  <hr class="mb-3 border-outline-variant" />
                   <slot name="online-actions" />
                 </div>
               </slot>
@@ -155,7 +153,7 @@ defineExpose({
 
             <div
               v-if="$slots.footer"
-              class="flex shrink-0 items-center justify-between gap-2 border-t border-outline-variant bg-surface-container px-4 py-2.5"
+              class="flex shrink-0 items-center justify-between gap-2 bg-surface-container px-4 py-2.5"
             >
               <slot name="footer" />
             </div>

@@ -270,7 +270,7 @@ onBeforeUnmount(unbindGlobalListeners)
     @click="toggleOpen"
   >
     <span
-      class="h-full w-full rounded-[3px] border border-outline-variant/40"
+      class="h-full w-full rounded-[3px] ring-1 ring-inset ring-on-surface/12"
       :style="{ backgroundColor: modelValue }"
     />
   </button>

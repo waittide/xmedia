@@ -575,7 +575,7 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
 
     <!-- Footer: Peak Day Highlight + MD3 5-Level Intensity Legend -->
     <div
-      class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-outline-variant/45 pt-3.5"
+      class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-corner-md bg-surface-container px-3.5 py-2.5"
     >
       <div class="flex items-center gap-2 text-body-small text-on-surface-variant">
         <template v-if="effectivePeakDay">

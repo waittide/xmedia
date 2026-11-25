@@ -58,7 +58,6 @@ const resolvedRetryLabel = computed(() => props.retryLabel || t('remote.retryBtn
       <MdButton
         v-if="showRetry"
         variant="tonal"
-        size="sm"
         :icon="LuRefreshCw"
         :loading="retrying"
         @click="emit('retry')"

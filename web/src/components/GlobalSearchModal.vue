@@ -178,7 +178,7 @@ function applyRecentTerm(term: string): void {
               <LuClock class="h-3.5 w-3.5" aria-hidden="true" />
               <span>{{ t('globalSearch.recentSearches') }}</span>
             </span>
-            <MdButton variant="text" size="sm" @click="clearRecent">
+            <MdButton variant="text" @click="clearRecent">
               {{ t('common.clear') }}
             </MdButton>
           </div>
@@ -253,7 +253,7 @@ function applyRecentTerm(term: string): void {
                 <component :is="DOMAIN_ICONS[group.domain]" class="h-3.5 w-3.5" aria-hidden="true" />
                 <span>{{ group.title }}</span>
               </span>
-              <MdButton variant="text" size="sm" @click="onSelectSeeAll(group)">
+              <MdButton variant="text" @click="onSelectSeeAll(group)">
                 {{ t('common.viewAll') }}
               </MdButton>
             </div>

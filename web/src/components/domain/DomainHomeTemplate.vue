@@ -308,7 +308,7 @@ function itemKey(item: MediaItemVM, idx: number): string {
           <h2 class="text-title-large text-on-surface">
             {{ resolvedContinueTitle }}
           </h2>
-          <MdButton variant="text" size="sm" :to="resolvedContinueSeeAll">
+          <MdButton variant="text" :to="resolvedContinueSeeAll">
             <span>{{ t('common.viewAll') }}</span>
             <template #trailing>
               <LuChevronRight class="h-4 w-4" aria-hidden="true" />
@@ -341,7 +341,7 @@ function itemKey(item: MediaItemVM, idx: number): string {
           <h2 class="text-title-large text-on-surface">
             {{ resolvedRecentTitle }}
           </h2>
-          <MdButton variant="text" size="sm" :to="resolvedRecentSeeAll">
+          <MdButton variant="text" :to="resolvedRecentSeeAll">
             <span>{{ t('common.viewAll') }}</span>
             <template #trailing>
               <LuChevronRight class="h-4 w-4" aria-hidden="true" />

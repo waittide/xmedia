@@ -280,8 +280,8 @@ function switchToAdvanced(): void {
       </div>
 
       <div class="flex items-center gap-2">
-        <RefreshButton size="sm" :action="() => emit('refresh')" />
-        <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
+        <RefreshButton :action="() => emit('refresh')" />
+        <MdButton variant="filled" :icon="LuPlus" @click="openAddDialog">
           {{ t('settings.addSourceBtn') }}
         </MdButton>
       </div>
@@ -296,7 +296,7 @@ function switchToAdvanced(): void {
       :description="t('settings.onlineSourcesEmptyBasic')"
     >
       <template #action>
-        <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
+        <MdButton variant="filled" :icon="LuPlus" @click="openAddDialog">
           {{ t('settings.addSourceBtn') }}
         </MdButton>
       </template>
@@ -387,10 +387,10 @@ function switchToAdvanced(): void {
           <span class="break-words">{{ dialogError }}</span>
         </div>
         <div v-if="urlFetchBlocked" class="flex flex-wrap items-center gap-2 pl-6">
-          <MdButton variant="tonal" size="sm" :disabled="isAddBusy" @click="triggerFilePicker">
+          <MdButton variant="tonal" :disabled="isAddBusy" @click="triggerFilePicker">
             {{ t('onlineSources.toolbar.uploadFileBtn') }}
           </MdButton>
-          <MdButton variant="text" size="sm" :disabled="isAddBusy" @click="switchToAdvanced">
+          <MdButton variant="text" :disabled="isAddBusy" @click="switchToAdvanced">
             {{ t('settings.openAdvancedLink') }}
           </MdButton>
         </div>
@@ -409,7 +409,6 @@ function switchToAdvanced(): void {
         </div>
         <MdButton
           variant="outlined"
-          size="sm"
           :loading="fileImporting"
           :disabled="isAddBusy"
           @click="triggerFilePicker"
@@ -446,10 +445,8 @@ function switchToAdvanced(): void {
           <MdButton
             type="submit"
             variant="filled"
-            size="sm"
             :loading="urlImporting"
             :disabled="isAddBusy || !subscriptionUrl.trim()"
-            class="mt-0.5"
           >
             {{ t('settings.fetchAndAddBtn') }}
           </MdButton>
@@ -464,7 +461,7 @@ function switchToAdvanced(): void {
             {{ t('settings.needAdvancedHint') }}
           </span>
         </span>
-        <MdButton variant="text" size="sm" @click="switchToAdvanced">
+        <MdButton variant="text" @click="switchToAdvanced">
           {{ t('settings.openAdvancedLink') }}
         </MdButton>
       </div>

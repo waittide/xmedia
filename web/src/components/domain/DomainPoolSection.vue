@@ -2,23 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import {
-  LuDatabase,
-  LuFilm,
-  LuFolderPlus,
-  LuLibrary,
-  LuTv,
-  LuUserCheck,
-} from 'vue-icons-plus/lu'
+import { LuFilm, LuTv } from 'vue-icons-plus/lu'
 import { api as coreApi } from '@/api/client'
-import {
-  MdButton,
-  MdChip,
-  MdEmptyState,
-  MdSelect,
-  MdSkeleton,
-  type SelectOption,
-} from '@/components/ui'
+import { MdEmptyState, MdSkeleton, type SelectOption } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import {
   getDomainPlugin,
@@ -32,6 +18,7 @@ import { useSnackbarStore } from '@/stores/snackbar'
 import type { BindMediaItemsResultDto, CoreLibraryDto, MediaKind, UserDto } from '@/types/api'
 import MediaErrorState from './MediaErrorState.vue'
 import PaginationBar from './PaginationBar.vue'
+import PoolControlsBar from './PoolControlsBar.vue'
 import PoolMusicTrackList from './PoolMusicTrackList.vue'
 import PoolPosterGrid from './PoolPosterGrid.vue'
 import { mediaGridClassFor, resolveDomainIcon } from './mediaLayout'
@@ -365,68 +352,19 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="space-y-4">
-    <!-- Controls Strip: Library filter chips + Admin target user + Batch claim -->
-    <div class="flex flex-wrap items-center justify-between gap-2.5">
-      <div
-        role="group"
-        :aria-label="t('pool.allLibraries')"
-        class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5"
-      >
-        <MdChip
-          variant="filter"
-          :icon="LuDatabase"
-          :label="t('pool.allLibraries')"
-          :selected="selectedLibraryId === null"
-          hide-check
-          @click="selectLibrary(null)"
-        />
-        <MdChip
-          v-for="lib in libraries"
-          :key="lib.id"
-          variant="filter"
-          :icon="LuLibrary"
-          :label="`${lib.name} (${lib.item_count})`"
-          :selected="selectedLibraryId === lib.id"
-          hide-check
-          @click="selectLibrary(lib.id)"
-        />
-      </div>
-
-      <div class="flex shrink-0 flex-wrap items-center gap-2">
-        <div
-          v-if="authStore.isAdmin && userSelectOptions.length > 1"
-          class="flex items-center gap-1.5"
-        >
-          <LuUserCheck class="h-4 w-4 text-on-surface-variant" aria-hidden="true" />
-          <MdSelect
-            v-model="targetUserId"
-            :options="userSelectOptions"
-            variant="compact"
-            :placeholder="t('pool.assignTargetLabel')"
-            :aria-label="t('pool.assignTargetLabel')"
-          />
-        </div>
-
-        <MdButton
-          v-if="selectedLibraryId"
-          variant="tonal"
-          :icon="LuFolderPlus"
-          :loading="batchBusy"
-          @click="handleBindWholeLibrary"
-        >
-          {{ t('pool.bindLibraryBtn') }}
-        </MdButton>
-        <MdButton
-          v-else-if="visibleUnboundIds.length > 0"
-          variant="tonal"
-          :icon="LuFolderPlus"
-          :loading="batchBusy"
-          @click="handleBindAllVisible"
-        >
-          {{ t('pool.bindAllVisibleBtn') }}
-        </MdButton>
-      </div>
-    </div>
+    <PoolControlsBar
+      :libraries="libraries"
+      :selected-library-id="selectedLibraryId"
+      :is-admin="authStore.isAdmin"
+      :user-select-options="userSelectOptions"
+      :target-user-id="targetUserId"
+      :visible-unbound-count="visibleUnboundIds.length"
+      :batch-busy="batchBusy"
+      @select-library="selectLibrary"
+      @update:target-user-id="targetUserId = $event"
+      @bind-library="handleBindWholeLibrary"
+      @bind-visible="handleBindAllVisible"
+    />
 
     <!-- Error / Skeleton / Empty -->
     <MediaErrorState v-if="error" :message="error" :retrying="loading" @retry="fetchPool" />

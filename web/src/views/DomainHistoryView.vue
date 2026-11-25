@@ -605,7 +605,6 @@ watch(activityFlushRevision, () => {
 
               <MdButton
                 variant="text"
-                size="sm"
                 :to="{ path: `/${domain}/library`, query: { tab: 'continue' } }"
               >
                 <span>{{ t('history.viewAllRecent') }}</span>
@@ -698,12 +697,11 @@ watch(activityFlushRevision, () => {
               class="my-auto py-8"
             >
               <template #action>
-                <MdButton variant="tonal" size="sm" :icon="LuLibrary" :to="`/${domain}/library`">
+                <MdButton variant="tonal" :icon="LuLibrary" :to="`/${domain}/library`">
                   {{ t('nav.library') }}
                 </MdButton>
                 <MdButton
                   variant="text"
-                  size="sm"
                   :icon="LuCompass"
                   :to="libraryRoute(domain, { scope: 'online' })"
                 >

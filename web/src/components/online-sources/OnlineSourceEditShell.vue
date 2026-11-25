@@ -126,7 +126,6 @@ function handleJsonInput(val: string): void {
             <div class="flex items-center gap-2">
               <MdButton
                 variant="tonal"
-                size="sm"
                 :icon="LuCode2"
                 @click="emit('format-json')"
               >
@@ -134,7 +133,6 @@ function handleJsonInput(val: string): void {
               </MdButton>
               <MdButton
                 variant="outlined"
-                size="sm"
                 :icon="LuCopy"
                 @click="emit('copy-json')"
               >

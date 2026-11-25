@@ -112,7 +112,6 @@ const resultMdTabs = computed<MdTabItem<Tab>[]>(() =>
     <template v-if="report" #headerActions>
       <MdButton
         variant="tonal"
-        size="sm"
         :icon="LuCopy"
         @click="emit('copy-report')"
       >
@@ -121,8 +120,8 @@ const resultMdTabs = computed<MdTabItem<Tab>[]>(() =>
     </template>
 
     <div class="mx-auto flex w-full max-w-5xl flex-col gap-4">
-      <!-- Mode Tabs (replaces over-limit 6-segment MdSegmentedButton) + Input Controls -->
-      <div class="flex flex-col gap-3 border-b border-outline-variant pb-4">
+      <!-- Mode Tabs + Input Controls -->
+      <div class="flex flex-col gap-3 rounded-corner-lg bg-surface-container-low p-4">
         <MdTabs
           :model-value="mode"
           :tabs="modeTabs"
@@ -148,7 +147,6 @@ const resultMdTabs = computed<MdTabItem<Tab>[]>(() =>
             type="button"
             variant="outlined"
             tone="error"
-            size="sm"
             :icon="LuSquare"
             class="shrink-0"
             @click="emit('stop')"
@@ -159,7 +157,6 @@ const resultMdTabs = computed<MdTabItem<Tab>[]>(() =>
             v-else
             type="submit"
             variant="filled"
-            size="sm"
             :icon="LuPlay"
             class="shrink-0"
           >
@@ -316,7 +313,7 @@ const resultMdTabs = computed<MdTabItem<Tab>[]>(() =>
         <MdTabs
           :model-value="activeTab"
           :tabs="resultMdTabs"
-          variant="primary"
+          variant="secondary"
           @update:model-value="emit('update:activeTab', $event)"
         />
 
@@ -349,7 +346,6 @@ const resultMdTabs = computed<MdTabItem<Tab>[]>(() =>
                 </span>
                 <MdButton
                   variant="text"
-                  size="sm"
                   @click="emit('update:activeTab', stageToTab(step.stage))"
                 >
                   <span>{{ t('onlineSources.debug.inspectStepBtn') }}</span>

@@ -298,7 +298,7 @@ defineExpose({
       </p>
       <button
         type="button"
-        class="md-btn md-btn-sm md-btn-filled md-state mt-5"
+        class="md-btn md-btn-filled md-state mt-5"
         @click="emit('add-source')"
       >
         <LuPlus class="h-4 w-4" />
@@ -401,7 +401,7 @@ defineExpose({
         </div>
         <button
           type="button"
-          class="md-btn md-btn-sm md-btn-text shrink-0 !text-[var(--md-sys-color-on-error-container)]"
+          class="md-btn md-btn-text md-state shrink-0 text-on-error-container"
           @click="fetchOpdsFeed({ url: opdsCurrentUrl, q: opdsActiveQuery || undefined })"
         >
           {{ t('remote.retryBtn') }}
@@ -510,7 +510,7 @@ defineExpose({
                   <button
                     v-if="card.entry.downloads.length > 1"
                     type="button"
-                    class="md-state md-touch-target h-9 shrink-0 cursor-pointer rounded-corner-full border border-outline-variant bg-surface-container-low px-2.5 font-mono text-label-small uppercase text-on-surface-variant hover:border-primary hover:text-on-surface"
+                    class="md-state md-touch-target h-10 shrink-0 cursor-pointer rounded-corner-full bg-surface-container-high px-3 font-mono text-label-small uppercase text-on-surface-variant hover:bg-secondary-container hover:text-on-secondary-container"
                     :title="t('remote.opdsFormats')"
                     @click="
                       opdsSelectedFormatIdx = {
@@ -532,7 +532,7 @@ defineExpose({
 
                   <button
                     type="button"
-                    class="md-btn md-btn-sm md-state h-9 flex-1 px-3 text-label-medium"
+                    class="md-btn md-state flex-1 px-4"
                     :class="card.imported ? 'md-btn-outlined' : 'md-btn-tonal'"
                     :disabled="card.importing"
                     @click="handleImportOpds(card.entry, card.selectedDownload)"
@@ -575,7 +575,7 @@ defineExpose({
           <button
             type="button"
             :disabled="opdsLoading"
-            class="md-btn md-btn-tonal md-btn-sm"
+            class="md-btn md-btn-tonal md-state"
             @click="handleOpdsNextPage"
           >
             <LuLoader2 v-if="opdsLoading" class="h-3.5 w-3.5 animate-spin" />
@@ -665,7 +665,7 @@ defineExpose({
 
                 <button
                   type="button"
-                  class="md-btn md-btn-sm md-btn-filled shrink-0"
+                  class="md-btn md-btn-filled md-state shrink-0"
                   :disabled="Boolean(opdsImportingKeys[opdsImportKey(selectedSourceId, dl.href)])"
                   @click="handleImportOpds(opdsDetailEntry, dl)"
                 >

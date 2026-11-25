@@ -101,7 +101,7 @@ function onHexInputChange(raw: string): void {
       <button
         v-if="themeStore.seedColor !== null"
         type="button"
-        class="md-btn md-btn-sm md-btn-text"
+        class="md-btn md-btn-text md-state"
         @click="themeStore.resetSeedColor()"
       >
         <LuRotateCw class="h-3.5 w-3.5" />
@@ -167,7 +167,7 @@ function onHexInputChange(raw: string): void {
       <button
         v-if="themeStore.appIcon !== null"
         type="button"
-        class="md-btn md-btn-sm md-btn-text"
+        class="md-btn md-btn-text md-state"
         @click="themeStore.resetAppIcon()"
       >
         <LuRotateCw class="h-3.5 w-3.5" />

@@ -268,6 +268,27 @@ export interface PlannedMediaBatch {
   totalBytes: number
 }
 
+export function formatUnsupportedUploadMessage(names: string[]): string {
+  if (names.length === 1) {
+    return i18n.global.t('uploads.unsupportedSingle', { name: names[0] })
+  }
+  const preview = names.slice(0, 2).join(', ') + (names.length > 2 ? '…' : '')
+  return i18n.global.t('uploads.unsupportedMultiple', { count: names.length, preview })
+}
+
+export function formatDirectorySkippedUploadMessage(
+  acceptedCount: number,
+  skippedCount: number,
+): string {
+  return i18n.global.t('uploads.dirSkipped', { accepted: acceptedCount, skipped: skippedCount })
+}
+
+export function formatNoSupportedDirectoryUploadMessage(skippedCount: number): string {
+  return skippedCount > 0
+    ? i18n.global.t('uploads.dirNoSupportedWithSkipped', { skipped: skippedCount })
+    : i18n.global.t('uploads.dirNoSupported')
+}
+
 export function planDomainMediaBatches(
   files: File[],
   options: {

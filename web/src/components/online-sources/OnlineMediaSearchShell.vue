@@ -356,7 +356,6 @@ function handleKeywordClear(): void {
       <MdButton
         type="submit"
         variant="filled"
-        size="sm"
         :icon="LuSearch"
         :loading="searching"
         :disabled="!keyword.trim() || enabledSources.length === 0"
@@ -399,7 +398,6 @@ function handleKeywordClear(): void {
       <MdButton
         v-if="canCollapseSources"
         variant="text"
-        size="sm"
         :icon="sourcesExpanded ? LuChevronUp : LuChevronDown"
         @click="sourcesExpanded = !sourcesExpanded"
       >
@@ -434,7 +432,6 @@ function handleKeywordClear(): void {
       <MdButton
         v-if="canCollapseCategories"
         variant="text"
-        size="sm"
         :icon="categoriesExpanded ? LuChevronUp : LuChevronDown"
         @click="categoriesExpanded = !categoriesExpanded"
       >
@@ -467,7 +464,6 @@ function handleKeywordClear(): void {
         <MdButton
           v-if="hasFatalSearchError"
           variant="tonal"
-          size="sm"
           :icon="LuRefreshCw"
           @click="emit('retry-search')"
         >

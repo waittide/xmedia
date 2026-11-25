@@ -348,7 +348,6 @@ defineExpose({
       class="safe-pt safe-px fixed top-0 right-0 left-0 z-[var(--z-base-overlay)] transition-[opacity,transform] duration-200 ease-standard"
       :class="[
         hudBarClass,
-        darkScheme ? 'border-b border-white/10' : 'border-b border-outline-variant/60',
         isHudVisible
           ? 'translate-y-0 opacity-100'
           : 'pointer-events-none -translate-y-2 opacity-0',
@@ -362,7 +361,6 @@ defineExpose({
           <MdButton
             v-if="showBack"
             variant="text"
-            size="sm"
             :icon="LuArrowLeft"
             :aria-label="resolvedBackLabel"
             class="shrink-0"
@@ -403,7 +401,6 @@ defineExpose({
       class="safe-pb safe-px fixed right-0 bottom-0 left-0 z-[var(--z-base-overlay)] transition-[opacity,transform] duration-200 ease-standard"
       :class="[
         hudBarClass,
-        darkScheme ? 'border-t border-white/10' : 'border-t border-outline-variant/60',
         isHudVisible
           ? 'translate-y-0 opacity-100'
           : 'pointer-events-none translate-y-2 opacity-0',

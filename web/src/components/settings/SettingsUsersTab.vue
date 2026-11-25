@@ -214,7 +214,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
           {{ users.length }}
         </span>
       </div>
-      <RefreshButton size="sm" :action="loadUsers" />
+      <RefreshButton :action="loadUsers" />
     </div>
 
     <ul class="divide-y divide-on-surface/6">
@@ -269,7 +269,6 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
             <MdButton
               type="submit"
               variant="outlined"
-              size="sm"
               :disabled="(resetPwdMap[u.id]?.length ?? 0) < 6"
             >
               {{ t('admin.resetPasswordBtn') }}

@@ -86,7 +86,7 @@ function triggerFileImport(): void {
           type="text"
           :placeholder="t('onlineSources.toolbar.searchPlaceholder', { domain: domainLabel })"
           :aria-label="t('onlineSources.toolbar.searchPlaceholder', { domain: domainLabel })"
-          class="sm:text-body-small h-9 w-full rounded-corner-full bg-surface-container-high pr-9 pl-9 text-base text-on-surface placeholder:text-on-surface-variant caret-primary outline-none transition-shadow duration-150 ease-standard focus:ring-2 focus:ring-primary"
+          class="sm:text-body-small h-10 w-full rounded-corner-full bg-surface-container-high pr-9 pl-9 text-base text-on-surface placeholder:text-on-surface-variant caret-primary outline-none transition-shadow duration-150 ease-standard focus:ring-2 focus:ring-primary"
           @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
         />
         <button
@@ -104,21 +104,21 @@ function triggerFileImport(): void {
         <button
           v-if="totalCount > 0 && !selectionMode"
           type="button"
-          class="md-icon-btn md-icon-btn-sm md-state"
+          class="md-icon-btn md-state"
           :title="t('onlineSources.toolbar.multiSelect')"
           :aria-label="t('onlineSources.toolbar.multiSelect')"
           @click="emit('toggle-selection-mode')"
         >
-          <LuListChecks class="h-4 w-4" />
+          <LuListChecks class="h-[18px] w-[18px]" />
         </button>
 
         <button
           v-else-if="totalCount > 0"
           type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
+          class="md-btn md-btn-tonal md-state"
           @click="emit('toggle-selection-mode')"
         >
-          <LuListChecks class="h-3.5 w-3.5" />
+          <LuListChecks class="h-4 w-4" />
           <span>{{ t('onlineSources.toolbar.exitMultiSelect') }}</span>
         </button>
 
@@ -143,14 +143,14 @@ function triggerFileImport(): void {
             <button
               type="button"
               v-bind="triggerAttrs"
-              class="md-btn md-btn-sm md-btn-filled md-state"
+              class="md-btn md-btn-filled md-state"
               :title="t('onlineSources.toolbar.importJsonTitle', { domain: domainLabel })"
               @click="toggle"
             >
-              <LuPlus class="h-3.5 w-3.5" />
+              <LuPlus class="h-4 w-4" />
               <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
               <LuChevronDown
-                class="h-3.5 w-3.5 transition-transform duration-150 ease-standard"
+                class="h-4 w-4 transition-transform duration-150 ease-standard"
                 :class="open ? 'rotate-180' : ''"
                 aria-hidden="true"
               />
@@ -257,7 +257,7 @@ function triggerFileImport(): void {
         </span>
         <button
           type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-on-secondary-container"
+          class="md-btn md-btn-text md-state px-3 text-on-secondary-container"
           @click="emit('toggle-select-all')"
         >
           {{
@@ -268,7 +268,7 @@ function triggerFileImport(): void {
         </button>
         <button
           type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-on-secondary-container"
+          class="md-btn md-btn-text md-state px-3 text-on-secondary-container"
           @click="emit('invert-select')"
         >
           {{ t('onlineSources.toolbar.invertSelect') }}
@@ -279,51 +279,51 @@ function triggerFileImport(): void {
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
+          class="md-btn md-state bg-surface-container-lowest px-4 text-on-surface disabled:opacity-45"
           @click="emit('batch-enable', true)"
         >
-          <LuCheckCircle2 class="h-3.5 w-3.5 text-success" />
+          <LuCheckCircle2 class="h-4 w-4 text-success" />
           <span>{{ t('onlineSources.toolbar.enableBtn') }}</span>
         </button>
 
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
+          class="md-btn md-state bg-surface-container-lowest px-4 text-on-surface disabled:opacity-45"
           @click="emit('batch-enable', false)"
         >
-          <LuBan class="h-3.5 w-3.5 text-on-surface-variant" />
+          <LuBan class="h-4 w-4 text-on-surface-variant" />
           <span>{{ t('onlineSources.toolbar.disableBtn') }}</span>
         </button>
 
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
+          class="md-btn md-state bg-surface-container-lowest px-4 text-on-surface disabled:opacity-45"
           @click="emit('batch-set-group')"
         >
-          <LuFolder class="h-3.5 w-3.5 text-primary" />
+          <LuFolder class="h-4 w-4 text-primary" />
           <span>{{ t('onlineSources.toolbar.groupBtn') }}</span>
         </button>
 
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
+          class="md-btn md-state bg-surface-container-lowest px-4 text-on-surface disabled:opacity-45"
           @click="emit('batch-export')"
         >
-          <LuDownload class="h-3.5 w-3.5" />
+          <LuDownload class="h-4 w-4" />
           <span>{{ t('onlineSources.toolbar.exportBtn') }}</span>
         </button>
 
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-error-container text-on-error-container disabled:opacity-45"
+          class="md-btn md-state bg-error-container px-4 text-on-error-container disabled:opacity-45"
           @click="emit('batch-delete')"
         >
-          <LuLoader2 v-if="batchBusy" class="h-3.5 w-3.5 animate-spin" />
-          <LuTrash2 v-else class="h-3.5 w-3.5" />
+          <LuLoader2 v-if="batchBusy" class="h-4 w-4 animate-spin" />
+          <LuTrash2 v-else class="h-4 w-4" />
           <span>{{ t('onlineSources.toolbar.deleteBtn') }}</span>
         </button>
       </div>
@@ -353,17 +353,17 @@ function triggerFileImport(): void {
       <div class="flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
-          class="md-btn md-btn-sm md-btn-text md-state"
+          class="md-btn md-btn-text md-state"
           @click="triggerFileImport"
         >
-          <LuUpload class="h-3.5 w-3.5" />
+          <LuUpload class="h-4 w-4" />
           <span>{{ t('onlineSources.toolbar.uploadFileBtn') }}</span>
         </button>
 
         <div class="flex items-center gap-2">
           <button
             type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
+            class="md-btn md-btn-text md-state"
             @click="emit('update:showImportBox', false)"
           >
             {{ t('common.cancel') }}
@@ -371,9 +371,9 @@ function triggerFileImport(): void {
           <button
             type="submit"
             :disabled="!importJsonText.trim() || importing"
-            class="md-btn md-btn-sm md-btn-filled md-state"
+            class="md-btn md-btn-filled md-state"
           >
-            <LuLoader2 v-if="importing" class="h-3.5 w-3.5 animate-spin" />
+            <LuLoader2 v-if="importing" class="h-4 w-4 animate-spin" />
             <span>
               {{
                 importing

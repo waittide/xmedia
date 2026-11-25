@@ -340,13 +340,13 @@ async function saveRawVariable(): Promise<void> {
             v-else-if="item.type === 'button'"
             type="button"
             :disabled="runningActionKey !== null"
-            class="md-btn md-btn-sm md-btn-tonal md-state w-full justify-center"
+            class="md-btn md-btn-tonal md-state w-full justify-center"
             :class="buttonSpanClass(item)"
             @click="triggerAction(item, idx)"
           >
             <LuLoader2
               v-if="runningActionKey === actionKeyFor(item, idx)"
-              class="h-3.5 w-3.5 animate-spin"
+              class="h-4 w-4 animate-spin"
             />
             <span class="truncate">{{ item.name }}</span>
           </button>
@@ -357,12 +357,12 @@ async function saveRawVariable(): Promise<void> {
           <button
             type="button"
             :disabled="runningActionKey !== null"
-            class="md-btn md-btn-sm md-btn-filled md-state w-full justify-center"
+            class="md-btn md-btn-filled md-state w-full justify-center"
             @click="triggerFallbackLogin"
           >
             <LuLoader2
               v-if="runningActionKey === '__default_login__'"
-              class="h-3.5 w-3.5 animate-spin"
+              class="h-4 w-4 animate-spin"
             />
             <span>
               {{
@@ -384,12 +384,12 @@ async function saveRawVariable(): Promise<void> {
           v-if="showFallbackLoginSubmit"
           type="button"
           :disabled="runningActionKey !== null"
-          class="md-btn md-btn-sm md-btn-filled md-state mt-3"
+          class="md-btn md-btn-filled md-state mt-3"
           @click="triggerFallbackLogin"
         >
           <LuLoader2
             v-if="runningActionKey === '__default_login__'"
-            class="h-3.5 w-3.5 animate-spin"
+            class="h-4 w-4 animate-spin"
           />
           <span>
             {{
@@ -402,7 +402,7 @@ async function saveRawVariable(): Promise<void> {
       </div>
 
       <!-- Advanced Raw Source Variable Editor -->
-      <div class="border-t border-outline-variant/40 pt-3">
+      <div class="rounded-corner-md bg-surface-container p-3">
         <button
           type="button"
           class="text-label-small cursor-pointer text-primary hover:underline"
@@ -449,7 +449,7 @@ async function saveRawVariable(): Promise<void> {
             <button
               type="button"
               :disabled="savingVar || loadingVar || !varLoaded || Boolean(varLoadError)"
-              class="md-btn md-btn-sm md-btn-filled md-state"
+              class="md-btn md-btn-filled md-state"
               @click="saveRawVariable"
             >
               {{
@@ -467,7 +467,7 @@ async function saveRawVariable(): Promise<void> {
       <div class="flex w-full items-center justify-end gap-2">
         <button
           type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
+          class="md-btn md-btn-tonal md-state"
           @click="emit('close')"
         >
           {{ t('onlineSources.login.doneBtn') }}

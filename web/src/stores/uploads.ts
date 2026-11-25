@@ -2,7 +2,6 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { notifyUnauthorized } from '@/api/client'
 import { invalidateHomeCache } from '@/config/homeCache'
-import { i18n } from '@/i18n'
 import {
   getDomainPlugin,
   listDomainPlugins,
@@ -13,6 +12,9 @@ import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
+  formatDirectorySkippedUploadMessage,
+  formatNoSupportedDirectoryUploadMessage,
+  formatUnsupportedUploadMessage,
   generateUploadTaskId,
   getParentDirectory,
   planDomainMediaBatches,
@@ -82,24 +84,6 @@ export function getAcceptedUploadExtensions(enabledModules: readonly MediaKind[]
     }
   }
   return exts.join(',')
-}
-
-function formatUnsupportedMessage(names: string[]): string {
-  if (names.length === 1) {
-    return i18n.global.t('uploads.unsupportedSingle', { name: names[0] })
-  }
-  const preview = names.slice(0, 2).join(', ') + (names.length > 2 ? '…' : '')
-  return i18n.global.t('uploads.unsupportedMultiple', { count: names.length, preview })
-}
-
-function formatDirectorySkippedMessage(acceptedCount: number, skippedCount: number): string {
-  return i18n.global.t('uploads.dirSkipped', { accepted: acceptedCount, skipped: skippedCount })
-}
-
-function formatNoSupportedDirectoryFilesMessage(skippedCount: number): string {
-  return skippedCount > 0
-    ? i18n.global.t('uploads.dirNoSupportedWithSkipped', { skipped: skippedCount })
-    : i18n.global.t('uploads.dirNoSupported')
 }
 
 export const useUploadStore = defineStore('uploads', () => {
@@ -286,7 +270,7 @@ export const useUploadStore = defineStore('uploads', () => {
     if (rawFiles.length === 0) {
       if (options?.fromDirectory) {
         snackbarStore.show({
-          message: formatNoSupportedDirectoryFilesMessage(0),
+          message: formatNoSupportedDirectoryUploadMessage(0),
           tone: 'error',
         })
       }
@@ -339,18 +323,18 @@ export const useUploadStore = defineStore('uploads', () => {
     if (isFromDirectory) {
       if (acceptedCount === 0) {
         snackbarStore.show({
-          message: formatNoSupportedDirectoryFilesMessage(unsupportedNames.length),
+          message: formatNoSupportedDirectoryUploadMessage(unsupportedNames.length),
           tone: 'error',
         })
       } else if (unsupportedNames.length > 0) {
         snackbarStore.show({
-          message: formatDirectorySkippedMessage(acceptedCount, unsupportedNames.length),
+          message: formatDirectorySkippedUploadMessage(acceptedCount, unsupportedNames.length),
           tone: 'default',
         })
       }
     } else if (unsupportedNames.length > 0) {
       snackbarStore.show({
-        message: formatUnsupportedMessage(unsupportedNames),
+        message: formatUnsupportedUploadMessage(unsupportedNames),
         tone: 'error',
       })
     }

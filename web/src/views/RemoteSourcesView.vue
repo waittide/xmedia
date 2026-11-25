@@ -234,7 +234,6 @@ onMounted(async () => {
 
       <MdButton
         variant="tonal"
-        size="sm"
         :icon="LuPlus"
         @click="openAddSourceDialog(embeddedProtocol ?? 'opds')"
       >
@@ -270,7 +269,6 @@ onMounted(async () => {
       <template #action>
         <MdButton
           variant="filled"
-          size="sm"
           :icon="embeddedProtocol === 'subsonic' ? LuDisc3 : LuBookOpen"
           @click="openAddSourceDialog(embeddedProtocol ?? 'opds')"
         >
@@ -362,7 +360,6 @@ onMounted(async () => {
         <div class="flex shrink-0 items-center gap-1.5">
           <MdButton
             variant="tonal"
-            size="sm"
             :icon="LuExternalLink"
             @click="openInLibrary(source)"
           >

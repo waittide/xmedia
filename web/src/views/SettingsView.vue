@@ -88,7 +88,7 @@ function handleMobileBack(): void {
     <!-- Mobile Detail Top Back Bar (<840px only) -->
     <div
       v-if="mobileShowDetail"
-      class="mb-4 flex items-center gap-2 border-b border-outline-variant/60 pb-3 md:hidden"
+      class="mb-3 flex items-center gap-2 md:hidden"
     >
       <MdIconButton
         size="sm"

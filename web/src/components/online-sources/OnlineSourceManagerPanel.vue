@@ -155,7 +155,7 @@ function closeDebugSheet(): void {
       </p>
       <button
         type="button"
-        class="md-btn md-btn-sm md-btn-text md-state mt-2"
+        class="md-btn md-btn-text md-state mt-2"
         @click="clearFilters"
       >
         {{ t('onlineSources.panel.clearFiltersBtn') }}

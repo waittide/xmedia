@@ -456,7 +456,7 @@ async function handleClearFinished(): Promise<void> {
       />
 
       <!-- Collapsible Completed / Cancelled Tasks -->
-      <section v-if="finishedTasks.length > 0" class="border-t border-outline-variant pt-3">
+      <section v-if="finishedTasks.length > 0" class="rounded-corner-lg bg-surface-container p-2">
         <button
           type="button"
           class="md-state text-label-large flex h-10 w-full cursor-pointer items-center justify-between rounded-corner-sm px-2 text-on-surface-variant hover:text-on-surface"
@@ -506,7 +506,6 @@ async function handleClearFinished(): Promise<void> {
                 <MdButton
                   v-if="item.downloadFileUrl"
                   variant="text"
-                  size="sm"
                   :href="item.downloadFileUrl"
                   :icon="LuDownload"
                   :download="item.downloadFileName"
@@ -516,7 +515,6 @@ async function handleClearFinished(): Promise<void> {
                 <MdButton
                   v-if="item.targetRoute"
                   variant="text"
-                  size="sm"
                   :icon="item.kind === 'download' ? LuBookOpen : LuArrowUpRight"
                   @click="handleNavigate(item.targetRoute)"
                 >

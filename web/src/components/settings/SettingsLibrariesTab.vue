@@ -383,18 +383,17 @@ function formatScanStatus(lib: CoreLibraryDto): string {
       </div>
 
       <div class="flex shrink-0 items-center gap-2">
-        <RefreshButton size="sm" :action="refreshAdminLibraries" />
+        <RefreshButton :action="refreshAdminLibraries" />
         <MdButton
           v-if="hasLocalMountInView"
           variant="outlined"
-          size="sm"
           :icon="LuRefreshCw"
           :loading="scanningAll"
           @click="handleScanAll"
         >
           {{ t('admin.scanAllBtn') }}
         </MdButton>
-        <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
+        <MdButton variant="filled" :icon="LuPlus" @click="openAddDialog">
           {{ t('settings.addLibraryBtn') }}
         </MdButton>
       </div>
@@ -410,7 +409,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         :description="t('admin.mountLibraryDesc')"
       >
         <template #action>
-          <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
+          <MdButton variant="filled" :icon="LuPlus" @click="openAddDialog">
             {{ t('settings.addLibraryBtn') }}
           </MdButton>
         </template>
@@ -480,7 +479,6 @@ function formatScanStatus(lib: CoreLibraryDto): string {
             <MdButton
               v-if="lib.kind.type === 'local_mount'"
               variant="tonal"
-              size="sm"
               :icon="LuRefreshCw"
               :loading="scanningId === lib.id || lib.scan_status.state === 'scanning'"
               @click="handleRescan(lib)"

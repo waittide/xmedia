@@ -208,7 +208,6 @@ const showSkeleton = useDelayedLoading(() => props.loading)
     <div v-if="showBack" class="flex items-center">
       <MdButton
         variant="text"
-        size="sm"
         :icon="LuArrowLeft"
         :to="backTo"
         @click="!backTo && emit('back')"
@@ -385,13 +384,10 @@ const showSkeleton = useDelayedLoading(() => props.loading)
                 </template>
                 <template #default="{ close }">
                   <slot name="overflow-menu" :close="close" />
-                  <div
-                    v-if="$slots['overflow-danger']"
-                    class="my-1 border-t border-outline-variant pt-1"
-                    role="separator"
-                  >
+                  <template v-if="$slots['overflow-danger']">
+                    <hr class="my-1 border-outline-variant" />
                     <slot name="overflow-danger" :close="close" />
-                  </div>
+                  </template>
                 </template>
               </MdMenu>
             </div>
@@ -408,8 +404,7 @@ const showSkeleton = useDelayedLoading(() => props.loading)
             <MdButton
               v-if="canCollapseDescription"
               variant="text"
-              size="sm"
-              class="-ml-2.5"
+              class="-ml-3"
               @click="descriptionExpanded = !descriptionExpanded"
             >
               {{ descriptionExpanded ? collapseTextLabel : expandTextLabel }}
@@ -459,7 +454,7 @@ const showSkeleton = useDelayedLoading(() => props.loading)
       </div>
 
       <!-- Collapsible Technical Specs (collapsed by default) -->
-      <section v-if="specs.length > 0" class="border-t border-outline-variant pt-4">
+      <section v-if="specs.length > 0" class="pt-2">
         <button
           type="button"
           :aria-expanded="specsExpanded"

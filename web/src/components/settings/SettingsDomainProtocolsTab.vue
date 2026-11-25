@@ -131,7 +131,6 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
 
         <MdButton
           variant="tonal"
-          size="sm"
           :icon="copiedKey === ep.key ? LuCheck : LuCopy"
           class="shrink-0 self-start sm:self-center"
           @click="copyText(ep.key, ep.url)"

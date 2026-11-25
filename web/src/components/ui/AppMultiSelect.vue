@@ -320,7 +320,7 @@ onBeforeUnmount(unbindGlobalListeners)
       <!-- Optional Header Controls Slot (e.g. Tag Match Any / Match All toggle) -->
       <div
         v-if="$slots.header"
-        class="mb-2 border-b border-outline-variant/60 px-3 pb-2"
+        class="mb-2 bg-surface-container-high px-3 py-2"
       >
         <slot name="header" />
       </div>
@@ -414,7 +414,7 @@ onBeforeUnmount(unbindGlobalListeners)
       <!-- Footer Clear Action -->
       <div
         v-if="modelValue.length > 0"
-        class="mt-1 flex items-center justify-between border-t border-outline-variant/60 px-3 pt-2"
+        class="mt-1 flex items-center justify-between bg-surface-container-high px-3 py-2"
       >
         <span class="text-label-small text-on-surface-variant">
           {{ formatSelectedCount(modelValue.length) }}

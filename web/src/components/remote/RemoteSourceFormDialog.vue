@@ -391,10 +391,10 @@ async function handleSubmit(): Promise<void> {
       <button
         type="button"
         :disabled="isBusy || !url.trim()"
-        class="md-btn md-btn-tonal md-btn-sm"
+        class="md-btn md-btn-tonal md-state"
         @click="handleTest"
       >
-        <LuLoader2 v-if="testing" class="h-3.5 w-3.5 animate-spin" />
+        <LuLoader2 v-if="testing" class="h-4 w-4 animate-spin" />
         <span>{{ testing ? t('remote.testingBtn') : t('remote.testBtn') }}</span>
       </button>
 
@@ -402,7 +402,7 @@ async function handleSubmit(): Promise<void> {
         <button
           type="button"
           :disabled="isBusy"
-          class="md-btn md-btn-text md-btn-sm"
+          class="md-btn md-btn-text md-state"
           @click="emit('close')"
         >
           {{ t('common.cancel') }}
@@ -411,9 +411,9 @@ async function handleSubmit(): Promise<void> {
           type="submit"
           form="remote-source-form"
           :disabled="isBusy || !url.trim()"
-          class="md-btn md-btn-filled md-btn-sm"
+          class="md-btn md-btn-filled md-state"
         >
-          <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
+          <LuLoader2 v-if="saving" class="h-4 w-4 animate-spin" />
           <span>{{ saving ? t('remote.savingBtn') : t('remote.saveBtn') }}</span>
         </button>
       </div>

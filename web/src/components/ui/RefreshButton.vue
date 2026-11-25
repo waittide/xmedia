@@ -15,7 +15,7 @@ const props = withDefaults(
   }>(),
   {
     busy: false,
-    size: 'sm',
+    size: 'md',
     variant: 'bordered',
     title: '',
     minSpinMs: 420,
@@ -34,28 +34,22 @@ const effectiveTitle = computed(() => {
   return props.title || t('common.refresh')
 })
 
-const sizeClasses = computed(() => (props.size === 'md' ? 'h-10 w-10' : 'h-8 w-8'))
-const iconClasses = computed(() => (props.size === 'md' ? 'h-4 w-4' : 'h-3.5 w-3.5'))
+const sizeClasses = computed(() => (props.size === 'sm' ? 'h-8 w-8' : 'h-10 w-10'))
+const iconClasses = computed(() => (props.size === 'sm' ? 'h-3.5 w-3.5' : 'h-[18px] w-[18px]'))
 
 const stateClasses = computed(() => {
   if (feedback.done.value) {
-    return props.variant === 'ghost'
-      ? 'bg-success-container text-on-success-container'
-      : 'border border-success/45 bg-success-container text-on-success-container'
+    return 'bg-success-container text-on-success-container'
   }
   if (feedback.errored.value) {
-    return props.variant === 'ghost'
-      ? 'bg-error-container text-on-error-container'
-      : 'border border-error/45 bg-error-container text-on-error-container'
+    return 'bg-error-container text-on-error-container'
   }
   if (isSpinning.value) {
-    return props.variant === 'ghost'
-      ? 'bg-primary-container text-on-primary-container'
-      : 'border border-primary/60 bg-surface text-primary'
+    return 'bg-primary-container text-on-primary-container'
   }
   return props.variant === 'ghost'
     ? 'text-on-surface-variant hover:text-on-surface'
-    : 'border border-outline-variant bg-surface text-on-surface-variant hover:border-outline hover:text-on-surface'
+    : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface'
 })
 
 function handleClick(): void {
