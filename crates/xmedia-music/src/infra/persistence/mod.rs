@@ -4,7 +4,7 @@ pub mod repositories;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::persistence::push_model_set;
 
 use models::{
@@ -12,6 +12,19 @@ use models::{
     MusicPlaylistModel, MusicRatingModel, MusicScrobbleModel, MusicSourceRecordModel,
     MusicStarredModel, MusicTrackModel, MusicTrackTagModel,
 };
+
+async fn ensure_music_indexes(db: &mut Db) -> DomainResult<()> {
+    for ddl in [
+        "CREATE INDEX IF NOT EXISTS idx_music_tracks_cover_key ON music_tracks (cover_key)",
+        "CREATE INDEX IF NOT EXISTS idx_music_albums_cover_key ON music_albums (cover_key)",
+    ] {
+        toasty::sql::statement(ddl)
+            .exec(db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("failed to ensure music index: {e}")))?;
+    }
+    Ok(())
+}
 
 pub fn register_music_models(set: &mut ModelSet) {
     <MusicArtistModel as Model>::register(set);
@@ -33,7 +46,11 @@ pub async fn ensure_music_schema(db: &mut Db, database_url: &str) -> DomainResul
         info!("initializing music database schema via toasty");
         let mut set = ModelSet::new();
         register_music_models(&mut set);
-        return push_model_set(database_url, "music database", set).await;
+        push_model_set(database_url, "music database", set).await?;
+        if MusicTrackModel::all().limit(1).exec(db).await.is_ok() {
+            ensure_music_indexes(db).await?;
+        }
+        return Ok(());
     }
 
     let mut missing = ModelSet::new();
@@ -92,5 +109,48 @@ pub async fn ensure_music_schema(db: &mut Db, database_url: &str) -> DomainResul
         info!("migrating music tables ({joined}) via toasty");
         push_model_set(database_url, &joined, missing).await?;
     }
+    ensure_music_indexes(db).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::domain::repository::MusicCatalogRepository;
+    use crate::infra::persistence::repositories::ToastyMusicCatalogRepository;
+
+    #[tokio::test]
+    async fn ensure_music_schema_creates_cover_indexes_and_lookup_queries_work() {
+        let tmp = TempDir::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp.path().join("music_idx.db").display());
+        let mut set = ModelSet::new();
+        register_music_models(&mut set);
+        let mut db = Db::builder().models(set).connect(&db_url).await.unwrap();
+        ensure_music_schema(&mut db, &db_url).await.unwrap();
+        ensure_music_schema(&mut db, &db_url).await.unwrap();
+
+        let rows = toasty::sql::query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_music_tracks_cover_key', 'idx_music_albums_cover_key')",
+        )
+        .exec(&mut db)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+
+        let repo = ToastyMusicCatalogRepository::new(db);
+        assert!(
+            repo.find_tracks_by_cover_key("missing.jpg")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            repo.find_albums_by_cover_key("missing.jpg")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

@@ -115,6 +115,23 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(rows.into_iter().map(Self::item_to_domain).collect())
     }
 
+    async fn find_videos_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoItem>> {
+        let clean = poster_key.trim();
+        if clean.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let rows = VideoItemModel::filter_by_poster_key(clean.to_string())
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| !r.is_missing)
+            .map(Self::item_to_domain)
+            .collect())
+    }
+
     async fn list_videos(&self, filter: &VideoQueryFilter) -> DomainResult<Vec<VideoItem>> {
         let mut db = self.db.clone();
         let rows = if let Some(lib_id) = filter.library_id {
@@ -364,6 +381,19 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
             .await
             .map_err(db_err)?;
         Ok(row.map(Self::show_to_domain))
+    }
+
+    async fn find_shows_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoShow>> {
+        let clean = poster_key.trim();
+        if clean.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let rows = VideoShowModel::filter_by_poster_key(clean.to_string())
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::show_to_domain).collect())
     }
 
     async fn list_shows(&self, filter: &ShowQueryFilter) -> DomainResult<Vec<VideoShow>> {

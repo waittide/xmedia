@@ -47,7 +47,10 @@ pub(crate) struct MusicAlbumModel {
     pub track_count: i64,
     pub duration_secs: i64,
     pub is_compilation: bool,
+
+    #[index]
     pub cover_key: Option<String>,
+
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -97,6 +100,8 @@ pub(crate) struct MusicTrackModel {
     pub has_embedded_lyrics: bool,
     pub has_sidecar_lyrics: bool,
     pub is_compilation: bool,
+
+    #[index]
     pub cover_key: Option<String>,
 
     #[column(type = text)]

@@ -41,7 +41,10 @@ pub(crate) struct ComicSeriesModel {
 
     pub language: Option<String>,
     pub year: Option<i64>,
+
+    #[index]
     pub cover_path: Option<String>,
+
     pub chapter_count: i64,
 
     #[column(type = text)]
@@ -77,6 +80,8 @@ pub(crate) struct ComicChapterModel {
 
     pub file_size: i64,
     pub file_hash: String,
+
+    #[index]
     pub cover_path: Option<String>,
 
     #[column(type = text)]

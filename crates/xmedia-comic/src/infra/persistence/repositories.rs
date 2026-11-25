@@ -94,6 +94,19 @@ impl SeriesRepository for ToastySeriesRepository {
         Ok(row.map(Self::to_domain))
     }
 
+    async fn find_series_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Series>> {
+        let clean = cover_key.trim();
+        if clean.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let rows = ComicSeriesModel::filter_by_cover_path(clean.to_string())
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::to_domain).collect())
+    }
+
     async fn list_all(&self) -> DomainResult<Vec<Series>> {
         let mut db = self.db.clone();
         let rows = ComicSeriesModel::all()
@@ -256,6 +269,19 @@ impl ChapterRepository for ToastyChapterRepository {
         let mut db = self.db.clone();
         let raw_ids: Vec<Uuid> = ids.iter().map(|i| i.0).collect();
         let rows = ComicChapterModel::filter(ComicChapterModel::fields().id().in_list(raw_ids))
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::to_domain).collect())
+    }
+
+    async fn find_chapters_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Chapter>> {
+        let clean = cover_key.trim();
+        if clean.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let rows = ComicChapterModel::filter_by_cover_path(clean.to_string())
             .exec(&mut db)
             .await
             .map_err(db_err)?;

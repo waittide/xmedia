@@ -20,6 +20,7 @@ use xmedia_source::model::SourceRuntimeState;
 pub trait MusicCatalogRepository: Send + Sync {
     async fn find_track_by_id(&self, id: TrackId) -> DomainResult<Option<Track>>;
     async fn find_tracks_by_ids(&self, ids: &[TrackId]) -> DomainResult<Vec<Track>>;
+    async fn find_tracks_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Track>>;
     async fn list_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Track>>;
     async fn count_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
     async fn count_all_active_tracks(&self) -> DomainResult<u64>;
@@ -49,6 +50,7 @@ pub trait MusicCatalogRepository: Send + Sync {
     async fn find_album_by_id(&self, id: AlbumId) -> DomainResult<Option<Album>>;
     async fn find_album_by_key(&self, album_key: &str) -> DomainResult<Option<Album>>;
     async fn find_albums_by_ids(&self, ids: &[AlbumId]) -> DomainResult<Vec<Album>>;
+    async fn find_albums_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Album>>;
     async fn list_albums(
         &self,
         query: &AlbumListQuery,

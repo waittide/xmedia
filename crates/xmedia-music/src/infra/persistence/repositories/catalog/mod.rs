@@ -107,6 +107,10 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         self.find_tracks_by_ids_impl(ids).await
     }
 
+    async fn find_tracks_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Track>> {
+        self.find_tracks_by_cover_key_impl(cover_key).await
+    }
+
     async fn list_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Track>> {
         self.list_tracks_by_library_impl(library_id).await
     }
@@ -180,6 +184,10 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
 
     async fn find_albums_by_ids(&self, ids: &[AlbumId]) -> DomainResult<Vec<Album>> {
         self.find_albums_by_ids_impl(ids).await
+    }
+
+    async fn find_albums_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Album>> {
+        self.find_albums_by_cover_key_impl(cover_key).await
     }
 
     async fn list_albums(

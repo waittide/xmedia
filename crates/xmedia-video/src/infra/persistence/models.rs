@@ -28,7 +28,9 @@ pub(crate) struct VideoShowModel {
     #[column(type = text)]
     pub tags: toasty::Json<Vec<String>>,
 
+    #[index]
     pub poster_key: Option<String>,
+
     pub season_count: i64,
     pub episode_count: i64,
     pub created_at: Timestamp,
@@ -76,6 +78,7 @@ pub(crate) struct VideoItemModel {
     #[column(type = text)]
     pub subtitle_streams: toasty::Json<Vec<ProbedSubtitleStream>>,
 
+    #[index]
     pub poster_key: Option<String>,
 
     #[column(type = text)]

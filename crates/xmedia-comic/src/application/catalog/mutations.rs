@@ -426,35 +426,29 @@ impl ComicCatalogService {
     }
 
     async fn ensure_cover_accessible(&self, user: &User, cover_key: &str) -> DomainResult<()> {
-        // Resolve modern content-hashed cover keys against referencing series and chapters.
-        let all_series = self.series.list_all().await?;
-        let mut matched_pool = false;
+        // Resolve modern content-hashed cover keys via indexed series and chapter lookups.
+        let matched_series = self.series.find_series_by_cover_key(cover_key).await?;
         let mut matched_tracked_series: Vec<SeriesId> = Vec::new();
-        for s in &all_series {
-            if s.cover_path.as_deref() == Some(cover_key) {
-                if s.online_tracking().is_some() {
-                    matched_tracked_series.push(s.id);
-                } else {
-                    matched_pool = true;
-                    break;
-                }
+        for s in &matched_series {
+            if s.online_tracking().is_some() {
+                matched_tracked_series.push(s.id);
+            } else {
+                return Ok(());
             }
         }
-        if matched_pool {
-            return Ok(());
-        }
         if matched_tracked_series.is_empty() {
-            // Check chapters of tracked series (chapter thumbnails).
-            for s in &all_series {
-                if s.online_tracking().is_none() {
+            let matched_chapters = self.chapters.find_chapters_by_cover_key(cover_key).await?;
+            let mut seen_series = std::collections::HashSet::new();
+            for ch in matched_chapters {
+                if !seen_series.insert(ch.series_id) {
                     continue;
                 }
-                let chapters = self.chapters.list_by_series(s.id).await?;
-                if chapters
-                    .iter()
-                    .any(|ch| ch.cover_path.as_deref() == Some(cover_key))
-                {
-                    matched_tracked_series.push(s.id);
+                if let Some(s) = self.series.find_by_id(ch.series_id).await? {
+                    if s.online_tracking().is_some() {
+                        matched_tracked_series.push(s.id);
+                    } else {
+                        return Ok(());
+                    }
                 }
             }
         }

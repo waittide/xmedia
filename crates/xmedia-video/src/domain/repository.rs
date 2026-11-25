@@ -15,6 +15,7 @@ use crate::source::model::SourceRuntimeState;
 pub trait VideoCatalogRepository: Send + Sync {
     async fn find_video_by_id(&self, id: VideoId) -> DomainResult<Option<VideoItem>>;
     async fn find_videos_by_ids(&self, ids: &[VideoId]) -> DomainResult<Vec<VideoItem>>;
+    async fn find_videos_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoItem>>;
     async fn list_videos(&self, filter: &VideoQueryFilter) -> DomainResult<Vec<VideoItem>>;
     async fn list_videos_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<VideoItem>>;
     async fn list_episodes_by_show(&self, show_id: ShowId) -> DomainResult<Vec<VideoItem>>;
@@ -26,6 +27,7 @@ pub trait VideoCatalogRepository: Send + Sync {
 
     async fn find_show_by_id(&self, id: ShowId) -> DomainResult<Option<VideoShow>>;
     async fn find_show_by_key(&self, show_key: &str) -> DomainResult<Option<VideoShow>>;
+    async fn find_shows_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoShow>>;
     async fn list_shows(&self, filter: &ShowQueryFilter) -> DomainResult<Vec<VideoShow>>;
     async fn save_show(&self, show: &VideoShow) -> DomainResult<()>;
     async fn delete_show(&self, id: ShowId) -> DomainResult<()>;

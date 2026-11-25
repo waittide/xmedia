@@ -1666,19 +1666,23 @@ impl MusicCatalogService {
         }
 
         // Raw cover_key lookup (used by Web UI `buildCoverUrl(track.cover_key)`):
-        // enforce OnlineTracked isolation so private tracked covers are never leaked.
-        let libs = self.libraries.list_by_media(MediaKind::Music).await?;
+        // enforce OnlineTracked isolation via indexed lookups so private tracked covers never leak.
+        let matched_tracks = self.catalog.find_tracks_by_cover_key(clean).await?;
         let mut matched_pool = false;
         let mut matched_tracked_tracks: Vec<TrackId> = Vec::new();
-        let mut tracked_album_ids: HashSet<AlbumId> = HashSet::new();
-        let mut album_to_tracked_tracks: HashMap<AlbumId, Vec<TrackId>> = HashMap::new();
-        for lib in libs {
-            let tracks = self.catalog.list_tracks_by_library(lib.id).await?;
-            for tr in tracks {
-                if tr.is_missing {
-                    continue;
-                }
-                if tr.cover_key.as_deref() == Some(clean) {
+        for tr in matched_tracks {
+            if tr.source.is_online_tracked() {
+                matched_tracked_tracks.push(tr.id);
+            } else {
+                matched_pool = true;
+                break;
+            }
+        }
+        if !matched_pool {
+            let matched_albums = self.catalog.find_albums_by_cover_key(clean).await?;
+            for alb in matched_albums {
+                let alb_tracks = self.catalog.list_tracks_by_album(alb.id).await?;
+                for tr in alb_tracks {
                     if tr.source.is_online_tracked() {
                         matched_tracked_tracks.push(tr.id);
                     } else {
@@ -1686,25 +1690,8 @@ impl MusicCatalogService {
                         break;
                     }
                 }
-                if tr.source.is_online_tracked() {
-                    tracked_album_ids.insert(tr.album_id);
-                    album_to_tracked_tracks
-                        .entry(tr.album_id)
-                        .or_default()
-                        .push(tr.id);
-                }
-            }
-            if matched_pool {
-                break;
-            }
-        }
-        if !matched_pool && !tracked_album_ids.is_empty() {
-            let alb_ids: Vec<AlbumId> = tracked_album_ids.into_iter().collect();
-            for alb in self.catalog.find_albums_by_ids(&alb_ids).await? {
-                if alb.cover_key.as_deref() == Some(clean)
-                    && let Some(tids) = album_to_tracked_tracks.get(&alb.id)
-                {
-                    matched_tracked_tracks.extend(tids.iter().copied());
+                if matched_pool {
+                    break;
                 }
             }
         }

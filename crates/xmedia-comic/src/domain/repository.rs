@@ -22,6 +22,7 @@ pub trait SeriesRepository: Send + Sync {
         library_id: LibraryId,
         source_dir: &str,
     ) -> DomainResult<Option<Series>>;
+    async fn find_series_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Series>>;
     async fn list_all(&self) -> DomainResult<Vec<Series>>;
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Series>>;
     async fn count_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
@@ -33,6 +34,7 @@ pub trait SeriesRepository: Send + Sync {
 pub trait ChapterRepository: Send + Sync {
     async fn find_by_id(&self, id: ChapterId) -> DomainResult<Option<Chapter>>;
     async fn find_by_ids(&self, ids: &[ChapterId]) -> DomainResult<Vec<Chapter>>;
+    async fn find_chapters_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Chapter>>;
     async fn list_by_series(&self, series_id: SeriesId) -> DomainResult<Vec<Chapter>>;
     async fn list_by_series_ids(&self, series_ids: &[SeriesId]) -> DomainResult<Vec<Chapter>>;
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Chapter>>;

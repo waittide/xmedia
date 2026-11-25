@@ -55,6 +55,22 @@ impl ToastyMusicCatalogRepository {
         Ok(out)
     }
 
+    pub(super) async fn find_albums_by_cover_key_impl(
+        &self,
+        cover_key: &str,
+    ) -> DomainResult<Vec<Album>> {
+        let clean = cover_key.trim();
+        if clean.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let rows = MusicAlbumModel::filter_by_cover_key(clean.to_string())
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::album_to_domain).collect())
+    }
+
     pub(super) async fn list_albums_impl(
         &self,
         query: &AlbumListQuery,

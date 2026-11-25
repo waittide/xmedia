@@ -1239,33 +1239,25 @@ impl VideoCatalogService {
         max_size: Option<u32>,
     ) -> DomainResult<BinaryPayload> {
         if let Some(user) = actor {
-            let videos = self
-                .catalog
-                .list_videos(&VideoQueryFilter::default())
-                .await?;
-            let shows = self.catalog.list_shows(&ShowQueryFilter::default()).await?;
-
+            let videos = self.catalog.find_videos_by_poster_key(key).await?;
             let mut matched_pool = false;
             let mut matched_tracked_binding_ids: Vec<Uuid> = Vec::new();
             for v in &videos {
-                if v.poster_key.as_deref() == Some(key) {
-                    if v.source.is_online_tracked() {
-                        matched_tracked_binding_ids.push(video_binding_id(v));
-                    } else {
-                        matched_pool = true;
-                        break;
-                    }
+                if v.source.is_online_tracked() {
+                    matched_tracked_binding_ids.push(video_binding_id(v));
+                } else {
+                    matched_pool = true;
+                    break;
                 }
             }
             if !matched_pool {
+                let shows = self.catalog.find_shows_by_poster_key(key).await?;
                 for s in &shows {
-                    if s.poster_key.as_deref() == Some(key) {
-                        if s.online_tracked_ref().is_some() {
-                            matched_tracked_binding_ids.push(s.id.0);
-                        } else {
-                            matched_pool = true;
-                            break;
-                        }
+                    if s.online_tracked_ref().is_some() {
+                        matched_tracked_binding_ids.push(s.id.0);
+                    } else {
+                        matched_pool = true;
+                        break;
                     }
                 }
             }
