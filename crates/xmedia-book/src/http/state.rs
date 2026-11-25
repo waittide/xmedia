@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::FromRef;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
+use xmedia_core::application::online_items::OnlineLibraryService;
 
 use crate::application::BookServices;
 
@@ -17,6 +18,12 @@ pub struct BookHttpState {
 impl FromRef<BookHttpState> for Arc<AuthService> {
     fn from_ref(input: &BookHttpState) -> Self {
         input.auth.clone()
+    }
+}
+
+impl FromRef<BookHttpState> for Arc<OnlineLibraryService> {
+    fn from_ref(input: &BookHttpState) -> Self {
+        input.services.online_items.clone()
     }
 }
 

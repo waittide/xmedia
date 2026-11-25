@@ -8,8 +8,8 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::persistence::push_model_set;
 
 use models::{
-    BookBookmarkModel, BookFavoriteModel, BookModel, BookOnlineShelfModel,
-    BookReadingProgressModel, BookShelfModel, BookSourceRecordModel,
+    BookBookmarkModel, BookFavoriteModel, BookModel, BookReadingProgressModel, BookShelfModel,
+    BookSourceRecordModel,
 };
 
 pub fn register_book_models(set: &mut ModelSet) {
@@ -19,7 +19,6 @@ pub fn register_book_models(set: &mut ModelSet) {
     <BookFavoriteModel as Model>::register(set);
     <BookShelfModel as Model>::register(set);
     <BookSourceRecordModel as Model>::register(set);
-    <BookOnlineShelfModel as Model>::register(set);
 }
 
 async fn ensure_book_columns(db: &mut Db) -> DomainResult<()> {
@@ -89,10 +88,6 @@ pub async fn ensure_book_schema(db: &mut Db, database_url: &str) -> DomainResult
     {
         <BookSourceRecordModel as Model>::register(&mut missing);
         labels.push("book_sources");
-    }
-    if BookOnlineShelfModel::all().limit(1).exec(db).await.is_err() {
-        <BookOnlineShelfModel as Model>::register(&mut missing);
-        labels.push("book_online_books");
     }
     if !labels.is_empty() {
         let joined = labels.join(", ");

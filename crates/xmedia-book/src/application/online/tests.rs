@@ -22,9 +22,7 @@ use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, register_core_models};
 
 use crate::domain::book::{BookFormat, BookSource};
-use crate::infra::persistence::repositories::{
-    ToastyBookSourceRepository, ToastyOnlineShelfRepository,
-};
+use crate::infra::persistence::repositories::ToastyBookSourceRepository;
 use crate::source::BookSourceEngine;
 use crate::source::http::HttpClientConfig;
 use crate::source::model::ConcurrentRateSpec;
@@ -101,12 +99,10 @@ async fn setup_test_online_service_with_member() -> (TempDir, User, User, Arc<Bo
     ));
     let book_services =
         init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
-    let sources_repo = Arc::new(ToastyBookSourceRepository::new(db.clone()));
-    let shelves_repo = Arc::new(ToastyOnlineShelfRepository::new(db.clone()));
+    let sources_repo = Arc::new(ToastyBookSourceRepository::new(db));
     let online_svc = Arc::new(
         BookOnlineService::with_engine(
             sources_repo,
-            shelves_repo,
             tmp.path(),
             book_services.catalog.clone(),
             BookSourceEngine::new(
@@ -1190,7 +1186,7 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
             .await
             .is_err()
     );
-    // Non-admin calling fetch_book_info / fetch_toc / fetch_chapter_content / add_to_shelf / start_download on disabled source -> Forbidden
+    // Non-admin calling fetch_book_info / fetch_toc / fetch_chapter_content / track_online_book / start_download on disabled source -> Forbidden
     assert!(matches!(
         online_svc
             .fetch_book_info(&member, dis_id, &format!("http://{addr}/book/1"), None)
@@ -1223,9 +1219,9 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
     ));
     assert!(matches!(
         online_svc
-            .add_to_shelf(
+            .track_online_book(
                 &member,
-                AddOnlineShelfInput {
+                TrackOnlineBookInput {
                     source_id: dis_id,
                     name: "书一".into(),
                     author: String::new(),
@@ -1235,7 +1231,6 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
                     intro: None,
                     kind: None,
                     last_chapter: None,
-                    total_chapters: None,
                 }
             )
             .await,

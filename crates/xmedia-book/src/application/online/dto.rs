@@ -111,61 +111,6 @@ pub struct OnlineContentResponseDto {
     pub diagnostics: ExecutionDiagnostics,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OnlineShelfBookDto {
-    pub id: Uuid,
-    pub source_id: Uuid,
-    pub source_name: String,
-    pub name: String,
-    pub author: String,
-    pub book_url: String,
-    pub toc_url: String,
-    pub cover_url: Option<String>,
-    pub intro: Option<String>,
-    pub kind: Option<String>,
-    pub last_chapter: Option<String>,
-    pub total_chapters: i64,
-    pub current_chapter_index: i64,
-    pub current_chapter_title: Option<String>,
-    pub scroll_ratio: f64,
-    pub updated_at: Timestamp,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AddOnlineShelfInput {
-    pub source_id: Uuid,
-    pub name: String,
-    #[serde(default)]
-    pub author: String,
-    pub book_url: String,
-    #[serde(default)]
-    pub toc_url: String,
-    #[serde(default)]
-    pub cover_url: Option<String>,
-    #[serde(default)]
-    pub intro: Option<String>,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub last_chapter: Option<String>,
-    #[serde(default)]
-    pub total_chapters: Option<i64>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct UpdateOnlineShelfInput {
-    pub current_chapter_index: Option<i64>,
-    pub current_chapter_title: Option<String>,
-    pub scroll_ratio: Option<f64>,
-    pub total_chapters: Option<i64>,
-    pub last_chapter: Option<String>,
-    pub toc_url: Option<String>,
-    // Optional source switch
-    pub source_id: Option<Uuid>,
-    pub book_url: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OnlineDownloadFormat {

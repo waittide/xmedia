@@ -23,8 +23,8 @@ use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, register_core_models};
 
 use crate::application::online::{
-    AddOnlineShelfInput, BookOnlineService, DownloadJobStatus, OnlineDownloadFormat,
-    StartDownloadInput, TrackOnlineBookInput, UpdateBookSourceInput, UpdateOnlineShelfInput,
+    BookOnlineService, DownloadJobStatus, OnlineDownloadFormat, StartDownloadInput,
+    TrackOnlineBookInput, UpdateBookSourceInput,
 };
 use crate::domain::book::BookId;
 use crate::http::rest_router;
@@ -118,15 +118,11 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
     let book_services =
         init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
 
-    let sources_repo = Arc::new(
-        crate::infra::persistence::repositories::ToastyBookSourceRepository::new(db.clone()),
-    );
-    let shelves_repo =
-        Arc::new(crate::infra::persistence::repositories::ToastyOnlineShelfRepository::new(db));
+    let sources_repo =
+        Arc::new(crate::infra::persistence::repositories::ToastyBookSourceRepository::new(db));
     let online_svc = Arc::new(
         BookOnlineService::with_engine(
             sources_repo.clone(),
-            shelves_repo,
             tmp.path(),
             book_services.catalog.clone(),
             BookSourceEngine::new(
@@ -229,43 +225,49 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
         .unwrap();
     assert!(c1_cached.cached);
 
-    // Online shelf add + progress update
-    let shelf_item = online_svc
-        .add_to_shelf(
-            &admin,
-            AddOnlineShelfInput {
-                source_id,
-                name: detail.detail.name.clone(),
-                author: hit.book.author.clone(),
-                book_url: detail.detail.book_url.clone(),
-                toc_url: detail.detail.toc_url.clone(),
+    // Unified online_items upsert + progress update
+    let online_item = book_services
+        .online_items
+        .upsert(
+            admin.id,
+            xmedia_core::application::online_items::UpsertOnlineItemInput {
+                source_kind: xmedia_core::domain::online_item::OnlineItemSourceKind::Online,
+                source_id: source_id.to_string(),
+                item_key: detail.detail.book_url.clone(),
+                title: detail.detail.name.clone(),
+                subtitle: Some(hit.book.author.clone()),
                 cover_url: detail.detail.cover_url.clone(),
                 intro: detail.detail.intro.clone(),
                 kind: None,
-                last_chapter: Some(toc.chapters[1].title.clone()),
-                total_chapters: Some(2),
+                extra: Some(serde_json::json!({ "toc_url": detail.detail.toc_url })),
+                favorite: Some(true),
+                progress: None,
             },
         )
         .await
         .unwrap();
-    let updated_shelf = online_svc
-        .update_shelf_book(
+    let updated_item = book_services
+        .online_items
+        .update_progress(
             admin.id,
-            shelf_item.id,
-            UpdateOnlineShelfInput {
-                current_chapter_index: Some(1),
-                current_chapter_title: Some("第二章 开门".into()),
-                scroll_ratio: Some(0.5),
-                total_chapters: None,
-                last_chapter: None,
-                toc_url: None,
-                source_id: None,
-                book_url: None,
+            online_item.id,
+            xmedia_core::domain::online_item::OnlineItemProgress {
+                unit_index: Some(1),
+                unit_key: Some(toc.chapters[1].url.clone()),
+                unit_title: Some("第二章 开门".into()),
+                unit_group: None,
+                position: 0.5,
+                duration: Some(1.0),
+                total_units: Some(2),
+                completed: false,
             },
         )
         .await
         .unwrap();
-    assert_eq!(updated_shelf.current_chapter_index, 1);
+    assert_eq!(
+        updated_item.progress.as_ref().and_then(|p| p.unit_index),
+        Some(1)
+    );
 
     // Background download -> EPUB 3.0 -> auto import into local library
     let job = online_svc
@@ -323,7 +325,7 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
 }
 
 #[tokio::test]
-async fn deleting_user_cleans_up_online_shelf_entries() {
+async fn deleting_user_cleans_up_online_items_entries() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("user_cascade_test.db");
     let db_url = format!("sqlite:{}", db_path.display());
@@ -388,36 +390,38 @@ async fn deleting_user_cleans_up_online_shelf_entries() {
         .unwrap();
     let source_id = imported.sources[0].id;
 
-    let member_user =
+    let _member_user =
         xmedia_core::domain::repository::UserRepository::find_by_id(users.as_ref(), member.id)
             .await
             .unwrap()
             .unwrap();
     book_services
-        .online
-        .add_to_shelf(
-            &member_user,
-            AddOnlineShelfInput {
-                source_id,
-                name: "测试书".into(),
-                author: "作者".into(),
-                book_url: "https://example.com/b/1".into(),
-                toc_url: "https://example.com/b/1/toc".into(),
+        .online_items
+        .upsert(
+            member.id,
+            xmedia_core::application::online_items::UpsertOnlineItemInput {
+                source_kind: xmedia_core::domain::online_item::OnlineItemSourceKind::Online,
+                source_id: source_id.to_string(),
+                item_key: "https://example.com/b/1".into(),
+                title: "测试书".into(),
+                subtitle: Some("作者".into()),
                 cover_url: None,
                 intro: None,
                 kind: None,
-                last_chapter: None,
-                total_chapters: Some(10),
+                extra: None,
+                favorite: Some(true),
+                progress: None,
             },
         )
         .await
         .unwrap();
     assert_eq!(
         book_services
-            .online
-            .list_shelf(member.id)
+            .online_items
+            .list(member.id, Default::default())
             .await
             .unwrap()
+            .items
             .len(),
         1
     );
@@ -425,12 +429,13 @@ async fn deleting_user_cleans_up_online_shelf_entries() {
     auth.delete_user(&admin, member.id).await.unwrap();
     assert!(
         book_services
-            .online
-            .list_shelf(member.id)
+            .online_items
+            .list(member.id, Default::default())
             .await
             .unwrap()
+            .items
             .is_empty(),
-        "deleting a user must cascade-delete their online bookshelf entries"
+        "deleting a user must cascade-delete their online book items"
     );
 }
 
@@ -1704,9 +1709,7 @@ async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use xmedia_core::domain::error::DomainError;
 
-    use crate::infra::persistence::repositories::{
-        ToastyBookSourceRepository, ToastyOnlineShelfRepository,
-    };
+    use crate::infra::persistence::repositories::ToastyBookSourceRepository;
 
     let after_hits = Arc::new(AtomicUsize::new(0));
     let after_hits_c = after_hits.clone();
@@ -1800,8 +1803,7 @@ async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
         .await
         .unwrap();
 
-    let sources_repo = Arc::new(ToastyBookSourceRepository::new(db.clone()));
-    let shelves_repo = Arc::new(ToastyOnlineShelfRepository::new(db));
+    let sources_repo = Arc::new(ToastyBookSourceRepository::new(db));
     let engine = BookSourceEngine::new(
         HttpClientConfig {
             allow_private_ips: true,
@@ -1811,7 +1813,6 @@ async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
     );
     let svc = BookOnlineService::with_engine(
         sources_repo,
-        shelves_repo,
         tmp.path(),
         book_services.catalog.clone(),
         engine,

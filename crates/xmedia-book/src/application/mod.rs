@@ -7,6 +7,8 @@ pub mod reading;
 
 use std::sync::Arc;
 
+use xmedia_core::application::online_items::OnlineLibraryService;
+
 use catalog::BookCatalogService;
 use online::BookOnlineService;
 use reading::BookReadingService;
@@ -16,6 +18,7 @@ pub struct BookServices {
     pub catalog: Arc<BookCatalogService>,
     pub reading: Arc<BookReadingService>,
     pub online: Arc<BookOnlineService>,
+    pub online_items: Arc<OnlineLibraryService>,
 }
 
 impl BookServices {
@@ -23,11 +26,13 @@ impl BookServices {
         catalog: Arc<BookCatalogService>,
         reading: Arc<BookReadingService>,
         online: Arc<BookOnlineService>,
+        online_items: Arc<OnlineLibraryService>,
     ) -> Self {
         Self {
             catalog,
             reading,
             online,
+            online_items,
         }
     }
 }

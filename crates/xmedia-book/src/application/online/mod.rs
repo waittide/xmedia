@@ -3,7 +3,6 @@ mod downloads;
 mod dto;
 mod helpers;
 mod reader;
-mod shelf;
 mod sources;
 mod tracked;
 
@@ -15,19 +14,61 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use xmedia_core::application::online_items::{OnlineSourceDirectory, OnlineSourceInfo};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::application::catalog::BookCatalogService;
 use crate::domain::book::BookId;
-use crate::domain::repository::{BookSourceRepository, OnlineShelfRepository};
+use crate::domain::repository::BookSourceRepository;
 use crate::source::BookSourceEngine;
 use crate::source::tracked_store::TrackedBookStore;
 
 pub use dto::*;
 pub(crate) use helpers::validate_safe_cover_image;
 use helpers::{AsyncLockMap, StoredDownloadJob};
+
+pub struct BookOnlineSourceDirectory {
+    sources: Arc<dyn BookSourceRepository>,
+}
+
+impl BookOnlineSourceDirectory {
+    pub fn new(sources: Arc<dyn BookSourceRepository>) -> Self {
+        Self { sources }
+    }
+}
+
+#[async_trait]
+impl OnlineSourceDirectory for BookOnlineSourceDirectory {
+    async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
+        let rows = self.sources.list_all().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.id,
+                    OnlineSourceInfo {
+                        name: r.name,
+                        enabled: r.enabled,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    async fn find_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
+        Ok(self
+            .sources
+            .find_by_id(id)
+            .await?
+            .map(|r| OnlineSourceInfo {
+                name: r.name,
+                enabled: r.enabled,
+            }))
+    }
+}
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -43,7 +84,6 @@ const TRACKED_EPUB_IMMEDIATE_BATCH: u32 = 20;
 
 pub struct BookOnlineService {
     sources: Arc<dyn BookSourceRepository>,
-    shelves: Arc<dyn OnlineShelfRepository>,
     catalog: Arc<BookCatalogService>,
     engine: BookSourceEngine,
     cache_dir: PathBuf,
@@ -64,13 +104,11 @@ pub struct BookOnlineService {
 impl BookOnlineService {
     pub fn new(
         sources: Arc<dyn BookSourceRepository>,
-        shelves: Arc<dyn OnlineShelfRepository>,
         data_dir: &Path,
         catalog: Arc<BookCatalogService>,
     ) -> DomainResult<Self> {
         Self::with_engine(
             sources,
-            shelves,
             data_dir,
             catalog,
             BookSourceEngine::default(),
@@ -80,7 +118,6 @@ impl BookOnlineService {
 
     pub fn with_engine(
         sources: Arc<dyn BookSourceRepository>,
-        shelves: Arc<dyn OnlineShelfRepository>,
         data_dir: &Path,
         catalog: Arc<BookCatalogService>,
         engine: BookSourceEngine,
@@ -140,7 +177,6 @@ impl BookOnlineService {
 
         Ok(Self {
             sources,
-            shelves,
             catalog,
             engine,
             cache_dir,

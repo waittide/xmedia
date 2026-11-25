@@ -1,6 +1,5 @@
 use jiff::Timestamp;
 use uuid::Uuid;
-use xmedia_core::domain::user::UserId;
 
 pub use xmedia_source::model::SourceRuntimeState;
 
@@ -51,25 +50,4 @@ impl BookSourceRecord {
             "bookSourceGroup",
         )
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct OnlineShelfBook {
-    pub id: Uuid,
-    pub user_id: UserId,
-    pub source_id: Uuid,
-    pub name: String,
-    pub author: String,
-    pub book_url: String,
-    pub toc_url: String,
-    pub cover_url: Option<String>,
-    pub intro: Option<String>,
-    pub kind: Option<String>,
-    pub last_chapter: Option<String>,
-    pub total_chapters: i64,
-    pub current_chapter_index: i64,
-    pub current_chapter_title: Option<String>,
-    pub scroll_ratio: f64,
-    pub created_at: Timestamp,
-    pub updated_at: Timestamp,
 }

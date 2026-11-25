@@ -6,9 +6,7 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::book::{Book, BookId, BookQuery, FacetCount, PagedResult};
-use crate::domain::online::{
-    BookSourceMetadataUpdate, BookSourceRecord, OnlineShelfBook, SourceRuntimeState,
-};
+use crate::domain::online::{BookSourceMetadataUpdate, BookSourceRecord, SourceRuntimeState};
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
 
 #[async_trait]
@@ -118,13 +116,4 @@ pub trait BookSourceRepository: Send + Sync {
         updated_at: Timestamp,
     ) -> DomainResult<bool>;
     async fn delete(&self, id: Uuid) -> DomainResult<()>;
-}
-
-#[async_trait]
-pub trait OnlineShelfRepository: Send + Sync {
-    async fn list_by_user(&self, user_id: UserId) -> DomainResult<Vec<OnlineShelfBook>>;
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<OnlineShelfBook>>;
-    async fn save(&self, item: &OnlineShelfBook) -> DomainResult<()>;
-    async fn delete(&self, id: Uuid) -> DomainResult<()>;
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
 }

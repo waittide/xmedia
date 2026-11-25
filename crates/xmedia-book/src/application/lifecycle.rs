@@ -7,20 +7,20 @@ use xmedia_core::application::library::ScanProgressReporter;
 use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
-use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::repository::{LibraryRepository, OnlineLibraryItemRepository};
 use xmedia_core::domain::user::UserId;
 
 use crate::application::catalog::BookCatalogService;
 use crate::application::online::BookOnlineService;
 use crate::application::ports::{BookParserPort, BookScannerPort, BookStoragePort};
 use crate::domain::book::{Book, BookId, BookSource};
-use crate::domain::repository::{BookReadingRepository, BookRepository, OnlineShelfRepository};
+use crate::domain::repository::{BookReadingRepository, BookRepository};
 
 pub struct BookDomainLifecycle {
     libraries: Arc<dyn LibraryRepository>,
     books: Arc<dyn BookRepository>,
     readings: Arc<dyn BookReadingRepository>,
-    online_shelves: Arc<dyn OnlineShelfRepository>,
+    online_items: Arc<dyn OnlineLibraryItemRepository>,
     bindings: Arc<MediaBindingService>,
     catalog: Arc<BookCatalogService>,
     online: Arc<BookOnlineService>,
@@ -36,7 +36,7 @@ impl BookDomainLifecycle {
         libraries: Arc<dyn LibraryRepository>,
         books: Arc<dyn BookRepository>,
         readings: Arc<dyn BookReadingRepository>,
-        online_shelves: Arc<dyn OnlineShelfRepository>,
+        online_items: Arc<dyn OnlineLibraryItemRepository>,
         bindings: Arc<MediaBindingService>,
         catalog: Arc<BookCatalogService>,
         online: Arc<BookOnlineService>,
@@ -49,7 +49,7 @@ impl BookDomainLifecycle {
             libraries,
             books,
             readings,
-            online_shelves,
+            online_items,
             bindings,
             catalog,
             online,
@@ -363,7 +363,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {
         self.readings.delete_by_user(user_id).await?;
-        self.online_shelves.delete_by_user(user_id).await?;
+        self.online_items.delete_by_user(user_id).await?;
         let unbound_ids = self
             .bindings
             .delete_user_bindings_for_media(user_id, MediaKind::Book)

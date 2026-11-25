@@ -1,12 +1,10 @@
 mod books;
-mod online_shelf;
 mod reading;
 mod sources;
 
 use xmedia_core::domain::error::DomainError;
 
 pub use books::ToastyBookRepository;
-pub use online_shelf::ToastyOnlineShelfRepository;
 pub use reading::ToastyBookReadingRepository;
 pub use sources::ToastyBookSourceRepository;
 

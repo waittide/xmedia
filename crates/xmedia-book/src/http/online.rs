@@ -18,13 +18,12 @@ use xmedia_source::crud::{
 
 use crate::application::dto::BookSummaryDto;
 use crate::application::online::{
-    AddOnlineShelfInput, AggregatedSearchResponseDto, BatchBookSourcesInput,
-    BatchBookSourcesReportDto, BookSourceSummaryDto, ImportBookSourcesReportDto,
-    LoginActionResponseDto, OnlineBookDetailResponseDto, OnlineContentResponseDto,
-    OnlineDownloadJobDto, OnlineShelfBookDto, OnlineTocResponseDto, SourceTestInput,
-    SourceTestReportDto, StartDownloadInput, SwitchTrackedSourceInput, TrackOnlineBookInput,
-    TrackedChapterResponseDto, TrackedTocResponseDto, UpdateBookSourceInput,
-    UpdateOnlineShelfInput,
+    AggregatedSearchResponseDto, BatchBookSourcesInput, BatchBookSourcesReportDto,
+    BookSourceSummaryDto, ImportBookSourcesReportDto, LoginActionResponseDto,
+    OnlineBookDetailResponseDto, OnlineContentResponseDto, OnlineDownloadJobDto,
+    OnlineTocResponseDto, SourceTestInput, SourceTestReportDto, StartDownloadInput,
+    SwitchTrackedSourceInput, TrackOnlineBookInput, TrackedChapterResponseDto,
+    TrackedTocResponseDto, UpdateBookSourceInput,
 };
 use crate::domain::book::BookId;
 use crate::http::state::BookHttpState;
@@ -64,11 +63,10 @@ pub fn router() -> Router<BookHttpState> {
             post(switch_tracked_source),
         )
         .route("/books/{id}/online/sync-epub", post(sync_tracked_epub))
-        // Per-user online bookshelf (legacy compatibility)
-        .route("/online/shelf", get(list_shelf).post(add_to_shelf))
-        .route(
-            "/online/shelf/{id}",
-            patch(update_shelf_book).delete(remove_from_shelf),
+        // Per-user online book favorites & reading progress
+        .nest(
+            "/online/items",
+            xmedia_core::http::online_items::online_items_router(),
         )
         // Background downloads & EPUB/TXT packaging
         .route(
@@ -338,46 +336,6 @@ async fn online_cover_proxy(
         HeaderValue::from_static("private, max-age=86400"),
     );
     Ok(resp)
-}
-
-async fn list_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<Vec<OnlineShelfBookDto>>> {
-    let list = state.services.online.list_shelf(user.id).await?;
-    Ok(Json(list))
-}
-
-async fn add_to_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<AddOnlineShelfInput>,
-) -> ApiResult<Json<OnlineShelfBookDto>> {
-    let item = state.services.online.add_to_shelf(&user, req).await?;
-    Ok(Json(item))
-}
-
-async fn update_shelf_book(
-    State(state): State<BookHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<UpdateOnlineShelfInput>,
-) -> ApiResult<Json<OnlineShelfBookDto>> {
-    let item = state
-        .services
-        .online
-        .update_shelf_book(user.id, id, req)
-        .await?;
-    Ok(Json(item))
-}
-
-async fn remove_from_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<StatusCode> {
-    state.services.online.remove_from_shelf(user.id, id).await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_downloads(
