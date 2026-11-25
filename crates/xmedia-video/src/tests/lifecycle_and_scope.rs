@@ -4,7 +4,6 @@ use std::sync::{Arc, RwLock};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use bytes::Bytes;
 use tempfile::TempDir;
 use toasty::Db;
 use toasty::schema::ModelSet;
@@ -24,8 +23,8 @@ use xmedia_core::infra::persistence::repositories::{
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, register_core_models};
 
-use super::fake_mp4_bytes;
-use crate::application::dto::{SaveWatchProgressInput, UpsertVideoShelfInput, VideoUploadItem};
+use super::{fake_mp4_bytes, stage_upload_files};
+use crate::application::dto::{SaveWatchProgressInput, UpsertVideoShelfInput};
 use crate::domain::repository::VideoWatchRepository;
 use crate::domain::video::ShowMetadataPatch;
 use crate::domain::watch::VideoFavoriteKind;
@@ -88,20 +87,21 @@ async fn delete_video_emits_media_changed_and_subtitles_list_endpoint_works() {
     let state = VideoHttpState::new(auth_svc, library_svc, video_services.clone());
     let app = Router::new().nest("/api/v1/video", rest_router(state));
 
+    let dune_mp4 = fake_mp4_bytes(256);
     let uploaded = video_services
         .ingest
-        .upload_files(
+        .upload_files_from_paths(
             &admin,
-            vec![
-                VideoUploadItem {
-                    filename: "Dune (2021).mp4".into(),
-                    bytes: Bytes::from(fake_mp4_bytes(256)),
-                },
-                VideoUploadItem {
-                    filename: "Dune (2021).en.srt".into(),
-                    bytes: Bytes::from_static(b"1\n00:00:01,000 --> 00:00:03,000\nArrakis.\n"),
-                },
-            ],
+            stage_upload_files(
+                tmp.path(),
+                &[
+                    ("Dune (2021).mp4", &dune_mp4),
+                    (
+                        "Dune (2021).en.srt",
+                        b"1\n00:00:01,000 --> 00:00:03,000\nArrakis.\n",
+                    ),
+                ],
+            ),
         )
         .await
         .unwrap();
@@ -209,14 +209,12 @@ async fn delete_library_cascades_progress_favorites_and_shelf_items() {
     let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
 
     // Upload a managed movie (in another library) that must survive cascade deletion
+    let arrival_mp4 = fake_mp4_bytes(256);
     let managed = video_services
         .ingest
-        .upload_files(
+        .upload_files_from_paths(
             &admin,
-            vec![VideoUploadItem {
-                filename: "Arrival (2016).mp4".into(),
-                bytes: Bytes::from(fake_mp4_bytes(256)),
-            }],
+            stage_upload_files(tmp.path(), &[("Arrival (2016).mp4", &arrival_mp4)]),
         )
         .await
         .unwrap();

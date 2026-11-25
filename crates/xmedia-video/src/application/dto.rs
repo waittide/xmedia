@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use bytes::Bytes;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,12 +10,6 @@ use xmedia_core::domain::media::ProbedAudioStream;
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
 use crate::domain::video::VideoContainer;
 use crate::domain::watch::WatchProgress;
-
-#[derive(Debug, Clone)]
-pub struct VideoUploadItem {
-    pub filename: String,
-    pub bytes: Bytes,
-}
 
 #[derive(Debug, Clone)]
 pub struct VideoUploadPathItem {

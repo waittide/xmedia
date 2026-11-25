@@ -10,10 +10,9 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{User, UserId, require_admin};
-use xmedia_core::http::TempUploadFile;
 
 use crate::application::catalog::{VideoCatalogService, video_binding_id};
-use crate::application::dto::{VideoUploadItem, VideoUploadPathItem, VideoUploadResultDto};
+use crate::application::dto::{VideoUploadPathItem, VideoUploadResultDto};
 use crate::application::ports::{
     ParsedNfoMetadata, ProbedVideoInfo, VideoMediaEnginePort, VideoScannerPort, VideoStoragePort,
 };
@@ -61,32 +60,6 @@ impl VideoDomainLifecycle {
             events,
             managed_lib_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
-    }
-
-    pub async fn upload_files(
-        &self,
-        actor: &User,
-        files: Vec<VideoUploadItem>,
-    ) -> DomainResult<VideoUploadResultDto> {
-        require_admin(actor)?;
-        if files.is_empty() {
-            return Err(DomainError::Validation("no files uploaded".into()));
-        }
-
-        let mut temp_guards = Vec::with_capacity(files.len());
-        let mut path_items = Vec::with_capacity(files.len());
-        for f in files {
-            let tmp = TempUploadFile::from_bytes(&f.bytes).await?;
-            path_items.push(VideoUploadPathItem {
-                filename: f.filename,
-                temp_path: tmp.path().to_path_buf(),
-            });
-            temp_guards.push(tmp);
-        }
-
-        let result = self.upload_files_from_paths(actor, path_items).await;
-        drop(temp_guards);
-        result
     }
 
     pub async fn upload_files_from_paths(

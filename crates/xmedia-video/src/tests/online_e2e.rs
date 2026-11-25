@@ -4417,8 +4417,6 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
 
 #[tokio::test]
 async fn jellyfin_api_local_and_online_tracked_video_e2e() {
-    use bytes::Bytes;
-
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("xmedia_video_jellyfin.db");
     let db_url = format!("sqlite:{}", db_path.display());
@@ -4476,12 +4474,9 @@ async fn jellyfin_api_local_and_online_tracked_video_e2e() {
     let local_mp4 = fake_mp4_payload();
     let uploaded = video_services
         .ingest
-        .upload_files(
+        .upload_files_from_paths(
             &admin,
-            vec![crate::application::dto::VideoUploadItem {
-                filename: "Local Classic (2020).mp4".into(),
-                bytes: Bytes::from(local_mp4.clone()),
-            }],
+            super::stage_upload_files(tmp.path(), &[("Local Classic (2020).mp4", &local_mp4)]),
         )
         .await
         .unwrap();

@@ -7,7 +7,6 @@ use std::sync::{Arc, RwLock};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use bytes::Bytes;
 use tempfile::TempDir;
 use toasty::Db;
 use toasty::schema::ModelSet;
@@ -25,7 +24,7 @@ use xmedia_core::infra::persistence::repositories::{
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, register_core_models};
 
-use crate::application::dto::{SaveWatchProgressInput, UpsertVideoShelfInput, VideoUploadItem};
+use crate::application::dto::{SaveWatchProgressInput, UpsertVideoShelfInput, VideoUploadPathItem};
 use crate::domain::video::{ShowMetadataPatch, ShowQueryFilter};
 use crate::domain::watch::VideoFavoriteKind;
 use crate::http::rest_router;
@@ -36,6 +35,26 @@ pub(super) fn fake_mp4_bytes(size: usize) -> Vec<u8> {
     let mut buf = vec![0u8; size.max(64)];
     buf[0..12].copy_from_slice(b"\x00\x00\x00\x18ftypmp42");
     buf
+}
+
+pub(super) fn stage_upload_files(
+    base_dir: &std::path::Path,
+    files: &[(&str, &[u8])],
+) -> Vec<VideoUploadPathItem> {
+    let stage_dir = base_dir.join(format!("upload_stage_{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&stage_dir).unwrap();
+    files
+        .iter()
+        .enumerate()
+        .map(|(idx, (filename, bytes))| {
+            let temp_path = stage_dir.join(format!("{idx}_{filename}"));
+            std::fs::write(&temp_path, bytes).unwrap();
+            VideoUploadPathItem {
+                filename: (*filename).to_string(),
+                temp_path,
+            }
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -93,22 +112,21 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     let app = Router::new().nest("/api/v1/video", rest_router(state));
 
     // 1. Upload standalone movie + sidecar SRT subtitle
+    let mp4_512 = fake_mp4_bytes(512);
     let uploaded = video_services
         .ingest
-        .upload_files(
+        .upload_files_from_paths(
             &admin,
-            vec![
-                VideoUploadItem {
-                    filename: "Interstellar (2014).mp4".into(),
-                    bytes: Bytes::from(fake_mp4_bytes(512)),
-                },
-                VideoUploadItem {
-                    filename: "Interstellar (2014).zh.srt".into(),
-                    bytes: Bytes::from_static(
+            stage_upload_files(
+                tmp.path(),
+                &[
+                    ("Interstellar (2014).mp4", &mp4_512),
+                    (
+                        "Interstellar (2014).zh.srt",
                         b"1\r\n00:00:01,250 --> 00:00:04,000\r\nDo not go gentle into that good night.\r\n",
                     ),
-                },
-            ],
+                ],
+            ),
         )
         .await
         .unwrap();
