@@ -22,6 +22,11 @@ import {
   type SegmentedOption,
 } from '@/components/ui'
 import { useComicI18n } from '@/domains/comic/i18n'
+import SourceDebugFieldsCard from '@/domains/shared/source-debug/SourceDebugFieldsCard.vue'
+import {
+  copySourceDebugReport,
+  type SourceDebugFieldRow,
+} from '@/domains/shared/source-debug/useSourceDebugHelpers'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
   buildOnlineComicImageUrl,
@@ -272,7 +277,7 @@ const filteredChapters = computed(() => {
   )
 })
 
-const detailFields = computed(() => {
+const detailFields = computed<SourceDebugFieldRow[]>(() => {
   const d = report.value?.comic_detail
   if (!d) return []
   return [
@@ -339,22 +344,13 @@ function pagePreviewSrc(proxyUrl: string, rawUrl: string): string {
 }
 
 async function copyDebugReport(): Promise<void> {
-  if (!report.value || !props.source) return
-  const r = report.value
-  const lines = [
-    `=== ${props.source.name} (${r.mode}) ===`,
-    `URL: ${props.source.source_url}`,
-    `Result: ${r.ok ? 'OK' : 'FAIL'} | Elapsed: ${r.total_elapsed_ms} ms`,
-    ...r.steps.map(
-      (s, i) => `${i + 1}. [${s.ok ? 'OK' : 'FAIL'}] ${s.label} (${s.elapsed_ms}ms) - ${s.summary}`,
-    ),
-  ]
-  try {
-    await navigator.clipboard.writeText(lines.join('\n'))
-    snackbar.show({ message: t('onlineSources.debug.reportCopied') })
-  } catch {
-    snackbar.show({ message: t('onlineSources.debug.copyFailed'), tone: 'error' })
-  }
+  await copySourceDebugReport({
+    source: props.source,
+    report: report.value,
+    snackbar,
+    copiedMessage: t('onlineSources.debug.reportCopied'),
+    failedMessage: t('onlineSources.debug.copyFailed'),
+  })
 }
 </script>
 
@@ -518,28 +514,10 @@ async function copyDebugReport(): Promise<void> {
             </MdButton>
           </div>
 
-          <MdCard variant="filled" padding="none" class="overflow-hidden">
-            <div
-              v-for="(field, fIdx) in detailFields"
-              :key="field.label"
-              class="grid grid-cols-1 gap-1 px-4 py-3 sm:grid-cols-[11rem_1fr] sm:gap-3"
-              :class="fIdx > 0 ? 'border-t border-outline-variant/50' : ''"
-            >
-              <div class="text-label-medium text-on-surface-variant">
-                {{ field.label }}
-              </div>
-              <div
-                class="text-body-small min-w-0"
-                :class="[
-                  field.value ? 'text-on-surface' : 'italic text-on-surface-variant/60',
-                  field.mono ? 'break-all font-mono' : '',
-                  field.multiline ? 'leading-relaxed whitespace-pre-wrap' : 'break-words',
-                ]"
-              >
-                {{ field.value || t('onlineSources.debug.emptyValue') }}
-              </div>
-            </div>
-          </MdCard>
+          <SourceDebugFieldsCard
+            :fields="detailFields"
+            :empty-label="t('onlineSources.debug.emptyValue')"
+          />
         </template>
       </div>
 

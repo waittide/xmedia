@@ -14,8 +14,14 @@ import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
 import { useOnlineSourceDebug } from '@/components/online-sources/useOnlineSourceDebug'
-import { MdButton, MdTextField, type SegmentedOption } from '@/components/ui'
+import { MdButton, MdChip, MdTextField, type SegmentedOption } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
+import SourceDebugFieldsCard from '@/domains/shared/source-debug/SourceDebugFieldsCard.vue'
+import {
+  copyDebugTextToClipboard,
+  copySourceDebugReport,
+  type SourceDebugFieldRow,
+} from '@/domains/shared/source-debug/useSourceDebugHelpers'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { ensureBookLocale, useBookI18n } from '../i18n'
 import {
@@ -279,7 +285,7 @@ const contentParagraphs = computed(() => {
     .filter((line) => line.length > 0)
 })
 
-const detailFields = computed(() => {
+const detailFields = computed<SourceDebugFieldRow[]>(() => {
   const d = report.value?.book_detail
   if (!d) return []
   return [
@@ -343,19 +349,9 @@ async function handleDebugChapter(ch: OnlineChapterItem): Promise<void> {
 async function copyDebugReport(): Promise<void> {
   if (!report.value || !props.source) return
   const r = report.value
-  const lines: string[] = [
-    `=== ${props.source.name} ===`,
-    `URL: ${props.source.source_url}`,
-    `mode: ${r.mode} | input: ${r.keyword} | ok: ${r.ok} | elapsed: ${r.total_elapsed_ms}ms`,
-    '',
-    '--- Steps ---',
-    ...r.steps.map(
-      (s, i) =>
-        `${i + 1}. [${s.ok ? 'OK' : 'FAIL'}] ${s.label} (${s.elapsed_ms}ms) — ${s.summary}${s.error ? `\n   error: ${s.error}` : ''}`,
-    ),
-  ]
+  const extraLines: string[] = []
   if (r.book_detail) {
-    lines.push(
+    extraLines.push(
       '',
       '--- Detail ---',
       `name: ${r.book_detail.name}`,
@@ -365,37 +361,36 @@ async function copyDebugReport(): Promise<void> {
     )
   }
   if (r.toc_total_count > 0) {
-    lines.push('', `--- TOC (${r.toc_total_count}) ---`)
+    extraLines.push('', `--- TOC (${r.toc_total_count}) ---`)
     for (const ch of r.toc_chapters.slice(0, 20)) {
-      lines.push(`[${ch.index + 1}] ${ch.title} -> ${ch.url}`)
+      extraLines.push(`[${ch.index + 1}] ${ch.title} -> ${ch.url}`)
     }
   }
   if (r.content_text) {
-    lines.push(
+    extraLines.push(
       '',
       `--- Content: ${r.content_chapter_title ?? ''} (${r.content_char_count}) ---`,
       r.content_text,
     )
   }
-  if (r.diagnostics.logs.length > 0) {
-    lines.push('', '--- Diagnostics ---', ...r.diagnostics.logs)
-  }
-  try {
-    await navigator.clipboard.writeText(lines.join('\n'))
-    snackbar.show({ message: t('onlineSources.debug.reportCopied') })
-  } catch {
-    snackbar.show({ message: t('onlineSources.debug.copyFailed'), tone: 'error' })
-  }
+  await copySourceDebugReport({
+    source: props.source,
+    report: r,
+    snackbar,
+    copiedMessage: t('onlineSources.debug.reportCopied'),
+    failedMessage: t('onlineSources.debug.copyFailed'),
+    extraLines,
+  })
 }
 
 async function copyContentText(): Promise<void> {
   if (!report.value?.content_text) return
-  try {
-    await navigator.clipboard.writeText(report.value.content_text)
-    snackbar.show({ message: bt('sourceEditor.debugContentCopied') })
-  } catch {
-    snackbar.show({ message: t('onlineSources.debug.copyFailed'), tone: 'error' })
-  }
+  await copyDebugTextToClipboard(
+    report.value.content_text,
+    snackbar,
+    bt('sourceEditor.debugContentCopied'),
+    t('onlineSources.debug.copyFailed'),
+  )
 }
 </script>
 
@@ -426,38 +421,30 @@ async function copyContentText(): Promise<void> {
     @copy-report="copyDebugReport"
   >
     <template #quick-hints>
-      <button
+      <MdChip
         v-if="source?.check_keyword && (mode === 'full' || mode === 'search')"
-        type="button"
-        class="md-state cursor-pointer rounded-corner-full bg-surface-container-high px-2.5 py-1 text-label-small text-on-surface"
+        variant="suggestion"
+        :label="t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword })"
         @click="queryInput = source.check_keyword!"
-      >
-        {{ t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword }) }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastBookUrl && mode === 'book_info'"
-        type="button"
-        class="md-state max-w-xs cursor-pointer truncate rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-label-small text-on-surface"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastDetailHint')"
         @click="queryInput = lastBookUrl"
-      >
-        {{ t('onlineSources.debug.lastDetailHint') }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastTocUrl && mode === 'toc'"
-        type="button"
-        class="md-state max-w-xs cursor-pointer truncate rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-label-small text-on-surface"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastTocHint')"
         @click="queryInput = lastTocUrl"
-      >
-        {{ t('onlineSources.debug.lastTocHint') }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastChapterUrl && mode === 'content'"
-        type="button"
-        class="md-state max-w-xs cursor-pointer truncate rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-label-small text-on-surface"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastChapterHint')"
         @click="queryInput = lastChapterUrl"
-      >
-        {{ t('onlineSources.debug.lastChapterHint') }}
-      </button>
+      />
     </template>
 
     <template #tab-content>
@@ -588,28 +575,10 @@ async function copyContentText(): Promise<void> {
             </MdButton>
           </div>
 
-          <div class="overflow-hidden rounded-corner-lg bg-surface-container">
-            <div
-              v-for="(field, fIdx) in detailFields"
-              :key="field.label"
-              class="grid grid-cols-1 gap-1 px-4 py-3 sm:grid-cols-[11rem_1fr] sm:gap-3"
-              :class="fIdx > 0 ? 'border-t border-outline-variant/50' : ''"
-            >
-              <div class="font-mono text-label-medium text-on-surface-variant">
-                {{ field.label }}
-              </div>
-              <div
-                class="min-w-0 text-body-small"
-                :class="[
-                  field.value ? 'text-on-surface' : 'italic text-on-surface-variant/65',
-                  field.mono ? 'break-all font-mono' : '',
-                  field.multiline ? 'leading-relaxed whitespace-pre-wrap' : 'break-words',
-                ]"
-              >
-                {{ field.value || bt('sourceEditor.debugEmptyValue') }}
-              </div>
-            </div>
-          </div>
+          <SourceDebugFieldsCard
+            :fields="detailFields"
+            :empty-label="bt('sourceEditor.debugEmptyValue')"
+          />
         </template>
       </div>
 

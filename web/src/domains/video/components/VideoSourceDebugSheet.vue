@@ -21,6 +21,7 @@ import {
   MediaCoverImage,
   type SegmentedOption,
 } from '@/components/ui'
+import { copySourceDebugReport } from '@/domains/shared/source-debug/useSourceDebugHelpers'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useVideoI18n } from '../i18n'
 import {
@@ -281,22 +282,13 @@ function visibleGroupEpisodes(groupName: string, episodes: OnlineVideoEpisode[])
 }
 
 async function copyDebugReport(): Promise<void> {
-  if (!report.value || !props.source) return
-  const r = report.value
-  const lines = [
-    `=== ${props.source.name} (${r.mode}) ===`,
-    `URL: ${props.source.source_url}`,
-    `Result: ${r.ok ? 'OK' : 'FAIL'} | Elapsed: ${r.total_elapsed_ms} ms`,
-    ...r.steps.map(
-      (s, i) => `${i + 1}. [${s.ok ? 'OK' : 'FAIL'}] ${s.label} (${s.elapsed_ms}ms) - ${s.summary}`,
-    ),
-  ]
-  try {
-    await navigator.clipboard.writeText(lines.join('\n'))
-    snackbar.show({ message: t('onlineSources.debug.reportCopied') })
-  } catch {
-    snackbar.show({ message: t('onlineSources.debug.copyFailed'), tone: 'error' })
-  }
+  await copySourceDebugReport({
+    source: props.source,
+    report: report.value,
+    snackbar,
+    copiedMessage: t('onlineSources.debug.reportCopied'),
+    failedMessage: t('onlineSources.debug.copyFailed'),
+  })
 }
 </script>
 

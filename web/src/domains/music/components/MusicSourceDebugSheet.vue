@@ -15,8 +15,16 @@ import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
 import { useOnlineSourceDebug } from '@/components/online-sources/useOnlineSourceDebug'
-import { AppSlider, MdButton, MdIconButton, type SegmentedOption } from '@/components/ui'
+import {
+  AppSlider,
+  MdButton,
+  MdChip,
+  MdIconButton,
+  MdTextField,
+  type SegmentedOption,
+} from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
+import { copySourceDebugReport } from '@/domains/shared/source-debug/useSourceDebugHelpers'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime } from '@/utils/format'
 import { ensureMusicLocale, useMusicI18n } from '../i18n'
@@ -362,22 +370,13 @@ async function handleDebugTrack(track: OnlineMusicTrackDto): Promise<void> {
 }
 
 async function copyDebugReport(): Promise<void> {
-  if (!report.value || !props.source) return
-  const r = report.value
-  const lines = [
-    `=== ${props.source.name} (${r.mode}) ===`,
-    `URL: ${props.source.source_url}`,
-    `Result: ${r.ok ? 'OK' : 'FAIL'} | Elapsed: ${r.total_elapsed_ms} ms`,
-    ...r.steps.map(
-      (s, i) => `${i + 1}. [${s.ok ? 'OK' : 'FAIL'}] ${s.label} (${s.elapsed_ms}ms) - ${s.summary}`,
-    ),
-  ]
-  try {
-    await navigator.clipboard.writeText(lines.join('\n'))
-    snackbar.show({ message: t('onlineSources.debug.reportCopied') })
-  } catch {
-    snackbar.show({ message: t('onlineSources.debug.copyFailed'), tone: 'error' })
-  }
+  await copySourceDebugReport({
+    source: props.source,
+    report: report.value,
+    snackbar,
+    copiedMessage: t('onlineSources.debug.reportCopied'),
+    failedMessage: t('onlineSources.debug.copyFailed'),
+  })
 }
 
 onBeforeUnmount(() => {
@@ -412,36 +411,29 @@ onBeforeUnmount(() => {
     @copy-report="copyDebugReport"
   >
     <template v-if="showQualityControl" #extra-controls>
-      <div class="text-body-small flex items-center gap-2">
-        <span class="text-on-surface-variant">
-          {{ t('onlineSources.debug.qualityLabel') }}
-        </span>
-        <input
+      <div class="w-full sm:w-64">
+        <MdTextField
           v-model="qualityInput"
-          type="text"
+          size="sm"
+          :label="t('onlineSources.debug.qualityLabel')"
           placeholder="320 / 999 / flac"
-          class="md-input text-body-small w-40 py-1 font-mono"
         />
       </div>
     </template>
 
     <template #quick-hints>
-      <button
+      <MdChip
         v-if="source?.check_keyword && (mode === 'full' || mode === 'search')"
-        type="button"
-        class="md-state text-label-small cursor-pointer rounded-corner-full bg-surface-container-high px-2.5 py-1 text-on-surface"
+        variant="suggestion"
+        :label="t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword })"
         @click="queryInput = source.check_keyword!"
-      >
-        {{ t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword }) }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastExploreUrl && mode === 'explore'"
-        type="button"
-        class="md-state text-label-small max-w-xs cursor-pointer truncate rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-on-surface"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastExploreHint')"
         @click="queryInput = lastExploreUrl"
-      >
-        {{ t('onlineSources.debug.lastExploreHint') }}
-      </button>
+      />
     </template>
 
     <template #tab-content>
