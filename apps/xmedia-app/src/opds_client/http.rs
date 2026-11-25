@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
@@ -12,8 +11,6 @@ use axum::response::Response;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
-use uuid::Uuid;
 
 use super::helpers::{
     append_query_param, expand_search_template, resolve_import_filename_and_format,
@@ -24,6 +21,7 @@ use super::{
     MAX_IMAGE_BYTES, MAX_IMPORT_BYTES, MAX_METADATA_BYTES, MAX_REDIRECTS, OpdsClient, OpdsError,
     OpdsFeedDto, OpdsTestResult, REQUEST_TIMEOUT, RemoteImportResultDto, TEST_TIMEOUT,
 };
+use crate::remote_common::{stream_response_to_temp_file, upload_temp_file_to_local};
 use crate::remote_sources::{RemoteSource, is_same_origin, normalize_remote_url};
 
 pub(crate) fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
@@ -571,77 +569,24 @@ impl OpdsClient {
             }
         };
 
-        let temp_guard =
-            stream_response_to_temp_file(resp, MAX_IMPORT_BYTES, &self.temp_dir).await?;
-        if temp_guard.size == 0 {
-            return Err(OpdsError::Upstream(
-                "Remote OPDS download returned an empty file".into(),
-            ));
-        }
-
-        let file = tokio::fs::File::open(&temp_guard.path).await.map_err(|e| {
-            OpdsError::Internal(format!("Failed to open downloaded temp file: {e}"))
-        })?;
-        let file_len = temp_guard.size;
-        let stream = tokio_util_file_stream(file);
-        let part = reqwest::multipart::Part::stream_with_length(
-            reqwest::Body::wrap_stream(stream),
-            file_len,
+        let temp_guard = stream_response_to_temp_file(
+            resp,
+            MAX_IMPORT_BYTES,
+            &self.temp_dir,
+            "xmedia-opds-import",
+            "OPDS download",
         )
-        .file_name(filename.clone());
-        let form = reqwest::multipart::Form::new().part("file", part);
+        .await?;
 
-        let upload_resp = self
-            .local_upload
-            .post(&upload_endpoint)
-            .bearer_auth(local_token)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| {
-                OpdsError::Internal(format!(
-                    "Failed to upload into local library: {}",
-                    e.without_url()
-                ))
-            })?;
-
-        let status = upload_resp.status();
-        let body_bytes = upload_resp.bytes().await.map_err(|e| {
-            OpdsError::Internal(format!(
-                "Failed to read local upload response: {}",
-                e.without_url()
-            ))
-        })?;
-        let parsed_json: Option<Value> = serde_json::from_slice(&body_bytes).ok();
-
-        if !status.is_success() {
-            let msg = parsed_json
-                .as_ref()
-                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str))
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    let snippet = String::from_utf8_lossy(&body_bytes);
-                    let trimmed = snippet.trim();
-                    if trimmed.is_empty() {
-                        "Local library rejected uploaded file".to_string()
-                    } else {
-                        trimmed.chars().take(200).collect()
-                    }
-                });
-            if status == StatusCode::PAYLOAD_TOO_LARGE {
-                return Err(OpdsError::TooLarge(format!(
-                    "Local import rejected (HTTP 413): {msg}"
-                )));
-            }
-            return Err(OpdsError::Upstream(format!(
-                "Local import failed (HTTP {}): {msg}",
-                status.as_u16()
-            )));
-        }
-
-        let resp_json = parsed_json.ok_or_else(|| {
-            OpdsError::Internal("Local upload succeeded but returned invalid JSON".into())
-        })?;
+        let resp_json = upload_temp_file_to_local(
+            &self.local_upload,
+            &temp_guard,
+            &filename,
+            &upload_endpoint,
+            local_token,
+            "OPDS",
+        )
+        .await?;
 
         let first = resp_json
             .get("uploaded")
@@ -689,17 +634,6 @@ impl OpdsClient {
     }
 }
 
-struct TempDownloadFile {
-    path: PathBuf,
-    size: u64,
-}
-
-impl Drop for TempDownloadFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 fn is_disallowed_import_content_type(content_type: &str) -> bool {
     let essence = content_type
         .split(';')
@@ -711,76 +645,6 @@ fn is_disallowed_import_content_type(content_type: &str) -> bool {
         essence.as_str(),
         "text/html" | "application/xhtml+xml" | "image/svg+xml"
     )
-}
-
-async fn create_private_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
-    let mut opts = tokio::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        opts.mode(0o600);
-    }
-    opts.open(path).await
-}
-
-async fn stream_response_to_temp_file(
-    resp: reqwest::Response,
-    max_bytes: u64,
-    temp_dir: &Path,
-) -> Result<TempDownloadFile, OpdsError> {
-    tokio::fs::create_dir_all(temp_dir)
-        .await
-        .map_err(|e| OpdsError::Internal(format!("Failed to prepare temp directory: {e}")))?;
-    let path = temp_dir.join(format!("xmedia-opds-import-{}.tmp", Uuid::new_v4()));
-    // Declare RAII guard BEFORE opening the file handle so `file` drops first (Windows unlink safety).
-    let mut guard = TempDownloadFile {
-        path: path.clone(),
-        size: 0,
-    };
-    let mut file = create_private_temp_file(&path)
-        .await
-        .map_err(|e| OpdsError::Internal(format!("Failed to create temp file: {e}")))?;
-
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = chunk_res.map_err(|e| {
-            OpdsError::Upstream(format!("Error reading remote stream: {}", e.without_url()))
-        })?;
-        guard.size = guard.size.saturating_add(chunk.len() as u64);
-        if guard.size > max_bytes {
-            drop(file);
-            return Err(OpdsError::TooLarge(format!(
-                "Remote download exceeded maximum limit of {max_bytes} bytes"
-            )));
-        }
-        file.write_all(&chunk).await.map_err(|err| {
-            OpdsError::Internal(format!(
-                "Failed writing downloaded data to temp file: {err}"
-            ))
-        })?;
-    }
-    file.flush()
-        .await
-        .map_err(|e| OpdsError::Internal(format!("Failed to flush temp file: {e}")))?;
-
-    Ok(guard)
-}
-
-pub(crate) fn tokio_util_file_stream(
-    file: tokio::fs::File,
-) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
-    futures_util::stream::unfold(Some(file), |state| async move {
-        let mut f = state?;
-        let mut buf = vec![0u8; 64 * 1024];
-        match tokio::io::AsyncReadExt::read(&mut f, &mut buf).await {
-            Ok(0) => None,
-            Ok(n) => {
-                buf.truncate(n);
-                Some((Ok(Bytes::from(buf)), Some(f)))
-            }
-            Err(err) => Some((Err(err), None)),
-        }
-    })
 }
 
 pub(crate) struct LimitedByteStream {

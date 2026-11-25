@@ -13,7 +13,8 @@ use super::dto::{
 use super::{APP_HEADER_NAME, APP_HEADER_VALUE, StandaloneGatewayState};
 use crate::app_icon::AppIconVariant;
 use crate::remote_sources::{
-    CreateRemoteSourceInput, RemoteProtocol, UpdateRemoteSourceInput, is_same_origin,
+    CreateRemoteSourceInput, PendingSourceMutation, RemoteProtocol, RemoteSourceStore,
+    RemoteSourceSummaryDto, SourceStoreError, UpdateRemoteSourceInput, is_same_origin,
     normalize_remote_url,
 };
 
@@ -128,45 +129,58 @@ pub(super) async fn list_remote_sources(State(state): State<StandaloneGatewaySta
     with_app_headers(Json(RemoteSourcesListResponse { sources }).into_response())
 }
 
-pub(super) async fn create_remote_source(
-    State(state): State<StandaloneGatewayState>,
-    Json(input): Json<CreateRemoteSourceInput>,
-) -> Response {
+async fn execute_source_mutation<F>(
+    state: &StandaloneGatewayState,
+    op_label: &'static str,
+    prepare: F,
+) -> Result<(Option<RemoteSourceSummaryDto>, Vec<RemoteSourceSummaryDto>), Box<Response>>
+where
+    F: FnOnce(&RemoteSourceStore) -> Result<PendingSourceMutation, SourceStoreError>,
+{
     let _write_guard = state.sources_write_lock.lock().await;
     let pending = match state.sources.read() {
-        Ok(guard) => match guard.prepare_create(input) {
-            Ok(p) => p,
-            Err(err) => return store_error_response(err),
-        },
+        Ok(guard) => prepare(&guard).map_err(|err| Box::new(store_error_response(err)))?,
         Err(_) => {
-            return app_error(
+            return Err(Box::new(app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "store_poisoned",
                 "Remote source store lock poisoned",
-            );
+            )));
         }
     };
     let persisted = match tokio::task::spawn_blocking(move || pending.persist()).await {
         Ok(Ok(p)) => p,
-        Ok(Err(err)) => return store_error_response(err),
+        Ok(Err(err)) => return Err(Box::new(store_error_response(err))),
         Err(err) => {
-            tracing::error!(error = %err, "remote source create persist task failed");
-            return app_error(
+            tracing::error!(op = op_label, error = %err, "remote source persist task failed");
+            return Err(Box::new(app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "storage_error",
                 "Failed to persist remote sources",
-            );
+            )));
         }
     };
-    let (source, sources) = match state.sources.write() {
-        Ok(mut guard) => guard.commit_mutation(persisted),
-        Err(_) => {
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_poisoned",
-                "Remote source store lock poisoned",
-            );
-        }
+    match state.sources.write() {
+        Ok(mut guard) => Ok(guard.commit_mutation(persisted)),
+        Err(_) => Err(Box::new(app_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "store_poisoned",
+            "Remote source store lock poisoned",
+        ))),
+    }
+}
+
+pub(super) async fn create_remote_source(
+    State(state): State<StandaloneGatewayState>,
+    Json(input): Json<CreateRemoteSourceInput>,
+) -> Response {
+    let (source, sources) = match execute_source_mutation(&state, "create", |store| {
+        store.prepare_create(input)
+    })
+    .await
+    {
+        Ok(res) => res,
+        Err(err_res) => return *err_res,
     };
     let Some(source) = source else {
         return app_error(
@@ -189,42 +203,13 @@ pub(super) async fn update_remote_source(
     AxumPath(id): AxumPath<String>,
     Json(input): Json<UpdateRemoteSourceInput>,
 ) -> Response {
-    let _write_guard = state.sources_write_lock.lock().await;
-    let pending = match state.sources.read() {
-        Ok(guard) => match guard.prepare_update(&id, input) {
-            Ok(p) => p,
-            Err(err) => return store_error_response(err),
-        },
-        Err(_) => {
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_poisoned",
-                "Remote source store lock poisoned",
-            );
-        }
-    };
-    let persisted = match tokio::task::spawn_blocking(move || pending.persist()).await {
-        Ok(Ok(p)) => p,
-        Ok(Err(err)) => return store_error_response(err),
-        Err(err) => {
-            tracing::error!(error = %err, "remote source update persist task failed");
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "Failed to persist remote sources",
-            );
-        }
-    };
-    let (source, sources) = match state.sources.write() {
-        Ok(mut guard) => guard.commit_mutation(persisted),
-        Err(_) => {
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_poisoned",
-                "Remote source store lock poisoned",
-            );
-        }
-    };
+    let (source, sources) =
+        match execute_source_mutation(&state, "update", |store| store.prepare_update(&id, input))
+            .await
+        {
+            Ok(res) => res,
+            Err(err_res) => return *err_res,
+        };
     let Some(source) = source else {
         return app_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -239,42 +224,11 @@ pub(super) async fn delete_remote_source(
     State(state): State<StandaloneGatewayState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    let _write_guard = state.sources_write_lock.lock().await;
-    let pending = match state.sources.read() {
-        Ok(guard) => match guard.prepare_delete(&id) {
-            Ok(p) => p,
-            Err(err) => return store_error_response(err),
-        },
-        Err(_) => {
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_poisoned",
-                "Remote source store lock poisoned",
-            );
-        }
-    };
-    let persisted = match tokio::task::spawn_blocking(move || pending.persist()).await {
-        Ok(Ok(p)) => p,
-        Ok(Err(err)) => return store_error_response(err),
-        Err(err) => {
-            tracing::error!(error = %err, "remote source delete persist task failed");
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "Failed to persist remote sources",
-            );
-        }
-    };
-    let (_, sources) = match state.sources.write() {
-        Ok(mut guard) => guard.commit_mutation(persisted),
-        Err(_) => {
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_poisoned",
-                "Remote source store lock poisoned",
-            );
-        }
-    };
+    let (_, sources) =
+        match execute_source_mutation(&state, "delete", |store| store.prepare_delete(&id)).await {
+            Ok(res) => res,
+            Err(err_res) => return *err_res,
+        };
     with_app_headers(Json(RemoteSourcesListResponse { sources }).into_response())
 }
 

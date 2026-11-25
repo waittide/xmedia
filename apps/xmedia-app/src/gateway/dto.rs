@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use xmedia_core::domain::library::MediaKind;
 
 use super::{APP_HEADER_NAME, APP_HEADER_VALUE, StandaloneGatewayState};
-use crate::opds_client::OpdsError;
+use crate::remote_common::RemoteClientError;
 use crate::remote_sources::{
     RemoteProtocol, RemoteSource, RemoteSourceSummaryDto, SourceStoreError,
 };
-use crate::subsonic_client::{SubsonicAlbumDto, SubsonicError};
+use crate::subsonic_client::SubsonicAlbumDto;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ErrorBody {
@@ -163,28 +163,21 @@ pub(super) fn store_error_response(err: SourceStoreError) -> Response {
     }
 }
 
-pub(super) fn opds_error_response(err: OpdsError) -> Response {
+pub(super) fn remote_error_response(
+    protocol_label: &'static str,
+    err: RemoteClientError,
+) -> Response {
     match err {
-        OpdsError::Internal(msg) => {
-            tracing::error!(error = %msg, "internal OPDS gateway error");
+        RemoteClientError::Internal(msg) => {
+            tracing::error!(
+                protocol = protocol_label,
+                error = %msg,
+                "internal remote gateway error"
+            );
             app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
-                "Internal OPDS processing error",
-            )
-        }
-        other => app_error(other.status_code(), other.code(), other.to_string()),
-    }
-}
-
-pub(super) fn subsonic_error_response(err: SubsonicError) -> Response {
-    match err {
-        SubsonicError::Internal(msg) => {
-            tracing::error!(error = %msg, "internal Subsonic gateway error");
-            app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "Internal Subsonic processing error",
+                format!("Internal {protocol_label} processing error"),
             )
         }
         other => app_error(other.status_code(), other.code(), other.to_string()),

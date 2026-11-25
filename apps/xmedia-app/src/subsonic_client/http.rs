@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use axum::body::Body;
@@ -8,10 +7,7 @@ use axum::http::header::{
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
-use futures_util::StreamExt;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
-use uuid::Uuid;
 
 use super::parser::{
     build_subsonic_url, extract_subsonic_ok, json_value_items, parse_album_dto, parse_song_dto,
@@ -26,8 +22,8 @@ use crate::opds_client::{
     MAX_IMAGE_BYTES, MAX_METADATA_BYTES, ReadLimitError, RemoteImportResultDto, SniffImageError,
     apply_proxy_security_headers, build_sniffed_raster_image_response,
     is_disallowed_non_raster_header, is_safe_raster_image_content_type, read_response_text_limited,
-    tokio_util_file_stream,
 };
+use crate::remote_common::{stream_response_to_temp_file, upload_temp_file_to_local};
 use crate::remote_sources::{RemoteSource, normalize_remote_url};
 
 impl SubsonicClient {
@@ -555,7 +551,14 @@ impl SubsonicClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
 
-        let temp_file = stream_audio_to_temp_file(resp, MAX_IMPORT_BYTES, &self.temp_dir).await?;
+        let temp_file = stream_response_to_temp_file(
+            resp,
+            MAX_IMPORT_BYTES,
+            &self.temp_dir,
+            "xmedia-subsonic-import",
+            "Subsonic audio",
+        )
+        .await?;
 
         let mut song_meta_title: Option<String> = None;
         let mut song_meta_suffix: Option<String> = None;
@@ -583,69 +586,16 @@ impl SubsonicClient {
             song_id,
         );
 
-        let file = tokio::fs::File::open(&temp_file.path).await.map_err(|e| {
-            SubsonicError::Internal(format!("Failed to reopen temp audio file: {e}"))
-        })?;
-        let stream = tokio_util_file_stream(file);
-        let part = reqwest::multipart::Part::stream_with_length(
-            reqwest::Body::wrap_stream(stream),
-            temp_file.size,
-        )
-        .file_name(filename.clone());
-        let form = reqwest::multipart::Form::new().part("file", part);
-
         let upload_url = format!("{local_gateway_url}/api/v1/music/tracks/upload");
-        let upload_resp = self
-            .local_upload
-            .post(&upload_url)
-            .bearer_auth(local_token)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| {
-                SubsonicError::Internal(format!(
-                    "Failed to upload track to local library: {}",
-                    e.without_url()
-                ))
-            })?;
-
-        let status = upload_resp.status();
-        let body_bytes = upload_resp.bytes().await.map_err(|e| {
-            SubsonicError::Internal(format!(
-                "Failed to read local music upload response: {}",
-                e.without_url()
-            ))
-        })?;
-        let parsed_json: Option<Value> = serde_json::from_slice(&body_bytes).ok();
-
-        if !status.is_success() {
-            let msg = parsed_json
-                .as_ref()
-                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str))
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    let snippet = String::from_utf8_lossy(&body_bytes);
-                    let trimmed = snippet.trim();
-                    if trimmed.is_empty() {
-                        "Local music library rejected uploaded track".to_string()
-                    } else {
-                        trimmed.chars().take(200).collect()
-                    }
-                });
-            if status == StatusCode::PAYLOAD_TOO_LARGE {
-                return Err(SubsonicError::TooLarge(format!(
-                    "Local music import rejected (HTTP 413): {msg}"
-                )));
-            }
-            return Err(SubsonicError::Upstream(format!(
-                "Local music import failed (HTTP {}): {msg}",
-                status.as_u16()
-            )));
-        }
-
-        let resp_json = parsed_json.ok_or_else(|| {
-            SubsonicError::Internal("Local music upload succeeded but returned invalid JSON".into())
-        })?;
+        let resp_json = upload_temp_file_to_local(
+            &self.local_upload,
+            &temp_file,
+            &filename,
+            &upload_url,
+            local_token,
+            "music",
+        )
+        .await?;
 
         let first = resp_json
             .get("uploaded_tracks")
@@ -697,83 +647,6 @@ impl SubsonicClient {
                 SubsonicError::Upstream(format!("Subsonic {endpoint} failed: {}", e.without_url()))
             })
     }
-}
-
-struct TempAudioFile {
-    path: PathBuf,
-    size: u64,
-}
-
-impl Drop for TempAudioFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-async fn create_private_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
-    let mut opts = tokio::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        opts.mode(0o600);
-    }
-    opts.open(path).await
-}
-
-async fn stream_audio_to_temp_file(
-    resp: reqwest::Response,
-    max_bytes: u64,
-    temp_dir: &Path,
-) -> Result<TempAudioFile, SubsonicError> {
-    if let Some(len) = resp.content_length()
-        && len > max_bytes
-    {
-        return Err(SubsonicError::TooLarge(format!(
-            "Remote audio exceeds 511MB import limit ({len} bytes)"
-        )));
-    }
-
-    tokio::fs::create_dir_all(temp_dir)
-        .await
-        .map_err(|e| SubsonicError::Internal(format!("Failed to prepare temp directory: {e}")))?;
-    let path = temp_dir.join(format!("xmedia-subsonic-import-{}.tmp", Uuid::new_v4()));
-    // Declare RAII guard BEFORE opening the file handle so `file` drops first (Windows unlink safety).
-    let mut guard = TempAudioFile {
-        path: path.clone(),
-        size: 0,
-    };
-    let mut file = create_private_temp_file(&path)
-        .await
-        .map_err(|e| SubsonicError::Internal(format!("Failed to create temp audio file: {e}")))?;
-
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = chunk_res.map_err(|e| {
-            SubsonicError::Upstream(format!("Error reading audio stream: {}", e.without_url()))
-        })?;
-        guard.size = guard.size.saturating_add(chunk.len() as u64);
-        if guard.size > max_bytes {
-            drop(file);
-            return Err(SubsonicError::TooLarge(
-                "Remote audio exceeded 511MB import limit".to_string(),
-            ));
-        }
-        file.write_all(&chunk).await.map_err(|err| {
-            SubsonicError::Internal(format!("Failed writing audio temp file: {err}"))
-        })?;
-    }
-    file.flush()
-        .await
-        .map_err(|e| SubsonicError::Internal(format!("Failed flushing audio temp file: {e}")))?;
-
-    if guard.size == 0 {
-        drop(file);
-        return Err(SubsonicError::Upstream(
-            "Remote Subsonic server returned an empty audio payload".to_string(),
-        ));
-    }
-
-    Ok(guard)
 }
 
 fn is_metadata_content_type(ct: &str) -> bool {

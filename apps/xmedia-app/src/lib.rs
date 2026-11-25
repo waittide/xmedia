@@ -1,7 +1,9 @@
 pub mod app_icon;
+pub(crate) mod atomic_fs;
 pub mod gateway;
 pub mod local_engine;
 pub mod opds_client;
+pub mod remote_common;
 pub mod remote_sources;
 pub mod subsonic_client;
 

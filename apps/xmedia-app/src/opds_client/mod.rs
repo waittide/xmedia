@@ -4,12 +4,10 @@ mod parser;
 #[cfg(test)]
 mod tests;
 
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
@@ -20,7 +18,6 @@ pub(crate) use http::{
     ReadLimitError, SniffImageError, apply_proxy_security_headers,
     build_sniffed_raster_image_response, is_disallowed_non_raster_header,
     is_safe_raster_image_content_type, read_response_text_limited, same_origin_redirect_policy,
-    tokio_util_file_stream,
 };
 
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -104,50 +101,7 @@ pub struct RemoteImportResultDto {
     pub title: String,
 }
 
-#[derive(Debug)]
-pub enum OpdsError {
-    BadRequest(String),
-    Upstream(String),
-    Unsupported(String),
-    TooLarge(String),
-    Internal(String),
-}
-
-impl OpdsError {
-    pub fn status_code(&self) -> StatusCode {
-        match self {
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::Upstream(_) => StatusCode::BAD_GATEWAY,
-            Self::Unsupported(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Self::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::BadRequest(_) => "invalid_request",
-            Self::Upstream(_) => "upstream_error",
-            Self::Unsupported(_) => "unsupported_media_type",
-            Self::TooLarge(_) => "payload_too_large",
-            Self::Internal(_) => "internal_error",
-        }
-    }
-}
-
-impl fmt::Display for OpdsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadRequest(m)
-            | Self::Upstream(m)
-            | Self::Unsupported(m)
-            | Self::TooLarge(m)
-            | Self::Internal(m) => write!(f, "{m}"),
-        }
-    }
-}
-
-impl std::error::Error for OpdsError {}
+pub type OpdsError = crate::remote_common::RemoteClientError;
 
 #[derive(Clone)]
 pub struct OpdsClient {

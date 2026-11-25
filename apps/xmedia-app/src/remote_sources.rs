@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -740,33 +739,11 @@ fn discard_corrupt_sources_file(path: &Path, reason: &str) {
     );
 }
 
-fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    opts.open(path)
-}
-
 fn persist_atomic(
     path: &Path,
     data: &PersistedRemoteSources,
     cipher: &SourceSecretCipher,
 ) -> Result<(), SourceStoreError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|e| {
-            SourceStoreError::Io(format!(
-                "Failed to create config directory {}: {e}",
-                parent.display()
-            ))
-        })?;
-    }
-
     let mut on_disk = data.clone();
     for src in &mut on_disk.sources {
         if !src.password.is_empty() {
@@ -777,36 +754,12 @@ fn persist_atomic(
     let payload = serde_json::to_vec_pretty(&on_disk)
         .map_err(|e| SourceStoreError::Io(format!("Failed to serialize remote sources: {e}")))?;
 
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("remote_sources.json");
-    let tmp_path = path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
-
-    {
-        let mut file = create_private_file(&tmp_path).map_err(|e| {
-            SourceStoreError::Io(format!(
-                "Failed to create temporary config file {}: {e}",
-                tmp_path.display()
-            ))
-        })?;
-        if let Err(err) = file.write_all(&payload).and_then(|()| file.sync_all()) {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(SourceStoreError::Io(format!(
-                "Failed to write temporary config file: {err}"
-            )));
-        }
-    }
-
-    if let Err(err) = fs::rename(&tmp_path, path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(SourceStoreError::Io(format!(
-            "Failed to atomically replace {}: {err}",
+    crate::atomic_fs::write_private_file_atomic(path, &payload).map_err(|e| {
+        SourceStoreError::Io(format!(
+            "Failed to atomically persist {}: {e}",
             path.display()
-        )));
-    }
-
-    Ok(())
+        ))
+    })
 }
 
 #[cfg(test)]

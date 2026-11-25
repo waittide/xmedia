@@ -3,12 +3,10 @@ mod parser;
 #[cfg(test)]
 mod tests;
 
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
@@ -80,52 +78,7 @@ pub struct SubsonicSearchResultDto {
     pub songs: Vec<SubsonicSongDto>,
 }
 
-#[derive(Debug)]
-pub enum SubsonicError {
-    BadRequest(String),
-    Upstream(String),
-    Unsupported(String),
-    TooLarge(String),
-    Internal(String),
-}
-
-impl SubsonicError {
-    pub fn status_code(&self) -> StatusCode {
-        match self {
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::Upstream(_) => StatusCode::BAD_GATEWAY,
-            Self::Unsupported(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Self::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::BadRequest(_) => "invalid_request",
-            Self::Upstream(_) => "upstream_error",
-            Self::Unsupported(_) => "unsupported_media_type",
-            Self::TooLarge(_) => "payload_too_large",
-            Self::Internal(_) => "internal_error",
-        }
-    }
-}
-
-impl fmt::Display for SubsonicError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadRequest(m)
-            | Self::Upstream(m)
-            | Self::Unsupported(m)
-            | Self::TooLarge(m)
-            | Self::Internal(m) => {
-                write!(f, "{m}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for SubsonicError {}
+pub type SubsonicError = crate::remote_common::RemoteClientError;
 
 #[derive(Clone)]
 pub struct SubsonicClient {

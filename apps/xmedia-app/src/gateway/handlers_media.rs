@@ -8,8 +8,7 @@ use super::StandaloneGatewayState;
 use super::dto::{
     OpdsBrowseQuery, OpdsImportRequest, OpdsProxyImageQuery, SubsonicAlbumsQuery,
     SubsonicAlbumsResponse, SubsonicImportRequest, SubsonicSearchQuery, app_error,
-    load_source_with_protocol, mark_source_ok, opds_error_response, subsonic_error_response,
-    with_app_headers,
+    load_source_with_protocol, mark_source_ok, remote_error_response, with_app_headers,
 };
 use crate::remote_sources::RemoteProtocol;
 
@@ -32,7 +31,7 @@ pub(super) async fn opds_browse(
             mark_source_ok(&state, &id);
             with_app_headers(Json(feed).into_response())
         }
-        Err(err) => opds_error_response(err),
+        Err(err) => remote_error_response("OPDS", err),
     }
 }
 
@@ -50,7 +49,7 @@ pub(super) async fn opds_proxy_image(
         crate::opds_client::expand_pse_template_url(&query.url, query.page, query.max_width);
     match state.opds.proxy_image(&source, &resolved_url).await {
         Ok(res) => res,
-        Err(err) => opds_error_response(err),
+        Err(err) => remote_error_response("OPDS", err),
     }
 }
 
@@ -88,7 +87,7 @@ pub(super) async fn opds_import(
         .await
     {
         Ok(result) => with_app_headers((StatusCode::CREATED, Json(result)).into_response()),
-        Err(err) => opds_error_response(err),
+        Err(err) => remote_error_response("OPDS", err),
     }
 }
 
@@ -115,7 +114,7 @@ pub(super) async fn subsonic_list_albums(
             mark_source_ok(&state, &id);
             with_app_headers(Json(SubsonicAlbumsResponse { albums }).into_response())
         }
-        Err(err) => subsonic_error_response(err),
+        Err(err) => remote_error_response("Subsonic", err),
     }
 }
 
@@ -133,7 +132,7 @@ pub(super) async fn subsonic_get_album(
             mark_source_ok(&state, &id);
             with_app_headers(Json(detail).into_response())
         }
-        Err(err) => subsonic_error_response(err),
+        Err(err) => remote_error_response("Subsonic", err),
     }
 }
 
@@ -156,7 +155,7 @@ pub(super) async fn subsonic_search(
             mark_source_ok(&state, &id);
             with_app_headers(Json(res).into_response())
         }
-        Err(err) => subsonic_error_response(err),
+        Err(err) => remote_error_response("Subsonic", err),
     }
 }
 
@@ -171,7 +170,7 @@ pub(super) async fn subsonic_proxy_cover(
 
     match state.subsonic.proxy_cover(&source, &cover_id).await {
         Ok(res) => res,
-        Err(err) => subsonic_error_response(err),
+        Err(err) => remote_error_response("Subsonic", err),
     }
 }
 
@@ -197,7 +196,7 @@ pub(super) async fn subsonic_proxy_stream(
         .await
     {
         Ok(res) => res,
-        Err(err) => subsonic_error_response(err),
+        Err(err) => remote_error_response("Subsonic", err),
     }
 }
 
@@ -250,6 +249,6 @@ pub(super) async fn subsonic_import_song(
         .await
     {
         Ok(result) => with_app_headers((StatusCode::CREATED, Json(result)).into_response()),
-        Err(err) => subsonic_error_response(err),
+        Err(err) => remote_error_response("Subsonic", err),
     }
 }

@@ -108,12 +108,8 @@ fn read_persisted_icon(path: &Path) -> Option<AppIconVariant> {
 }
 
 fn persist_icon_atomically(path: &Path, variant: AppIconVariant) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, format!("{}\n", variant.as_str()))?;
-    std::fs::rename(&tmp, path)?;
+    let payload = format!("{}\n", variant.as_str());
+    crate::atomic_fs::write_private_file_atomic(path, payload.as_bytes())?;
     Ok(())
 }
 
