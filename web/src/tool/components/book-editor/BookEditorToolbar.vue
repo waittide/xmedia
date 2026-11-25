@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuBold,
   LuCode,
@@ -22,13 +24,9 @@ import {
   LuUnderline,
   LuUndo2,
 } from 'vue-icons-plus/lu'
+import MdChip from '@/components/ui/MdChip.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import type { SurfaceMode } from './useBookEditorChapters'
-
-const surfaceModeOptions = [
-  { value: 'wysiwyg', label: '所见即所得' },
-  { value: 'xhtml', label: 'XHTML 源码' },
-] as const
 
 defineProps<{
   surfaceMode: SurfaceMode
@@ -56,226 +54,230 @@ const emit = defineEmits<{
   switchSurfaceMode: [mode: SurfaceMode]
   toggleLivePreview: []
 }>()
+
+const { t } = useI18n()
+
+const surfaceModeOptions = computed(
+  () =>
+    [
+      { value: 'wysiwyg', label: t('tool.bookEditor.toolbar.wysiwyg') },
+      { value: 'xhtml', label: t('tool.bookEditor.toolbar.xhtmlSource') },
+    ] as const,
+)
 </script>
 
 <template>
   <div
-    class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 select-none"
+    class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-outline-variant/50 bg-surface-container-low px-3 py-2 select-none"
   >
-    <!-- Left Formatting Buttons (`@mousedown.prevent` keeps caret & selection intact!) -->
+    <!-- Left Formatting Buttons (`@mousedown.prevent` keeps caret & selection intact) -->
     <div class="flex flex-wrap items-center gap-0.5">
       <template v-if="surfaceMode === 'wysiwyg'">
         <button
           type="button"
           class="tb-btn"
-          title="撤销 (Ctrl+Z)"
+          :title="t('tool.bookEditor.toolbar.undo')"
+          :aria-label="t('tool.bookEditor.toolbar.undo')"
           @mousedown.prevent="emit('execCmd', 'undo')"
         >
-          <LuUndo2 class="h-3.5 w-3.5" />
+          <LuUndo2 class="h-4 w-4" />
         </button>
         <button
           type="button"
           class="tb-btn"
-          title="重做 (Ctrl+Y)"
+          :title="t('tool.bookEditor.toolbar.redo')"
+          :aria-label="t('tool.bookEditor.toolbar.redo')"
           @mousedown.prevent="emit('execCmd', 'redo')"
         >
-          <LuRedo2 class="h-3.5 w-3.5" />
+          <LuRedo2 class="h-4 w-4" />
         </button>
 
-        <span class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
+        <span class="mx-1 h-4 w-px bg-outline-variant/60" />
       </template>
 
       <button
         type="button"
         class="tb-btn"
-        title="正文段落 (<p>)"
+        :title="t('tool.bookEditor.toolbar.paragraph')"
+        :aria-label="t('tool.bookEditor.toolbar.paragraph')"
         @mousedown.prevent="emit('formatBlock', 'P')"
       >
-        <LuPilcrow class="h-3.5 w-3.5" />
+        <LuPilcrow class="h-4 w-4" />
       </button>
       <button
         type="button"
         class="tb-btn"
-        title="一级标题 (<h1>)"
+        :title="t('tool.bookEditor.toolbar.h1')"
+        :aria-label="t('tool.bookEditor.toolbar.h1')"
         @mousedown.prevent="emit('formatBlock', 'H1')"
       >
-        <LuHeading1 class="h-3.5 w-3.5" />
+        <LuHeading1 class="h-4 w-4" />
       </button>
       <button
         type="button"
         class="tb-btn"
-        title="二级章节标题 (<h2>)"
+        :title="t('tool.bookEditor.toolbar.h2')"
+        :aria-label="t('tool.bookEditor.toolbar.h2')"
         @mousedown.prevent="emit('formatBlock', 'H2')"
       >
-        <LuHeading2 class="h-3.5 w-3.5" />
+        <LuHeading2 class="h-4 w-4" />
       </button>
       <button
         type="button"
         class="tb-btn"
-        title="三级小节标题 (<h3>)"
+        :title="t('tool.bookEditor.toolbar.h3')"
+        :aria-label="t('tool.bookEditor.toolbar.h3')"
         @mousedown.prevent="emit('formatBlock', 'H3')"
       >
-        <LuHeading3 class="h-3.5 w-3.5" />
+        <LuHeading3 class="h-4 w-4" />
       </button>
       <button
         type="button"
         class="tb-btn"
-        title="引用块 (<blockquote>)"
+        :title="t('tool.bookEditor.toolbar.blockquote')"
+        :aria-label="t('tool.bookEditor.toolbar.blockquote')"
         @mousedown.prevent="emit('formatBlock', 'BLOCKQUOTE')"
       >
-        <LuQuote class="h-3.5 w-3.5" />
+        <LuQuote class="h-4 w-4" />
       </button>
 
-      <span class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
+      <span class="mx-1 h-4 w-px bg-outline-variant/60" />
 
       <template v-if="surfaceMode === 'wysiwyg'">
         <button
           type="button"
           class="tb-btn"
-          title="加粗 (Ctrl+B)"
+          :title="t('tool.bookEditor.toolbar.bold')"
+          :aria-label="t('tool.bookEditor.toolbar.bold')"
           @mousedown.prevent="emit('execCmd', 'bold')"
         >
-          <LuBold class="h-3.5 w-3.5" />
+          <LuBold class="h-4 w-4" />
         </button>
         <button
           type="button"
           class="tb-btn"
-          title="斜体 (Ctrl+I)"
+          :title="t('tool.bookEditor.toolbar.italic')"
+          :aria-label="t('tool.bookEditor.toolbar.italic')"
           @mousedown.prevent="emit('execCmd', 'italic')"
         >
-          <LuItalic class="h-3.5 w-3.5" />
+          <LuItalic class="h-4 w-4" />
         </button>
         <button
           type="button"
           class="tb-btn"
-          title="下划线 (Ctrl+U)"
+          :title="t('tool.bookEditor.toolbar.underline')"
+          :aria-label="t('tool.bookEditor.toolbar.underline')"
           @mousedown.prevent="emit('execCmd', 'underline')"
         >
-          <LuUnderline class="h-3.5 w-3.5" />
+          <LuUnderline class="h-4 w-4" />
         </button>
         <button
           type="button"
           class="tb-btn"
-          title="清除选中文字格式"
+          :title="t('tool.bookEditor.toolbar.clearFormat')"
+          :aria-label="t('tool.bookEditor.toolbar.clearFormat')"
           @mousedown.prevent="emit('execCmd', 'removeFormat')"
         >
-          <LuEraser class="h-3.5 w-3.5" />
+          <LuEraser class="h-4 w-4" />
         </button>
       </template>
 
       <button
         type="button"
         class="tb-btn"
-        title="行内代码 (<code>)"
+        :title="t('tool.bookEditor.toolbar.inlineCode')"
+        :aria-label="t('tool.bookEditor.toolbar.inlineCode')"
         @mousedown.prevent="emit('wrapInlineCode')"
       >
-        <LuCode class="h-3.5 w-3.5" />
+        <LuCode class="h-4 w-4" />
       </button>
       <button
         type="button"
         class="tb-btn"
-        title="插入水平分割线 (<hr/>)"
+        :title="t('tool.bookEditor.toolbar.hr')"
+        :aria-label="t('tool.bookEditor.toolbar.hr')"
         @mousedown.prevent="emit('insertHr')"
       >
-        <LuMinus class="h-3.5 w-3.5" />
+        <LuMinus class="h-4 w-4" />
       </button>
 
-      <span class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
+      <span class="mx-1 h-4 w-px bg-outline-variant/60" />
 
       <button
         type="button"
-        class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]"
-        title="在当前光标位置拆分为上下两章 (Ctrl+Shift+Enter)"
+        class="md-state inline-flex h-8 items-center gap-1.5 rounded-corner-sm px-2.5 text-label-medium font-medium text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface"
+        :title="t('tool.bookEditor.toolbar.splitChapter')"
         @mousedown.prevent="emit('splitChapter')"
       >
-        <LuScissors class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-        <span>光标拆章</span>
+        <LuScissors class="h-3.5 w-3.5 text-primary" />
+        <span>{{ t('tool.bookEditor.toolbar.splitChapter') }}</span>
       </button>
 
       <button
         type="button"
-        class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]"
-        title="自动清理本章空段落与段首全角/半角冗余空格"
+        class="md-state inline-flex h-8 items-center gap-1.5 rounded-corner-sm px-2.5 text-label-medium font-medium text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface"
+        :title="t('tool.bookEditor.toolbar.cleanTypography')"
         @click="emit('cleanTypography')"
       >
-        <LuSparkles class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-        <span>一键净版</span>
+        <LuSparkles class="h-3.5 w-3.5 text-primary" />
+        <span>{{ t('tool.bookEditor.toolbar.cleanTypography') }}</span>
       </button>
 
       <button
         v-if="docFormat === 'epub'"
         type="button"
         :disabled="uploadingImage"
-        class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)] disabled:opacity-50"
-        title="上传图片写入 EPUB 资源包并插入当前光标处"
+        class="md-state inline-flex h-8 items-center gap-1.5 rounded-corner-sm px-2.5 text-label-medium font-medium text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface disabled:opacity-50"
+        :title="t('tool.bookEditor.toolbar.insertImage')"
         @mousedown.prevent="emit('uploadImage')"
       >
-        <LuImage class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-        <span>{{ uploadingImage ? '上传中…' : '插入图片' }}</span>
+        <LuImage class="h-3.5 w-3.5 text-primary" />
+        <span>{{ uploadingImage ? t('tool.common.loading') : t('tool.bookEditor.toolbar.insertImage') }}</span>
       </button>
 
-      <button
-        type="button"
-        class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
-        :class="
-          proofreadPanelOpen
-            ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-            : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
-        "
-        title="简繁转换、台版竖排转横排、网文求票净化与中文标点智能规整"
+      <MdChip
+        variant="filter"
+        :selected="proofreadPanelOpen"
+        :label="t('tool.bookEditor.toolbar.proofread')"
         @click="emit('toggleProofread')"
       >
-        <LuLanguages class="h-3.5 w-3.5" />
-        <span>简繁与精校</span>
-      </button>
+        <template #icon>
+          <LuLanguages class="h-3.5 w-3.5" />
+        </template>
+      </MdChip>
 
-      <button
-        type="button"
-        class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
-        :class="
-          cssPanelOpen
-            ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-            : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
-        "
-        title="切换中文排版 CSS 预设与编辑全局样式表"
+      <MdChip
+        variant="filter"
+        :selected="cssPanelOpen"
+        :label="t('tool.bookEditor.toolbar.cssStyle')"
         @click="emit('toggleCss')"
       >
-        <LuPalette class="h-3.5 w-3.5" />
-        <span>排版样式</span>
-      </button>
+        <template #icon>
+          <LuPalette class="h-3.5 w-3.5" />
+        </template>
+      </MdChip>
 
-      <button
-        type="button"
-        class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
-        :class="
-          findBarOpen
-            ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-            : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
-        "
-        title="查找与批量替换 (Ctrl+F)"
+      <MdChip
+        variant="filter"
+        :selected="findBarOpen"
+        :label="t('tool.bookEditor.toolbar.findReplace')"
         @click="emit('toggleFind')"
       >
-        <LuSearch class="h-3.5 w-3.5" />
-        <span>查找替换</span>
-      </button>
+        <template #icon>
+          <LuSearch class="h-3.5 w-3.5" />
+        </template>
+      </MdChip>
     </div>
 
     <!-- Right Mode Switcher + Live Preview Split Toggle -->
     <div class="flex items-center gap-1.5">
-      <button
+      <MdChip
         v-if="surfaceMode === 'wysiwyg'"
-        type="button"
-        class="md-state h-8 rounded-full border px-2.5 text-[11px] font-medium transition"
-        :class="
-          indentParagraphs
-            ? 'border-[var(--md-sys-color-primary)]/40 bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-            : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface-variant)]'
-        "
-        title="切换段落首行缩进两字符显示"
+        variant="filter"
+        :selected="indentParagraphs"
+        :label="t('tool.bookEditor.toolbar.firstLineIndent')"
         @click="emit('toggleIndent')"
-      >
-        首行缩进
-      </button>
+      />
 
       <MdSegmentedButton
         :model-value="surfaceMode"
@@ -284,21 +286,17 @@ const emit = defineEmits<{
         @update:model-value="emit('switchSurfaceMode', $event)"
       />
 
-      <button
-        type="button"
-        class="md-state inline-flex h-8 items-center gap-1 rounded-full border px-3 text-[11px] font-semibold transition"
-        :class="
-          showLivePreview
-            ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-            : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-        "
-        title="开启/关闭右侧阅读器真实样式对照预览窗"
+      <MdChip
+        variant="filter"
+        :selected="showLivePreview"
+        :label="t('tool.bookEditor.toolbar.livePreview')"
         @click="emit('toggleLivePreview')"
       >
-        <LuEye v-if="showLivePreview" class="h-3.5 w-3.5" />
-        <LuEyeOff v-else class="h-3.5 w-3.5" />
-        <span class="hidden sm:inline">预览分屏</span>
-      </button>
+        <template #icon>
+          <LuEye v-if="showLivePreview" class="h-3.5 w-3.5" />
+          <LuEyeOff v-else class="h-3.5 w-3.5" />
+        </template>
+      </MdChip>
     </div>
   </div>
 </template>
@@ -307,11 +305,11 @@ const emit = defineEmits<{
 .tb-btn {
   position: relative;
   display: flex;
-  height: 2.25rem;
-  width: 2.25rem;
+  height: 2rem;
+  width: 2rem;
   align-items: center;
   justify-content: center;
-  border-radius: 0.5rem;
+  border-radius: var(--md-sys-shape-corner-small, 0.5rem);
   color: var(--md-sys-color-on-surface-variant);
   transition: background-color 150ms ease, color 150ms ease;
 }

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuCheck, LuCombine, LuLayers } from 'vue-icons-plus/lu'
-
 import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSelect from '@/components/ui/MdSelect.vue'
 import MdTabs from '@/components/ui/MdTabs.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import { toolApi } from '../api'
 import type { MediaFileEntry } from '../types'
 
@@ -19,6 +20,8 @@ const emit = defineEmits<{
   close: []
   completed: []
 }>()
+
+const { t } = useI18n()
 
 const activeTab = ref<'sync' | 'merge'>('sync')
 const busy = ref(false)
@@ -35,31 +38,32 @@ const genres = ref('')
 const tags = ref('')
 const readingDirection = ref('')
 const numberingMode = ref<'none' | 'chapter' | 'volume'>('chapter')
-const startIndex = ref(1)
-const padWidth = ref(2)
+const startIndex = ref('1')
+const padWidth = ref('2')
 
-const tabOptions = [
-  { value: 'sync' as const, label: '系列同步 & 顺序编号', icon: LuLayers },
-  { value: 'merge' as const, label: '多话合卷为单行本 CBZ', icon: LuCombine },
-]
+const tabOptions = computed(() => [
+  { value: 'sync' as const, label: t('tool.modals.comicSeries.tabSync'), icon: LuLayers },
+  { value: 'merge' as const, label: t('tool.modals.comicSeries.tabMerge'), icon: LuCombine },
+])
 
-const directionOptions = [
-  { value: '', label: '保持原样' },
-  { value: 'rtl', label: '日漫右向左 (RTL)' },
-  { value: 'ltr', label: '欧美漫左向右 (LTR)' },
-  { value: 'webtoon', label: '条漫竖向滚动 (Webtoon)' },
-]
-const numberingOptions = [
-  { value: 'none', label: '不修改编号' },
-  { value: 'chapter', label: '顺序写入话号 (Number: 01, 02...)' },
-  { value: 'volume', label: '顺序写入卷号 (Volume: 1, 2...)' },
-]
+const directionOptions = computed(() => [
+  { value: '', label: t('tool.modals.comicSeries.keepOriginal') },
+  { value: 'rtl', label: t('tool.forms.comic.dirRtl') },
+  { value: 'ltr', label: t('tool.forms.comic.dirLtr') },
+  { value: 'webtoon', label: t('tool.forms.comic.dirWebtoon') },
+])
+
+const numberingOptions = computed(() => [
+  { value: 'none', label: t('tool.modals.comicSeries.numNone') },
+  { value: 'chapter', label: t('tool.modals.comicSeries.numChapter') },
+  { value: 'volume', label: t('tool.modals.comicSeries.numVolume') },
+])
 
 // Merge state
 const mergeOutputName = ref('')
 const mergeSeries = ref('')
 const mergeTitle = ref('')
-const mergeVolume = ref<number | null>(1)
+const mergeVolume = ref('1')
 
 const sortedEntries = computed(() =>
   [...props.entries].sort((a, b) => a.file_name.localeCompare(b.file_name, undefined, { numeric: true })),
@@ -79,7 +83,7 @@ watch(
       const guessedSeries = first.display_title.replace(/\s*(?:Vol\.?|Ch\.?|#)\s*\d+.*$/i, '').trim()
       series.value = guessedSeries
       mergeSeries.value = guessedSeries
-      mergeTitle.value = `${guessedSeries || '合订本'} Vol.01`
+      mergeTitle.value = `${guessedSeries || 'Volume'} Vol.01`
       const baseName = `${guessedSeries || 'merged'}_Vol.01.cbz`
       mergeOutputName.value = parentDir ? `${parentDir}/${baseName}` : baseName
     }
@@ -93,6 +97,12 @@ function splitCsv(raw: string): string[] | undefined {
     .map((s) => s.trim())
     .filter(Boolean)
   return arr.length > 0 ? arr : undefined
+}
+
+function toOptInt(val: string): number | undefined {
+  if (!val.trim()) return undefined
+  const n = Number.parseInt(val.trim(), 10)
+  return Number.isFinite(n) ? n : undefined
 }
 
 async function handleBatchSync(): Promise<void> {
@@ -118,7 +128,7 @@ async function handleBatchSync(): Promise<void> {
         pad_width: toOptInt(padWidth.value) ?? 2,
       },
     )
-    successMsg.value = `已同步 ${rep.updated_count} 本漫画${rep.failed_paths.length > 0 ? `（失败 ${rep.failed_paths.length} 本）` : ''}`
+    successMsg.value = t('tool.modals.comicSeries.syncedReport', { count: rep.updated_count })
     emit('completed')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -127,14 +137,10 @@ async function handleBatchSync(): Promise<void> {
   }
 }
 
-function toOptInt(val: unknown): number | undefined {
-  return typeof val === 'number' && Number.isFinite(val) ? Math.trunc(val) : undefined
-}
-
 async function handleMerge(): Promise<void> {
   if (!props.rootId || sortedEntries.value.length < 2) return
   if (!mergeOutputName.value.trim()) {
-    errorMsg.value = '请填写输出 CBZ 路径'
+    errorMsg.value = t('tool.modals.comicSeries.outputRequired')
     return
   }
   busy.value = true
@@ -149,7 +155,11 @@ async function handleMerge(): Promise<void> {
       mergeTitle.value.trim() || undefined,
       toOptInt(mergeVolume.value) ?? null,
     )
-    successMsg.value = `已合并 ${res.report.source_count} 话为 ${res.report.output_rel_path}（共 ${res.report.total_pages} 页）`
+    successMsg.value = t('tool.modals.comicSeries.mergedReport', {
+      count: res.report.source_count,
+      output: res.report.output_rel_path,
+      pages: res.report.total_pages,
+    })
     emit('completed')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -162,102 +172,136 @@ async function handleMerge(): Promise<void> {
 <template>
   <MdDialog
     :open="open"
-    :title="`漫画系列批量工具（已选 ${sortedEntries.length} 项）`"
-    subtitle="按文件名自然序处理 · 支持批量同步系列元数据、顺序重编号与多话合卷"
+    :title="t('tool.modals.comicSeries.title', { count: sortedEntries.length })"
+    :subtitle="t('tool.modals.comicSeries.subtitle')"
     max-width="max-w-2xl"
     :close-on-backdrop="!busy"
     @close="!busy && emit('close')"
   >
     <template #icon>
-      <LuLayers class="h-5 w-5" />
+      <LuLayers class="h-5 w-5" aria-hidden="true" />
     </template>
 
-    <div class="space-y-4 py-1 text-xs">
-      <MdTabs v-model="activeTab" :tabs="tabOptions" variant="primary" aria-label="漫画系列工具功能" />
+    <div class="space-y-4 py-1">
+      <MdTabs
+        v-model="activeTab"
+        :tabs="tabOptions"
+        variant="primary"
+        :aria-label="t('tool.modals.comicSeries.title', { count: sortedEntries.length })"
+      />
 
       <div v-if="activeTab === 'sync'" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">系列名 (Series) · 留空则不覆盖</span>
-          <input v-model="series" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">系列合集组 (SeriesGroup)</span>
-          <input v-model="seriesGroup" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">原作 / 编剧 (逗号分隔)</span>
-          <input v-model="writers" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">作画 (逗号分隔)</span>
-          <input v-model="pencillers" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">出版社</span>
-          <input v-model="publisher" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
-        <div class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">阅读方向</span>
+        <MdTextField
+          v-model="series"
+          size="sm"
+          :label="t('tool.modals.comicSeries.seriesKeepEmpty')"
+        />
+        <MdTextField
+          v-model="seriesGroup"
+          size="sm"
+          :label="t('tool.forms.comic.seriesGroup')"
+        />
+        <MdTextField
+          v-model="writers"
+          size="sm"
+          :label="t('tool.forms.comic.writers')"
+        />
+        <MdTextField
+          v-model="pencillers"
+          size="sm"
+          :label="t('tool.forms.comic.pencillers')"
+        />
+        <MdTextField
+          v-model="publisher"
+          size="sm"
+          :label="t('tool.forms.common.publisher')"
+        />
+        <div class="flex flex-col gap-1">
+          <span class="text-label-medium text-on-surface-variant">
+            {{ t('tool.forms.comic.direction') }}
+          </span>
           <MdSelect v-model="readingDirection" :options="directionOptions" size="sm" />
         </div>
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">分类 (Genre)</span>
-          <input v-model="genres" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">标签 (Tags)</span>
-          <input v-model="tags" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
+        <MdTextField
+          v-model="genres"
+          size="sm"
+          :label="t('tool.forms.comic.genres')"
+        />
+        <MdTextField
+          v-model="tags"
+          size="sm"
+          :label="t('tool.forms.comic.tags')"
+        />
 
-        <div class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3.5 sm:col-span-2">
-          <div class="mb-2 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-            顺序重编号（按文件名自然序）
+        <div class="space-y-2.5 rounded-corner-lg bg-surface p-4 sm:col-span-2">
+          <div class="text-title-small text-on-surface">
+            {{ t('tool.modals.comicSeries.numberingHeading') }}
           </div>
-          <div class="flex flex-wrap items-center gap-3">
-            <div class="w-60">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-12">
+            <div class="sm:col-span-6">
+              <span class="text-label-medium mb-1 block text-on-surface-variant">
+                {{ t('tool.modals.comicSeries.tabSync') }}
+              </span>
               <MdSelect
                 :model-value="numberingMode"
                 :options="numberingOptions"
-                variant="compact"
+                size="sm"
                 @update:model-value="(v) => (numberingMode = v as 'none' | 'chapter' | 'volume')"
               />
             </div>
-            <label v-if="numberingMode !== 'none'" class="inline-flex items-center gap-1.5">
-              <span>起始序号</span>
-              <input v-model.number="startIndex" type="number" min="0" class="md-input h-8 w-16 !px-2 text-xs" />
-            </label>
-            <label v-if="numberingMode === 'chapter'" class="inline-flex items-center gap-1.5">
-              <span>补零位数</span>
-              <input v-model.number="padWidth" type="number" min="1" max="4" class="md-input h-8 w-14 !px-2 text-xs" />
-            </label>
+            <div v-if="numberingMode !== 'none'" class="sm:col-span-3">
+              <MdTextField
+                v-model="startIndex"
+                size="sm"
+                type="number"
+                min="0"
+                :label="t('tool.modals.comicSeries.startIndex')"
+              />
+            </div>
+            <div v-if="numberingMode === 'chapter'" class="sm:col-span-3">
+              <MdTextField
+                v-model="padWidth"
+                size="sm"
+                type="number"
+                min="1"
+                max="4"
+                :label="t('tool.modals.comicSeries.padWidth')"
+              />
+            </div>
           </div>
         </div>
       </div>
 
       <div v-else class="space-y-3">
-        <label class="block">
-          <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">输出 CBZ 相对路径</span>
-          <input v-model="mergeOutputName" type="text" class="md-input h-9 w-full text-xs" />
-        </label>
+        <MdTextField
+          v-model="mergeOutputName"
+          size="sm"
+          :label="t('tool.modals.comicSeries.outputRelPath')"
+        />
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">系列名</span>
-            <input v-model="mergeSeries" type="text" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">单行本标题</span>
-            <input v-model="mergeTitle" type="text" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">卷号 (Volume)</span>
-            <input v-model.number="mergeVolume" type="number" min="1" class="md-input h-9 w-full text-xs" />
-          </label>
+          <MdTextField
+            v-model="mergeSeries"
+            size="sm"
+            :label="t('tool.forms.comic.series')"
+          />
+          <MdTextField
+            v-model="mergeTitle"
+            size="sm"
+            :label="t('tool.modals.comicSeries.volumeTitle')"
+          />
+          <MdTextField
+            v-model="mergeVolume"
+            size="sm"
+            type="number"
+            min="1"
+            :label="t('tool.forms.comic.volume')"
+          />
         </div>
-        <div class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3.5">
-          <div class="mb-1.5 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-            合并顺序预览（原文件将完整保留）：
+        <div class="rounded-corner-lg bg-surface p-4">
+          <div class="text-label-medium mb-1.5 text-on-surface-variant">
+            {{ t('tool.modals.comicSeries.mergeOrderHeading') }}
           </div>
-          <ol class="max-h-36 list-decimal space-y-1 overflow-y-auto pl-5 text-[11px]">
+          <ol class="text-body-small max-h-36 list-decimal space-y-1 overflow-y-auto pl-5">
             <li v-for="e in sortedEntries" :key="e.rel_path" class="truncate">
               {{ e.file_name }}
             </li>
@@ -267,22 +311,25 @@ async function handleMerge(): Promise<void> {
 
       <div
         v-if="errorMsg"
-        class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
         {{ errorMsg }}
       </div>
       <div
         v-if="successMsg"
-        class="flex items-center gap-1.5 rounded-2xl bg-[var(--md-sys-color-success-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-success-container)]"
+        class="text-body-small flex items-center gap-1.5 rounded-corner-lg bg-success-container px-3.5 py-2.5 text-on-success-container"
       >
-        <LuCheck class="h-4 w-4 shrink-0" />
+        <LuCheck class="h-4 w-4 shrink-0" aria-hidden="true" />
         <span>{{ successMsg }}</span>
       </div>
     </div>
 
     <template #footer>
       <div class="ml-auto flex items-center gap-2">
-        <MdButton variant="text" size="sm" @click="emit('close')">关闭</MdButton>
+        <MdButton variant="text" size="sm" @click="emit('close')">
+          {{ t('tool.common.close') }}
+        </MdButton>
         <MdButton
           v-if="activeTab === 'sync'"
           variant="filled"
@@ -291,7 +338,7 @@ async function handleMerge(): Promise<void> {
           :disabled="sortedEntries.length === 0"
           @click="handleBatchSync"
         >
-          执行批量同步
+          {{ t('tool.modals.comicSeries.executeSync') }}
         </MdButton>
         <MdButton
           v-else
@@ -301,7 +348,7 @@ async function handleMerge(): Promise<void> {
           :disabled="sortedEntries.length < 2"
           @click="handleMerge"
         >
-          合并生成 CBZ
+          {{ t('tool.modals.comicSeries.executeMerge') }}
         </MdButton>
       </div>
     </template>

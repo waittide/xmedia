@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertTriangle,
   LuCheckCircle2,
@@ -8,8 +9,8 @@ import {
   LuSearchCheck,
   LuSparkles,
 } from 'vue-icons-plus/lu'
-
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { toolApi } from '../api'
 import type { AutoScrapeOptionsDto, DryRunScrapeItemDto, MediaFileEntry } from '../types'
@@ -26,6 +27,8 @@ const emit = defineEmits<{
   confirm: [selectedEntries: MediaFileEntry[], options?: AutoScrapeOptionsDto]
   manualScrape: [entries: MediaFileEntry[]]
 }>()
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -143,99 +146,109 @@ function handleManualScrape(): void {
 <template>
   <MdDialog
     :open="open"
-    :title="`批量刮削预检 (Dry-Run) · 共 ${entries.length} 项`"
-    subtitle="仅做只读搜索与置信度评分，不修改本地文件；低置信度项已自动标黄取消勾选供复核"
+    :title="t('tool.modals.dryRun.title', { count: entries.length })"
+    :subtitle="t('tool.modals.dryRun.subtitle')"
     max-width="max-w-3xl"
+    footer-align="between"
     @close="emit('close')"
   >
     <template #icon>
-      <LuSearchCheck class="h-5 w-5" />
+      <LuSearchCheck class="h-5 w-5" aria-hidden="true" />
     </template>
 
-    <div class="py-1 text-xs">
-      <div v-if="loading" class="flex h-48 flex-col items-center justify-center gap-2 text-[var(--md-sys-color-on-surface-variant)]">
-        <LuLoader2 class="h-6 w-6 animate-spin text-[var(--md-sys-color-primary)]" />
-        <span>正在对 {{ entries.length }} 个文件执行只读预检匹配…</span>
+    <div class="py-1">
+      <div
+        v-if="loading"
+        class="text-body-small flex h-48 flex-col items-center justify-center gap-2 text-on-surface-variant"
+      >
+        <LuLoader2 class="h-6 w-6 animate-spin text-primary" aria-hidden="true" />
+        <span>{{ t('tool.modals.dryRun.checkingCount', { count: entries.length }) }}</span>
       </div>
 
       <div
         v-else-if="errorMsg"
-        class="rounded-2xl bg-[var(--md-sys-color-error-container)] p-3.5 text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container p-3.5 text-on-error-container"
       >
         {{ errorMsg }}
       </div>
 
       <div v-else class="space-y-2">
-        <div class="mb-2 flex items-center justify-between text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+        <div class="text-body-small mb-2 flex items-center justify-between text-on-surface-variant">
           <span>
-            已勾选 <strong class="text-[var(--md-sys-color-on-surface)]">{{ selectedCount }}</strong> / {{ items.length }} 项
-            <span v-if="lowConfidenceCount > 0" class="ml-2 text-[var(--md-sys-color-warning)]">
-              · {{ lowConfidenceCount }} 项低置信度需人工确认
+            {{
+              t('tool.modals.dryRun.checkedSummary', {
+                selected: selectedCount,
+                total: items.length,
+              })
+            }}
+            <span v-if="lowConfidenceCount > 0" class="ml-2 text-warning">
+              {{ t('tool.modals.dryRun.lowConfidenceNotice', { count: lowConfidenceCount }) }}
             </span>
           </span>
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-            @click="selectAllMatched"
-          >
-            全选已匹配项
-          </button>
+          <MdButton variant="outlined" size="sm" @click="selectAllMatched">
+            {{ t('tool.modals.dryRun.selectAllMatched') }}
+          </MdButton>
         </div>
 
+        <!-- Non-Interactive Row Container + Sibling AppCheckbox & Row Toggle Button (Zero Nested role="checkbox") -->
         <div
           v-for="item in items"
           :key="item.rel_path"
-          role="checkbox"
-          :aria-checked="checkedPaths.has(item.rel_path)"
-          tabindex="0"
-          class="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border p-3 transition outline-none focus-visible:outline-2 focus-visible:outline-secondary"
+          class="flex items-start justify-between gap-3 rounded-corner-lg p-3 transition"
           :class="
             isItemLowConfidence(item)
-              ? 'border-warning/45 bg-warning-container/35'
-              : 'border-outline-variant/55 bg-surface-container-low'
+              ? 'bg-warning-container/35'
+              : 'bg-surface'
           "
-          @click="togglePath(item.rel_path)"
-          @keydown.enter.self.prevent="togglePath(item.rel_path)"
-          @keydown.space.self.prevent="togglePath(item.rel_path)"
         >
-          <div class="flex min-w-0 items-start gap-2.5">
-            <div class="pt-0.5" @click.stop>
+          <div class="flex min-w-0 flex-1 items-start gap-2.5">
+            <div class="pt-0.5">
               <AppCheckbox
                 :model-value="checkedPaths.has(item.rel_path)"
                 :aria-label="item.display_title"
                 @update:model-value="() => togglePath(item.rel_path)"
               />
             </div>
-            <div class="min-w-0">
-              <div class="truncate font-medium">{{ item.display_title }}</div>
-              <div class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">{{ item.rel_path }}</div>
-              <div v-if="item.matched" class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
-                <span class="font-semibold text-[var(--md-sys-color-primary)]">→ {{ item.matched_title }}</span>
-                <span v-if="item.matched_creator" class="text-[var(--md-sys-color-on-surface-variant)]">· {{ item.matched_creator }}</span>
-                <span v-if="item.matched_year" class="text-[var(--md-sys-color-on-surface-variant)]">({{ item.matched_year }})</span>
+
+            <button
+              type="button"
+              class="md-state min-w-0 flex-1 cursor-pointer rounded-corner-sm text-left outline-none focus-visible:outline-2 focus-visible:outline-secondary"
+              @click="togglePath(item.rel_path)"
+            >
+              <div class="text-title-small truncate text-on-surface">{{ item.display_title }}</div>
+              <div class="text-body-small truncate text-on-surface-variant">{{ item.rel_path }}</div>
+              <div v-if="item.matched" class="text-body-small mt-1 flex flex-wrap items-center gap-1.5">
+                <span class="font-medium text-primary">→ {{ item.matched_title }}</span>
+                <span v-if="item.matched_creator" class="text-on-surface-variant">
+                  · {{ item.matched_creator }}
+                </span>
+                <span v-if="item.matched_year != null" class="text-on-surface-variant">
+                  ({{ item.matched_year }})
+                </span>
                 <span
                   v-if="item.matched_provider"
-                  class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px]"
+                  class="text-label-small rounded-corner-full bg-surface-container-high px-2 py-0.5"
                 >
                   {{ item.matched_provider }}
                 </span>
               </div>
-              <div v-else class="mt-1 text-[11px] text-[var(--md-sys-color-error)]">
-                {{ item.error || '未找到匹配条目' }}
+              <div v-else class="text-body-small mt-1 text-error">
+                {{ item.error || t('tool.modals.dryRun.noMatch') }}
               </div>
-            </div>
+            </button>
           </div>
 
           <div
-            class="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold"
+            class="text-label-medium flex shrink-0 items-center gap-1 rounded-corner-full px-2.5 py-1"
             :class="
               isItemLowConfidence(item)
-                ? 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
-                : 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                ? 'bg-warning-container text-on-warning-container'
+                : 'bg-success-container text-on-success-container'
             "
           >
-            <LuAlertTriangle v-if="isItemLowConfidence(item)" class="h-3.5 w-3.5" />
-            <LuCheckCircle2 v-else class="h-3.5 w-3.5" />
+            <LuAlertTriangle v-if="isItemLowConfidence(item)" class="h-3.5 w-3.5" aria-hidden="true" />
+            <LuCheckCircle2 v-else class="h-3.5 w-3.5" aria-hidden="true" />
             <span>{{ item.confidence }}%</span>
           </div>
         </div>
@@ -244,34 +257,30 @@ function handleManualScrape(): void {
 
     <template #footer>
       <div>
-        <button
+        <MdButton
           v-if="!loading && unmatchedEntries.length > 0"
-          type="button"
-          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]"
-          title="在三栏刮削工作台中逐项手动处理未匹配或低置信度条目"
+          variant="tonal"
+          size="sm"
+          :icon="LuColumns3"
+          :title="t('tool.modals.dryRun.manualScrapeHint')"
           @click="handleManualScrape"
         >
-          <LuColumns3 class="h-3.5 w-3.5" />
-          <span>手动刮削（{{ unmatchedEntries.length }} 项）</span>
-        </button>
+          {{ t('tool.modals.dryRun.manualScrapeCount', { count: unmatchedEntries.length }) }}
+        </MdButton>
       </div>
       <div class="flex items-center gap-2">
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          @click="emit('close')"
-        >
-          取消
-        </button>
-        <button
-          type="button"
+        <MdButton variant="text" size="sm" @click="emit('close')">
+          {{ t('tool.common.cancel') }}
+        </MdButton>
+        <MdButton
+          variant="filled"
+          size="sm"
+          :icon="LuSparkles"
           :disabled="loading || selectedCount === 0"
-          class="md-btn md-btn-sm md-btn-filled md-state"
           @click="handleConfirm"
         >
-          <LuSparkles class="h-3.5 w-3.5" />
-          <span>确认执行刮削（{{ selectedCount }} 项）</span>
-        </button>
+          {{ t('tool.modals.dryRun.confirmScrapeCount', { count: selectedCount }) }}
+        </MdButton>
       </div>
     </template>
   </MdDialog>

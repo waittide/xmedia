@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuReplace, LuReplaceAll, LuX } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 
 defineProps<{
   findQuery: string
@@ -23,15 +28,20 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const scopeOptions = [
-  { value: 'chapter', label: '当前章' },
-  { value: 'book', label: '全书' },
-] as const
+const { t } = useI18n()
 
-const findInputRef = ref<HTMLInputElement | null>(null)
+const scopeOptions = computed(
+  () =>
+    [
+      { value: 'chapter', label: t('tool.bookEditor.find.scopeChapter') },
+      { value: 'book', label: t('tool.bookEditor.find.scopeBook') },
+    ] as const,
+)
+
+const findFieldRef = ref<InstanceType<typeof MdTextField> | null>(null)
 
 function focusFind(): void {
-  findInputRef.value?.focus()
+  findFieldRef.value?.focus()
 }
 
 defineExpose({ focusFind })
@@ -39,23 +49,25 @@ defineExpose({ focusFind })
 
 <template>
   <div
-    class="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-4 py-2 text-xs"
+    class="flex shrink-0 flex-wrap items-center gap-2 border-b border-outline-variant/50 bg-surface-container-low px-4 py-2"
   >
-    <input
-      ref="findInputRef"
-      :value="findQuery"
-      type="text"
-      placeholder="查找内容…"
-      class="md-input h-8 w-44 px-2.5 text-xs"
-      @input="emit('update:findQuery', ($event.target as HTMLInputElement).value)"
-    />
-    <input
-      :value="replaceQuery"
-      type="text"
-      placeholder="替换为…"
-      class="md-input h-8 w-44 px-2.5 text-xs"
-      @input="emit('update:replaceQuery', ($event.target as HTMLInputElement).value)"
-    />
+    <div class="w-48">
+      <MdTextField
+        ref="findFieldRef"
+        :model-value="findQuery"
+        size="sm"
+        :label="t('tool.bookEditor.find.findLabel')"
+        @update:model-value="emit('update:findQuery', $event)"
+      />
+    </div>
+    <div class="w-48">
+      <MdTextField
+        :model-value="replaceQuery"
+        size="sm"
+        :label="t('tool.bookEditor.find.replaceLabel')"
+        @update:model-value="emit('update:replaceQuery', $event)"
+      />
+    </div>
 
     <MdSegmentedButton
       :model-value="findScope"
@@ -64,64 +76,51 @@ defineExpose({ focusFind })
       @update:model-value="emit('update:findScope', $event)"
     />
 
-    <button
-      type="button"
-      class="md-state h-8 rounded-lg border px-2 font-mono text-[11px] font-bold transition"
-      :class="
-        findCaseSensitive
-          ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-          : 'border-[var(--md-sys-color-outline-variant)] text-[var(--md-sys-color-on-surface-variant)]'
-      "
-      title="区分大小写"
+    <MdChip
+      variant="filter"
+      :selected="findCaseSensitive"
+      label="Aa"
+      :title="t('tool.bookEditor.find.caseSensitive')"
       @click="emit('update:findCaseSensitive', !findCaseSensitive)"
-    >
-      Aa
-    </button>
-    <button
-      type="button"
-      class="md-state h-8 rounded-lg border px-2 font-mono text-[11px] font-bold transition"
-      :class="
-        findUseRegex
-          ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-          : 'border-[var(--md-sys-color-outline-variant)] text-[var(--md-sys-color-on-surface-variant)]'
-      "
-      title="使用正则表达式"
+    />
+    <MdChip
+      variant="filter"
+      :selected="findUseRegex"
+      label=".*"
+      :title="t('tool.bookEditor.find.useRegex')"
       @click="emit('update:findUseRegex', !findUseRegex)"
-    >
-      .*
-    </button>
+    />
 
-    <span v-if="findQuery" class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+    <span v-if="findQuery" class="font-mono text-label-small text-on-surface-variant">
       {{ searchMatchSummary }}
     </span>
 
     <div class="ml-auto flex items-center gap-1.5">
-      <button
-        type="button"
+      <MdButton
+        variant="outlined"
+        size="sm"
         :disabled="!findQuery"
-        class="md-btn md-btn-sm md-btn-outlined md-state disabled:opacity-45"
         @click="emit('replaceSingle')"
       >
-        <LuReplace class="h-3 w-3" />
-        <span>替换当前</span>
-      </button>
-      <button
-        type="button"
+        <LuReplace class="h-3.5 w-3.5" />
+        <span>{{ t('tool.bookEditor.find.replaceCurrent') }}</span>
+      </MdButton>
+      <MdButton
+        variant="filled"
+        size="sm"
         :disabled="!findQuery"
-        class="md-btn md-btn-sm md-btn-filled md-state disabled:opacity-45"
         @click="emit('replaceAll')"
       >
-        <LuReplaceAll class="h-3 w-3" />
-        <span>全部替换</span>
-      </button>
-      <button
-        type="button"
-        class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
-        aria-label="关闭查找替换栏"
+        <LuReplaceAll class="h-3.5 w-3.5" />
+        <span>{{ t('tool.bookEditor.find.replaceAll') }}</span>
+      </MdButton>
+      <MdIconButton
+        size="sm"
+        :aria-label="t('tool.bookEditor.find.closeAria')"
         @click="emit('close')"
       >
-        <LuX class="h-3.5 w-3.5" />
-      </button>
+        <LuX class="h-4 w-4" />
+      </MdIconButton>
     </div>
   </div>
 </template>

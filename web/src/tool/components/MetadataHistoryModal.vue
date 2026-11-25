@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuChevronDown,
@@ -10,8 +11,9 @@ import {
   LuPencil,
   LuRotateCcw,
 } from 'vue-icons-plus/lu'
-
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSheet from '@/components/ui/MdSheet.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -35,6 +37,7 @@ const emit = defineEmits<{
   restored: []
 }>()
 
+const { t } = useI18n()
 const snackbar = useSnackbarStore()
 
 const activeTab = ref<'metadata' | 'rename'>('metadata')
@@ -96,7 +99,7 @@ function toggleExpand(id: string): void {
 }
 
 function formatUnix(secs: number): string {
-  return new Date(secs * 1000).toLocaleString('zh-CN', {
+  return new Date(secs * 1000).toLocaleString([], {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -106,18 +109,10 @@ function formatUnix(secs: number): string {
 }
 
 function domainBadge(kind: string): string {
-  switch (kind) {
-    case 'book':
-      return '书籍'
-    case 'comic':
-      return '漫画'
-    case 'music':
-      return '音乐'
-    case 'video':
-      return '视频'
-    default:
-      return kind
+  if (kind === 'book' || kind === 'comic' || kind === 'music' || kind === 'video') {
+    return t(`tool.domains.${kind}`)
   }
+  return kind
 }
 
 async function handleUndoMetadata(batch: MetadataHistoryBatchDto): Promise<void> {
@@ -129,9 +124,10 @@ async function handleUndoMetadata(batch: MetadataHistoryBatchDto): Promise<void>
     await loadHistory()
     emit('restored')
     snackbar.show(
-      `已回滚「${batch.label}」：恢复 ${report.restored_count} 个文件${
-        report.failed_paths.length > 0 ? `（${report.failed_paths.length} 项失败）` : ''
-      }`,
+      t('tool.modals.history.undoneMeta', {
+        label: batch.label,
+        count: report.restored_count,
+      }),
     )
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -149,9 +145,9 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
     await loadHistory()
     emit('restored')
     snackbar.show(
-      `已撤销重命名批次：还原 ${report.restored_count} 个路径${
-        report.skipped_conflicts.length > 0 ? `（${report.skipped_conflicts.length} 项冲突跳过）` : ''
-      }`,
+      t('tool.modals.history.undoneRename', {
+        count: report.restored_count,
+      }),
     )
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -164,8 +160,8 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
 <template>
   <MdSheet
     :open="open"
-    title="变更历史与撤销"
-    subtitle="最近会话内的元数据编辑与重命名批次均支持一键无损回滚"
+    :title="t('tool.modals.history.title')"
+    :subtitle="t('tool.modals.history.subtitle')"
     size="md"
     @close="emit('close')"
   >
@@ -174,98 +170,103 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
         <MdSegmentedButton
           v-model="activeTab"
           :options="[
-            { value: 'metadata', label: `元数据 (${metadataBatches.length})`, icon: LuPencil },
-            { value: 'rename', label: `重命名 (${renameBatches.length})`, icon: LuFileSignature },
+            {
+              value: 'metadata',
+              label: t('tool.modals.history.tabMetadata', { count: metadataBatches.length }),
+              icon: LuPencil,
+            },
+            {
+              value: 'rename',
+              label: t('tool.modals.history.tabRename', { count: renameBatches.length }),
+              icon: LuFileSignature,
+            },
           ]"
           size="sm"
         />
 
-        <AppCheckbox v-if="rootId" v-model="scopeAllRoots" label="全部目录" />
+        <AppCheckbox v-if="rootId" v-model="scopeAllRoots" :label="t('tool.modals.history.allRoots')" />
       </div>
     </template>
 
     <div class="space-y-3">
       <div
         v-if="errorMsg"
-        class="flex items-start gap-2 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small flex items-start gap-2 rounded-corner-lg bg-error-container px-4 py-3 text-on-error-container"
       >
-        <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+        <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
         <span>{{ errorMsg }}</span>
       </div>
 
       <div v-if="loading" class="flex items-center justify-center py-14">
-        <LuLoader2 class="h-6 w-6 animate-spin text-[var(--md-sys-color-primary)]" />
+        <LuLoader2 class="h-6 w-6 animate-spin text-primary" aria-hidden="true" />
       </div>
 
       <!-- Tab 1: Metadata History -->
       <template v-else-if="activeTab === 'metadata'">
         <div
           v-if="metadataBatches.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-14 text-center"
+          class="rounded-corner-lg bg-surface-container py-14 text-center"
         >
-          <LuClock class="mx-auto mb-2.5 h-7 w-7 text-[var(--md-sys-color-on-surface-variant)]" />
-          <p class="text-sm font-semibold">暂无元数据修改记录</p>
-          <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-            单条保存或批量编辑元数据后会自动生成可回滚快照
+          <LuClock class="mx-auto mb-2.5 h-7 w-7 text-on-surface-variant" aria-hidden="true" />
+          <p class="text-title-small text-on-surface">{{ t('tool.modals.history.emptyMetaTitle') }}</p>
+          <p class="text-body-small mt-1 text-on-surface-variant">
+            {{ t('tool.modals.history.emptyMetaDesc') }}
           </p>
         </div>
 
         <div
           v-for="batch in metadataBatches"
           :key="batch.batch_id"
-          class="overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface)]"
+          class="overflow-hidden rounded-corner-lg bg-surface"
         >
           <div class="flex flex-wrap items-center justify-between gap-2.5 px-4 py-3.5">
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-1.5">
-                <span class="truncate text-xs font-semibold">
+                <span class="text-title-small truncate text-on-surface">
                   {{ batch.label }}
                 </span>
                 <span
-                  class="rounded-full bg-[var(--md-sys-color-secondary-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-secondary-container)]"
+                  class="text-label-small rounded-corner-full bg-secondary-container px-2 py-0.5 text-on-secondary-container"
                 >
                   {{ domainBadge(batch.media_kind) }}
                 </span>
               </div>
-              <p class="mt-1 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                {{ formatUnix(batch.created_at_unix) }} · {{ batch.updated_count }} 个文件
+              <p class="text-label-small mt-1 font-mono text-on-surface-variant">
+                {{ formatUnix(batch.created_at_unix) }} ·
+                {{ t('tool.modals.history.filesCount', { count: batch.updated_count }) }}
               </p>
             </div>
 
             <div class="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state"
-                title="查看文件明细"
+              <MdIconButton
+                size="sm"
+                :icon="expandedIds.has(batch.batch_id) ? LuChevronUp : LuChevronDown"
+                :tooltip="t('tool.modals.history.viewDetails')"
+                :aria-label="t('tool.modals.history.viewDetails')"
                 @click="toggleExpand(batch.batch_id)"
-              >
-                <LuChevronUp v-if="expandedIds.has(batch.batch_id)" class="h-4 w-4" />
-                <LuChevronDown v-else class="h-4 w-4" />
-              </button>
+              />
 
-              <button
-                type="button"
+              <MdButton
+                variant="tonal"
+                size="sm"
+                :icon="LuRotateCcw"
+                :loading="undoingId === batch.batch_id"
                 :disabled="undoingId !== null"
-                class="md-btn md-btn-sm md-btn-tonal md-state"
                 @click="handleUndoMetadata(batch)"
               >
-                <LuLoader2
-                  v-if="undoingId === batch.batch_id"
-                  class="h-3.5 w-3.5 animate-spin"
-                />
-                <LuRotateCcw v-else class="h-3.5 w-3.5" />
-                <span>撤销</span>
-              </button>
+                {{ t('tool.modals.history.undo') }}
+              </MdButton>
             </div>
           </div>
 
           <div
             v-if="expandedIds.has(batch.batch_id)"
-            class="max-h-44 divide-y divide-[var(--md-sys-color-outline-variant)]/35 overflow-y-auto bg-[var(--md-sys-color-surface-container)]/50 px-4 py-1"
+            class="max-h-44 divide-y divide-outline-variant/35 overflow-y-auto bg-surface-container/50 px-4 py-1"
           >
-            <div v-for="rec in batch.records" :key="rec.rel_path" class="py-1.5 text-[11px]">
-              <div class="truncate font-medium">{{ rec.file_name }}</div>
-              <div class="truncate font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+            <div v-for="rec in batch.records" :key="rec.rel_path" class="py-1.5">
+              <div class="text-body-small truncate font-medium text-on-surface">{{ rec.file_name }}</div>
+              <div class="text-label-small truncate font-mono text-on-surface-variant">
                 {{ rec.rel_path }}
               </div>
             </div>
@@ -277,67 +278,62 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
       <template v-else>
         <div
           v-if="renameBatches.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-14 text-center"
+          class="rounded-corner-lg bg-surface-container py-14 text-center"
         >
-          <LuClock class="mx-auto mb-2.5 h-7 w-7 text-[var(--md-sys-color-on-surface-variant)]" />
-          <p class="text-sm font-semibold">暂无重命名记录</p>
-          <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-            执行批量重命名后可在此一键还原文件及伴随文件
+          <LuClock class="mx-auto mb-2.5 h-7 w-7 text-on-surface-variant" aria-hidden="true" />
+          <p class="text-title-small text-on-surface">{{ t('tool.modals.history.emptyRenameTitle') }}</p>
+          <p class="text-body-small mt-1 text-on-surface-variant">
+            {{ t('tool.modals.history.emptyRenameDesc') }}
           </p>
         </div>
 
         <div
           v-for="batch in renameBatches"
           :key="batch.batch_id"
-          class="overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface)]"
+          class="overflow-hidden rounded-corner-lg bg-surface"
         >
           <div class="flex flex-wrap items-center justify-between gap-2.5 px-4 py-3.5">
             <div class="min-w-0 flex-1">
-              <div class="text-xs font-semibold">
-                批量重命名 · {{ batch.moved_count }} 个文件
+              <div class="text-title-small text-on-surface">
+                {{ t('tool.modals.history.batchRenameTitle', { count: batch.moved_count }) }}
               </div>
-              <p class="mt-1 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              <p class="text-label-small mt-1 font-mono text-on-surface-variant">
                 {{ formatUnix(batch.created_at_unix) }}
               </p>
             </div>
 
             <div class="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state"
-                title="查看路径明细"
+              <MdIconButton
+                size="sm"
+                :icon="expandedIds.has(batch.batch_id) ? LuChevronUp : LuChevronDown"
+                :tooltip="t('tool.modals.history.viewDetails')"
+                :aria-label="t('tool.modals.history.viewDetails')"
                 @click="toggleExpand(batch.batch_id)"
-              >
-                <LuChevronUp v-if="expandedIds.has(batch.batch_id)" class="h-4 w-4" />
-                <LuChevronDown v-else class="h-4 w-4" />
-              </button>
+              />
 
-              <button
-                type="button"
+              <MdButton
+                variant="tonal"
+                size="sm"
+                :icon="LuRotateCcw"
+                :loading="undoingId === batch.batch_id"
                 :disabled="undoingId !== null"
-                class="md-btn md-btn-sm md-btn-tonal md-state"
                 @click="handleUndoRename(batch)"
               >
-                <LuLoader2
-                  v-if="undoingId === batch.batch_id"
-                  class="h-3.5 w-3.5 animate-spin"
-                />
-                <LuRotateCcw v-else class="h-3.5 w-3.5" />
-                <span>撤销</span>
-              </button>
+                {{ t('tool.modals.history.undo') }}
+              </MdButton>
             </div>
           </div>
 
           <div
             v-if="expandedIds.has(batch.batch_id)"
-            class="max-h-44 divide-y divide-[var(--md-sys-color-outline-variant)]/35 overflow-y-auto bg-[var(--md-sys-color-surface-container)]/50 px-4 py-1 font-mono text-[10px]"
+            class="text-label-small max-h-44 divide-y divide-outline-variant/35 overflow-y-auto bg-surface-container/50 px-4 py-1 font-mono"
           >
             <div v-for="mv in batch.moves" :key="mv.to_rel_path" class="space-y-0.5 py-1.5">
-              <div class="truncate text-[var(--md-sys-color-on-surface-variant)]">
-                原：{{ mv.from_rel_path }}
+              <div class="truncate text-on-surface-variant">
+                {{ t('tool.modals.history.fromPrefix') }}{{ mv.from_rel_path }}
               </div>
-              <div class="truncate text-[var(--md-sys-color-primary)]">
-                现：{{ mv.to_rel_path }}
+              <div class="truncate text-primary">
+                {{ t('tool.modals.history.toPrefix') }}{{ mv.to_rel_path }}
               </div>
             </div>
           </div>

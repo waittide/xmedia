@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuArrowLeft,
   LuArrowRight,
@@ -16,16 +17,12 @@ import {
   LuSave,
   LuSparkles,
   LuTrash2,
-  LuX,
 } from 'vue-icons-plus/lu'
-
 import AppSlider from '@/components/ui/AppSlider.vue'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdSelect from '@/components/ui/MdSelect.vue'
-import { useEscapeStack } from '@/composables/useEscapeStack'
-import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useDialogStore } from '@/stores/dialog'
 import { formatBytes } from '@/utils/format'
 import { toolApi } from '../api'
@@ -51,6 +48,8 @@ const emit = defineEmits<{
   saved: [detail: MediaFileDetail]
 }>()
 
+const { t } = useI18n()
+
 const loading = ref(false)
 const saving = ref(false)
 const errorMsg = ref('')
@@ -65,42 +64,30 @@ const jpegQuality = ref(84)
 const maxWidthStr = ref('')
 const lastReport = ref<ComicOptimizeReportDto | null>(null)
 
-// Progressive rendering & image skeleton state
 const PAGE_BATCH_SIZE = 48
 const visibleLimit = ref(PAGE_BATCH_SIZE)
 const loadedEntries = ref<Set<string>>(new Set())
 
-// Drag-and-drop reorder state
 const dragFromIdx = ref<number | null>(null)
 const dragOverIdx = ref<number | null>(null)
 
-// Lightbox preview state
 const lightboxIdx = ref<number | null>(null)
-const lightboxRef = ref<HTMLElement | null>(null)
 const lightboxPage = computed(() =>
   lightboxIdx.value !== null ? (pages.value[lightboxIdx.value] ?? null) : null,
 )
-const escapeStack = useEscapeStack()
-escapeStack.register(
-  () => lightboxIdx.value !== null,
-  () => {
-    lightboxIdx.value = null
-  },
-)
-useFocusTrap(lightboxRef, () => lightboxIdx.value !== null)
 
-const reencodeOptions = [
-  { value: 'keep', label: '保持原图（无损重写）' },
-  { value: 'jpeg', label: '转 JPEG 有损瘦身（推荐扫描版）' },
-  { value: 'webp', label: '转 WebP 无损压缩（适合黑白线稿）' },
-]
+const reencodeOptions = computed(() => [
+  { value: 'keep', label: t('tool.modals.comicPages.encKeep') },
+  { value: 'jpeg', label: t('tool.modals.comicPages.encJpeg') },
+  { value: 'webp', label: t('tool.modals.comicPages.encWebp') },
+])
 
-const maxWidthOptions = [
-  { value: '', label: '不缩放' },
-  { value: '2000', label: '2000 px（高清平板）' },
-  { value: '1600', label: '1600 px（平衡瘦身）' },
-  { value: '1280', label: '1280 px（轻量阅读）' },
-]
+const maxWidthOptions = computed(() => [
+  { value: '', label: t('tool.modals.comicPages.widthNone') },
+  { value: '2000', label: t('tool.modals.comicPages.width2000') },
+  { value: '1600', label: t('tool.modals.comicPages.width1600') },
+  { value: '1280', label: t('tool.modals.comicPages.width1280') },
+])
 
 const isCbzEditable = computed(() => format.value === 'cbz' || format.value === 'zip')
 const keptCount = computed(() => pages.value.filter((p) => !p.deleted).length)
@@ -109,10 +96,15 @@ const visiblePages = computed(() => pages.value.slice(0, visibleLimit.value))
 const hasMorePages = computed(() => pages.value.length > visibleLimit.value)
 
 const dialogSubtitle = computed(() => {
-  const parts = [`共 ${pages.value.length} 页`, `保留 ${keptCount.value} 页`]
-  if (deletedCount.value > 0) parts.push(`待删除 ${deletedCount.value} 页`)
-  parts.push(`当前体积 ${formatBytes(totalSizeBytes.value)}`)
-  if (isCbzEditable.value) parts.push('支持拖拽调序与点击放大预览')
+  const parts = [
+    t('tool.modals.comicPages.totalPages', { count: pages.value.length }),
+    t('tool.modals.comicPages.keptPages', { count: keptCount.value }),
+  ]
+  if (deletedCount.value > 0) {
+    parts.push(t('tool.modals.comicPages.pendingDeletePages', { count: deletedCount.value }))
+  }
+  parts.push(t('tool.modals.comicPages.currentSize', { size: formatBytes(totalSizeBytes.value) }))
+  if (isCbzEditable.value) parts.push(t('tool.modals.comicPages.cbzHint'))
   return parts.join(' · ')
 })
 
@@ -212,10 +204,10 @@ async function handleDialogClose(): Promise<void> {
   }
   if (isDirty.value) {
     const ok = await dialogStore.confirm({
-      title: '放弃未保存的页面调整？',
-      message: '当前页面排序、标记或删除操作尚未写入 CBZ 文件，关闭后将丢失。',
-      confirmText: '放弃并关闭',
-      cancelText: '继续编辑',
+      title: t('tool.modals.comicPages.discardTitle'),
+      message: t('tool.modals.comicPages.discardMsg'),
+      confirmText: t('tool.modals.comicPages.discardConfirm'),
+      cancelText: t('tool.inspector.continueEditing'),
       danger: true,
     })
     if (!ok) return
@@ -299,7 +291,7 @@ async function handleSave(): Promise<void> {
   if (!props.entry || !isCbzEditable.value) return
   const kept = pages.value.filter((p) => !p.deleted)
   if (kept.length === 0) {
-    errorMsg.value = '至少需要保留一页漫画图像'
+    errorMsg.value = t('tool.modals.comicPages.keepAtLeastOne')
     return
   }
   saving.value = true
@@ -320,13 +312,11 @@ async function handleSave(): Promise<void> {
       parsedMaxWidth,
     )
     lastReport.value = res.report
-    const savedRatio =
-      res.report.before_bytes > 0
-        ? Math.round(
-            ((res.report.before_bytes - res.report.after_bytes) / res.report.before_bytes) * 100,
-          )
-        : 0
-    statusMsg.value = `已保存 ${res.report.page_count} 页（${formatBytes(res.report.before_bytes)} → ${formatBytes(res.report.after_bytes)}，${savedRatio >= 0 ? `减少 ${savedRatio}%` : `增加 ${Math.abs(savedRatio)}%`}）`
+    statusMsg.value = t('tool.modals.comicPages.savedReport', {
+      pages: res.report.page_count,
+      before: formatBytes(res.report.before_bytes),
+      after: formatBytes(res.report.after_bytes),
+    })
     emit('saved', res.detail)
     await loadPages({ preserveReport: true })
   } catch (err) {
@@ -340,14 +330,18 @@ async function handleSave(): Promise<void> {
 <template>
   <MdDialog
     :open="Boolean(open && entry)"
-    :title="entry ? `漫画页面管理与体积瘦身 · ${entry.file_name}` : '漫画页面管理与体积瘦身'"
+    :title="
+      entry
+        ? t('tool.modals.comicPages.titleWithFile', { name: entry.file_name })
+        : t('tool.modals.comicPages.title')
+    "
     :subtitle="dialogSubtitle"
     fullscreen
     :close-on-backdrop="!saving && lightboxIdx === null"
     @close="handleDialogClose"
   >
     <template #icon>
-      <LuImage class="h-5 w-5" />
+      <LuImage class="h-5 w-5" aria-hidden="true" />
     </template>
 
     <template #headerActions>
@@ -358,7 +352,7 @@ async function handleSave(): Promise<void> {
         :icon="LuRotateCcw"
         @click="restoreAll"
       >
-        恢复全部
+        {{ t('tool.modals.comicPages.restoreAll') }}
       </MdButton>
       <MdButton
         variant="filled"
@@ -368,22 +362,22 @@ async function handleSave(): Promise<void> {
         :disabled="loading || !isCbzEditable"
         @click="handleSave"
       >
-        保存重写 CBZ
+        {{ t('tool.modals.comicPages.saveCbz') }}
       </MdButton>
     </template>
 
     <div v-if="entry" class="space-y-4 py-1">
       <!-- Optimize / Re-encode Bar -->
       <div
-        class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs"
+        class="text-body-small flex flex-wrap items-center justify-between gap-3 rounded-corner-lg bg-surface-container-low px-4 py-2.5"
       >
         <div class="flex flex-wrap items-center gap-3">
-          <span class="inline-flex items-center gap-1 font-medium text-[var(--md-sys-color-on-surface-variant)]">
-            <LuSparkles class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-            保存时优化：
+          <span class="inline-flex items-center gap-1 font-medium text-on-surface-variant">
+            <LuSparkles class="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+            {{ t('tool.modals.comicPages.optimizeLabel') }}
           </span>
           <div class="flex items-center gap-1.5">
-            <span class="text-[var(--md-sys-color-on-surface-variant)]">图像编码</span>
+            <span class="text-on-surface-variant">{{ t('tool.modals.comicPages.imageEncoding') }}</span>
             <div class="w-56">
               <MdSelect
                 :model-value="reencode"
@@ -394,38 +388,49 @@ async function handleSave(): Promise<void> {
             </div>
           </div>
           <div v-if="reencode === 'jpeg'" class="flex items-center gap-2">
-            <span class="text-[var(--md-sys-color-on-surface-variant)]">质量 {{ jpegQuality }}</span>
+            <span class="text-on-surface-variant">
+              {{ t('tool.modals.comicPages.quality', { q: jpegQuality }) }}
+            </span>
             <div class="w-28">
-              <AppSlider v-model="jpegQuality" :min="60" :max="95" :step="2" aria-label="JPEG 质量" />
+              <AppSlider
+                v-model="jpegQuality"
+                :min="60"
+                :max="95"
+                :step="2"
+                :aria-label="t('tool.modals.comicPages.quality', { q: jpegQuality })"
+              />
             </div>
           </div>
           <div class="flex items-center gap-1.5">
-            <span class="text-[var(--md-sys-color-on-surface-variant)]">最大宽度</span>
+            <span class="text-on-surface-variant">{{ t('tool.modals.comicPages.maxWidth') }}</span>
             <div class="w-40">
               <MdSelect v-model="maxWidthStr" :options="maxWidthOptions" variant="compact" />
             </div>
           </div>
         </div>
 
-        <div class="flex items-center gap-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-          <span v-if="!isCbzEditable" class="text-[var(--md-sys-color-warning)]">
-            当前为 {{ format.toUpperCase() }}（仅预览，重写支持 CBZ/ZIP）
+        <div class="flex items-center gap-2 text-on-surface-variant">
+          <span v-if="!isCbzEditable" class="text-warning">
+            {{ t('tool.modals.comicPages.readOnlyFormat', { fmt: format.toUpperCase() }) }}
           </span>
           <span
             v-else-if="statusMsg"
-            class="inline-flex items-center gap-1 font-medium text-[var(--md-sys-color-success)]"
+            class="inline-flex items-center gap-1 font-medium text-success"
           >
-            <LuCheck class="h-3.5 w-3.5" /> {{ statusMsg }}
+            <LuCheck class="h-3.5 w-3.5" aria-hidden="true" /> {{ statusMsg }}
           </span>
-          <span v-else-if="errorMsg" class="font-medium text-[var(--md-sys-color-error)]">{{ errorMsg }}</span>
-          <span v-else>保存时自动剔除 __MACOSX 垃圾、补零重命名并写入 ComicInfo.xml &lt;Pages&gt;</span>
+          <span v-else-if="errorMsg" class="font-medium text-error">{{ errorMsg }}</span>
+          <span v-else>{{ t('tool.modals.comicPages.cbzAutoCleanHint') }}</span>
         </div>
       </div>
 
       <!-- Page Grid -->
-      <div v-if="loading" class="flex h-64 items-center justify-center gap-2 text-sm text-[var(--md-sys-color-on-surface-variant)]">
-        <LuLoader2 class="h-5 w-5 animate-spin text-[var(--md-sys-color-primary)]" />
-        <span>正在读取漫画页面与尺寸信息…</span>
+      <div
+        v-if="loading"
+        class="text-body-medium flex h-64 items-center justify-center gap-2 text-on-surface-variant"
+      >
+        <LuLoader2 class="h-5 w-5 animate-spin text-primary" aria-hidden="true" />
+        <span>{{ t('tool.modals.comicPages.loadingPages') }}</span>
       </div>
 
       <template v-else>
@@ -436,15 +441,15 @@ async function handleSave(): Promise<void> {
             v-for="(page, idx) in visiblePages"
             :key="page.entry_name"
             :draggable="isCbzEditable"
-            class="group relative flex flex-col overflow-hidden rounded-2xl border transition"
+            class="group relative flex flex-col overflow-hidden rounded-corner-lg transition"
             :class="[
               dragOverIdx === idx && dragFromIdx !== idx
-                ? 'scale-[1.01] border-[var(--md-sys-color-primary)] ring-2 ring-[var(--md-sys-color-primary)]'
+                ? 'scale-[1.01] ring-2 ring-primary'
                 : page.deleted
-                  ? 'border-[var(--md-sys-color-error)]/55 bg-[var(--md-sys-color-error-container)]/30 opacity-45'
+                  ? 'bg-error-container/30 opacity-45'
                   : page.page_type === 'FrontCover'
-                    ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface)] shadow-sm'
-                    : 'border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] hover:border-[var(--md-sys-color-primary)]/60',
+                    ? 'bg-surface-container-low shadow-elevation-1 ring-1 ring-primary'
+                    : 'bg-surface-container-low hover:bg-surface-container',
             ]"
             @dragstart="handleDragStart(idx, $event)"
             @dragover="handleDragOver(idx, $event)"
@@ -454,7 +459,12 @@ async function handleSave(): Promise<void> {
             <!-- Thumbnail -->
             <button
               type="button"
-              :aria-label="`放大预览第 ${idx + 1} 页 ${page.entry_name}`"
+              :aria-label="
+                t('tool.modals.comicPages.previewPageAria', {
+                  num: idx + 1,
+                  name: page.entry_name,
+                })
+              "
               class="relative block aspect-[3/4] w-full cursor-zoom-in overflow-hidden bg-surface-container text-left outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
               @click="lightboxIdx = idx"
             >
@@ -473,96 +483,97 @@ async function handleSave(): Promise<void> {
               />
               <!-- Top badges -->
               <div class="absolute top-1.5 left-1.5 flex flex-wrap gap-1">
-                <span class="inline-flex items-center gap-0.5 rounded-md bg-scrim/75 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                  <LuGripVertical v-if="isCbzEditable" class="h-2.5 w-2.5 opacity-75" />
+                <span class="text-label-small inline-flex items-center gap-0.5 rounded-corner-xs bg-scrim/75 px-1.5 py-0.5 text-white">
+                  <LuGripVertical v-if="isCbzEditable" class="h-2.5 w-2.5 opacity-75" aria-hidden="true" />
                   #{{ idx + 1 }}
                 </span>
                 <span
                   v-if="page.page_type === 'FrontCover'"
-                  class="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-on-primary"
+                  class="text-label-small rounded-corner-xs bg-primary px-1.5 py-0.5 text-on-primary"
                 >
-                  封面
+                  {{ t('tool.modals.comicPages.coverBadge') }}
                 </span>
                 <span
                   v-if="page.double_page"
-                  class="rounded-md bg-tertiary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-container"
+                  class="text-label-small rounded-corner-xs bg-tertiary-container px-1.5 py-0.5 text-on-tertiary-container"
                 >
-                  双页跨页
+                  {{ t('tool.modals.comicPages.doublePageBadge') }}
                 </span>
               </div>
               <span
-                class="absolute right-1.5 bottom-1.5 rounded-lg bg-scrim/70 p-1 text-white opacity-0 transition group-hover:opacity-100"
+                class="absolute right-1.5 bottom-1.5 rounded-corner-xs bg-scrim/70 p-1 text-white opacity-0 transition group-hover:opacity-100"
                 aria-hidden="true"
               >
                 <LuMaximize2 class="h-3 w-3" />
               </span>
               <span
                 v-if="page.deleted"
-                class="absolute inset-0 flex items-center justify-center bg-scrim/65 text-xs font-semibold text-error-container"
+                class="text-label-large absolute inset-0 flex items-center justify-center bg-scrim/65 text-error-container"
               >
-                待删除
+                {{ t('tool.modals.comicPages.pendingDeleteBadge') }}
               </span>
             </button>
 
             <!-- Meta + Actions -->
-            <div class="flex flex-col gap-1.5 p-2">
-              <div class="truncate text-[11px] font-medium" :title="page.entry_name">
+            <div class="flex flex-col gap-1 p-2">
+              <div class="text-label-medium truncate" :title="page.entry_name">
                 {{ page.entry_name.split('/').pop() }}
               </div>
-              <div class="flex items-center justify-between text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="text-label-small flex items-center justify-between text-on-surface-variant">
                 <span>{{ page.width && page.height ? `${page.width}×${page.height}` : '—' }}</span>
                 <span>{{ formatBytes(page.file_size) }}</span>
               </div>
-              <div v-if="isCbzEditable" class="mt-0.5 flex items-center justify-between gap-1">
-                <div class="flex items-center gap-0.5">
-                  <button
-                    type="button"
-                    title="前移一页"
+              <div v-if="isCbzEditable" class="mt-0.5 flex items-center justify-between gap-0.5">
+                <div class="flex items-center">
+                  <MdIconButton
+                    size="sm"
                     :disabled="idx === 0"
-                    class="rounded-lg p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] disabled:opacity-30"
+                    :icon="LuArrowLeft"
+                    :tooltip="t('tool.modals.comicPages.movePrev')"
+                    :aria-label="t('tool.modals.comicPages.movePrev')"
                     @click="movePage(idx, -1)"
-                  >
-                    <LuArrowLeft class="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    title="后移一页"
+                  />
+                  <MdIconButton
+                    size="sm"
                     :disabled="idx === pages.length - 1"
-                    class="rounded-lg p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] disabled:opacity-30"
+                    :icon="LuArrowRight"
+                    :tooltip="t('tool.modals.comicPages.moveNext')"
+                    :aria-label="t('tool.modals.comicPages.moveNext')"
                     @click="movePage(idx, 1)"
-                  >
-                    <LuArrowRight class="h-3.5 w-3.5" />
-                  </button>
+                  />
                 </div>
-                <div class="flex items-center gap-0.5">
-                  <button
-                    type="button"
-                    title="设为封面并移至首页"
-                    class="rounded-lg p-1 hover:bg-[var(--md-sys-color-surface-container-high)]"
-                    :class="page.page_type === 'FrontCover' ? 'text-[var(--md-sys-color-primary)]' : 'text-[var(--md-sys-color-on-surface-variant)]'"
+                <div class="flex items-center">
+                  <MdIconButton
+                    size="sm"
+                    :selected="page.page_type === 'FrontCover'"
+                    :icon="LuBookOpen"
+                    :tooltip="t('tool.modals.comicPages.setAsCover')"
+                    :aria-label="t('tool.modals.comicPages.setAsCover')"
                     @click="setAsCover(idx)"
-                  >
-                    <LuBookOpen class="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    title="标记/取消双页跨页"
-                    class="rounded-lg p-1 hover:bg-[var(--md-sys-color-surface-container-high)]"
-                    :class="page.double_page ? 'text-[var(--md-sys-color-primary)]' : 'text-[var(--md-sys-color-on-surface-variant)]'"
+                  />
+                  <MdIconButton
+                    size="sm"
+                    :selected="page.double_page"
+                    :icon="LuColumns2"
+                    :tooltip="t('tool.modals.comicPages.toggleDouble')"
+                    :aria-label="t('tool.modals.comicPages.toggleDouble')"
                     @click="toggleDoublePage(idx)"
-                  >
-                    <LuColumns2 class="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    :title="page.deleted ? '恢复此页' : '删除此页（如广告页/空白页）'"
-                    class="rounded-lg p-1 hover:bg-[var(--md-sys-color-error-container)]/50"
-                    :class="page.deleted ? 'text-[var(--md-sys-color-success)]' : 'text-[var(--md-sys-color-error)]'"
+                  />
+                  <MdIconButton
+                    size="sm"
+                    :icon="page.deleted ? LuRotateCcw : LuTrash2"
+                    :tooltip="
+                      page.deleted
+                        ? t('tool.modals.comicPages.restorePage')
+                        : t('tool.modals.comicPages.deletePage')
+                    "
+                    :aria-label="
+                      page.deleted
+                        ? t('tool.modals.comicPages.restorePage')
+                        : t('tool.modals.comicPages.deletePage')
+                    "
                     @click="toggleDelete(idx)"
-                  >
-                    <LuRotateCcw v-if="page.deleted" class="h-3.5 w-3.5" />
-                    <LuTrash2 v-else class="h-3.5 w-3.5" />
-                  </button>
+                  />
                 </div>
               </div>
             </div>
@@ -571,104 +582,92 @@ async function handleSave(): Promise<void> {
 
         <div v-if="hasMorePages" class="mt-6 flex justify-center gap-2">
           <MdButton variant="tonal" size="sm" @click="visibleLimit += PAGE_BATCH_SIZE">
-            加载更多页面（剩余 {{ pages.length - visibleLimit }} 页）
+            {{ t('tool.modals.comicPages.loadMorePages', { count: pages.length - visibleLimit }) }}
           </MdButton>
           <MdButton variant="text" size="sm" @click="visibleLimit = pages.length">
-            展开全部 {{ pages.length }} 页
+            {{ t('tool.modals.comicPages.expandAllPages', { count: pages.length }) }}
           </MdButton>
         </div>
       </template>
 
-      <!-- High-res Lightbox Preview -->
-      <Teleport to="body">
+      <!-- High-res Lightbox Preview via Fullscreen MdDialog -->
+      <MdDialog
+        :open="lightboxIdx !== null && Boolean(lightboxPage)"
+        fullscreen
+        no-body-padding
+        :title="
+          lightboxPage && lightboxIdx !== null
+            ? `#${lightboxIdx + 1} / ${pages.length} · ${lightboxPage.entry_name}`
+            : ''
+        "
+        :subtitle="
+          lightboxPage
+            ? `${
+                lightboxPage.width && lightboxPage.height
+                  ? `${lightboxPage.width}×${lightboxPage.height} · `
+                  : ''
+              }${formatBytes(lightboxPage.file_size)}`
+            : ''
+        "
+        @close="lightboxIdx = null"
+      >
+        <template v-if="lightboxPage && lightboxIdx !== null && isCbzEditable" #headerActions>
+          <MdButton variant="tonal" size="sm" @click="setAsCover(lightboxIdx)">
+            {{ t('tool.modals.comicPages.setAsCover') }}
+          </MdButton>
+          <MdButton
+            :variant="lightboxPage.double_page ? 'filled' : 'outlined'"
+            size="sm"
+            @click="toggleDoublePage(lightboxIdx)"
+          >
+            {{
+              lightboxPage.double_page
+                ? t('tool.modals.comicPages.markedDouble')
+                : t('tool.modals.comicPages.markDouble')
+            }}
+          </MdButton>
+          <MdButton
+            :variant="lightboxPage.deleted ? 'tonal' : 'outlined'"
+            :tone="lightboxPage.deleted ? 'primary' : 'error'"
+            size="sm"
+            @click="toggleDelete(lightboxIdx)"
+          >
+            {{
+              lightboxPage.deleted
+                ? t('tool.modals.comicPages.restorePage')
+                : t('tool.modals.comicPages.deletePage')
+            }}
+          </MdButton>
+        </template>
+
         <div
-          v-if="lightboxIdx !== null && lightboxPage"
-          ref="lightboxRef"
-          role="dialog"
-          aria-modal="true"
-          tabindex="-1"
-          :aria-label="lightboxPage.entry_name"
-          class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-scrim/90 text-white outline-none"
+          v-if="lightboxPage && lightboxIdx !== null"
+          class="relative flex min-h-0 flex-1 items-center justify-center bg-surface-container-lowest p-4"
           @click.self="lightboxIdx = null"
         >
-          <div class="safe-pt safe-px flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">
-            <div class="flex min-w-0 items-center gap-2">
-              <span class="shrink-0 rounded-md bg-white/15 px-2 py-0.5 font-semibold">
-                #{{ lightboxIdx + 1 }} / {{ pages.length }}
-              </span>
-              <span class="truncate font-medium">{{ lightboxPage.entry_name }}</span>
-              <span class="shrink-0 text-white/75">
-                {{ lightboxPage.width && lightboxPage.height ? `${lightboxPage.width}×${lightboxPage.height}` : '' }}
-                · {{ formatBytes(lightboxPage.file_size) }}
-              </span>
-            </div>
-            <div class="flex shrink-0 items-center gap-2">
-              <template v-if="isCbzEditable">
-                <button
-                  type="button"
-                  class="rounded-full bg-white/10 px-3 py-1.5 hover:bg-white/20"
-                  @click="setAsCover(lightboxIdx)"
-                >
-                  设为封面
-                </button>
-                <button
-                  type="button"
-                  class="rounded-full px-3 py-1.5"
-                  :class="
-                    lightboxPage.double_page
-                      ? 'bg-primary text-on-primary'
-                      : 'bg-white/10 hover:bg-white/20'
-                  "
-                  @click="toggleDoublePage(lightboxIdx)"
-                >
-                  {{ lightboxPage.double_page ? '已标双页' : '标为双页' }}
-                </button>
-                <button
-                  type="button"
-                  class="rounded-full px-3 py-1.5"
-                  :class="
-                    lightboxPage.deleted
-                      ? 'bg-success text-on-success'
-                      : 'bg-error text-on-error'
-                  "
-                  @click="toggleDelete(lightboxIdx)"
-                >
-                  {{ lightboxPage.deleted ? '恢复此页' : '删除此页' }}
-                </button>
-              </template>
-              <MdIconButton
-                size="sm"
-                :icon="LuX"
-                aria-label="关闭大图预览"
-                class="!bg-white/10 !text-white hover:!bg-white/20"
-                @click="lightboxIdx = null"
-              />
-            </div>
-          </div>
-
-          <div class="relative flex min-h-0 flex-1 items-center justify-center p-4" @click.self="lightboxIdx = null">
-            <MdIconButton
-              v-if="lightboxIdx > 0"
-              :icon="LuChevronLeft"
-              aria-label="上一页"
-              class="absolute left-4 !bg-scrim/65 !text-white hover:!bg-scrim/85"
-              @click="lightboxIdx -= 1"
-            />
-            <img
-              :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, lightboxPage.entry_name, 1400, imgVersion)"
-              :alt="lightboxPage.entry_name"
-              class="max-h-full max-w-full rounded-lg object-contain shadow-elevation-3"
-            />
-            <MdIconButton
-              v-if="lightboxIdx < pages.length - 1"
-              :icon="LuChevronRight"
-              aria-label="下一页"
-              class="absolute right-4 !bg-scrim/65 !text-white hover:!bg-scrim/85"
-              @click="lightboxIdx += 1"
-            />
-          </div>
+          <MdIconButton
+            v-if="lightboxIdx > 0"
+            variant="tonal"
+            class="absolute left-4"
+            :icon="LuChevronLeft"
+            :aria-label="t('tool.modals.comicPages.prevPage')"
+            @click="lightboxIdx -= 1"
+          />
+          <img
+            :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, lightboxPage.entry_name, 1400, imgVersion)"
+            :alt="lightboxPage.entry_name"
+            class="max-h-full max-w-full rounded-corner-md object-contain shadow-elevation-3"
+          />
+          <MdIconButton
+            v-if="lightboxIdx < pages.length - 1"
+            variant="tonal"
+            class="absolute right-4"
+            :icon="LuChevronRight"
+            :aria-label="t('tool.modals.comicPages.nextPage')"
+            @click="lightboxIdx += 1"
+          />
         </div>
-      </Teleport>
+      </MdDialog>
     </div>
   </MdDialog>
 </template>

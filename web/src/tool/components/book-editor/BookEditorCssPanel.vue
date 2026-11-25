@@ -25,11 +25,14 @@ export const cssPresets = [
     css: `body {\n  font-family: "PingFang SC", "Noto Serif CJK SC", "Hiragino Sans GB", serif;\n  line-height: 1.82;\n  margin: 0;\n  padding: 1em 1.25em;\n}\nh1, h2 {\n  font-weight: 700;\n  line-height: 1.35;\n  margin: 1.1em 0 0.8em;\n}\np {\n  margin: 0 0 0.7em;\n  text-indent: 2em;\n}\nfigure {\n  margin: 0.8em auto;\n  text-align: center;\n  page-break-inside: avoid;\n  break-inside: avoid;\n}\nfigure img, img {\n  max-width: 100%;\n  max-height: 95vh;\n  object-fit: contain;\n  display: block;\n  margin: 0 auto;\n}`,
   },
 ]
-
 </script>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 
 defineProps<{
   modelValue: string
@@ -40,42 +43,43 @@ const emit = defineEmits<{
   applyPreset: [css: string, label: string]
   close: []
 }>()
+
+const { t } = useI18n()
 </script>
 
 <template>
   <div
-    class="space-y-2 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs"
+    class="space-y-2.5 border-b border-outline-variant/50 bg-surface-container-low px-4 py-3"
   >
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-1.5">
-        <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">中文排版预设：</span>
-        <button
+        <span class="text-label-medium font-semibold text-on-surface-variant">
+          {{ t('tool.bookEditor.css.presetsLabel') }}
+        </span>
+        <MdChip
           v-for="preset in cssPresets"
           :key="preset.id"
-          type="button"
-          class="md-state rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
+          variant="suggestion"
+          :label="preset.label"
           :title="preset.desc"
           @click="emit('applyPreset', preset.css, preset.label)"
-        >
-          {{ preset.label }}
-        </button>
+        />
       </div>
-      <button
-        type="button"
-        class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
-        aria-label="关闭样式面板"
+      <MdIconButton
+        size="sm"
+        :aria-label="t('tool.bookEditor.css.closeAria')"
         @click="emit('close')"
       >
-        <LuX class="h-3.5 w-3.5" />
-      </button>
+        <LuX class="h-4 w-4" />
+      </MdIconButton>
     </div>
-    <textarea
-      :value="modelValue"
-      rows="5"
-      spellcheck="false"
-      placeholder="编辑全局 EPUB CSS 样式表（保存 EPUB 或 TXT 转 EPUB 时自动写入样式文件，右侧预览分屏实时生效）…"
-      class="md-input w-full p-2 font-mono text-[11px] leading-relaxed"
-      @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
+    <MdTextField
+      :model-value="modelValue"
+      multiline
+      :rows="5"
+      :label="t('tool.bookEditor.css.cssLabel')"
+      :placeholder="t('tool.bookEditor.css.placeholder')"
+      @update:model-value="emit('update:modelValue', $event)"
     />
   </div>
 </template>

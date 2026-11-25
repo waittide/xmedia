@@ -9,8 +9,10 @@ import {
   triggerRef,
   watch,
 } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuLoader2, LuX } from 'vue-icons-plus/lu'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
@@ -53,6 +55,7 @@ const emit = defineEmits<{
   converted: [detail: MediaFileDetail, deletedSourceTxt: boolean]
 }>()
 
+const { t } = useI18n()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 const themeStore = useThemeStore()
@@ -211,8 +214,8 @@ const {
   clearIdleSyncTimer,
   confirmDelete: (title) =>
     dialogStore.confirm({
-      title: '删除章节',
-      message: `确定删除章节「${title}」吗？`,
+      title: t('tool.bookEditor.modal.deleteChapterTitle'),
+      message: t('tool.bookEditor.modal.deleteChapterMsg', { title }),
       danger: true,
     }),
   showToast,
@@ -287,8 +290,8 @@ const {
   buildLivePreviewSrcdoc,
   confirmResegment: () =>
     dialogStore.confirm({
-      title: '重新切分章节',
-      message: '按新规则重新切分原 TXT 将覆盖当前未保存的修改，确定继续吗？',
+      title: t('tool.bookEditor.modal.resegmentTitle'),
+      message: t('tool.bookEditor.modal.resegmentMsg'),
       danger: true,
     }),
   showToast,
@@ -494,7 +497,7 @@ function formatBlockTag(tag: 'P' | 'H1' | 'H2' | 'H3' | 'BLOCKQUOTE'): void {
     const ta = sourceTextareaRef.value
     const start = ta.selectionStart
     const end = ta.selectionEnd
-    const sel = sourceBuffer.value.slice(start, end) || '文本内容'
+    const sel = sourceBuffer.value.slice(start, end) || activeTitle.value || '...'
     const lower = tag.toLowerCase()
     const wrapped = `<${lower}>${sel}</${lower}>`
     sourceBuffer.value = `${sourceBuffer.value.slice(0, start)}${wrapped}${sourceBuffer.value.slice(end)}`
@@ -555,8 +558,8 @@ function triggerEpubImageUpload(): void {
 async function requestClose(): Promise<void> {
   if (hasUnsavedEdits.value) {
     const ok = await dialogStore.confirm({
-      title: '放弃未保存修改',
-      message: '当前有尚未保存的目录或正文修改，确定退出工作台吗？',
+      title: t('tool.bookEditor.modal.discardTitle'),
+      message: t('tool.bookEditor.modal.discardMsg'),
       danger: true,
     })
     if (!ok) return
@@ -565,7 +568,7 @@ async function requestClose(): Promise<void> {
 }
 
 function handleWorkbenchKeydown(ev: KeyboardEvent): void {
-  if (!props.open) return
+  if (!props.open || dialogStore.active) return
   const mod = ev.metaKey || ev.ctrlKey
   const key = ev.key.toLowerCase()
 
@@ -647,24 +650,24 @@ onBeforeUnmount(() => {
 
       <div
         v-if="errorMsg"
-        class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-error)]/30 bg-[var(--md-sys-color-error-container)] px-4 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
+        class="flex shrink-0 items-center justify-between gap-2 bg-error-container px-4 py-1.5 text-body-small text-on-error-container"
       >
         <span>{{ errorMsg }}</span>
-        <button
-          type="button"
-          class="md-state rounded p-0.5 text-[var(--md-sys-color-on-error-container)]"
+        <MdIconButton
+          size="sm"
+          :aria-label="t('tool.actions.close')"
           @click="errorMsg = null"
         >
-          <LuX class="h-3.5 w-3.5" />
-        </button>
+          <LuX class="h-4 w-4" />
+        </MdIconButton>
       </div>
 
       <div
         v-if="loading"
-        class="flex flex-1 flex-col items-center justify-center gap-2.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+        class="flex flex-1 flex-col items-center justify-center gap-3 text-body-small text-on-surface-variant"
       >
-        <LuLoader2 class="h-6 w-6 animate-spin text-[var(--md-sys-color-primary)]" />
-        <span>正在加载书籍目录结构与样式…</span>
+        <LuLoader2 class="h-6 w-6 animate-spin text-primary" />
+        <span>{{ t('tool.bookEditor.modal.loadingBook') }}</span>
       </div>
 
       <div v-else class="relative flex min-h-0 flex-1 overflow-hidden">
@@ -689,7 +692,7 @@ onBeforeUnmount(() => {
           @resegment-txt="handleResegmentTxt"
         />
 
-        <div class="flex min-w-0 flex-1 flex-col bg-[var(--md-sys-color-surface)]">
+        <div class="flex min-w-0 flex-1 flex-col bg-surface">
           <BookEditorToolbar
             :surface-mode="surfaceMode"
             :doc-format="docFormat"
@@ -750,19 +753,20 @@ onBeforeUnmount(() => {
             @close="findBarOpen = false"
           />
 
-          <div class="flex shrink-0 items-center gap-3 border-b border-[var(--md-sys-color-outline-variant)]/60 px-6 py-2.5">
-            <span class="shrink-0 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+          <div class="flex shrink-0 items-center gap-3 border-b border-outline-variant/40 px-6 py-2.5">
+            <span class="shrink-0 font-mono text-label-small text-on-surface-variant">
               #{{ activeIndex + 1 }}
             </span>
             <input
               :value="activeTitle"
               type="text"
-              placeholder="输入目录章节标题…"
-              class="min-w-0 flex-1 bg-transparent text-base font-bold text-[var(--md-sys-color-on-surface)] outline-none placeholder:text-[var(--md-sys-color-on-surface-variant)]/50"
+              :aria-label="t('tool.bookEditor.modal.chapterTitlePlaceholder')"
+              :placeholder="t('tool.bookEditor.modal.chapterTitlePlaceholder')"
+              class="min-w-0 flex-1 bg-transparent text-title-medium font-semibold text-on-surface outline-none placeholder:text-on-surface-variant/50"
               @input="onActiveTitleInput(($event.target as HTMLInputElement).value)"
             />
-            <span class="shrink-0 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              本章 {{ activeCharCount.toLocaleString() }} 字
+            <span class="shrink-0 font-mono text-label-small text-on-surface-variant">
+              {{ t('tool.bookEditor.modal.chapterChars', { count: activeCharCount.toLocaleString() }) }}
             </span>
           </div>
 
@@ -786,8 +790,9 @@ onBeforeUnmount(() => {
               ref="sourceTextareaRef"
               v-model="sourceBuffer"
               spellcheck="false"
-              placeholder="在此编辑章节 <body> 内的 XHTML 源码…"
-              class="h-full w-full resize-none bg-transparent p-5 font-mono text-xs leading-relaxed text-[var(--md-sys-color-on-surface)] outline-none"
+              :aria-label="t('tool.bookEditor.modal.xhtmlPlaceholder')"
+              :placeholder="t('tool.bookEditor.modal.xhtmlPlaceholder')"
+              class="h-full w-full resize-none bg-transparent p-5 font-mono text-body-small leading-relaxed text-on-surface outline-none"
               @input="onSourceTextareaInput"
               @keydown="onSourceKeydown"
             />
@@ -796,17 +801,21 @@ onBeforeUnmount(() => {
 
         <aside
           v-if="showLivePreview"
-          class="hidden w-[38%] max-w-xl shrink-0 flex-col border-l border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] lg:flex"
+          class="hidden w-[38%] max-w-xl shrink-0 flex-col border-l border-outline-variant/50 bg-surface-container-low lg:flex"
         >
-          <div class="flex h-9 shrink-0 items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/70 px-3.5 text-xs">
-            <span class="font-semibold text-[var(--md-sys-color-on-surface)]">阅读器实时排版预览</span>
-            <span class="text-[10px] text-[var(--md-sys-color-on-surface-variant)]">已加载包内 CSS 与原图</span>
+          <div class="flex h-10 shrink-0 items-center justify-between border-b border-outline-variant/40 px-4">
+            <span class="text-label-large font-semibold text-on-surface">
+              {{ t('tool.bookEditor.modal.livePreviewTitle') }}
+            </span>
+            <span class="text-label-small text-on-surface-variant">
+              {{ t('tool.bookEditor.modal.livePreviewSub') }}
+            </span>
           </div>
           <iframe
             :srcdoc="previewSrcdoc"
-            title="EPUB Live Preview"
+            :title="t('tool.bookEditor.modal.livePreviewTitle')"
             sandbox=""
-            class="min-h-0 w-full flex-1 border-0 bg-[var(--md-sys-color-surface)]"
+            class="min-h-0 w-full flex-1 border-0 bg-surface"
           />
         </aside>
       </div>

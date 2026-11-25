@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuCheck,
   LuDisc3,
@@ -9,7 +10,6 @@ import {
   LuSlidersHorizontal,
   LuVolume2,
 } from 'vue-icons-plus/lu'
-
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
@@ -31,6 +31,8 @@ const emit = defineEmits<{
   completed: []
 }>()
 
+const { t } = useI18n()
+
 const isSingleMode = computed(() => props.entries.length === 1)
 const primaryEntry = computed(() => props.entries[0] ?? null)
 const sortedEntries = computed(() =>
@@ -44,7 +46,7 @@ const successMsg = ref('')
 
 // Lyrics state
 const lyricsText = ref('')
-const offsetMs = ref(0)
+const offsetMsStr = ref('0')
 const stripCreditNoise = ref(true)
 const zhDirection = ref<'t2s' | 's2t' | ''>('')
 const syncMode = ref<'both' | 'sidecar_to_embedded' | 'embedded_to_sidecar' | 'none'>('both')
@@ -56,45 +58,47 @@ const coverQuality = ref(86)
 const tabOptions = computed(() => {
   const list: Array<{ value: 'lyrics' | 'audio' | 'album'; label: string; icon: typeof LuMusic }> = []
   if (isSingleMode.value) {
-    list.push({ value: 'lyrics', label: '歌词精校 & 同步', icon: LuSlidersHorizontal })
+    list.push({ value: 'lyrics', label: t('tool.modals.musicTools.tabLyrics'), icon: LuSlidersHorizontal })
   }
-  list.push({ value: 'audio', label: '响度 / 封面 / CUE 分轨', icon: LuVolume2 })
-  list.push({ value: 'album', label: '专辑聚类批量同步', icon: LuDisc3 })
+  list.push({ value: 'audio', label: t('tool.modals.musicTools.tabAudio'), icon: LuVolume2 })
+  list.push({ value: 'album', label: t('tool.modals.musicTools.tabAlbum'), icon: LuDisc3 })
   return list
 })
 
 const dialogTitle = computed(() =>
   isSingleMode.value && primaryEntry.value
-    ? `音乐精校工具箱 · ${primaryEntry.value.file_name}`
-    : `音乐精校工具箱（已选 ${sortedEntries.value.length} 首曲目）`,
+    ? t('tool.modals.musicTools.titleSingle', { name: primaryEntry.value.file_name })
+    : t('tool.modals.musicTools.titleBatch', { count: sortedEntries.value.length }),
 )
 
-const zhOptions = [
-  { value: '', label: '不转换' },
-  { value: 't2s', label: '繁 → 简' },
-  { value: 's2t', label: '简 → 繁' },
-]
-const syncModeOptions = [
-  { value: 'both', label: '同时同步内嵌 + 侧车 .lrc' },
-  { value: 'sidecar_to_embedded', label: '仅写入音频内嵌标签' },
-  { value: 'embedded_to_sidecar', label: '仅导出侧车 .lrc 文件' },
-  { value: 'none', label: '仅更新当前缓冲不额外同步' },
-]
-const coverDimOptions = [
+const zhOptions = computed(() => [
+  { value: '', label: t('tool.modals.batchMeta.zhNone') },
+  { value: 't2s', label: t('tool.modals.batchMeta.zhT2s') },
+  { value: 's2t', label: t('tool.modals.batchMeta.zhS2t') },
+])
+
+const syncModeOptions = computed(() => [
+  { value: 'both', label: t('tool.modals.musicTools.syncBoth') },
+  { value: 'sidecar_to_embedded', label: t('tool.modals.musicTools.syncEmbeddedOnly') },
+  { value: 'embedded_to_sidecar', label: t('tool.modals.musicTools.syncSidecarOnly') },
+  { value: 'none', label: t('tool.modals.musicTools.syncBufferOnly') },
+])
+
+const coverDimOptions = computed(() => [
   { value: '1200', label: '1200 px' },
-  { value: '1000', label: '1000 px（推荐）' },
+  { value: '1000', label: '1000 px' },
   { value: '800', label: '800 px' },
-]
+])
 
 // Album batch sync state
 const albumName = ref('')
 const albumArtist = ref('')
 const trackArtist = ref('')
-const albumYear = ref<number | null>(null)
+const albumYearStr = ref('')
 const albumGenre = ref('')
-const discNumber = ref<number | null>(1)
+const discNumberStr = ref('1')
 const autoNumberTracks = ref(true)
-const startTrack = ref(1)
+const startTrackStr = ref('1')
 
 let musicLoadSeq = 0
 
@@ -105,7 +109,7 @@ watch(
     if (!isOpen) return
     errorMsg.value = ''
     successMsg.value = ''
-    offsetMs.value = 0
+    offsetMsStr.value = '0'
     activeTab.value = isSingleMode.value ? 'lyrics' : 'album'
 
     if (isSingleMode.value && primaryEntry.value) {
@@ -118,7 +122,8 @@ watch(
             detail.metadata.data.sidecar_lrc || detail.metadata.data.embedded_lyrics || ''
           albumName.value = detail.metadata.data.album || ''
           albumArtist.value = detail.metadata.data.album_artist || detail.metadata.data.artist || ''
-          albumYear.value = detail.metadata.data.year ?? null
+          albumYearStr.value =
+            detail.metadata.data.year != null ? String(detail.metadata.data.year) : ''
           albumGenre.value = detail.metadata.data.genre || ''
         }
       } catch {
@@ -129,8 +134,15 @@ watch(
   { immediate: true },
 )
 
-function toOptInt(val: unknown): number | undefined {
-  return typeof val === 'number' && Number.isFinite(val) ? Math.trunc(val) : undefined
+function toOptInt(raw: string): number | undefined {
+  if (!raw.trim()) return undefined
+  const parsed = Number.parseInt(raw.trim(), 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function shiftOffset(delta: number): void {
+  const cur = toOptInt(offsetMsStr.value) ?? 0
+  offsetMsStr.value = String(cur + delta)
 }
 
 async function handleProcessLyrics(): Promise<void> {
@@ -143,7 +155,7 @@ async function handleProcessLyrics(): Promise<void> {
       primaryEntry.value.root_id,
       primaryEntry.value.rel_path,
       {
-        offset_ms: toOptInt(offsetMs.value) ?? 0,
+        offset_ms: toOptInt(offsetMsStr.value) ?? 0,
         strip_credit_noise: stripCreditNoise.value,
         zh_direction: zhDirection.value || null,
         sync_mode: syncMode.value,
@@ -151,11 +163,8 @@ async function handleProcessLyrics(): Promise<void> {
       },
     )
     lyricsText.value = res.report.final_lyrics
-    offsetMs.value = 0
-    const targets: string[] = []
-    if (res.report.updated_embedded) targets.push('内嵌歌词')
-    if (res.report.updated_sidecar) targets.push('侧车 .lrc')
-    successMsg.value = `歌词已更新至 ${targets.join(' + ')}${res.report.removed_lines > 0 ? `，清理 ${res.report.removed_lines} 行制作/版权噪声` : ''}`
+    offsetMsStr.value = '0'
+    successMsg.value = t('tool.common.saved')
     emit('updated', res.detail)
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -177,11 +186,18 @@ async function handleOptimizeCover(): Promise<void> {
       coverQuality.value,
     )
     if (!res.report.had_cover) {
-      successMsg.value = '该音频未包含内嵌封面'
+      successMsg.value = t('tool.modals.musicTools.noEmbeddedCover')
     } else if (!res.report.optimized) {
-      successMsg.value = `封面已足够精简（${(res.report.before_bytes / 1024).toFixed(1)} KB），无需重压`
+      successMsg.value = t('tool.modals.musicTools.coverAlreadyOptimal', {
+        kb: (res.report.before_bytes / 1024).toFixed(1),
+      })
     } else {
-      successMsg.value = `封面已优化：${(res.report.before_bytes / 1024).toFixed(1)} KB → ${(res.report.after_bytes / 1024).toFixed(1)} KB（${res.report.width}×${res.report.height}）`
+      successMsg.value = t('tool.modals.musicTools.coverOptimized', {
+        before: (res.report.before_bytes / 1024).toFixed(1),
+        after: (res.report.after_bytes / 1024).toFixed(1),
+        w: res.report.width,
+        h: res.report.height,
+      })
       emit('updated', res.detail)
     }
   } catch (err) {
@@ -201,9 +217,7 @@ async function handleReplayGain(): Promise<void> {
       props.rootId,
       sortedEntries.value.map((e) => e.rel_path),
     )
-    const albumPart =
-      rep.album_gain_db !== null ? `，专辑增益 ${rep.album_gain_db > 0 ? '+' : ''}${rep.album_gain_db} dB` : ''
-    successMsg.value = `已写入 ${rep.processed} 首曲目的 ReplayGain 响度标签${albumPart}`
+    successMsg.value = t('tool.modals.musicTools.replayGainDone', { count: rep.processed })
     emit('completed')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -219,7 +233,7 @@ async function handleSplitCue(): Promise<void> {
   successMsg.value = ''
   try {
     const rep = await toolApi.splitMusicCue(primaryEntry.value.root_id, primaryEntry.value.rel_path)
-    successMsg.value = `CUE 分轨完成：生成 ${rep.created_files.length} 首无损 FLAC 并写入标签`
+    successMsg.value = t('tool.modals.musicTools.cueDone', { count: rep.created_files.length })
     emit('completed')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -241,14 +255,14 @@ async function handleBatchSyncAlbum(): Promise<void> {
         album: albumName.value.trim() || undefined,
         album_artist: albumArtist.value.trim() || undefined,
         artist: trackArtist.value.trim() || undefined,
-        year: toOptInt(albumYear.value),
+        year: toOptInt(albumYearStr.value),
         genre: albumGenre.value.trim() || undefined,
-        disc_number: toOptInt(discNumber.value),
+        disc_number: toOptInt(discNumberStr.value),
         auto_number_tracks: autoNumberTracks.value,
-        start_track: toOptInt(startTrack.value) ?? 1,
+        start_track: toOptInt(startTrackStr.value) ?? 1,
       },
     )
-    successMsg.value = `已同步 ${rep.updated_count} 首曲目的专辑信息${rep.failed_paths.length > 0 ? `（失败 ${rep.failed_paths.length}）` : ''}`
+    successMsg.value = t('tool.modals.musicTools.albumSynced', { count: rep.updated_count })
     emit('completed')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -262,62 +276,42 @@ async function handleBatchSyncAlbum(): Promise<void> {
   <MdDialog
     :open="open"
     :title="dialogTitle"
-    subtitle="歌词偏移精校、ReplayGain 响度归一化、封面瘦身、CUE 无损分轨与专辑批量同步"
+    :subtitle="t('tool.modals.musicTools.subtitle')"
     max-width="max-w-2xl"
     :close-on-backdrop="!busy"
     @close="!busy && emit('close')"
   >
     <template #icon>
-      <LuMusic class="h-5 w-5" />
+      <LuMusic class="h-5 w-5" aria-hidden="true" />
     </template>
 
-    <div class="space-y-4 py-1 text-xs">
-      <MdTabs v-model="activeTab" :tabs="tabOptions" variant="primary" aria-label="音乐工具箱功能" />
+    <div class="space-y-4 py-1">
+      <MdTabs v-model="activeTab" :tabs="tabOptions" variant="primary" :aria-label="dialogTitle" />
 
       <!-- TAB 1: Lyrics -->
       <div v-if="activeTab === 'lyrics' && isSingleMode" class="space-y-3">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">时间轴偏移 (ms)：</span>
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-            @click="offsetMs -= 500"
-          >
-            -0.5s
-          </button>
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-            @click="offsetMs -= 100"
-          >
-            -0.1s
-          </button>
-          <input
-            v-model.number="offsetMs"
-            type="number"
-            step="100"
-            class="md-input h-8 w-24 !px-2 text-center text-xs"
-          />
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-            @click="offsetMs += 100"
-          >
-            +0.1s
-          </button>
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-            @click="offsetMs += 500"
-          >
-            +0.5s
-          </button>
+        <div class="flex flex-wrap items-end gap-2">
+          <div class="w-36">
+            <MdTextField
+              v-model="offsetMsStr"
+              size="sm"
+              type="number"
+              step="100"
+              :label="t('tool.modals.musicTools.offsetLabel')"
+            />
+          </div>
+          <MdButton variant="outlined" size="sm" @click="shiftOffset(-500)">-0.5s</MdButton>
+          <MdButton variant="outlined" size="sm" @click="shiftOffset(-100)">-0.1s</MdButton>
+          <MdButton variant="outlined" size="sm" @click="shiftOffset(100)">+0.1s</MdButton>
+          <MdButton variant="outlined" size="sm" @click="shiftOffset(500)">+0.5s</MdButton>
         </div>
 
         <div class="flex flex-wrap items-center gap-4">
-          <AppCheckbox v-model="stripCreditNoise" label="清理头部作词/作曲/版权噪声行" />
+          <AppCheckbox v-model="stripCreditNoise" :label="t('tool.modals.musicTools.stripNoise')" />
           <div class="inline-flex items-center gap-1.5">
-            <span class="text-[var(--md-sys-color-on-surface-variant)]">简繁转换</span>
+            <span class="text-label-medium text-on-surface-variant">
+              {{ t('tool.modals.musicTools.zhConvert') }}
+            </span>
             <div class="w-28">
               <MdSelect
                 :model-value="zhDirection"
@@ -328,7 +322,9 @@ async function handleBatchSyncAlbum(): Promise<void> {
             </div>
           </div>
           <div class="inline-flex items-center gap-1.5">
-            <span class="text-[var(--md-sys-color-on-surface-variant)]">写入目标</span>
+            <span class="text-label-medium text-on-surface-variant">
+              {{ t('tool.modals.musicTools.syncTarget') }}
+            </span>
             <div class="w-48">
               <MdSelect
                 :model-value="syncMode"
@@ -344,69 +340,65 @@ async function handleBatchSyncAlbum(): Promise<void> {
           v-model="lyricsText"
           multiline
           :rows="11"
-          placeholder="[00:00.00] 歌词内容（留空则自动读取现有内嵌或侧车歌词）"
-          aria-label="歌词内容"
+          :placeholder="t('tool.modals.musicTools.lyricsPlaceholder')"
+          :aria-label="t('tool.modals.musicTools.tabLyrics')"
         />
 
         <div class="flex justify-end">
           <MdButton variant="filled" size="sm" :loading="busy" @click="handleProcessLyrics">
-            应用歌词精校并保存
+            {{ t('tool.modals.musicTools.applyLyrics') }}
           </MdButton>
         </div>
       </div>
 
       <!-- TAB 2: Audio / ReplayGain / Cover / CUE -->
       <div v-else-if="activeTab === 'audio'" class="space-y-3.5">
-        <div class="rounded-2xl bg-surface-container-low p-4">
-          <div class="mb-1 flex items-center gap-2 font-semibold">
-            <LuVolume2 class="h-4 w-4 text-primary" />
-            ReplayGain 2.0 响度归一化（FFmpeg EBU R128）
+        <div class="rounded-corner-lg bg-surface p-4">
+          <div class="text-title-small mb-1 flex items-center gap-2 text-on-surface">
+            <LuVolume2 class="h-4 w-4 text-primary" aria-hidden="true" />
+            <span>{{ t('tool.modals.musicTools.replayGainHeading') }}</span>
           </div>
-          <p class="mb-3 text-[11px] text-on-surface-variant">
-            无损分析音轨集成响度（基准 -18 LUFS）并写入标准 REPLAYGAIN_TRACK_GAIN / ALBUM_GAIN 标签，不重新编码音频。
+          <p class="text-body-small mb-3 text-on-surface-variant">
+            {{ t('tool.modals.musicTools.replayGainDesc') }}
           </p>
           <MdButton variant="filled" size="sm" :loading="busy" @click="handleReplayGain">
-            计算并写入 ReplayGain（{{ sortedEntries.length }} 首）
+            {{ t('tool.modals.musicTools.runReplayGain', { count: sortedEntries.length }) }}
           </MdButton>
         </div>
 
-        <div
-          v-if="isSingleMode"
-          class="rounded-2xl bg-surface-container-low p-4"
-        >
-          <div class="mb-1 flex items-center gap-2 font-semibold">
-            <LuImage class="h-4 w-4 text-primary" />
-            内嵌封面压缩瘦身
+        <div v-if="isSingleMode" class="rounded-corner-lg bg-surface p-4">
+          <div class="text-title-small mb-1 flex items-center gap-2 text-on-surface">
+            <LuImage class="h-4 w-4 text-primary" aria-hidden="true" />
+            <span>{{ t('tool.modals.musicTools.coverOptHeading') }}</span>
           </div>
-          <p class="mb-3 text-[11px] text-on-surface-variant">
-            检测超大内嵌封面并等比缩放为高画质 JPEG，显著加速播放器加载与扫码。
+          <p class="text-body-small mb-3 text-on-surface-variant">
+            {{ t('tool.modals.musicTools.coverOptDesc') }}
           </p>
           <div class="flex flex-wrap items-center gap-3">
             <div class="inline-flex items-center gap-1.5">
-              <span>最大边长</span>
+              <span class="text-label-medium text-on-surface-variant">
+                {{ t('tool.modals.musicTools.maxEdge') }}
+              </span>
               <div class="w-36">
                 <MdSelect v-model="coverMaxDimStr" :options="coverDimOptions" variant="compact" />
               </div>
             </div>
             <MdButton variant="tonal" size="sm" :loading="busy" @click="handleOptimizeCover">
-              压缩当前内嵌封面
+              {{ t('tool.modals.musicTools.optCoverBtn') }}
             </MdButton>
           </div>
         </div>
 
-        <div
-          v-if="isSingleMode"
-          class="rounded-2xl bg-surface-container-low p-4"
-        >
-          <div class="mb-1 flex items-center gap-2 font-semibold">
-            <LuScissors class="h-4 w-4 text-primary" />
-            整轨音频 + 同名 .cue 一键无损分轨
+        <div v-if="isSingleMode" class="rounded-corner-lg bg-surface p-4">
+          <div class="text-title-small mb-1 flex items-center gap-2 text-on-surface">
+            <LuScissors class="h-4 w-4 text-primary" aria-hidden="true" />
+            <span>{{ t('tool.modals.musicTools.cueHeading') }}</span>
           </div>
-          <p class="mb-3 text-[11px] text-on-surface-variant">
-            自动读取同目录下伴随 .cue 索引（兼容 GBK/UTF-8），使用 FFmpeg 切分为单曲 FLAC 并自动写入曲名、艺人、专辑与音轨号。
+          <p class="text-body-small mb-3 text-on-surface-variant">
+            {{ t('tool.modals.musicTools.cueDesc') }}
           </p>
           <MdButton variant="tonal" size="sm" :loading="busy" @click="handleSplitCue">
-            按伴随 .cue 切分为单曲 FLAC
+            {{ t('tool.modals.musicTools.splitCueBtn') }}
           </MdButton>
         </div>
       </div>
@@ -414,63 +406,80 @@ async function handleBatchSyncAlbum(): Promise<void> {
       <!-- TAB 3: Album Cluster Batch Sync -->
       <div v-else class="space-y-3">
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">专辑名 (Album) · 留空不覆盖</span>
-            <input v-model="albumName" type="text" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">专辑艺人 (AlbumArtist)</span>
-            <input v-model="albumArtist" type="text" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">曲目艺人 (Artist · 可留空保留原值)</span>
-            <input v-model="trackArtist" type="text" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">流派 (Genre)</span>
-            <input v-model="albumGenre" type="text" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">发行年份</span>
-            <input v-model.number="albumYear" type="number" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">碟号 (DiscNumber)</span>
-            <input v-model.number="discNumber" type="number" min="1" class="md-input h-9 w-full text-xs" />
-          </label>
+          <MdTextField
+            v-model="albumName"
+            size="sm"
+            :label="t('tool.modals.musicTools.albumKeepEmpty')"
+          />
+          <MdTextField
+            v-model="albumArtist"
+            size="sm"
+            :label="t('tool.forms.music.albumArtist')"
+          />
+          <MdTextField
+            v-model="trackArtist"
+            size="sm"
+            :label="t('tool.modals.musicTools.trackArtistKeepEmpty')"
+          />
+          <MdTextField
+            v-model="albumGenre"
+            size="sm"
+            :label="t('tool.forms.music.genre')"
+          />
+          <MdTextField
+            v-model="albumYearStr"
+            size="sm"
+            type="number"
+            :label="t('tool.forms.music.year')"
+          />
+          <MdTextField
+            v-model="discNumberStr"
+            size="sm"
+            type="number"
+            min="1"
+            :label="t('tool.forms.music.disc')"
+          />
         </div>
-        <div class="flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3.5">
-          <AppCheckbox v-model="autoNumberTracks" label="按文件名自然序自动重编音轨号 (Track 1..N)" />
-          <label v-if="autoNumberTracks" class="inline-flex items-center gap-1.5">
-            <span>起始曲目号</span>
-            <input v-model.number="startTrack" type="number" min="1" class="md-input h-8 w-16 !px-2 text-xs" />
-          </label>
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-corner-lg bg-surface p-4">
+          <AppCheckbox v-model="autoNumberTracks" :label="t('tool.modals.musicTools.autoTrackNumbers')" />
+          <div v-if="autoNumberTracks" class="w-32">
+            <MdTextField
+              v-model="startTrackStr"
+              size="sm"
+              type="number"
+              min="1"
+              :label="t('tool.modals.musicTools.startTrack')"
+            />
+          </div>
         </div>
         <div class="flex justify-end">
           <MdButton variant="filled" size="sm" :loading="busy" @click="handleBatchSyncAlbum">
-            同步整张专辑（{{ sortedEntries.length }} 首）
+            {{ t('tool.modals.musicTools.syncAlbumBtn', { count: sortedEntries.length }) }}
           </MdButton>
         </div>
       </div>
 
       <div
         v-if="errorMsg"
-        class="rounded-2xl bg-error-container px-3.5 py-2.5 text-on-error-container"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
         {{ errorMsg }}
       </div>
       <div
         v-if="successMsg"
-        class="flex items-center gap-1.5 rounded-2xl bg-success-container px-3.5 py-2.5 text-on-success-container"
+        class="text-body-small flex items-center gap-1.5 rounded-corner-lg bg-success-container px-3.5 py-2.5 text-on-success-container"
       >
-        <LuCheck class="h-4 w-4 shrink-0" />
+        <LuCheck class="h-4 w-4 shrink-0" aria-hidden="true" />
         <span>{{ successMsg }}</span>
       </div>
     </div>
 
     <template #footer>
       <div class="ml-auto">
-        <MdButton variant="text" size="sm" @click="emit('close')">关闭</MdButton>
+        <MdButton variant="text" size="sm" @click="emit('close')">
+          {{ t('tool.common.close') }}
+        </MdButton>
       </div>
     </template>
   </MdDialog>

@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuArchive,
   LuBookOpen,
   LuCheckCircle2,
-  LuLoader2,
   LuPackageCheck,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import MdSelect from '@/components/ui/MdSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
-import MdSwitch from '@/components/ui/MdSwitch.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import { formatBytes } from '@/utils/format'
 import { toolApi } from '../api'
 import type {
@@ -32,6 +33,8 @@ const emit = defineEmits<{
   close: []
   completed: [report: NormalizeBooksBatchReportDto]
 }>()
+
+const { t } = useI18n()
 
 const form = reactive<{
   keep_source: boolean
@@ -109,8 +112,6 @@ watch(
       form.generate_jacket = true
       form.remove_orphans = true
       form.pdf_scanned_fallback = true
-      // Batch mode defaults to skipping already-normalized EPUBs & .orig.epub backups;
-      // single-book intentional re-run defaults to force reprocessing unless it's an .orig.epub backup.
       form.skip_normalized = bookEntries.value.length > 1 || origBackupCount.value > 0
     }
   },
@@ -134,9 +135,9 @@ const savingsText = computed(() => {
   const diff = report.value.total_before_bytes - report.value.total_after_bytes
   const pct = Math.round((Math.abs(diff) / report.value.total_before_bytes) * 100)
   if (diff >= 0) {
-    return `共节省 ${formatBytes(diff)} (-${pct}%)`
+    return t('tool.modals.normalizeEpub.savedBytes', { bytes: formatBytes(diff), pct })
   }
-  return `变化 +${formatBytes(-diff)} (+${pct}%)`
+  return t('tool.modals.normalizeEpub.increasedBytes', { bytes: formatBytes(-diff), pct })
 })
 
 async function handleRun(): Promise<void> {
@@ -171,18 +172,19 @@ async function handleRun(): Promise<void> {
     running.value = false
   }
 }
-const imageFormatOptions = [
-  { value: 'webp', label: 'WebP（推荐 · 默认）' },
-  { value: 'jpeg', label: 'JPEG（通用墨水屏兼容）' },
-  { value: 'keep', label: '保持原格式' },
-]
 
-const maxDimOptions = [
-  { value: '1200', label: '1200 px（极限瘦身）' },
-  { value: '1600', label: '1600 px（均衡推荐）' },
-  { value: '2000', label: '2000 px（高清）' },
-  { value: '0', label: '不缩放原尺寸' },
-]
+const imageFormatOptions = computed(() => [
+  { value: 'webp', label: t('tool.modals.normalizeEpub.fmtWebp') },
+  { value: 'jpeg', label: t('tool.modals.normalizeEpub.fmtJpeg') },
+  { value: 'keep', label: t('tool.modals.normalizeEpub.fmtKeep') },
+])
+
+const maxDimOptions = computed(() => [
+  { value: '1200', label: t('tool.modals.normalizeEpub.dim1200') },
+  { value: '1600', label: t('tool.modals.normalizeEpub.dim1600') },
+  { value: '2000', label: t('tool.modals.normalizeEpub.dim2000') },
+  { value: '0', label: t('tool.modals.normalizeEpub.dimKeep') },
+])
 
 const maxDimModel = computed<string>({
   get: () => String(form.max_image_dimension),
@@ -192,7 +194,9 @@ const maxDimModel = computed<string>({
 })
 
 const dialogSubtitle = computed(() => {
-  const parts: string[] = [`已选 ${bookEntries.value.length} 本图书`]
+  const parts: string[] = [
+    t('tool.modals.normalizeEpub.selectedBooks', { count: bookEntries.value.length }),
+  ]
   if (formatBreakdown.value.txt) parts.push(`TXT ${formatBreakdown.value.txt}`)
   if (formatBreakdown.value.epub) parts.push(`EPUB ${formatBreakdown.value.epub}`)
   if (formatBreakdown.value.pdf) parts.push(`PDF ${formatBreakdown.value.pdf}`)
@@ -203,77 +207,87 @@ const dialogSubtitle = computed(() => {
 <template>
   <MdDialog
     :open="open"
-    title="转换为规范化压缩 EPUB 3.0"
+    :title="t('tool.modals.normalizeEpub.title')"
     :subtitle="dialogSubtitle"
     max-width="max-w-2xl"
+    footer-align="between"
     :close-on-backdrop="!running"
     :hide-close="running"
     @close="!running && emit('close')"
   >
     <template #icon>
-      <LuPackageCheck class="h-5 w-5" />
+      <LuPackageCheck class="h-5 w-5" aria-hidden="true" />
     </template>
 
     <div class="space-y-4 py-1">
-      <!-- Single Already-Normalized Notice -->
       <div
         v-if="isSingleAlreadyNormalized"
-        class="flex items-start gap-2 rounded-2xl bg-[var(--md-sys-color-primary-container)]/55 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]"
+        class="text-body-small flex items-start gap-2 rounded-corner-lg bg-primary-container/55 px-3.5 py-2.5 text-on-primary-container"
       >
-        <LuCheckCircle2 class="mt-0.5 h-4 w-4 shrink-0" />
-        <span>该书已规范化，继续将按新参数重新处理。</span>
+        <LuCheckCircle2 class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        <span>{{ t('tool.modals.normalizeEpub.alreadyNormalizedNotice') }}</span>
       </div>
 
-      <!-- Source Retention Option (Highlighted, Default: Keep) -->
-      <div class="rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
+      <!-- Source Retention Option -->
+      <div class="rounded-corner-lg bg-surface p-4">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-              <span>保留源文件</span>
+            <div class="text-title-small flex flex-wrap items-center gap-2 text-on-surface">
+              <span>{{ t('tool.modals.normalizeEpub.keepSource') }}</span>
               <span
-                class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                class="text-label-small rounded-corner-full px-2 py-0.5"
                 :class="
                   form.keep_source
-                    ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                    : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+                    ? 'bg-success-container text-on-success-container'
+                    : 'bg-warning-container text-on-warning-container'
                 "
               >
-                {{ form.keep_source ? '默认开启 · 安全保留' : '转换后将删除或覆盖源文件' }}
+                {{
+                  form.keep_source
+                    ? t('tool.modals.normalizeEpub.keepSourceOn')
+                    : t('tool.modals.normalizeEpub.keepSourceOff')
+                }}
               </span>
             </div>
-            <p class="mt-1 text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
-              <template v-if="form.keep_source">
-                TXT / PDF 保留原文件并生成 .epub；EPUB 备份为
-                <code class="rounded bg-[var(--md-sys-color-surface-container-high)] px-1 font-mono text-[10px]">.orig.epub</code>。
-              </template>
-              <template v-else>
-                转换后删除 TXT / PDF 源文件，EPUB 直接覆盖原文件。
-              </template>
+            <p class="text-body-small mt-1 leading-relaxed text-on-surface-variant">
+              {{
+                form.keep_source
+                  ? t('tool.modals.normalizeEpub.keepSourceDescOn')
+                  : t('tool.modals.normalizeEpub.keepSourceDescOff')
+              }}
             </p>
           </div>
-          <MdSwitch v-model="form.keep_source" :disabled="running" />
+          <MdSwitch
+            v-model="form.keep_source"
+            :disabled="running"
+            :aria-label="t('tool.modals.normalizeEpub.keepSource')"
+          />
         </div>
       </div>
 
-      <!-- Image Compression Settings (Default: WebP) -->
-      <div class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
+      <!-- Image Compression Settings -->
+      <div class="space-y-3 rounded-corner-lg bg-surface p-4">
         <div class="flex items-center justify-between gap-2">
           <div>
-            <div class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-              压缩封面与内嵌插图
+            <div class="text-title-small text-on-surface">
+              {{ t('tool.modals.normalizeEpub.compressImages') }}
             </div>
-            <div class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              仅在图片超限或体积缩小时替换
+            <div class="text-body-small mt-0.5 text-on-surface-variant">
+              {{ t('tool.modals.normalizeEpub.compressImagesDesc') }}
             </div>
           </div>
-          <MdSwitch v-model="form.compress_images" :disabled="running" />
+          <MdSwitch
+            v-model="form.compress_images"
+            :disabled="running"
+            :aria-label="t('tool.modals.normalizeEpub.compressImages')"
+          />
         </div>
 
         <div v-if="form.compress_images" class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-3">
           <div class="space-y-1">
-            <label class="block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-              目标图片格式
-            </label>
+            <span class="text-label-medium block text-on-surface-variant">
+              {{ t('tool.modals.normalizeEpub.imageFormat') }}
+            </span>
             <MdSelect
               :model-value="form.image_format"
               :options="imageFormatOptions"
@@ -284,9 +298,9 @@ const dialogSubtitle = computed(() => {
           </div>
 
           <div class="space-y-1">
-            <label class="block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-              最大边长限制
-            </label>
+            <span class="text-label-medium block text-on-surface-variant">
+              {{ t('tool.modals.normalizeEpub.maxDim') }}
+            </span>
             <MdSelect
               v-model="maxDimModel"
               :options="maxDimOptions"
@@ -296,10 +310,16 @@ const dialogSubtitle = computed(() => {
           </div>
 
           <div class="space-y-1">
-            <label class="flex items-center justify-between text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-              <span>{{ form.image_format.toUpperCase() }} 压缩质量</span>
-              <span class="font-mono text-[var(--md-sys-color-primary)]">{{ form.image_quality }}</span>
-            </label>
+            <div class="text-label-medium flex items-center justify-between text-on-surface-variant">
+              <span>
+                {{
+                  t('tool.modals.normalizeEpub.qualityLabel', {
+                    fmt: form.image_format.toUpperCase(),
+                  })
+                }}
+              </span>
+              <span class="font-mono text-primary">{{ form.image_quality }}</span>
+            </div>
             <div class="pt-1.5">
               <AppSlider
                 v-model="form.image_quality"
@@ -307,7 +327,11 @@ const dialogSubtitle = computed(() => {
                 :max="95"
                 :step="1"
                 :disabled="running"
-                :aria-label="`${form.image_format.toUpperCase()} 压缩质量`"
+                :aria-label="
+                  t('tool.modals.normalizeEpub.qualityLabel', {
+                    fmt: form.image_format.toUpperCase(),
+                  })
+                "
               />
             </div>
           </div>
@@ -315,130 +339,149 @@ const dialogSubtitle = computed(() => {
       </div>
 
       <!-- Normalization Options -->
-      <div class="space-y-2.5 rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
-        <div class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-          EPUB 3.0 结构规范化选项
+      <div class="space-y-2.5 rounded-corner-lg bg-surface p-4">
+        <div class="text-title-small text-on-surface">
+          {{ t('tool.modals.normalizeEpub.optionsHeading') }}
         </div>
 
         <div class="flex flex-col gap-2">
           <AppCheckbox
             v-model="form.generate_jacket"
             :disabled="running"
-            label="生成 / 更新书籍简介扉页"
+            :label="t('tool.modals.normalizeEpub.optJacket')"
           />
           <AppCheckbox
             v-model="form.remove_orphans"
             :disabled="running"
-            label="清理未引用图片与系统垃圾文件"
+            :label="t('tool.modals.normalizeEpub.optOrphans')"
           />
           <AppCheckbox
             v-model="form.pdf_scanned_fallback"
             :disabled="running"
-            label="扫描版 PDF 自动转为图页 EPUB"
+            :label="t('tool.modals.normalizeEpub.optPdfFallback')"
           />
           <div class="flex flex-wrap items-center justify-between gap-2">
             <AppCheckbox
               v-model="form.skip_normalized"
               :disabled="running"
-              label="跳过已规范化 EPUB 与 .orig.epub 原件备份"
+              :label="t('tool.modals.normalizeEpub.optSkipNormalized')"
             />
             <span
               v-if="alreadyNormalizedCount + origBackupCount > 0"
-              class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+              class="text-label-small shrink-0 rounded-corner-full px-2 py-0.5"
               :class="
                 form.skip_normalized
-                  ? 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-                  : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+                  ? 'bg-surface-container-high text-on-surface-variant'
+                  : 'bg-warning-container text-on-warning-container'
               "
             >
               {{
                 form.skip_normalized
-                  ? `将跳过 ${willSkipCount} 项`
-                  : `强制重跑 ${alreadyNormalizedCount + origBackupCount} 项`
+                  ? t('tool.modals.normalizeEpub.willSkip', { count: willSkipCount })
+                  : t('tool.modals.normalizeEpub.forceRerun', {
+                      count: alreadyNormalizedCount + origBackupCount,
+                    })
               }}
             </span>
           </div>
         </div>
       </div>
 
-      <!-- Error Alert -->
       <div
         v-if="errorMsg"
-        class="flex items-start gap-2 rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small flex items-start gap-2 rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
-        <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+        <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
         <span>{{ errorMsg }}</span>
       </div>
 
       <!-- Execution Report -->
-      <div v-if="report" class="space-y-2.5 rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
+      <div v-if="report" class="space-y-2.5 rounded-corner-lg bg-surface p-4">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex items-center gap-2 text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            <LuCheckCircle2 class="h-4 w-4 text-[var(--md-sys-color-success)]" />
+          <div class="text-title-small flex items-center gap-2 text-on-surface">
+            <LuCheckCircle2 class="h-4 w-4 text-success" aria-hidden="true" />
             <span>
-              处理完成：成功 {{ report.succeeded }} 本
-              <template v-if="report.skipped > 0">，跳过 {{ report.skipped }} 本</template>
-              <template v-if="report.failed > 0">，失败 {{ report.failed }} 本</template>
+              {{ t('tool.modals.normalizeEpub.doneSummary', { succeeded: report.succeeded }) }}
             </span>
           </div>
           <span
             v-if="savingsText"
-            class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
+            class="text-label-medium rounded-corner-full bg-primary-container px-2.5 py-0.5 font-mono text-on-primary-container"
           >
             {{ formatBytes(report.total_before_bytes) }} → {{ formatBytes(report.total_after_bytes) }} · {{ savingsText }}
           </span>
         </div>
 
-        <div class="max-h-56 divide-y divide-[var(--md-sys-color-outline-variant)]/40 overflow-y-auto rounded-xl border border-[var(--md-sys-color-outline-variant)]/45">
+        <div class="max-h-56 divide-y divide-outline-variant/35 overflow-y-auto rounded-corner-md bg-surface-container-low">
           <div
             v-for="item in report.items"
             :key="item.source_rel_path"
-            class="flex items-start justify-between gap-3 px-3 py-2 text-xs"
+            class="text-body-small flex items-start justify-between gap-3 px-3 py-2"
           >
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5">
-                <LuBookOpen class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-primary)]" />
-                <span class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">
+                <LuBookOpen class="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
+                <span class="truncate font-medium text-on-surface">
                   {{ item.output_rel_path || item.source_rel_path }}
                 </span>
-                <span class="shrink-0 rounded bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 font-mono text-[9px] uppercase text-[var(--md-sys-color-on-surface-variant)]">
+                <span class="text-label-small shrink-0 rounded-corner-xs bg-surface-container-high px-1.5 py-0.5 font-mono uppercase text-on-surface-variant">
                   {{ item.source_format }}
                 </span>
               </div>
 
-              <div
-                v-if="item.error"
-                class="mt-1 text-[11px] text-[var(--md-sys-color-error)]"
-              >
+              <div v-if="item.error" class="mt-1 text-error">
                 {{ item.error }}
               </div>
               <div
                 v-else-if="item.skipped"
-                class="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+                class="mt-0.5 flex items-center gap-1.5 text-on-surface-variant"
               >
-                <span class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium">
-                  已跳过
+                <span class="text-label-small rounded-corner-full bg-surface-container-high px-2 py-0.5">
+                  {{ t('tool.modals.normalizeEpub.skippedBadge') }}
                 </span>
-                <span>{{ item.skip_reason || '已是规范化 EPUB' }}</span>
+                <span>
+                  {{ item.skip_reason || t('tool.modals.normalizeEpub.alreadyNormalizedReason') }}
+                </span>
               </div>
               <div
                 v-else
-                class="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+                class="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-on-surface-variant"
               >
-                <span>{{ item.chapter_count }} 章/页</span>
-                <span v-if="item.compressed_images > 0">压缩 {{ item.compressed_images }} 张图</span>
-                <span v-if="item.removed_orphans > 0">清理 {{ item.removed_orphans }} 孤立项</span>
-                <span v-if="item.backup_rel_path" class="inline-flex items-center gap-1 text-[var(--md-sys-color-primary)]">
-                  <LuArchive class="h-3 w-3" />
-                  原件备份：{{ item.backup_rel_path.split('/').pop() }}
+                <span>
+                  {{ t('tool.modals.normalizeEpub.chaptersOrPages', { count: item.chapter_count }) }}
                 </span>
-                <span v-else-if="item.deleted_source" class="text-[var(--md-sys-color-warning)]">已删源文件</span>
+                <span v-if="item.compressed_images > 0">
+                  {{
+                    t('tool.modals.normalizeEpub.compressedImgs', {
+                      count: item.compressed_images,
+                    })
+                  }}
+                </span>
+                <span v-if="item.removed_orphans > 0">
+                  {{
+                    t('tool.modals.normalizeEpub.removedOrphans', {
+                      count: item.removed_orphans,
+                    })
+                  }}
+                </span>
+                <span v-if="item.backup_rel_path" class="inline-flex items-center gap-1 text-primary">
+                  <LuArchive class="h-3 w-3" aria-hidden="true" />
+                  {{
+                    t('tool.modals.normalizeEpub.backupLabel', {
+                      name: item.backup_rel_path.split('/').pop(),
+                    })
+                  }}
+                </span>
+                <span v-else-if="item.deleted_source" class="text-warning">
+                  {{ t('tool.modals.normalizeEpub.deletedSource') }}
+                </span>
               </div>
             </div>
 
             <div
               v-if="!item.error && !item.skipped"
-              class="shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+              class="text-label-small shrink-0 text-right font-mono text-on-surface-variant"
             >
               <div>{{ formatBytes(item.before_bytes) }} → {{ formatBytes(item.after_bytes) }}</div>
             </div>
@@ -448,36 +491,29 @@ const dialogSubtitle = computed(() => {
     </div>
 
     <template #footer>
-      <span class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-        支持 TXT / EPUB / PDF 统一规范化打包
+      <span class="text-body-small text-on-surface-variant">
+        {{ t('tool.modals.normalizeEpub.footerHint') }}
       </span>
       <div class="flex items-center gap-2">
-        <button
-          type="button"
-          :disabled="running"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          @click="emit('close')"
-        >
-          {{ report ? '完成' : '取消' }}
-        </button>
-        <button
-          type="button"
-          :disabled="running || runnableCount === 0"
-          class="md-btn md-btn-sm md-btn-filled md-state"
+        <MdButton variant="text" size="sm" :disabled="running" @click="emit('close')">
+          {{ report ? t('tool.common.done') : t('tool.common.cancel') }}
+        </MdButton>
+        <MdButton
+          variant="filled"
+          size="sm"
+          :icon="LuPackageCheck"
+          :loading="running"
+          :disabled="runnableCount === 0"
           @click="handleRun"
         >
-          <LuLoader2 v-if="running" class="h-3.5 w-3.5 animate-spin" />
-          <LuPackageCheck v-else class="h-3.5 w-3.5" />
-          <span>
-            {{
-              running
-                ? '正在转换与压缩…'
-                : runnableCount === 0
-                  ? '所选均已跳过（可取消勾选以重跑）'
-                  : `开始转换 (${runnableCount} 本)`
-            }}
-          </span>
-        </button>
+          {{
+            running
+              ? t('tool.modals.normalizeEpub.converting')
+              : runnableCount === 0
+                ? t('tool.modals.normalizeEpub.allSkippedBtn')
+                : t('tool.modals.normalizeEpub.startConvert', { count: runnableCount })
+          }}
+        </MdButton>
       </div>
     </template>
   </MdDialog>

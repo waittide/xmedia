@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertTriangle,
   LuChevronDown,
@@ -15,6 +16,10 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 
 export interface TocChapterSummary {
   key: string
@@ -48,6 +53,8 @@ const emit = defineEmits<{
   resegmentTxt: [chapterRegex?: string, volumeRegex?: string]
 }>()
 
+const { t } = useI18n()
+
 const tocSearchQuery = ref('')
 const onlyShowAnomalies = ref(false)
 const tocToolsOpen = ref(false)
@@ -61,20 +68,24 @@ const regexPanelOpen = ref(false)
 const chapterRegexInput = ref('')
 const volumeRegexInput = ref('')
 
-const regexPresets = [
-  { label: '默认中英卷章', chapter: '', volume: '' },
-  { label: '数字序号 (1. / 01)', chapter: '^\\s*\\d{1,4}[\\.、\\s]\\s*\\S+.*$', volume: '' },
+const regexPresets = computed(() => [
+  { label: t('tool.bookEditor.toc.presetDefault'), chapter: '', volume: '' },
   {
-    label: '第X章/回/话',
+    label: t('tool.bookEditor.toc.presetNumeric'),
+    chapter: '^\\s*\\d{1,4}[\\.、\\s]\\s*\\S+.*$',
+    volume: '',
+  },
+  {
+    label: t('tool.bookEditor.toc.presetCnChapter'),
     chapter: '^\\s*第[零一二三四五六七八九十百千万两0-9]+[章节回话集].*$',
     volume: '^\\s*第[零一二三四五六七八九十百千万两0-9]+[卷部篇册].*$',
   },
   {
-    label: 'English Chapters',
+    label: t('tool.bookEditor.toc.presetEnChapter'),
     chapter: '(?i)^\\s*(?:chapter|section|prologue|epilogue)\\b.*$',
     volume: '(?i)^\\s*(?:volume|book|part)\\b.*$',
   },
-]
+])
 
 watch(
   () => props.resetKey,
@@ -119,7 +130,7 @@ const filteredTocItems = computed(() => {
   return all.filter(({ ch, idx, anomaly }) => {
     if (onlyShowAnomalies.value && !anomaly) return false
     if (!q) return true
-    const label = (ch.title || `第 ${idx + 1} 章`).toLowerCase()
+    const label = (ch.title || `#${idx + 1}`).toLowerCase()
     return label.includes(q)
   })
 })
@@ -179,299 +190,276 @@ function onTocDrop(targetIdx: number): void {
 </script>
 
 <template>
-<!-- COLUMN 1: Fixed-Height Non-Jumping TOC & Chapter Tree -->
-<aside
-  class="flex w-68 shrink-0 flex-col border-r border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] select-none lg:w-76"
->
-  <!-- TOC Header + Search -->
-  <div class="space-y-2 border-b border-[var(--md-sys-color-outline-variant)]/70 p-2.5">
-    <div class="flex items-center justify-between gap-1.5">
-      <span class="px-1 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-        目录树 ({{ chapters.length }})
-      </span>
+  <aside
+    class="flex w-68 shrink-0 flex-col border-r border-outline-variant/50 bg-surface-container-low select-none lg:w-76"
+  >
+    <!-- TOC Header + Search -->
+    <div class="space-y-2 border-b border-outline-variant/40 p-2.5">
+      <div class="flex items-center justify-between gap-1.5">
+        <span class="px-1 text-label-large font-semibold text-on-surface">
+          {{ t('tool.bookEditor.toc.heading', { count: chapters.length }) }}
+        </span>
 
-      <div class="flex items-center gap-1">
-        <button
-          type="button"
-          class="md-state inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition"
-          :class="
-            tocToolsOpen
-              ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-              : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface-variant)] hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-surface)]'
-          "
-          title="目录层级批量整理与正文标题同步"
-          @click="tocToolsOpen = !tocToolsOpen"
+        <div class="flex items-center gap-1">
+          <MdChip
+            variant="filter"
+            :selected="tocToolsOpen"
+            :label="t('tool.bookEditor.toc.organize')"
+            :title="t('tool.bookEditor.toc.organizeHint')"
+            @click="tocToolsOpen = !tocToolsOpen"
+          >
+            <template #icon>
+              <LuListTree class="h-3.5 w-3.5" />
+            </template>
+          </MdChip>
+
+          <MdChip
+            v-if="docFormat === 'txt'"
+            variant="filter"
+            :selected="regexPanelOpen"
+            :label="t('tool.bookEditor.toc.splitRules')"
+            @click="regexPanelOpen = !regexPanelOpen"
+          >
+            <template #icon>
+              <LuChevronDown v-if="regexPanelOpen" class="h-3.5 w-3.5" />
+              <LuChevronRight v-else class="h-3.5 w-3.5" />
+            </template>
+          </MdChip>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-1.5">
+        <MdButton
+          variant="tonal"
+          size="sm"
+          class="w-full"
+          @click="emit('insertVolumeBelow', activeIndex)"
         >
-          <LuListTree class="h-3 w-3" />
-          <span>整理</span>
-        </button>
-
-        <button
-          v-if="docFormat === 'txt'"
-          type="button"
-          class="md-state inline-flex items-center gap-1 rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-surface)]"
-          @click="regexPanelOpen = !regexPanelOpen"
+          <LuFolderPlus class="h-3.5 w-3.5" />
+          <span>{{ t('tool.bookEditor.toc.newVolume') }}</span>
+        </MdButton>
+        <MdButton
+          variant="tonal"
+          size="sm"
+          class="w-full"
+          @click="emit('insertBelow', activeIndex)"
         >
-          <LuChevronDown v-if="regexPanelOpen" class="h-3 w-3" />
-          <LuChevronRight v-else class="h-3 w-3" />
-          <span>分章规则</span>
-        </button>
+          <LuPlus class="h-3.5 w-3.5" />
+          <span>{{ t('tool.bookEditor.toc.newChapter') }}</span>
+        </MdButton>
+      </div>
 
+      <div class="flex items-center gap-1.5">
+        <div class="min-w-0 flex-1">
+          <MdTextField
+            v-model="tocSearchQuery"
+            size="sm"
+            :aria-label="t('tool.bookEditor.toc.searchPlaceholder')"
+            :placeholder="t('tool.bookEditor.toc.searchPlaceholder')"
+          >
+            <template #leading>
+              <LuSearch class="h-4 w-4" />
+            </template>
+            <template v-if="tocSearchQuery" #trailing>
+              <MdIconButton
+                size="sm"
+                :aria-label="t('tool.actions.close')"
+                @click="tocSearchQuery = ''"
+              >
+                <LuX class="h-3.5 w-3.5" />
+              </MdIconButton>
+            </template>
+          </MdTextField>
+        </div>
+
+        <MdChip
+          v-if="anomalyCount > 0 || onlyShowAnomalies"
+          variant="filter"
+          :selected="onlyShowAnomalies"
+          :label="String(anomalyCount)"
+          :title="t('tool.bookEditor.toc.anomalyHint')"
+          @click="onlyShowAnomalies = !onlyShowAnomalies"
+        >
+          <template #icon>
+            <LuAlertTriangle class="h-3.5 w-3.5" />
+          </template>
+        </MdChip>
       </div>
     </div>
 
-    <div class="grid grid-cols-2 gap-1.5">
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-tonal md-state w-full"
-        title="在当前项下方插入顶层分卷 (L0)，并自动将其后同级章节归入该卷"
-        @click="emit('insertVolumeBelow', activeIndex)"
-      >
-        <LuFolderPlus class="h-3.5 w-3.5" />
-        <span>新建卷</span>
-      </button>
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-tonal md-state w-full"
-        title="在当前项下方插入新章节"
-        @click="emit('insertBelow', activeIndex)"
-      >
-        <LuPlus class="h-3.5 w-3.5" />
-        <span>新建章</span>
-      </button>
-    </div>
-
-    <div class="flex items-center gap-1.5">
-      <div class="relative min-w-0 flex-1">
-        <LuSearch
-          class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-        />
-        <input
-          v-model="tocSearchQuery"
-          type="text"
-          placeholder="搜索定位章节标题…"
-          class="md-input h-8 w-full pr-7 pl-8 text-xs"
-        />
-        <button
-          v-if="tocSearchQuery"
-          type="button"
-          class="absolute top-1/2 right-2 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-          @click="tocSearchQuery = ''"
-        >
-          <LuX class="h-3 w-3" />
-        </button>
-      </div>
-
-      <button
-        v-if="anomalyCount > 0 || onlyShowAnomalies"
-        type="button"
-        class="md-state inline-flex h-8 shrink-0 items-center gap-1 rounded-xl border px-2 text-[11px] font-semibold transition"
-        :class="
-          onlyShowAnomalies
-            ? 'border-[var(--md-sys-color-warning)] bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
-            : 'border-[var(--md-sys-color-warning)]/40 bg-[var(--md-sys-color-warning-container)]/60 text-[var(--md-sys-color-on-warning-container)] hover:bg-[var(--md-sys-color-warning-container)]'
-        "
-        title="筛选过短残章 (<80字) 或超长疑似漏分章 (>20000字)"
-        @click="onlyShowAnomalies = !onlyShowAnomalies"
-      >
-        <LuAlertTriangle class="h-3 w-3" />
-        <span>{{ anomalyCount }}</span>
-      </button>
-    </div>
-  </div>
-
-  <!-- Collapsible Batch TOC Hierarchy & Sync Panel -->
-  <div
-    v-if="tocToolsOpen"
-    class="space-y-1.5 border-b border-[var(--md-sys-color-outline-variant)]/75 bg-[var(--md-sys-color-surface-container)] p-2 text-[11px]"
-  >
-    <div class="grid grid-cols-2 gap-1.5">
-      <button
-        type="button"
-        class="md-state rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1.5 font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
-        @click="emit('autoDetectHierarchy')"
-      >
-        自动识别卷/章层级
-      </button>
-      <button
-        type="button"
-        class="md-state rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1.5 font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
-        @click="emit('flattenLevels')"
-      >
-        全部平铺为一级
-      </button>
-    </div>
-    <button
-      type="button"
-      class="md-state w-full rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1.5 font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
-      @click="emit('syncTitlesFromBody')"
-    >
-      从各章正文 H1~H3 标题同步目录名
-    </button>
-  </div>
-
-  <!-- Collapsible TXT Regex Panel -->
-  <div
-    v-if="docFormat === 'txt' && regexPanelOpen"
-    class="space-y-2 border-b border-[var(--md-sys-color-outline-variant)]/75 bg-[var(--md-sys-color-surface-container)] p-2.5 text-xs"
-  >
-    <div class="flex flex-wrap gap-1">
-      <button
-        v-for="p in regexPresets"
-        :key="p.label"
-        type="button"
-        class="md-state rounded-md border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
-        @click="chapterRegexInput = p.chapter; volumeRegexInput = p.volume"
-      >
-        {{ p.label }}
-      </button>
-    </div>
-    <input
-      v-model="chapterRegexInput"
-      type="text"
-      placeholder="章节标题正则（留空默认）"
-      class="md-input h-7 w-full px-2 font-mono text-[11px]"
-    />
-    <input
-      v-model="volumeRegexInput"
-      type="text"
-      placeholder="分卷标题正则（可选）"
-      class="md-input h-7 w-full px-2 font-mono text-[11px]"
-    />
-    <button
-      type="button"
-      :disabled="resegmenting"
-      class="md-btn md-btn-sm md-btn-filled md-state w-full disabled:opacity-50"
-      @click="emit('resegmentTxt', chapterRegexInput.trim() || undefined, volumeRegexInput.trim() || undefined)"
-    >
-      <LuRefreshCw class="h-3 w-3" :class="resegmenting ? 'animate-spin' : ''" />
-      <span>按规则重新分章</span>
-    </button>
-  </div>
-
-  <!-- Fixed-Height Draggable Chapter Rows (Zero Vertical Jump) -->
-  <div class="flex-1 space-y-0.5 overflow-y-auto p-1.5" role="listbox" aria-label="章节目录">
+    <!-- Collapsible Batch TOC Hierarchy & Sync Panel -->
     <div
-      v-for="{ ch, idx, anomaly } in filteredTocItems"
-      :key="ch.key"
-      role="option"
-      :aria-selected="activeIndex === idx"
-      :tabindex="renamingIdx === idx ? -1 : 0"
-      :draggable="!tocSearchQuery && !onlyShowAnomalies && renamingIdx !== idx"
-      class="group relative flex min-h-10 cursor-pointer items-center gap-1 rounded-xl px-2 transition outline-none focus-visible:outline-2 focus-visible:outline-secondary"
-      :class="[
-        ch.level > 0 ? 'pl-5' : '',
-        activeIndex === idx
-          ? 'bg-secondary-container text-on-secondary-container'
-          : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
-        dragOverIdx === idx && dragDropPos === 'before'
-          ? 'border-t-2 border-primary'
-          : '',
-        dragOverIdx === idx && dragDropPos === 'after'
-          ? 'border-b-2 border-primary'
-          : '',
-      ]"
-      @dragstart="onTocDragStart(idx, $event)"
-      @dragover.prevent="onTocDragOver(idx, $event)"
-      @dragend="onTocDragEnd"
-      @drop.prevent="onTocDrop(idx)"
-      @click="emit('select', idx)"
-      @keydown.enter.self.prevent="emit('select', idx)"
-      @keydown.space.self.prevent="emit('select', idx)"
-      @dblclick.stop="startInlineRename(idx)"
+      v-if="tocToolsOpen"
+      class="space-y-1.5 border-b border-outline-variant/40 bg-surface-container p-2.5"
     >
-      <LuGripVertical
-        v-if="!tocSearchQuery"
-        class="h-3.5 w-3.5 shrink-0 cursor-grab opacity-35 group-hover:opacity-80"
-      />
-
-      <button
-        type="button"
-        class="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold transition hover:opacity-90"
-        :class="
-          ch.level > 0
-            ? 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
-            : isVolumeEntry(ch, idx)
-              ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-              : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-        "
-        title="点击切换顶层（卷/章）与子章层级"
-        @click.stop="emit('toggleLevel', idx)"
-      >
-        {{ ch.level > 0 ? '子章' : isVolumeEntry(ch, idx) ? '卷' : '章' }}
-      </button>
-
-      <!-- Inline Rename Input vs Title Label -->
-      <input
-        v-if="renamingIdx === idx"
-        ref="renameInputRef"
-        v-model="renameDraft"
-        type="text"
-        aria-label="重命名章节标题"
-        class="h-6 min-w-0 flex-1 rounded border border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface-container-lowest)] px-1.5 text-xs text-[var(--md-sys-color-on-surface)] outline-none"
-        @click.stop
-        @keydown.enter.prevent="commitInlineRename"
-        @keydown.esc.prevent="renamingIdx = null"
-        @blur="commitInlineRename"
-      />
-      <span
-        v-else
-        class="min-w-0 flex-1 truncate text-xs"
-        :class="ch.level === 0 ? 'font-semibold' : 'font-normal'"
-        :title="`${ch.title}（双击可直接重命名，拖拽可排序）`"
-      >
-        {{ ch.title || `第 ${idx + 1} 章` }}
-      </span>
-
-      <span
-        v-if="anomaly && renamingIdx !== idx"
-        class="shrink-0 rounded px-1 py-0.2 text-[9px] font-bold group-hover:hidden"
-        :class="
-          anomaly === 'short'
-            ? 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
-            : 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-        "
-        :title="anomaly === 'short' ? '疑似残章/空章 (<80字)' : '疑似漏分超长章 (>20000字)'"
-      >
-        {{ anomaly === 'short' ? '短' : '长' }}
-      </span>
-
-      <!-- Hover Compact Inline Actions (No Height Shift) -->
-      <div
-        v-if="renamingIdx !== idx"
-        class="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex"
-        @click.stop
-      >
-        <button
-          type="button"
-          class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-on-surface)]"
-          title="重命名章节标题"
-          aria-label="重命名章节标题"
-          @click="startInlineRename(idx)"
-        >
-          <LuPencil class="h-3 w-3" />
-        </button>
-        <button
-          v-if="idx > 0"
-          type="button"
-          class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-primary)]"
-          title="合并到上一章"
-          aria-label="合并到上一章"
-          @click="emit('mergePrev', idx)"
-        >
-          <LuMerge class="h-3 w-3" />
-        </button>
-        <button
-          type="button"
-          class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-error)]"
-          title="删除章节"
-          aria-label="删除章节"
-          @click="emit('delete', idx)"
-        >
-          <LuTrash2 class="h-3 w-3" />
-        </button>
+      <div class="grid grid-cols-2 gap-1.5">
+        <MdButton variant="outlined" size="sm" class="w-full" @click="emit('autoDetectHierarchy')">
+          {{ t('tool.bookEditor.toc.autoHierarchy') }}
+        </MdButton>
+        <MdButton variant="outlined" size="sm" class="w-full" @click="emit('flattenLevels')">
+          {{ t('tool.bookEditor.toc.flattenLevels') }}
+        </MdButton>
       </div>
+      <MdButton variant="tonal" size="sm" class="w-full" @click="emit('syncTitlesFromBody')">
+        {{ t('tool.bookEditor.toc.syncFromHeadings') }}
+      </MdButton>
     </div>
-  </div>
-</aside>
+
+    <!-- Collapsible TXT Regex Panel -->
+    <div
+      v-if="docFormat === 'txt' && regexPanelOpen"
+      class="space-y-2 border-b border-outline-variant/40 bg-surface-container p-2.5"
+    >
+      <div class="flex flex-wrap gap-1">
+        <MdChip
+          v-for="p in regexPresets"
+          :key="p.label"
+          variant="suggestion"
+          :label="p.label"
+          @click="chapterRegexInput = p.chapter; volumeRegexInput = p.volume"
+        />
+      </div>
+      <MdTextField
+        v-model="chapterRegexInput"
+        size="sm"
+        :label="t('tool.bookEditor.toc.chapterRegexLabel')"
+      />
+      <MdTextField
+        v-model="volumeRegexInput"
+        size="sm"
+        :label="t('tool.bookEditor.toc.volumeRegexLabel')"
+      />
+      <MdButton
+        variant="filled"
+        size="sm"
+        class="w-full"
+        :disabled="resegmenting"
+        @click="emit('resegmentTxt', chapterRegexInput.trim() || undefined, volumeRegexInput.trim() || undefined)"
+      >
+        <LuRefreshCw class="h-3.5 w-3.5" :class="resegmenting ? 'animate-spin' : ''" />
+        <span>{{ t('tool.bookEditor.toc.resegmentBtn') }}</span>
+      </MdButton>
+    </div>
+
+    <!-- Draggable Chapter Rows (Sibling interactive controls — zero nested button/option A11y violation) -->
+    <nav
+      class="flex-1 space-y-0.5 overflow-y-auto p-1.5"
+      :aria-label="t('tool.bookEditor.toc.heading', { count: chapters.length })"
+    >
+      <div
+        v-for="{ ch, idx, anomaly } in filteredTocItems"
+        :key="ch.key"
+        :draggable="!tocSearchQuery && !onlyShowAnomalies && renamingIdx !== idx"
+        class="group relative flex min-h-10 items-center gap-1 rounded-corner-md px-2 transition"
+        :class="[
+          ch.level > 0 ? 'pl-5' : '',
+          activeIndex === idx
+            ? 'bg-secondary-container text-on-secondary-container'
+            : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
+          dragOverIdx === idx && dragDropPos === 'before' ? 'border-t-2 border-primary' : '',
+          dragOverIdx === idx && dragDropPos === 'after' ? 'border-b-2 border-primary' : '',
+        ]"
+        @dragstart="onTocDragStart(idx, $event)"
+        @dragover.prevent="onTocDragOver(idx, $event)"
+        @dragend="onTocDragEnd"
+        @drop.prevent="onTocDrop(idx)"
+      >
+        <LuGripVertical
+          v-if="!tocSearchQuery"
+          aria-hidden="true"
+          class="h-3.5 w-3.5 shrink-0 cursor-grab opacity-35 group-hover:opacity-80"
+        />
+
+        <button
+          type="button"
+          class="shrink-0 rounded-corner-xs px-1.5 py-0.5 text-label-small font-semibold transition hover:opacity-90"
+          :class="
+            ch.level > 0
+              ? 'bg-surface-container text-on-surface-variant'
+              : isVolumeEntry(ch, idx)
+                ? 'bg-primary-container text-on-primary-container'
+                : 'bg-surface-container-high text-on-surface-variant'
+          "
+          @click="emit('toggleLevel', idx)"
+        >
+          {{
+            ch.level > 0
+              ? t('tool.bookEditor.toc.subChapter')
+              : isVolumeEntry(ch, idx)
+                ? t('tool.bookEditor.toc.volume')
+                : t('tool.bookEditor.toc.chapter')
+          }}
+        </button>
+
+        <input
+          v-if="renamingIdx === idx"
+          ref="renameInputRef"
+          v-model="renameDraft"
+          type="text"
+          :aria-label="t('tool.bookEditor.toc.renameAria')"
+          class="h-7 min-w-0 flex-1 rounded-corner-xs border border-primary bg-surface-container-lowest px-2 text-body-small text-on-surface outline-none"
+          @keydown.enter.prevent="commitInlineRename"
+          @keydown.esc.prevent="renamingIdx = null"
+          @blur="commitInlineRename"
+        />
+        <button
+          v-else
+          type="button"
+          :aria-current="activeIndex === idx ? 'true' : undefined"
+          class="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left outline-none focus-visible:underline"
+          @click="emit('select', idx)"
+          @dblclick="startInlineRename(idx)"
+        >
+          <span
+            class="min-w-0 flex-1 truncate text-body-small"
+            :class="ch.level === 0 ? 'font-semibold' : 'font-normal'"
+          >
+            {{ ch.title || `#${idx + 1}` }}
+          </span>
+          <span
+            v-if="anomaly"
+            class="shrink-0 rounded-corner-xs px-1.5 py-0.5 text-label-small font-semibold group-hover:hidden"
+            :class="
+              anomaly === 'short'
+                ? 'bg-warning-container text-on-warning-container'
+                : 'bg-error-container text-on-error-container'
+            "
+          >
+            {{ anomaly === 'short' ? t('tool.bookEditor.toc.anomalyShort') : t('tool.bookEditor.toc.anomalyLong') }}
+          </span>
+        </button>
+
+        <div
+          v-if="renamingIdx !== idx"
+          class="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex"
+        >
+          <MdIconButton
+            size="sm"
+            :title="t('tool.bookEditor.toc.renameAria')"
+            :aria-label="t('tool.bookEditor.toc.renameAria')"
+            @click="startInlineRename(idx)"
+          >
+            <LuPencil class="h-3.5 w-3.5" />
+          </MdIconButton>
+          <MdIconButton
+            v-if="idx > 0"
+            size="sm"
+            :title="t('tool.bookEditor.toc.mergePrev')"
+            :aria-label="t('tool.bookEditor.toc.mergePrev')"
+            @click="emit('mergePrev', idx)"
+          >
+            <LuMerge class="h-3.5 w-3.5" />
+          </MdIconButton>
+          <MdIconButton
+            size="sm"
+            :title="t('tool.bookEditor.toc.deleteChapter')"
+            :aria-label="t('tool.bookEditor.toc.deleteChapter')"
+            @click="emit('delete', idx)"
+          >
+            <LuTrash2 class="h-3.5 w-3.5 text-error" />
+          </MdIconButton>
+        </div>
+      </div>
+    </nav>
+  </aside>
 </template>

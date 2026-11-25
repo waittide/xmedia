@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuCheck,
   LuKey,
@@ -7,8 +8,10 @@ import {
   LuShieldCheck,
   LuSparkles,
 } from 'vue-icons-plus/lu'
-import MdDialog from '@/components/ui/MdDialog.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import {
@@ -37,6 +40,8 @@ const emit = defineEmits<{
   openSettings: []
 }>()
 
+const { t } = useI18n()
+
 const matchMode = ref<AutoScrapeMatchMode>('standard')
 const onlyFillMissing = ref(true)
 const applyCover = ref(true)
@@ -50,12 +55,23 @@ const fieldLyrics = ref(true)
 const providers = ref<ProviderStatusDto[]>([])
 const selectedProviderIds = ref<string[]>([])
 
-const domainNameMap: Record<MediaKind, string> = {
-  book: '图书',
-  comic: '漫画',
-  music: '音乐',
-  video: '影视',
-}
+const matchModes = computed(() => [
+  {
+    id: 'strict' as const,
+    title: t('tool.modals.autoScrape.modeStrict'),
+    desc: t('tool.modals.autoScrape.modeStrictDesc'),
+  },
+  {
+    id: 'standard' as const,
+    title: t('tool.modals.autoScrape.modeStandard'),
+    desc: t('tool.modals.autoScrape.modeStandardDesc'),
+  },
+  {
+    id: 'loose' as const,
+    title: t('tool.modals.autoScrape.modeLoose'),
+    desc: t('tool.modals.autoScrape.modeLooseDesc'),
+  },
+])
 
 function loadSavedPrefs(): void {
   const parsed = loadAutoScrapePrefs()
@@ -177,56 +193,46 @@ function handleOpenDryRun(): void {
 <template>
   <MdDialog
     :open="open"
-    :title="'批量自动刮削策略 · ' + domainNameMap[domain] + '（' + entries.length + ' 项）'"
-    subtitle="未命中或低于置信度阈值的项目将自动归入任务清单，可一键聚焦并在右侧对照在线候选精修"
+    :title="
+      t('tool.modals.autoScrape.title', {
+        domain: t(`tool.domains.${domain}`),
+        count: entries.length,
+      })
+    "
+    :subtitle="t('tool.modals.autoScrape.subtitle')"
     max-width="max-w-xl"
+    footer-align="between"
     @close="emit('close')"
   >
     <template #icon>
-      <LuSparkles class="h-5 w-5" />
+      <LuSparkles class="h-5 w-5" aria-hidden="true" />
     </template>
 
     <div class="space-y-5 py-2">
       <!-- 1. Match Strictness Mode -->
       <div class="space-y-2">
-        <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-          <LuShieldCheck class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-          <span>匹配严格度</span>
+        <div class="text-title-small flex items-center gap-1.5 text-on-surface">
+          <LuShieldCheck class="h-4 w-4 text-primary" aria-hidden="true" />
+          <span>{{ t('tool.modals.autoScrape.strictness') }}</span>
         </div>
         <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <button
-            v-for="m in [
-              {
-                id: 'strict' as const,
-                title: '严格模式',
-                desc: '置信度 ≥ 70，标题+作者/年份强校验，宁缺毋滥',
-              },
-              {
-                id: 'standard' as const,
-                title: '标准模式（推荐）',
-                desc: '置信度 ≥ 45，兼顾命中率与准确性',
-              },
-              {
-                id: 'loose' as const,
-                title: '宽松模式',
-                desc: '只要命中即写入，适合杂乱文件名快速补全',
-              },
-            ]"
+            v-for="m in matchModes"
             :key="m.id"
             type="button"
-            class="md-state rounded-2xl border p-3 text-left transition"
+            class="md-state cursor-pointer rounded-corner-lg p-3 text-left transition"
             :class="
               matchMode === m.id
-                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/50'
-                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-low)] hover:border-[var(--md-sys-color-outline)]'
+                ? 'bg-secondary-container text-on-secondary-container'
+                : 'bg-surface text-on-surface hover:bg-surface-container-low'
             "
             @click="matchMode = m.id"
           >
-            <div class="flex items-center justify-between text-xs font-bold text-[var(--md-sys-color-on-surface)]">
+            <div class="text-label-large flex items-center justify-between">
               <span>{{ m.title }}</span>
-              <LuCheck v-if="matchMode === m.id" class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+              <LuCheck v-if="matchMode === m.id" class="h-4 w-4 text-primary" aria-hidden="true" />
             </div>
-            <p class="mt-1 text-[10px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
+            <p class="text-body-small mt-1 leading-relaxed opacity-85">
               {{ m.desc }}
             </p>
           </button>
@@ -235,36 +241,38 @@ function handleOpenDryRun(): void {
 
       <!-- 2. Write Strategy -->
       <div class="space-y-2">
-        <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">字段写入策略</div>
+        <div class="text-title-small text-on-surface">
+          {{ t('tool.modals.autoScrape.writeStrategy') }}
+        </div>
         <div class="grid grid-cols-2 gap-2">
           <button
             type="button"
-            class="md-state rounded-xl border px-3 py-2.5 text-left transition"
+            class="md-state cursor-pointer rounded-corner-lg px-3.5 py-2.5 text-left transition"
             :class="
               onlyFillMissing
-                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/45'
-                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-low)]'
+                ? 'bg-secondary-container text-on-secondary-container'
+                : 'bg-surface text-on-surface hover:bg-surface-container-low'
             "
             @click="onlyFillMissing = true"
           >
-            <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">仅补全缺失字段</div>
-            <div class="mt-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-              保护已有元数据，只填补空白项
+            <div class="text-label-large">{{ t('tool.modals.autoScrape.fillMissingTitle') }}</div>
+            <div class="text-body-small mt-0.5 opacity-85">
+              {{ t('tool.modals.autoScrape.fillMissingDesc') }}
             </div>
           </button>
           <button
             type="button"
-            class="md-state rounded-xl border px-3 py-2.5 text-left transition"
+            class="md-state cursor-pointer rounded-corner-lg px-3.5 py-2.5 text-left transition"
             :class="
               !onlyFillMissing
-                ? 'border-[var(--md-sys-color-warning)]/70 bg-[var(--md-sys-color-warning-container)]/60'
-                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-low)]'
+                ? 'bg-warning-container text-on-warning-container'
+                : 'bg-surface text-on-surface hover:bg-surface-container-low'
             "
             @click="onlyFillMissing = false"
           >
-            <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">强制覆盖已有字段</div>
-            <div class="mt-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-              用在线高优先级源重写选中字段
+            <div class="text-label-large">{{ t('tool.modals.autoScrape.overwriteTitle') }}</div>
+            <div class="text-body-small mt-0.5 opacity-85">
+              {{ t('tool.modals.autoScrape.overwriteDesc') }}
             </div>
           </button>
         </div>
@@ -272,28 +280,28 @@ function handleOpenDryRun(): void {
 
       <!-- 3. Field Groups & Extra Actions -->
       <div class="space-y-2">
-        <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">要刮削的字段与附加动作</div>
-        <div
-          class="grid grid-cols-2 gap-2.5 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-low)] p-3.5"
-        >
-          <AppCheckbox v-model="fieldBasic" label="基础信息（标题/作者/系列/年份）" />
-          <AppCheckbox v-model="applyCover" label="下载并写入封面 / 海报" />
-          <AppCheckbox v-model="fieldSummary" label="简介 / 剧情概要 / 注释" />
-          <AppCheckbox v-model="fieldTags" label="流派与标签" />
+        <div class="text-title-small text-on-surface">
+          {{ t('tool.modals.autoScrape.fieldsHeading') }}
+        </div>
+        <div class="grid grid-cols-1 gap-2.5 rounded-corner-lg bg-surface p-3.5 sm:grid-cols-2">
+          <AppCheckbox v-model="fieldBasic" :label="t('tool.modals.autoScrape.fieldBasic')" />
+          <AppCheckbox v-model="applyCover" :label="t('tool.modals.autoScrape.fieldCover')" />
+          <AppCheckbox v-model="fieldSummary" :label="t('tool.modals.autoScrape.fieldSummary')" />
+          <AppCheckbox v-model="fieldTags" :label="t('tool.modals.autoScrape.fieldTags')" />
           <AppCheckbox
             v-if="domain === 'music'"
             v-model="fieldLyrics"
-            label="内嵌同步 / 纯文本歌词"
+            :label="t('tool.modals.autoScrape.fieldLyrics')"
           />
           <AppCheckbox
             v-if="domain === 'music'"
             v-model="writeSidecarLrc"
-            label="同步导出同名 .lrc 文件"
+            :label="t('tool.modals.autoScrape.fieldSidecarLrc')"
           />
-          <div class="col-span-2 border-t border-[var(--md-sys-color-outline-variant)]/45 pt-2">
+          <div class="border-t border-outline-variant/40 pt-2 sm:col-span-2">
             <AppCheckbox
               v-model="organizeByTemplate"
-              label="刮削后同步按当前领域命名模板重命名并归档目录"
+              :label="t('tool.modals.autoScrape.organizeAfter')"
             />
           </div>
         </div>
@@ -301,65 +309,71 @@ function handleOpenDryRun(): void {
 
       <!-- 4. Provider Selection -->
       <div v-if="providers.length > 0" class="space-y-2">
-        <div class="flex items-center justify-between text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-          <span>本次启用的数据源（按设置页优先级瀑布合并）</span>
-          <span class="text-[10px] font-normal text-[var(--md-sys-color-on-surface-variant)]">
-            已选 {{ selectedProviderIds.length }}/{{ providers.filter((p) => p.configured).length }}
+        <div class="flex items-center justify-between">
+          <span class="text-title-small text-on-surface">
+            {{ t('tool.modals.autoScrape.providersHeading') }}
+          </span>
+          <span class="text-label-small text-on-surface-variant">
+            {{
+              t('tool.modals.autoScrape.selectedRatio', {
+                selected: selectedProviderIds.length,
+                total: providers.filter((p) => p.configured).length,
+              })
+            }}
           </span>
         </div>
         <div class="flex flex-wrap gap-1.5">
-          <button
+          <MdChip
             v-for="p in providers"
             :key="p.id"
-            type="button"
-            class="md-state inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition"
-            :class="
-              !p.configured
-                ? 'border-dashed border-[var(--md-sys-color-warning)]/55 bg-[var(--md-sys-color-warning-container)]/50 text-[var(--md-sys-color-on-warning-container)]'
-                : selectedProviderIds.includes(p.id)
-                  ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-                  : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)]'
-            "
+            variant="filter"
+            :selected="p.configured && selectedProviderIds.includes(p.id)"
             @click="toggleProvider(p)"
           >
-            <LuKey v-if="!p.configured && p.requires_api_key" class="h-3 w-3" />
+            <template #icon>
+              <LuKey
+                v-if="!p.configured && p.requires_api_key"
+                class="h-3.5 w-3.5 shrink-0 text-warning"
+                aria-hidden="true"
+              />
+            </template>
             <span>{{ p.name }}</span>
-            <span v-if="!p.configured" class="text-[10px]">
-              {{ p.requires_api_key ? '(去配置)' : '(去启用)' }}
+            <span v-if="!p.configured" class="text-label-small ml-1 opacity-80">
+              {{
+                p.requires_api_key
+                  ? t('tool.modals.autoScrape.goConfigure')
+                  : t('tool.modals.autoScrape.goEnable')
+              }}
             </span>
-          </button>
+          </MdChip>
         </div>
       </div>
     </div>
 
     <template #footer>
-      <button
-        type="button"
+      <MdButton
+        variant="outlined"
+        size="sm"
+        :icon="LuSearchCheck"
         :disabled="entries.length === 0 || !hasAnyFieldSelected"
-        class="md-btn md-btn-sm md-btn-outlined md-state"
         @click="handleOpenDryRun"
       >
-        <LuSearchCheck class="h-3.5 w-3.5" />
-        <span>先预演置信度</span>
-      </button>
+        {{ t('tool.modals.autoScrape.dryRunFirst') }}
+      </MdButton>
 
       <div class="flex items-center gap-2">
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          @click="emit('close')"
-        >
-          取消
-        </button>
-        <button
-          type="button"
+        <MdButton variant="text" size="sm" @click="emit('close')">
+          {{ t('tool.common.cancel') }}
+        </MdButton>
+        <MdButton
+          variant="filled"
+          size="sm"
+          :icon="LuSparkles"
           :disabled="entries.length === 0 || !hasAnyFieldSelected"
-          class="md-btn md-btn-sm md-btn-filled md-state"
           @click="handleStart"
         >
-          <LuSparkles class="h-3.5 w-3.5" />
-          <span>开始自动刮削 ({{ entries.length }})</span>
-        </button>
+          {{ t('tool.modals.autoScrape.startScrape', { count: entries.length }) }}
+        </MdButton>
       </div>
     </template>
   </MdDialog>

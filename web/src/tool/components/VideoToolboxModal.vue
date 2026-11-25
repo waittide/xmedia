@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuCheck,
   LuDownload,
@@ -8,12 +9,13 @@ import {
   LuLoader2,
   LuSubtitles,
 } from 'vue-icons-plus/lu'
-
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import MdSelect from '@/components/ui/MdSelect.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdRadio from '@/components/ui/MdRadio.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import MdTabs from '@/components/ui/MdTabs.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import { toolApi } from '../api'
 import type {
   MediaFileDetail,
@@ -34,6 +36,8 @@ const emit = defineEmits<{
   completed: []
 }>()
 
+const { t } = useI18n()
+
 const isSingleMode = computed(() => props.entries.length === 1)
 const primaryEntry = computed(() => props.entries[0] ?? null)
 const sortedEntries = computed(() =>
@@ -51,7 +55,7 @@ const subtitles = ref<VideoSubtitleInfoDto[]>([])
 const embeddedStreams = ref<ProbedSubtitleStreamDto[]>([])
 const selectedSubName = ref('')
 const convertUtf8 = ref(true)
-const subOffsetMs = ref(0)
+const subOffsetMsStr = ref('0')
 const subZhDir = ref<'t2s' | 's2t' | ''>('')
 const renameLang = ref('')
 const subForced = ref(false)
@@ -59,47 +63,50 @@ const extractExt = ref<'srt' | 'ass'>('srt')
 
 // Episode batch remap state
 const showTitle = ref('')
-const seasonNumber = ref<number | null>(1)
+const seasonNumberStr = ref('1')
 const remapMode = ref<'sequential' | 'absolute_offset'>('sequential')
-const startEpisode = ref(1)
-const episodeOffset = ref(-24)
+const startEpisodeStr = ref('1')
+const episodeOffsetStr = ref('-24')
 const writeSeasonNfo = ref(true)
 
 const tabOptions = computed(() => {
   const list: Array<{ value: 'subtitles' | 'episodes'; label: string; icon: typeof LuFilm }> = []
   if (isSingleMode.value) {
-    list.push({ value: 'subtitles', label: '字幕精校 & 抽取', icon: LuSubtitles })
+    list.push({ value: 'subtitles', label: t('tool.modals.videoTools.tabSubtitles'), icon: LuSubtitles })
   }
-  list.push({ value: 'episodes', label: '剧集/番剧整季映射', icon: LuListOrdered })
+  list.push({ value: 'episodes', label: t('tool.modals.videoTools.tabEpisodes'), icon: LuListOrdered })
   return list
 })
 
 const dialogTitle = computed(() =>
   isSingleMode.value && primaryEntry.value
-    ? `影视字幕与剧集工具箱 · ${primaryEntry.value.file_name}`
-    : `影视字幕与剧集工具箱（已选 ${sortedEntries.value.length} 集视频）`,
+    ? t('tool.modals.videoTools.titleSingle', { name: primaryEntry.value.file_name })
+    : t('tool.modals.videoTools.titleBatch', { count: sortedEntries.value.length }),
 )
 
-const zhSubOptions = [
-  { value: '', label: '不转换' },
-  { value: 't2s', label: '繁 → 简（保留 ASS 特效）' },
-  { value: 's2t', label: '简 → 繁（保留 ASS 特效）' },
-]
-const renameLangOptions = [
-  { value: '', label: '保持原文件名' },
-  { value: 'zh-CN', label: '.zh-CN（简体中文）' },
-  { value: 'zh-TW', label: '.zh-TW（繁体中文）' },
-  { value: 'en', label: '.en（英语）' },
-  { value: 'ja', label: '.ja（日语）' },
-]
-const extractExtOptions = [
-  { value: 'srt', label: '抽取为 .srt' },
-  { value: 'ass', label: '抽取为 .ass' },
-]
-const remapModeOptions = [
-  { value: 'sequential', label: '按文件名自然序顺序重编 (E01, E02...)' },
-  { value: 'absolute_offset', label: '番剧绝对集数偏移映射 (如 EP25 - 24 → S02E01)' },
-]
+const zhSubOptions = computed(() => [
+  { value: '', label: t('tool.modals.batchMeta.zhNone') },
+  { value: 't2s', label: t('tool.modals.videoTools.zhSubT2s') },
+  { value: 's2t', label: t('tool.modals.videoTools.zhSubS2t') },
+])
+
+const renameLangOptions = computed(() => [
+  { value: '', label: t('tool.modals.videoTools.keepFilename') },
+  { value: 'zh-CN', label: '.zh-CN' },
+  { value: 'zh-TW', label: '.zh-TW' },
+  { value: 'en', label: '.en' },
+  { value: 'ja', label: '.ja' },
+])
+
+const extractExtOptions = computed(() => [
+  { value: 'srt', label: t('tool.modals.videoTools.extractSrt') },
+  { value: 'ass', label: t('tool.modals.videoTools.extractAss') },
+])
+
+const remapModeOptions = computed(() => [
+  { value: 'sequential', label: t('tool.modals.videoTools.remapSequential') },
+  { value: 'absolute_offset', label: t('tool.modals.videoTools.remapOffset') },
+])
 
 let videoLoadSeq = 0
 
@@ -120,7 +127,7 @@ async function loadVideoContext(): Promise<void> {
     if (detail.metadata.kind === 'video') {
       embeddedStreams.value = detail.metadata.data.subtitle_streams
       showTitle.value = detail.metadata.data.show_title || detail.metadata.data.title || ''
-      seasonNumber.value = detail.metadata.data.season_number ?? 1
+      seasonNumberStr.value = String(detail.metadata.data.season_number ?? 1)
     }
   } catch (err) {
     if (seq === videoLoadSeq && props.open) {
@@ -142,7 +149,7 @@ watch(
     }
     errorMsg.value = ''
     successMsg.value = ''
-    subOffsetMs.value = 0
+    subOffsetMsStr.value = '0'
     activeTab.value = isSingleMode.value ? 'subtitles' : 'episodes'
     if (isSingleMode.value) {
       void loadVideoContext()
@@ -154,8 +161,15 @@ watch(
   { immediate: true },
 )
 
-function toOptInt(val: unknown): number | undefined {
-  return typeof val === 'number' && Number.isFinite(val) ? Math.trunc(val) : undefined
+function toOptInt(raw: string): number | undefined {
+  if (!raw.trim()) return undefined
+  const parsed = Number.parseInt(raw.trim(), 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function shiftSubOffset(delta: number): void {
+  const cur = toOptInt(subOffsetMsStr.value) ?? 0
+  subOffsetMsStr.value = String(cur + delta)
 }
 
 async function handleProcessSubtitle(): Promise<void> {
@@ -170,14 +184,17 @@ async function handleProcessSubtitle(): Promise<void> {
       {
         subtitle_filename: selectedSubName.value,
         convert_utf8: convertUtf8.value,
-        offset_ms: toOptInt(subOffsetMs.value) ?? 0,
+        offset_ms: toOptInt(subOffsetMsStr.value) ?? 0,
         zh_direction: subZhDir.value || null,
         rename_language: renameLang.value.trim() || undefined,
         forced: subForced.value,
       },
     )
-    subOffsetMs.value = 0
-    successMsg.value = `字幕已处理：${res.report.final_filename}（原编码 ${res.report.original_encoding}${res.report.converted_utf8 ? ' → UTF-8' : ''}${res.report.shifted_cues > 0 ? `，平移 ${res.report.shifted_cues} 条时间轴` : ''}）`
+    subOffsetMsStr.value = '0'
+    successMsg.value = t('tool.modals.videoTools.subProcessed', {
+      filename: res.report.final_filename,
+      encoding: res.report.original_encoding,
+    })
     emit('updated', res.detail)
     await loadVideoContext()
   } catch (err) {
@@ -201,7 +218,10 @@ async function handleExtractStream(stream: ProbedSubtitleStreamDto): Promise<voi
       lang,
       extractExt.value,
     )
-    successMsg.value = `已抽取内封字幕为 ${res.report.created_filename}（${(res.report.file_size / 1024).toFixed(1)} KB）`
+    successMsg.value = t('tool.modals.videoTools.subExtracted', {
+      filename: res.report.created_filename,
+      kb: (res.report.file_size / 1024).toFixed(1),
+    })
     emit('updated', res.detail)
     await loadVideoContext()
   } catch (err) {
@@ -222,14 +242,14 @@ async function handleBatchRemap(): Promise<void> {
       sortedEntries.value.map((e) => e.rel_path),
       {
         show_title: showTitle.value.trim() || undefined,
-        season_number: toOptInt(seasonNumber.value),
+        season_number: toOptInt(seasonNumberStr.value),
         mode: remapMode.value,
-        start_episode: toOptInt(startEpisode.value) ?? 1,
-        episode_offset: toOptInt(episodeOffset.value) ?? 0,
+        start_episode: toOptInt(startEpisodeStr.value) ?? 1,
+        episode_offset: toOptInt(episodeOffsetStr.value) ?? 0,
         write_season_nfo: writeSeasonNfo.value,
       },
     )
-    successMsg.value = `已重映射 ${rep.updated_count} 集剧集 NFO${rep.failed_paths.length > 0 ? `（失败 ${rep.failed_paths.length}）` : ''}`
+    successMsg.value = t('tool.modals.videoTools.episodesRemapped', { count: rep.updated_count })
     emit('completed')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -243,42 +263,51 @@ async function handleBatchRemap(): Promise<void> {
   <MdDialog
     :open="open"
     :title="dialogTitle"
-    subtitle="外挂字幕转码 / 简繁 / 时间轴平移、内封字幕轨抽取与剧集整季编号映射"
+    :subtitle="t('tool.modals.videoTools.subtitle')"
     max-width="max-w-2xl"
     :close-on-backdrop="!busy"
     @close="!busy && emit('close')"
   >
     <template #icon>
-      <LuFilm class="h-5 w-5" />
+      <LuFilm class="h-5 w-5" aria-hidden="true" />
     </template>
 
-    <div class="space-y-4 py-1 text-xs">
-      <MdTabs v-model="activeTab" :tabs="tabOptions" variant="primary" aria-label="工具箱功能" />
+    <div class="space-y-4 py-1">
+      <MdTabs v-model="activeTab" :tabs="tabOptions" variant="primary" :aria-label="dialogTitle" />
 
       <!-- TAB 1: Subtitles -->
       <div v-if="activeTab === 'subtitles' && isSingleMode" class="space-y-4">
-        <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-[var(--md-sys-color-on-surface-variant)]">
-          <LuLoader2 class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
-          <span>正在扫描外挂与内封字幕…</span>
+        <div
+          v-if="loading"
+          class="text-body-small flex items-center justify-center gap-2 py-8 text-on-surface-variant"
+        >
+          <LuLoader2 class="h-4 w-4 animate-spin text-primary" aria-hidden="true" />
+          <span>{{ t('tool.modals.videoTools.scanningSubs') }}</span>
         </div>
 
         <template v-else>
           <!-- Sidecar subtitles -->
-          <div class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-4">
-            <div class="mb-2 font-semibold">外挂字幕精校（共 {{ subtitles.length }} 条）</div>
-            <div v-if="subtitles.length === 0" class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              当前视频目录下未发现伴随外挂字幕（.srt / .ass / .ssa / .vtt）。
+          <div class="space-y-3 rounded-corner-lg bg-surface p-4">
+            <div class="text-title-small text-on-surface">
+              {{ t('tool.modals.videoTools.sidecarHeading', { count: subtitles.length }) }}
+            </div>
+            <div v-if="subtitles.length === 0" class="text-body-small text-on-surface-variant">
+              {{ t('tool.modals.videoTools.noSidecarSubs') }}
             </div>
             <div v-else class="space-y-3">
-              <div role="radiogroup" aria-label="外挂字幕列表" class="space-y-1.5">
+              <div
+                role="radiogroup"
+                :aria-label="t('tool.modals.videoTools.sidecarHeading', { count: subtitles.length })"
+                class="space-y-1.5"
+              >
                 <div
                   v-for="sub in subtitles"
                   :key="sub.filename"
-                  class="flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 transition"
+                  class="flex w-full items-center justify-between gap-2 rounded-corner-md px-3 py-2 transition"
                   :class="
                     selectedSubName === sub.filename
-                      ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/45'
-                      : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)]'
+                      ? 'bg-secondary-container/65'
+                      : 'bg-surface-container-low'
                   "
                 >
                   <MdRadio
@@ -287,20 +316,20 @@ async function handleBatchRemap(): Promise<void> {
                     class="min-w-0 flex-1"
                     @select="selectedSubName = sub.filename"
                   />
-                  <div class="flex shrink-0 items-center gap-1.5 text-[11px]">
+                  <div class="flex shrink-0 items-center gap-1.5">
                     <span
-                      class="rounded-full px-2 py-0.5 font-medium"
+                      class="text-label-small rounded-corner-full px-2 py-0.5"
                       :class="
                         sub.is_utf8
-                          ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                          : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+                          ? 'bg-success-container text-on-success-container'
+                          : 'bg-warning-container text-on-warning-container'
                       "
                     >
                       {{ sub.detected_encoding }}
                     </span>
                     <span
                       v-if="sub.language_tag"
-                      class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[var(--md-sys-color-on-surface-variant)]"
+                      class="text-label-small rounded-corner-full bg-surface-container-high px-2 py-0.5 text-on-surface-variant"
                     >
                       {{ sub.language_tag }}
                     </span>
@@ -309,9 +338,11 @@ async function handleBatchRemap(): Promise<void> {
               </div>
 
               <div class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-                <AppCheckbox v-model="convertUtf8" label="强制转为无 BOM UTF-8（防乱码）" />
+                <AppCheckbox v-model="convertUtf8" :label="t('tool.modals.videoTools.convertUtf8')" />
                 <div class="inline-flex items-center gap-2">
-                  <span class="text-[var(--md-sys-color-on-surface-variant)]">简繁转换</span>
+                  <span class="text-label-medium text-on-surface-variant">
+                    {{ t('tool.modals.musicTools.zhConvert') }}
+                  </span>
                   <div class="w-48">
                     <MdSelect
                       :model-value="subZhDir"
@@ -321,57 +352,55 @@ async function handleBatchRemap(): Promise<void> {
                     />
                   </div>
                 </div>
-                <div class="flex items-center gap-1.5 sm:col-span-2">
-                  <span class="text-[var(--md-sys-color-on-surface-variant)]">时间轴平移 (ms)：</span>
-                  <button
-                    type="button"
-                    class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-                    @click="subOffsetMs -= 500"
-                  >
-                    -0.5s
-                  </button>
-                  <input
-                    v-model.number="subOffsetMs"
-                    type="number"
-                    step="100"
-                    class="md-input h-8 w-24 !px-2 text-center text-xs"
-                  />
-                  <button
-                    type="button"
-                    class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-                    @click="subOffsetMs += 500"
-                  >
-                    +0.5s
-                  </button>
+                <div class="flex flex-wrap items-end gap-2 sm:col-span-2">
+                  <div class="w-36">
+                    <MdTextField
+                      v-model="subOffsetMsStr"
+                      size="sm"
+                      type="number"
+                      step="100"
+                      :label="t('tool.modals.videoTools.offsetLabel')"
+                    />
+                  </div>
+                  <MdButton variant="outlined" size="sm" @click="shiftSubOffset(-500)">-0.5s</MdButton>
+                  <MdButton variant="outlined" size="sm" @click="shiftSubOffset(500)">+0.5s</MdButton>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 sm:col-span-2">
-                  <span class="text-[var(--md-sys-color-on-surface-variant)]">规范重命名语言后缀：</span>
+                  <span class="text-label-medium text-on-surface-variant">
+                    {{ t('tool.modals.videoTools.renameSuffix') }}
+                  </span>
                   <div class="w-44">
                     <MdSelect v-model="renameLang" :options="renameLangOptions" variant="compact" />
                   </div>
-                  <AppCheckbox v-if="renameLang" v-model="subForced" label=".forced 强制字幕" />
+                  <AppCheckbox
+                    v-if="renameLang"
+                    v-model="subForced"
+                    :label="t('tool.modals.videoTools.forcedSub')"
+                  />
                 </div>
               </div>
 
               <div class="flex justify-end">
-                <button
-                  type="button"
-                  :disabled="busy || !selectedSubName"
-                  class="md-btn md-btn-sm md-btn-filled md-state"
+                <MdButton
+                  variant="filled"
+                  size="sm"
+                  :loading="busy"
+                  :disabled="!selectedSubName"
                   @click="handleProcessSubtitle"
                 >
-                  <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                  <span>应用字幕精校</span>
-                </button>
+                  {{ t('tool.modals.videoTools.applySubBtn') }}
+                </MdButton>
               </div>
             </div>
           </div>
 
           <!-- Embedded subtitle streams -->
-          <div class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-4">
-            <div class="mb-2 flex items-center justify-between gap-2">
-              <span class="font-semibold">内封字幕流抽取（共 {{ embeddedStreams.length }} 轨）</span>
-              <div class="w-32">
+          <div class="space-y-2.5 rounded-corner-lg bg-surface p-4">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-title-small text-on-surface">
+                {{ t('tool.modals.videoTools.embeddedHeading', { count: embeddedStreams.length }) }}
+              </span>
+              <div class="w-36">
                 <MdSelect
                   :model-value="extractExt"
                   :options="extractExtOptions"
@@ -380,30 +409,37 @@ async function handleBatchRemap(): Promise<void> {
                 />
               </div>
             </div>
-            <div v-if="embeddedStreams.length === 0" class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              该视频文件未检测到内封文本字幕轨。
+            <div v-if="embeddedStreams.length === 0" class="text-body-small text-on-surface-variant">
+              {{ t('tool.modals.videoTools.noEmbeddedSubs') }}
             </div>
             <div v-else class="space-y-1.5">
               <div
                 v-for="st in embeddedStreams"
                 :key="st.stream_index"
-                class="flex items-center justify-between rounded-xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] px-3 py-2"
+                class="flex items-center justify-between rounded-corner-md bg-surface-container-low px-3 py-2"
               >
                 <div class="min-w-0">
-                  <span class="font-medium">流 #{{ st.stream_index }} · {{ st.codec }}</span>
-                  <span class="ml-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                  <span class="text-body-small font-medium text-on-surface">
+                    {{
+                      t('tool.modals.videoTools.streamLabel', {
+                        index: st.stream_index,
+                        codec: st.codec,
+                      })
+                    }}
+                  </span>
+                  <span class="text-body-small ml-2 text-on-surface-variant">
                     {{ st.language || 'und' }}{{ st.title ? ` (${st.title})` : '' }}
                   </span>
                 </div>
-                <button
-                  type="button"
+                <MdButton
+                  variant="tonal"
+                  size="sm"
+                  :icon="LuDownload"
                   :disabled="busy"
-                  class="md-btn md-btn-sm md-btn-tonal md-state !h-7 !px-2.5 !text-[11px]"
                   @click="handleExtractStream(st)"
                 >
-                  <LuDownload class="h-3 w-3" />
-                  <span>抽取外挂</span>
-                </button>
+                  {{ t('tool.modals.videoTools.extractBtn') }}
+                </MdButton>
               </div>
             </div>
           </div>
@@ -413,74 +449,91 @@ async function handleBatchRemap(): Promise<void> {
       <!-- TAB 2: Batch Episode Remap -->
       <div v-else class="space-y-3">
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">剧集名 (ShowTitle)</span>
-            <input v-model="showTitle" type="text" class="md-input h-9 w-full text-xs" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">季号 (Season · 0 为特别篇)</span>
-            <input v-model.number="seasonNumber" type="number" min="0" class="md-input h-9 w-full text-xs" />
-          </label>
+          <MdTextField
+            v-model="showTitle"
+            size="sm"
+            :label="t('tool.forms.video.showTitle')"
+          />
+          <MdTextField
+            v-model="seasonNumberStr"
+            size="sm"
+            type="number"
+            min="0"
+            :label="t('tool.modals.videoTools.seasonLabel')"
+          />
         </div>
 
-        <div class="space-y-2.5 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3.5">
-          <div class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">集数映射策略</div>
-          <div class="flex flex-wrap items-center gap-3">
-            <div class="w-72">
+        <div class="space-y-3 rounded-corner-lg bg-surface p-4">
+          <div class="text-title-small text-on-surface">
+            {{ t('tool.modals.videoTools.remapStrategy') }}
+          </div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-12">
+            <div class="flex flex-col gap-1 sm:col-span-8">
+              <span class="text-label-medium text-on-surface-variant">
+                {{ t('tool.modals.videoTools.tabEpisodes') }}
+              </span>
               <MdSelect
                 :model-value="remapMode"
                 :options="remapModeOptions"
-                variant="compact"
+                size="sm"
                 @update:model-value="(v) => (remapMode = v as 'sequential' | 'absolute_offset')"
               />
             </div>
-            <label v-if="remapMode === 'sequential'" class="inline-flex items-center gap-1.5">
-              <span>起始集号</span>
-              <input v-model.number="startEpisode" type="number" min="1" class="md-input h-8 w-16 !px-2 text-xs" />
-            </label>
-            <label v-else class="inline-flex items-center gap-1.5">
-              <span>集数偏移量</span>
-              <input v-model.number="episodeOffset" type="number" class="md-input h-8 w-20 !px-2 text-xs" />
-            </label>
+            <div v-if="remapMode === 'sequential'" class="sm:col-span-4">
+              <MdTextField
+                v-model="startEpisodeStr"
+                size="sm"
+                type="number"
+                min="1"
+                :label="t('tool.modals.videoTools.startEpisode')"
+              />
+            </div>
+            <div v-else class="sm:col-span-4">
+              <MdTextField
+                v-model="episodeOffsetStr"
+                size="sm"
+                type="number"
+                :label="t('tool.modals.videoTools.episodeOffset')"
+              />
+            </div>
           </div>
-          <div class="pt-1">
-            <AppCheckbox v-model="writeSeasonNfo" label="同时在当前目录生成/更新标准 season.nfo" />
-          </div>
+          <AppCheckbox v-model="writeSeasonNfo" :label="t('tool.modals.videoTools.writeSeasonNfo')" />
         </div>
 
         <div class="flex justify-end">
-          <button
-            type="button"
-            :disabled="busy || sortedEntries.length === 0"
-            class="md-btn md-btn-sm md-btn-filled md-state"
+          <MdButton
+            variant="filled"
+            size="sm"
+            :loading="busy"
+            :disabled="sortedEntries.length === 0"
             @click="handleBatchRemap"
           >
-            <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-            <span>应用整季映射（{{ sortedEntries.length }} 集）</span>
-          </button>
+            {{ t('tool.modals.videoTools.applyRemapBtn', { count: sortedEntries.length }) }}
+          </MdButton>
         </div>
       </div>
 
       <div
         v-if="errorMsg"
-        class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
         {{ errorMsg }}
       </div>
       <div
         v-if="successMsg"
-        class="flex items-center gap-1.5 rounded-2xl bg-[var(--md-sys-color-success-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-success-container)]"
+        class="text-body-small flex items-center gap-1.5 rounded-corner-lg bg-success-container px-3.5 py-2.5 text-on-success-container"
       >
-        <LuCheck class="h-4 w-4 shrink-0" />
+        <LuCheck class="h-4 w-4 shrink-0" aria-hidden="true" />
         <span>{{ successMsg }}</span>
       </div>
     </div>
 
     <template #footer>
       <div class="ml-auto">
-        <button type="button" class="md-btn md-btn-sm md-btn-text md-state" @click="emit('close')">
-          关闭
-        </button>
+        <MdButton variant="text" size="sm" @click="emit('close')">
+          {{ t('tool.common.close') }}
+        </MdButton>
       </div>
     </template>
   </MdDialog>
