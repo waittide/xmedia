@@ -1,6 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+mod rate_limit;
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
@@ -16,161 +20,13 @@ use crate::application::ports::{
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
 use crate::domain::repository::{OnlineLibraryItemRepository, UserRepository};
-use crate::domain::user::{User, UserId, UserPreferences, UserRole, require_admin};
-use crate::infra::stream::sha256_hex;
+use crate::domain::user::{User, UserId, UserPreferences, UserRole};
 
-/// Computes a deterministic credential version fingerprint from a user's password hash, API key,
-/// and role so password changes, admin password resets, API key rotations, and role changes
-/// immediately invalidate all previously issued JWTs even across server restarts.
-fn compute_user_cred_ver(user: &User) -> String {
-    let material = format!(
-        "{}\0{}\0{}",
-        user.password_hash,
-        user.api_key,
-        user.role.as_str()
-    );
-    let full = sha256_hex(material.as_bytes());
-    full[..16].to_string()
-}
-
-/// Constant-time byte-slice comparison using XOR accumulation to avoid timing side-channels
-/// when comparing API keys or secrets.
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    std::hint::black_box(diff) == 0
-}
-
-const MAX_REVOKED_JTIS: usize = 8192;
-const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
-const AUTH_RATE_LIMIT_MAX_FAILURES: usize = 20;
-const AUTH_RATE_LIMIT_MAX_KEYS: usize = 2048;
-
-struct RateLimiterState {
-    entries: HashMap<String, VecDeque<Instant>>,
-    overflow: VecDeque<Instant>,
-}
-
-struct AuthRateLimiter {
-    window: Duration,
-    max_failures: usize,
-    state: std::sync::Mutex<RateLimiterState>,
-}
-
-impl AuthRateLimiter {
-    fn new(window: Duration, max_failures: usize) -> Self {
-        Self {
-            window,
-            max_failures: max_failures.max(1),
-            state: std::sync::Mutex::new(RateLimiterState {
-                entries: HashMap::new(),
-                overflow: VecDeque::new(),
-            }),
-        }
-    }
-
-    fn normalize_key(key: &str) -> String {
-        let trimmed = key.trim();
-        if trimmed.is_empty() {
-            "<anonymous>".to_string()
-        } else {
-            trimmed.to_ascii_lowercase()
-        }
-    }
-
-    fn prune_hits(hits: &mut VecDeque<Instant>, now: Instant, window: Duration) {
-        while hits
-            .front()
-            .is_some_and(|ts| now.saturating_duration_since(*ts) >= window)
-        {
-            hits.pop_front();
-        }
-    }
-
-    fn is_limited(&self, key: &str) -> bool {
-        let norm = Self::normalize_key(key);
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
-        let window = self.window;
-        if let Some(hits) = guard.entries.get_mut(&norm) {
-            Self::prune_hits(hits, now, window);
-            let limited = hits.len() >= self.max_failures;
-            if hits.is_empty() {
-                guard.entries.remove(&norm);
-            }
-            return limited;
-        }
-        if guard.entries.len() >= AUTH_RATE_LIMIT_MAX_KEYS {
-            Self::prune_hits(&mut guard.overflow, now, window);
-            return guard.overflow.len() >= self.max_failures;
-        }
-        false
-    }
-
-    /// Records a failed authentication attempt and returns `Err(TooManyRequests)` once the
-    /// active failure window for `key` (or the global overflow bucket when saturated) has already
-    /// reached `max_failures`. Never evicts active rate-limit windows.
-    fn record_failure_and_check(&self, key: &str) -> DomainResult<()> {
-        let norm = Self::normalize_key(key);
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
-        let window = self.window;
-
-        if let Some(hits) = guard.entries.get_mut(&norm) {
-            Self::prune_hits(hits, now, window);
-            if hits.len() >= self.max_failures {
-                return Err(DomainError::TooManyRequests(
-                    "too many failed authentication attempts; please try again later".into(),
-                ));
-            }
-            hits.push_back(now);
-            return Ok(());
-        }
-
-        if guard.entries.len() >= AUTH_RATE_LIMIT_MAX_KEYS {
-            guard.entries.retain(|_, hits| {
-                Self::prune_hits(hits, now, window);
-                !hits.is_empty()
-            });
-        }
-
-        if guard.entries.len() < AUTH_RATE_LIMIT_MAX_KEYS {
-            let mut hits = VecDeque::with_capacity(4);
-            hits.push_back(now);
-            guard.entries.insert(norm, hits);
-            return Ok(());
-        }
-
-        Self::prune_hits(&mut guard.overflow, now, window);
-        if guard.overflow.len() >= self.max_failures {
-            return Err(DomainError::TooManyRequests(
-                "too many failed authentication attempts; please try again later".into(),
-            ));
-        }
-        guard.overflow.push_back(now);
-        Ok(())
-    }
-
-    /// Clears minor pre-lockout typo counters upon valid authentication while preserving an
-    /// active brute-force lockout window so concurrent attackers remain rate-limited.
-    fn clear_below_limit(&self, key: &str) {
-        let norm = Self::normalize_key(key);
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
-        let window = self.window;
-        if let Some(hits) = guard.entries.get_mut(&norm) {
-            Self::prune_hits(hits, now, window);
-            if hits.len() < self.max_failures {
-                guard.entries.remove(&norm);
-            }
-        }
-    }
-}
+pub use rate_limit::constant_time_eq;
+use rate_limit::{
+    AUTH_RATE_LIMIT_MAX_FAILURES, AUTH_RATE_LIMIT_WINDOW, AuthRateLimiter, MAX_REVOKED_JTIS,
+    compute_user_cred_ver,
+};
 
 #[derive(Clone)]
 pub struct AuthService {
@@ -306,16 +162,32 @@ impl AuthService {
     }
 
     pub async fn login(&self, username: &str, password: &str) -> DomainResult<AuthSessionDto> {
+        self.login_with_ip(username, password, None).await
+    }
+
+    /// Authenticates `username`/`password` while scoping brute-force rate limiting to
+    /// `(client_ip, username)` so an attacker on IP A cannot lock out legitimate logins from IP B.
+    pub async fn login_with_ip(
+        &self,
+        username: &str,
+        password: &str,
+        client_ip: Option<IpAddr>,
+    ) -> DomainResult<AuthSessionDto> {
         let Some(user) = self.users.find_by_username(username.trim()).await? else {
             self.rate_limiter
-                .record_failure_and_check("login:<unknown>")?;
+                .record_failure_and_check(client_ip, "login:<unknown>")?;
             return Err(DomainError::Unauthorized(
                 "invalid username or password".into(),
             ));
         };
 
         let rate_key = format!("login:{}", user.username);
-        let verified = if self.rate_limiter.is_limited(&rate_key) {
+        let verified = if self.rate_limiter.is_limited(client_ip, &rate_key) {
+            if client_ip.is_some() {
+                return Err(DomainError::TooManyRequests(
+                    "too many failed authentication attempts; please try again later".into(),
+                ));
+            }
             let _throttle = self.throttled_verify_lock.lock().await;
             self.hasher
                 .verify_password(password, &user.password_hash)
@@ -326,24 +198,20 @@ impl AuthService {
                 .await?
         };
         if !verified {
-            self.rate_limiter.record_failure_and_check(&rate_key)?;
+            self.rate_limiter
+                .record_failure_and_check(client_ip, &rate_key)?;
             return Err(DomainError::Unauthorized(
                 "invalid username or password".into(),
             ));
         }
 
-        self.rate_limiter.clear_below_limit(&rate_key);
-        if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
-        }
-
+        self.rate_limiter.clear_below_limit(client_ip, &rate_key);
+        user.ensure_active()?;
         self.issue_session(user)
     }
 
     /// Issues a session directly for an active local administrator without password verification.
-    /// Intended strictly for the in-process standalone loopback client gateway so local
-    /// password changes or identity file recovery never break auto-login and repeated
-    /// imports avoid redundant Argon2 hashing.
+    /// Intended strictly for the in-process standalone loopback client gateway.
     pub async fn issue_local_admin_session(
         &self,
         preferred_username: Option<&str>,
@@ -379,9 +247,7 @@ impl AuthService {
             .find_by_id(claims.user_id)
             .await?
             .ok_or_else(|| DomainError::Unauthorized("user no longer exists".into()))?;
-        if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
-        }
+        user.ensure_active()?;
         let expected_ver = compute_user_cred_ver(&user);
         if claims.cred_ver.is_empty()
             || !constant_time_eq(claims.cred_ver.as_bytes(), expected_ver.as_bytes())
@@ -394,25 +260,31 @@ impl AuthService {
     }
 
     pub async fn authenticate_api_key(&self, key: &str) -> DomainResult<User> {
+        self.authenticate_api_key_with_ip(key, None).await
+    }
+
+    pub async fn authenticate_api_key_with_ip(
+        &self,
+        key: &str,
+        client_ip: Option<IpAddr>,
+    ) -> DomainResult<User> {
         let trimmed = key.trim();
         if trimmed.is_empty() {
             self.rate_limiter
-                .record_failure_and_check("api_key:<invalid>")?;
+                .record_failure_and_check(client_ip, "api_key:<invalid>")?;
             return Err(DomainError::Unauthorized("empty api key".into()));
         }
         let Some(user) = self.users.find_by_api_key(trimmed).await? else {
             self.rate_limiter
-                .record_failure_and_check("api_key:<invalid>")?;
+                .record_failure_and_check(client_ip, "api_key:<invalid>")?;
             return Err(DomainError::Unauthorized("invalid api key".into()));
         };
         if !constant_time_eq(trimmed.as_bytes(), user.api_key.as_bytes()) {
             self.rate_limiter
-                .record_failure_and_check("api_key:<invalid>")?;
+                .record_failure_and_check(client_ip, "api_key:<invalid>")?;
             return Err(DomainError::Unauthorized("invalid api key".into()));
         }
-        if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
-        }
+        user.ensure_active()?;
         Ok(user)
     }
 
@@ -421,9 +293,19 @@ impl AuthService {
         username: &str,
         password: &str,
     ) -> DomainResult<User> {
+        self.verify_basic_credentials_with_ip(username, password, None)
+            .await
+    }
+
+    pub async fn verify_basic_credentials_with_ip(
+        &self,
+        username: &str,
+        password: &str,
+        client_ip: Option<IpAddr>,
+    ) -> DomainResult<User> {
         let Some(user) = self.users.find_by_username(username.trim()).await? else {
             self.rate_limiter
-                .record_failure_and_check("basic:<unknown>")?;
+                .record_failure_and_check(client_ip, "basic:<unknown>")?;
             return Err(DomainError::Unauthorized("invalid credentials".into()));
         };
         let rate_key = format!("basic:{}", user.username);
@@ -431,7 +313,12 @@ impl AuthService {
             && constant_time_eq(password.as_bytes(), user.api_key.as_bytes())
         {
             true
-        } else if self.rate_limiter.is_limited(&rate_key) {
+        } else if self.rate_limiter.is_limited(client_ip, &rate_key) {
+            if client_ip.is_some() {
+                return Err(DomainError::TooManyRequests(
+                    "too many failed authentication attempts; please try again later".into(),
+                ));
+            }
             let _throttle = self.throttled_verify_lock.lock().await;
             self.hasher
                 .verify_password(password, &user.password_hash)
@@ -442,22 +329,32 @@ impl AuthService {
                 .await?
         };
         if !ok {
-            self.rate_limiter.record_failure_and_check(&rate_key)?;
+            self.rate_limiter
+                .record_failure_and_check(client_ip, &rate_key)?;
             return Err(DomainError::Unauthorized("invalid credentials".into()));
         }
-        self.rate_limiter.clear_below_limit(&rate_key);
-        if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
-        }
+        self.rate_limiter.clear_below_limit(client_ip, &rate_key);
+        user.ensure_active()?;
         Ok(user)
     }
 
     pub async fn authenticate_subsonic(&self, creds: SubsonicCredentials) -> DomainResult<User> {
+        self.authenticate_subsonic_with_ip(creds, None).await
+    }
+
+    pub async fn authenticate_subsonic_with_ip(
+        &self,
+        creds: SubsonicCredentials,
+        client_ip: Option<IpAddr>,
+    ) -> DomainResult<User> {
         match creds {
-            SubsonicCredentials::ApiKey(key) => self.authenticate_api_key(&key).await,
+            SubsonicCredentials::ApiKey(key) => {
+                self.authenticate_api_key_with_ip(&key, client_ip).await
+            }
             SubsonicCredentials::Password { username, password } => {
                 let plain = decode_subsonic_password(&password)?;
-                self.verify_basic_credentials(&username, &plain).await
+                self.verify_basic_credentials_with_ip(&username, &plain, client_ip)
+                    .await
             }
             SubsonicCredentials::TokenSalt {
                 username,
@@ -466,12 +363,17 @@ impl AuthService {
             } => {
                 let Some(user) = self.users.find_by_username(username.trim()).await? else {
                     self.rate_limiter
-                        .record_failure_and_check("subsonic:<unknown>")?;
+                        .record_failure_and_check(client_ip, "subsonic:<unknown>")?;
                     return Err(DomainError::Unauthorized(
                         "wrong username or password".into(),
                     ));
                 };
                 let rate_key = format!("subsonic:{}", user.username);
+                if client_ip.is_some() && self.rate_limiter.is_limited(client_ip, &rate_key) {
+                    return Err(DomainError::TooManyRequests(
+                        "too many failed authentication attempts; please try again later".into(),
+                    ));
+                }
                 let ok = self.hasher.verify_subsonic_token(
                     &user.subsonic_secret_enc,
                     &user.api_key,
@@ -479,15 +381,14 @@ impl AuthService {
                     &token,
                 )?;
                 if !ok {
-                    self.rate_limiter.record_failure_and_check(&rate_key)?;
+                    self.rate_limiter
+                        .record_failure_and_check(client_ip, &rate_key)?;
                     return Err(DomainError::Unauthorized(
                         "wrong username or password".into(),
                     ));
                 }
-                self.rate_limiter.clear_below_limit(&rate_key);
-                if !user.is_active {
-                    return Err(DomainError::Forbidden("account has been disabled".into()));
-                }
+                self.rate_limiter.clear_below_limit(client_ip, &rate_key);
+                user.ensure_active()?;
                 Ok(user)
             }
         }
@@ -580,13 +481,13 @@ impl AuthService {
     }
 
     pub async fn list_users(&self, actor: &User) -> DomainResult<Vec<UserDto>> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let all = self.users.list_all().await?;
         Ok(all.into_iter().map(UserDto::from_redacted).collect())
     }
 
     pub async fn create_user(&self, actor: &User, input: CreateUserInput) -> DomainResult<UserDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         Self::validate_password(&input.password)?;
         if self
             .users
@@ -710,361 +611,5 @@ fn decode_subsonic_password(raw: &str) -> DomainResult<String> {
             .map_err(|_| DomainError::Unauthorized("invalid UTF-8 password".into()))
     } else {
         Ok(raw.to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn constant_time_eq_compares_bytes_accurately() {
-        assert!(constant_time_eq(b"xmk_secret_123", b"xmk_secret_123"));
-        assert!(!constant_time_eq(b"xmk_secret_123", b"xmk_secret_124"));
-        assert!(!constant_time_eq(b"short", b"longer"));
-        assert!(constant_time_eq(b"", b""));
-    }
-
-    #[test]
-    fn rate_limiter_never_evicts_active_buckets_under_global_key_flood() {
-        let limiter = AuthRateLimiter::new(Duration::from_secs(60), 3);
-
-        for _ in 0..3 {
-            assert!(limiter.record_failure_and_check("login:admin").is_ok());
-        }
-        assert!(limiter.is_limited("login:admin"));
-        assert!(matches!(
-            limiter.record_failure_and_check("login:admin"),
-            Err(DomainError::TooManyRequests(_))
-        ));
-
-        // Flood past AUTH_RATE_LIMIT_MAX_KEYS with distinct unauthenticated keys.
-        for i in 0..(AUTH_RATE_LIMIT_MAX_KEYS + 10) {
-            let _ = limiter.record_failure_and_check(&format!("flood:{i}"));
-        }
-
-        // Active `login:admin` bucket must NOT be evicted or reset.
-        assert!(limiter.is_limited("login:admin"));
-        assert!(matches!(
-            limiter.record_failure_and_check("login:admin"),
-            Err(DomainError::TooManyRequests(_))
-        ));
-        // Overflow bucket must also reject additional untracked failures.
-        assert!(matches!(
-            limiter.record_failure_and_check("flood:extra"),
-            Err(DomainError::TooManyRequests(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn valid_admin_credentials_and_api_key_are_not_locked_out_by_failed_attempts() {
-        use async_trait::async_trait;
-        use jiff::Timestamp;
-
-        #[derive(Default)]
-        struct MemUserRepo {
-            users: std::sync::Mutex<Vec<User>>,
-        }
-
-        #[async_trait]
-        impl UserRepository for MemUserRepo {
-            async fn count(&self) -> DomainResult<u64> {
-                Ok(self.users.lock().unwrap().len() as u64)
-            }
-            async fn has_any_user(&self) -> DomainResult<bool> {
-                Ok(!self.users.lock().unwrap().is_empty())
-            }
-            async fn list_all(&self) -> DomainResult<Vec<User>> {
-                Ok(self.users.lock().unwrap().clone())
-            }
-            async fn find_by_id(&self, id: UserId) -> DomainResult<Option<User>> {
-                Ok(self
-                    .users
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|u| u.id == id)
-                    .cloned())
-            }
-            async fn find_by_username(&self, username: &str) -> DomainResult<Option<User>> {
-                let norm = username.trim().to_ascii_lowercase();
-                Ok(self
-                    .users
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|u| u.username == norm)
-                    .cloned())
-            }
-            async fn find_by_api_key(&self, api_key: &str) -> DomainResult<Option<User>> {
-                Ok(self
-                    .users
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|u| u.api_key == api_key)
-                    .cloned())
-            }
-            async fn save(&self, user: &User) -> DomainResult<()> {
-                let mut g = self.users.lock().unwrap();
-                if let Some(slot) = g.iter_mut().find(|u| u.id == user.id) {
-                    *slot = user.clone();
-                } else {
-                    g.push(user.clone());
-                }
-                Ok(())
-            }
-            async fn update_preferences(
-                &self,
-                _id: UserId,
-                _preferences: &UserPreferences,
-                _updated_at: Timestamp,
-            ) -> DomainResult<bool> {
-                Ok(true)
-            }
-            async fn update_credentials(
-                &self,
-                _id: UserId,
-                _password_hash: &str,
-                _subsonic_secret_enc: &str,
-                _updated_at: Timestamp,
-            ) -> DomainResult<bool> {
-                Ok(true)
-            }
-            async fn update_api_key(
-                &self,
-                _id: UserId,
-                _api_key: &str,
-                _updated_at: Timestamp,
-            ) -> DomainResult<bool> {
-                Ok(true)
-            }
-            async fn delete(&self, id: UserId) -> DomainResult<()> {
-                self.users.lock().unwrap().retain(|u| u.id != id);
-                Ok(())
-            }
-        }
-
-        struct FastTestHasher;
-
-        #[async_trait]
-        impl PasswordHasherPort for FastTestHasher {
-            async fn hash_password(&self, plain: &str) -> DomainResult<String> {
-                Ok(format!("hash:{plain}"))
-            }
-            async fn verify_password(&self, plain: &str, hash: &str) -> DomainResult<bool> {
-                Ok(hash == format!("hash:{plain}"))
-            }
-            fn encrypt_subsonic_secret(&self, plain: &str) -> DomainResult<String> {
-                Ok(format!("enc:{plain}"))
-            }
-            fn verify_subsonic_token(
-                &self,
-                encrypted_secret: &str,
-                _fallback_api_key: &str,
-                salt: &str,
-                expected_token_hex: &str,
-            ) -> DomainResult<bool> {
-                Ok(expected_token_hex == format!("{encrypted_secret}:{salt}"))
-            }
-            fn generate_api_key(&self) -> String {
-                "xmk_valid_admin_key_123456".into()
-            }
-        }
-
-        struct DummyTokenSvc;
-
-        impl TokenServicePort for DummyTokenSvc {
-            fn issue_token(&self, claims: &AuthClaims) -> DomainResult<String> {
-                Ok(format!("tok:{}:{}", claims.user_id, claims.jti))
-            }
-            fn verify_token(&self, _token: &str) -> DomainResult<AuthClaims> {
-                Err(DomainError::Unauthorized("unused".into()))
-            }
-            fn ttl_seconds(&self) -> u64 {
-                3600
-            }
-        }
-
-        let auth = AuthService::new(
-            Arc::new(MemUserRepo::default()),
-            Arc::new(FastTestHasher),
-            Arc::new(DummyTokenSvc),
-            Arc::new(RwLock::new(HashMap::new())),
-        );
-        let setup = auth
-            .setup_initial_admin(SetupAdminInput {
-                username: "admin".into(),
-                display_name: Some("Admin".into()),
-                password: "admin-good-pass".into(),
-            })
-            .await
-            .unwrap();
-
-        // 1. Brute-force wrong passwords against "admin" triggers TooManyRequests on 21st failure
-        for i in 0..AUTH_RATE_LIMIT_MAX_FAILURES {
-            assert!(matches!(
-                auth.login("admin", &format!("wrong-{i}")).await,
-                Err(DomainError::Unauthorized(_))
-            ));
-        }
-        assert!(matches!(
-            auth.login("admin", "wrong-overflow").await,
-            Err(DomainError::TooManyRequests(_))
-        ));
-
-        // 2. Real "admin" presenting valid credentials succeeds without lockout, while keeping
-        // the attacker's active rate-limit window enforced on subsequent wrong guesses!
-        let valid_sess = auth.login("admin", "admin-good-pass").await.unwrap();
-        assert_eq!(valid_sess.user.username, "admin");
-        assert!(matches!(
-            auth.login("admin", "still-wrong-after-valid").await,
-            Err(DomainError::TooManyRequests(_))
-        ));
-
-        // 3. Invalid API keys are rate-limited, while the valid API key continues to work
-        for i in 0..AUTH_RATE_LIMIT_MAX_FAILURES {
-            assert!(matches!(
-                auth.authenticate_api_key(&format!("xmk_bad_{i}")).await,
-                Err(DomainError::Unauthorized(_))
-            ));
-        }
-        assert!(matches!(
-            auth.authenticate_api_key("xmk_bad_overflow").await,
-            Err(DomainError::TooManyRequests(_))
-        ));
-        let api_user = auth
-            .authenticate_api_key(&setup.user.api_key)
-            .await
-            .unwrap();
-        assert_eq!(api_user.username, "admin");
-
-        // 4. Deleting a user via AuthService purges that user's activity records consistently
-        use crate::application::activity::{ActivityHeatmapQuery, RecordActivityInput};
-        use crate::domain::activity::{UserActivityDaily, UserActivityRepository};
-
-        #[derive(Default)]
-        struct MemActivityRepo {
-            rows: tokio::sync::Mutex<Vec<UserActivityDaily>>,
-        }
-
-        #[async_trait]
-        impl UserActivityRepository for MemActivityRepo {
-            async fn list_by_user_and_domain(
-                &self,
-                user_id: UserId,
-                media_kind: MediaKind,
-            ) -> DomainResult<Vec<UserActivityDaily>> {
-                let g = self.rows.lock().await;
-                Ok(g.iter()
-                    .filter(|r| r.user_id == user_id && r.media_kind == media_kind)
-                    .cloned()
-                    .collect())
-            }
-            async fn find_by_key(
-                &self,
-                user_id: UserId,
-                media_kind: MediaKind,
-                activity_date: &str,
-            ) -> DomainResult<Option<UserActivityDaily>> {
-                let g = self.rows.lock().await;
-                Ok(g.iter()
-                    .find(|r| {
-                        r.user_id == user_id
-                            && r.media_kind == media_kind
-                            && r.activity_date == activity_date
-                    })
-                    .cloned())
-            }
-            async fn save(&self, record: &UserActivityDaily) -> DomainResult<()> {
-                let mut g = self.rows.lock().await;
-                if let Some(slot) = g.iter_mut().find(|r| r.id == record.id) {
-                    *slot = record.clone();
-                } else {
-                    g.push(record.clone());
-                }
-                Ok(())
-            }
-            async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
-                self.rows.lock().await.retain(|r| r.user_id != user_id);
-                Ok(())
-            }
-        }
-
-        let activity = Arc::new(ActivityService::new(Arc::new(MemActivityRepo::default())));
-        let auth_with_act = auth.with_activity(activity.clone());
-        let member = auth_with_act
-            .create_user(
-                &api_user,
-                CreateUserInput {
-                    username: "member_to_delete".into(),
-                    display_name: None,
-                    password: "member-pass-123".into(),
-                    role: UserRole::Member,
-                },
-            )
-            .await
-            .unwrap();
-        let today = Timestamp::now()
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .date()
-            .to_string();
-        activity
-            .record_heartbeat(
-                member.id,
-                RecordActivityInput {
-                    media_kind: MediaKind::Book,
-                    date: today.clone(),
-                    delta_secs: 90,
-                    new_session: true,
-                    item_title: Some("Sample".into()),
-                },
-            )
-            .await
-            .unwrap();
-        activity
-            .record_heartbeat(
-                api_user.id,
-                RecordActivityInput {
-                    media_kind: MediaKind::Book,
-                    date: today.clone(),
-                    delta_secs: 120,
-                    new_session: true,
-                    item_title: Some("AdminBook".into()),
-                },
-            )
-            .await
-            .unwrap();
-
-        auth_with_act
-            .delete_user(&api_user, member.id)
-            .await
-            .unwrap();
-
-        let deleted_hm = activity
-            .get_heatmap(
-                member.id,
-                ActivityHeatmapQuery {
-                    media_kind: MediaKind::Book,
-                    year: None,
-                    today: Some(today.clone()),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(deleted_hm.summary.total_secs, 0);
-
-        let admin_hm = activity
-            .get_heatmap(
-                api_user.id,
-                ActivityHeatmapQuery {
-                    media_kind: MediaKind::Book,
-                    year: None,
-                    today: Some(today),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(admin_hm.summary.total_secs, 120);
     }
 }
