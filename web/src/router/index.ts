@@ -9,11 +9,6 @@ import { ensureBookLocale } from '@/domains/book/i18n'
 import { ensureComicLocale } from '@/domains/comic/i18n'
 import { ensureMusicLocale } from '@/domains/music/i18n'
 import { ensureVideoLocale } from '@/domains/video/i18n'
-import {
-  legacyRedirectRoutes,
-  migrateBookOnlineReadQuery,
-  resolveLegacySettingsRedirect,
-} from '@/router/legacyRedirects'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
@@ -153,11 +148,14 @@ export const router = createRouter({
           meta: { domain: 'book' as MediaKind },
         },
         {
-          // Placeholder until Wave 4B introduces a dedicated online book detail view
           path: 'book/item/online',
           name: 'book-online-detail',
           redirect: (to) => {
-            const query = migrateBookOnlineReadQuery(to.query)
+            const query: LocationQueryRaw = {}
+            for (const key of ['source', 'ref', 'toc', 'chapter', 'title', 'author', 'cover'] as const) {
+              const val = firstQueryString(to.query, [key])
+              if (val) query[key] = val
+            }
             return Object.keys(query).length > 0
               ? { path: '/book/play/online', query }
               : { path: '/book/play/online' }
@@ -304,9 +302,7 @@ export const router = createRouter({
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),
-          beforeEnter: (to) => {
-            const legacyTarget = resolveLegacySettingsRedirect(to)
-            if (legacyTarget) return legacyTarget
+          beforeEnter: () => {
             if (
               typeof window !== 'undefined' &&
               typeof window.matchMedia === 'function' &&
@@ -324,9 +320,6 @@ export const router = createRouter({
         },
       ],
     },
-
-    // Centralized legacy redirects & `/:domain/discover` alias (§1.4)
-    ...legacyRedirectRoutes,
 
     {
       path: '/:pathMatch(.*)*',

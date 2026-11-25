@@ -2,10 +2,10 @@ import type { RouteLocationRaw } from 'vue-router'
 import type { MediaKind } from '@/types/api'
 
 /** Media domains that mount `/api/v1/{domain}/online/items` on the backend. */
-export type OnlineItemDomain = 'comic' | 'music' | 'video'
+export type OnlineItemDomain = MediaKind
 
 export function isOnlineItemDomain(domain: MediaKind): domain is OnlineItemDomain {
-  return domain === 'comic' || domain === 'music' || domain === 'video'
+  return domain === 'book' || domain === 'comic' || domain === 'music' || domain === 'video'
 }
 
 /**
