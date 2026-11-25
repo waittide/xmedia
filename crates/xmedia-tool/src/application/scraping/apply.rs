@@ -23,8 +23,9 @@ use crate::infra::inspectors::book::{dir_has_single_book, is_generic_book_folder
 use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::{
-    apply_video_patch_onto, is_season_dir, read_base_video_meta, render_season_nfo_xml,
-    render_tvshow_nfo_xml, render_video_nfo_xml, write_image_replacing_opposite_ext,
+    apply_video_patch_onto, find_existing_nfo, find_show_nfo_for_episode, is_season_dir,
+    read_base_video_meta, render_season_nfo_xml_preserving, render_tvshow_nfo_xml_preserving,
+    render_video_nfo_xml_preserving, write_image_replacing_opposite_ext,
 };
 use crate::infra::scrapers::http_client::build_ssrf_safe_http_client;
 use crate::infra::workspace_fs::{resolve_existing_in_root, resolve_target_in_root};
@@ -453,6 +454,8 @@ impl ScrapingOrchestratorService {
         apply_cover: bool,
         only_fill_missing: bool,
     ) -> DomainResult<MediaFileDetail> {
+        let root_lock = self.workbench.root_write_lock(root_id);
+        let root_guard = root_lock.lock().await;
         let raw_settings = self.settings.get_raw().await?;
         let root = raw_settings
             .roots
@@ -631,6 +634,16 @@ impl ScrapingOrchestratorService {
             }
 
             let old_parent = src_abs.parent().map(Path::to_path_buf);
+            let existing_video_nfo_bytes = find_existing_nfo(&src_abs, meta.is_episode)
+                .or_else(|| find_existing_nfo(&src_abs, !meta.is_episode))
+                .and_then(|p| std::fs::read(p).ok());
+            let existing_show_nfo_bytes =
+                find_show_nfo_for_episode(&src_abs).and_then(|p| std::fs::read(p).ok());
+            let existing_old_season_nfo_bytes = old_parent
+                .as_ref()
+                .map(|p| p.join("season.nfo"))
+                .filter(|p| p.is_file())
+                .and_then(|p| std::fs::read(p).ok());
             let companions = find_companion_sidecars(&src_abs);
 
             if dst_abs_clone != src_abs {
@@ -695,7 +708,8 @@ impl ScrapingOrchestratorService {
             if !meta.is_episode {
                 // Jellyfin Movie layout: `<Movie Dir>/movie.nfo`, `poster.jpg`, `fanart.jpg`
                 let movie_nfo = dst_dir.join("movie.nfo");
-                let xml = render_video_nfo_xml(&meta);
+                let prev_movie_nfo = std::fs::read(&movie_nfo).ok().or(existing_video_nfo_bytes);
+                let xml = render_video_nfo_xml_preserving(&meta, prev_movie_nfo.as_deref());
                 atomic_write_bytes(&movie_nfo, xml.as_bytes())?;
 
                 let same_stem_nfo = dst_dir.join(format!("{target_stem}.nfo"));
@@ -720,11 +734,15 @@ impl ScrapingOrchestratorService {
                 // 1) Series root (`show_dir`): `tvshow.nfo`, `poster.jpg`, `fanart.jpg`
                 let tvshow_nfo_path = show_dir.join("tvshow.nfo");
                 if !only_fill_missing || !tvshow_nfo_path.is_file() {
+                    let prev_tvshow = std::fs::read(&tvshow_nfo_path)
+                        .ok()
+                        .or(existing_show_nfo_bytes);
                     let show_plot = scraped_clone
                         .show_summary
                         .as_deref()
                         .or(meta.summary.as_deref());
-                    let tvshow_xml = render_tvshow_nfo_xml(&meta, show_plot);
+                    let tvshow_xml =
+                        render_tvshow_nfo_xml_preserving(&meta, show_plot, prev_tvshow.as_deref());
                     atomic_write_bytes(&tvshow_nfo_path, tvshow_xml.as_bytes())?;
                 }
 
@@ -745,18 +763,22 @@ impl ScrapingOrchestratorService {
                 let season_num = meta.season_number.unwrap_or(1);
                 let season_nfo_path = dst_dir.join("season.nfo");
                 if !only_fill_missing || !season_nfo_path.is_file() {
+                    let prev_season = std::fs::read(&season_nfo_path)
+                        .ok()
+                        .or(existing_old_season_nfo_bytes);
                     let season_plot = scraped_clone
                         .season_summary
                         .as_deref()
                         .or(scraped_clone.show_summary.as_deref())
                         .or(meta.summary.as_deref());
-                    let season_xml = render_season_nfo_xml(
+                    let season_xml = render_season_nfo_xml_preserving(
                         season_num,
                         scraped_clone.season_title.as_deref(),
                         meta.year,
                         season_plot,
                         meta.tmdb_id.as_deref(),
                         meta.bangumi_id.as_deref(),
+                        prev_season.as_deref(),
                     );
                     atomic_write_bytes(&season_nfo_path, season_xml.as_bytes())?;
                 }
@@ -784,7 +806,8 @@ impl ScrapingOrchestratorService {
 
                 // 3) Episode level (`Season XX/<target_stem>.nfo` + `<target_stem>-thumb.jpg`)
                 let ep_nfo = dst_dir.join(format!("{target_stem}.nfo"));
-                let ep_xml = render_video_nfo_xml(&meta);
+                let prev_ep_nfo = std::fs::read(&ep_nfo).ok().or(existing_video_nfo_bytes);
+                let ep_xml = render_video_nfo_xml_preserving(&meta, prev_ep_nfo.as_deref());
                 atomic_write_bytes(&ep_nfo, ep_xml.as_bytes())?;
 
                 if !skip_thumb
@@ -804,6 +827,7 @@ impl ScrapingOrchestratorService {
         })
         .await
         .map_err(|e| DomainError::Storage(format!("video Jellyfin archive task failed: {e}")))??;
+        drop(root_guard);
 
         if raw_settings.xmedia_webhook.notify_on_scrape {
             let webhook_cfg = raw_settings.xmedia_webhook;

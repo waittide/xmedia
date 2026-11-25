@@ -13,8 +13,9 @@ use super::artwork::{
 };
 use super::filename::{VIDEO_EXTENSIONS, dir_has_single_video, is_season_dir};
 use super::nfo::{
-    apply_video_patch_onto, find_show_nfo_for_episode, parse_nfo_into, read_base_video_meta,
-    render_season_nfo_xml, render_tvshow_nfo_xml, render_video_nfo_xml,
+    apply_video_patch_onto, find_existing_nfo, find_show_nfo_for_episode, parse_nfo_into,
+    read_base_video_meta, render_season_nfo_xml_preserving, render_tvshow_nfo_xml_preserving,
+    render_video_nfo_xml_preserving,
 };
 use crate::domain::media::{
     CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload, VideoFileMeta, VideoMetaPatch,
@@ -127,6 +128,8 @@ impl MediaInspectorPort for VideoNfoInspector {
             let mut meta = read_base_video_meta(&p);
             apply_video_patch_onto(&mut meta, vp_cloned);
 
+            let existing_source_nfo = find_existing_nfo(&p, meta.is_episode)
+                .or_else(|| find_existing_nfo(&p, !meta.is_episode));
             let nfo_target = if !meta.is_episode
                 && let Some(parent) = p.parent()
                 && parent.join("movie.nfo").is_file()
@@ -137,7 +140,12 @@ impl MediaInspectorPort for VideoNfoInspector {
             } else {
                 p.with_extension("nfo")
             };
-            let xml = render_video_nfo_xml(&meta);
+            let existing_nfo_bytes = std::fs::read(&nfo_target).ok().or_else(|| {
+                existing_source_nfo
+                    .as_ref()
+                    .and_then(|src| std::fs::read(src).ok())
+            });
+            let xml = render_video_nfo_xml_preserving(&meta, existing_nfo_bytes.as_deref());
             atomic_write_bytes(&nfo_target, xml.as_bytes())?;
 
             // Keep Jellyfin `season.nfo` and `tvshow.nfo` synchronized when editing an archived episode,
@@ -147,13 +155,14 @@ impl MediaInspectorPort for VideoNfoInspector {
                     let season_nfo = parent.join("season.nfo");
                     if season_nfo.is_file() {
                         let mut existing_season = VideoFileMeta::default();
-                        if let Ok(raw) = std::fs::read(&season_nfo) {
-                            parse_nfo_into(&raw, &mut existing_season);
+                        let existing_season_raw = std::fs::read(&season_nfo).ok();
+                        if let Some(ref raw) = existing_season_raw {
+                            parse_nfo_into(raw, &mut existing_season);
                         }
                         let s_num = meta.season_number.unwrap_or(1);
                         let s_title = (!existing_season.title.trim().is_empty())
                             .then_some(existing_season.title.as_str());
-                        let s_xml = render_season_nfo_xml(
+                        let s_xml = render_season_nfo_xml_preserving(
                             s_num,
                             s_title,
                             existing_season.year.or(meta.year),
@@ -166,14 +175,16 @@ impl MediaInspectorPort for VideoNfoInspector {
                                 .bangumi_id
                                 .as_deref()
                                 .or(meta.bangumi_id.as_deref()),
+                            existing_season_raw.as_deref(),
                         );
                         let _ = atomic_write_bytes(&season_nfo, s_xml.as_bytes());
                     }
                 }
                 if let Some(show_nfo) = find_show_nfo_for_episode(&p) {
                     let mut merged_show = VideoFileMeta::default();
-                    if let Ok(raw) = std::fs::read(&show_nfo) {
-                        parse_nfo_into(&raw, &mut merged_show);
+                    let existing_show_raw = std::fs::read(&show_nfo).ok();
+                    if let Some(ref raw) = existing_show_raw {
+                        parse_nfo_into(raw, &mut merged_show);
                     }
                     if let Some(ref st) = meta.show_title
                         && !st.trim().is_empty()
@@ -197,7 +208,11 @@ impl MediaInspectorPort for VideoNfoInspector {
                         merged_show.genres = meta.genres.clone();
                     }
                     let show_summary = merged_show.summary.clone();
-                    let show_xml = render_tvshow_nfo_xml(&merged_show, show_summary.as_deref());
+                    let show_xml = render_tvshow_nfo_xml_preserving(
+                        &merged_show,
+                        show_summary.as_deref(),
+                        existing_show_raw.as_deref(),
+                    );
                     let _ = atomic_write_bytes(&show_nfo, show_xml.as_bytes());
                 }
             }

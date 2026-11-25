@@ -99,7 +99,7 @@ impl MediaWorkbenchService {
         }
     }
 
-    pub(super) fn root_write_lock(&self, root_id: RootId) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn root_write_lock(&self, root_id: RootId) -> Arc<tokio::sync::Mutex<()>> {
         let mut guard = self.root_locks.lock().unwrap_or_else(|e| e.into_inner());
         Arc::clone(
             guard

@@ -22,7 +22,7 @@ use crate::infra::inspectors::music_ops::{
     ReplayGainReportDto, apply_replaygain_batch, optimize_music_cover, process_music_lyrics,
     split_cue_album,
 };
-use crate::infra::inspectors::video::{read_base_video_meta, render_season_nfo_xml};
+use crate::infra::inspectors::video::{read_base_video_meta, render_season_nfo_xml_preserving};
 use crate::infra::inspectors::video_ops::{
     BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
     ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
@@ -466,16 +466,19 @@ impl MediaWorkbenchService {
                         && let Some(parent) = sb.abs_path.parent()
                         && !written_season_dirs.contains(parent)
                     {
-                        let nfo = render_season_nfo_xml(
+                        let season_nfo_path = parent.join("season.nfo");
+                        let prev_season = std::fs::read(&season_nfo_path).ok();
+                        let nfo = render_season_nfo_xml_preserving(
                             season_num,
                             None,
                             base.year,
                             None,
                             base.tmdb_id.as_deref(),
                             base.bangumi_id.as_deref(),
+                            prev_season.as_deref(),
                         );
                         if crate::infra::atomic_fs::atomic_write_bytes(
-                            &parent.join("season.nfo"),
+                            &season_nfo_path,
                             nfo.as_bytes(),
                         )
                         .is_ok()

@@ -17,7 +17,15 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
     std::fs::write(video_root.join("spirited_away.mp4"), b"dummy-mp4").unwrap();
     std::fs::write(
         video_root.join("spirited_away.nfo"),
-        b"<movie><title>Old</title></movie>",
+        r#"<movie>
+  <title>Old</title>
+  <premiered>2001-07-20</premiered>
+  <mpaa>PG</mpaa>
+  <country>Japan</country>
+  <uniqueid type="imdb">tt0245429</uniqueid>
+  <actor><name>柊瑠美</name><role>荻野千寻</role><thumb>https://img.example/chihiro.jpg</thumb></actor>
+  <fileinfo><streamdetails><video><codec>h264</codec><width>1920</width><height>1080</height></video></streamdetails></fileinfo>
+</movie>"#,
     )
     .unwrap();
     std::fs::write(video_root.join("Frieren.S01E01.1080p.mkv"), b"dummy-mkv").unwrap();
@@ -53,6 +61,7 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
                 title: Some("千与千寻".into()),
                 year: Some(2001),
                 summary: Some("少女千寻误入神灵世界。".into()),
+                cast: vec!["柊瑠美".into()],
                 cover_url: Some(format!("http://{addr}/movie_poster.png")),
                 backdrop_url: Some(format!("http://{addr}/movie_fanart.png")),
                 ..Default::default()
@@ -79,6 +88,13 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
     assert!(movie_dir.join("movie.nfo").is_file());
     assert!(movie_dir.join("poster.png").is_file());
     assert!(movie_dir.join("fanart.png").is_file());
+    let movie_nfo_str = std::fs::read_to_string(movie_dir.join("movie.nfo")).unwrap();
+    assert!(movie_nfo_str.contains("<premiered>2001-07-20</premiered>"));
+    assert!(movie_nfo_str.contains("<mpaa>PG</mpaa>"));
+    assert!(movie_nfo_str.contains("<country>Japan</country>"));
+    assert!(movie_nfo_str.contains("<uniqueid type=\"imdb\">tt0245429</uniqueid>"));
+    assert!(movie_nfo_str.contains("<role>荻野千寻</role>"));
+    assert!(movie_nfo_str.contains("<codec>h264</codec>"));
 
     let ep_detail = app
         .scraping
@@ -154,6 +170,7 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
     let ep_nfo_str =
         std::fs::read_to_string(season_dir.join("葬送的芙莉莲 - S01E01 - 冒险的终点.nfo")).unwrap();
     assert!(tvshow_nfo_str.contains("全剧总览简介。"));
+    assert!(season_nfo_str.contains("<season>1</season>"));
     assert!(season_nfo_str.contains("<seasonnumber>1</seasonnumber>"));
     assert!(season_nfo_str.contains("第一季剧情简介。"));
     assert!(ep_nfo_str.contains("第一集剧情简介。"));
