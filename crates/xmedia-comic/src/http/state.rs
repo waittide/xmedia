@@ -4,8 +4,10 @@ use axum::extract::FromRef;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
+use xmedia_source::crud::SourceCrudService;
 
 use crate::application::ComicServices;
+use crate::domain::online::ComicSourceSpec;
 
 #[derive(Clone)]
 pub struct ComicHttpState {
@@ -24,6 +26,12 @@ impl FromRef<ComicHttpState> for Arc<AuthService> {
 impl FromRef<ComicHttpState> for Arc<OnlineLibraryService> {
     fn from_ref(state: &ComicHttpState) -> Self {
         state.services.online_items.clone()
+    }
+}
+
+impl FromRef<ComicHttpState> for Arc<SourceCrudService<ComicSourceSpec>> {
+    fn from_ref(state: &ComicHttpState) -> Self {
+        state.services.online.source_crud().clone()
     }
 }
 

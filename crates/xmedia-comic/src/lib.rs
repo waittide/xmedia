@@ -2,7 +2,6 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
-pub mod source;
 
 #[cfg(test)]
 mod online_tests;
@@ -24,22 +23,24 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::persistence::repositories::{
     ToastyOnlineLibraryItemRepository, ToastyUserMediaBindingRepository,
 };
+use xmedia_source::crud::SourceCrudService;
 
 use application::ComicServices;
 use application::catalog::ComicCatalogService;
 use application::lifecycle::ComicDomainLifecycle;
-use application::online::{ComicOnlineService, ComicOnlineSourceDirectory};
+use application::online::ComicOnlineService;
 use application::opds::ComicOpdsService;
 use application::reading::ComicReadingService;
+use domain::online::ComicSourceSpec;
 use infra::archive::PureRustArchiveReader;
 use infra::persistence::repositories::{
     ToastyChapterRepository, ToastyComicReadingRepository, ToastyComicSourceRepository,
     ToastySeriesRepository,
 };
 use infra::scanner::SmartComicScanner;
+use infra::source::{ComicSourceEngine, http::HttpClientConfig};
 use infra::storage::LocalComicFileStorage;
 use infra::thumbnail::WebpThumbnailGenerator;
-use source::ComicSourceEngine;
 
 pub use infra::persistence::{ensure_comic_schema, register_comic_models};
 
@@ -142,16 +143,17 @@ pub fn init_comic_module_with_bindings(
         reading_repo.clone(),
         bindings,
     ));
-    let engine = ComicSourceEngine::new(
-        source::http::HttpClientConfig {
+    let engine = Arc::new(ComicSourceEngine::new(
+        HttpClientConfig {
             timeout_secs: 20,
             allow_private_ips,
             ..Default::default()
         },
         Duration::from_secs(45),
-    );
+    ));
+    let source_crud = Arc::new(SourceCrudService::<ComicSourceSpec>::new(sources));
     let online = Arc::new(ComicOnlineService::with_engine(
-        sources.clone(),
+        source_crud.clone(),
         libraries_repo,
         series,
         chapters,
@@ -166,7 +168,7 @@ pub fn init_comic_module_with_bindings(
     let online_items = Arc::new(OnlineLibraryService::new(
         MediaKind::Comic,
         online_items_repo,
-        Arc::new(ComicOnlineSourceDirectory::new(sources)),
+        source_crud,
     ));
 
     Ok(ComicServices::new(

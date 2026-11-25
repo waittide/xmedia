@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
@@ -7,7 +6,6 @@ use xmedia_core::domain::user::UserId;
 
 use crate::domain::chapter::Chapter;
 use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
-use crate::domain::online::{ComicSourceMetadataUpdate, ComicSourceRecord, SourceRuntimeState};
 use crate::domain::reading::{
     ChapterProgress, ComicBookmark, ComicShelf, FavoriteSeries, SeriesReaderPref,
 };
@@ -103,44 +101,4 @@ pub trait ComicReadingRepository: Send + Sync {
         user_id: UserId,
         bookmark_id: ComicBookmarkId,
     ) -> DomainResult<()>;
-}
-
-#[async_trait]
-pub trait ComicSourceRepository: Send + Sync {
-    async fn list_all(&self) -> DomainResult<Vec<ComicSourceRecord>>;
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<ComicSourceRecord>>;
-    async fn save(&self, source: &ComicSourceRecord) -> DomainResult<()>;
-    async fn update_metadata_if_exists(
-        &self,
-        id: Uuid,
-        patch: ComicSourceMetadataUpdate,
-    ) -> DomainResult<Option<ComicSourceRecord>>;
-    async fn update_runtime_state(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        updated_at: Timestamp,
-    ) -> DomainResult<()>;
-    async fn update_test_result(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        last_test_ok: bool,
-        last_test_msg: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn update_weight_if_exists(
-        &self,
-        id: Uuid,
-        weight: i64,
-        updated_at: Timestamp,
-    ) -> DomainResult<Option<ComicSourceRecord>>;
-    async fn update_batch_fields_if_exists(
-        &self,
-        id: Uuid,
-        enabled: Option<bool>,
-        group_name: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn delete(&self, id: Uuid) -> DomainResult<()>;
 }

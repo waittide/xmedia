@@ -1,47 +1,34 @@
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderValue;
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
-use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth};
-use xmedia_source::crud::{
-    ExportSourcesBatchRequest, ImportSourcesRequest, LoginActionRequest, ReorderSourcesRequest,
-    SourceVariableResponse,
-};
+use xmedia_source::crud::{LoginActionRequest, sources_prefixed_crud_router};
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
 use crate::application::dto::{ChapterItemDto, SeriesDetailDto};
 use crate::application::online::{
-    BatchComicSourcesInput, BatchComicSourcesReportDto, ComicCacheReportDto, ComicSourceSummaryDto,
-    ComicSourceTestInput, ComicSourceTestReportDto, ImportComicSourcesReportDto,
-    LoginActionResponseDto, OnlineComicChaptersResponseDto, OnlineComicDetailResponseDto,
-    OnlineComicExploreResponseDto, OnlineComicPagesResponseDto, OnlineComicSearchResponseDto,
-    TrackOnlineComicInput, UpdateComicSourceInput,
+    ComicCacheReportDto, ComicSourceTestInput, ComicSourceTestReportDto, LoginActionResponseDto,
+    OnlineComicChaptersResponseDto, OnlineComicDetailResponseDto, OnlineComicExploreResponseDto,
+    OnlineComicPagesResponseDto, OnlineComicSearchResponseDto, TrackOnlineComicInput,
 };
 use crate::domain::id::{ChapterId, SeriesId};
+use crate::domain::online::{ComicChapterJsContext, ComicJsContext, ComicSourceSpec};
 use crate::http::state::ComicHttpState;
-use crate::source::model::{ComicChapterJsContext, ComicJsContext};
 
 pub fn router() -> Router<ComicHttpState> {
     Router::new()
-        // Comic source management
-        .route("/sources", get(list_sources))
-        .route("/sources/reorder", post(reorder_sources))
-        .route("/sources/batch", post(batch_sources))
-        .route("/sources/export-batch", post(export_sources_batch))
-        .route(
-            "/sources/import",
-            post(import_sources).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
-        )
-        .route("/sources/{id}", patch(update_source).delete(delete_source))
-        .route("/sources/{id}/variable", get(get_source_variable))
-        .route("/sources/{id}/export", get(export_source))
+        .merge(sources_prefixed_crud_router::<
+            ComicHttpState,
+            ComicSourceSpec,
+        >())
         .route("/sources/{id}/login-action", post(run_login_action))
         .route("/sources/{id}/test", post(test_source))
         // Online comic search / explore / detail / chapters / pages / image-proxy
@@ -114,113 +101,6 @@ struct OnlinePagesRequest {
 struct ImageProxyQuery {
     url: String,
     source_id: Option<Uuid>,
-}
-
-async fn list_sources(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<Vec<ComicSourceSummaryDto>>> {
-    let list = state.services.online.list_sources(&user).await?;
-    Ok(Json(list))
-}
-
-async fn import_sources(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<ImportSourcesRequest>,
-) -> ApiResult<Json<ImportComicSourcesReportDto>> {
-    let report = state
-        .services
-        .online
-        .import_sources(&user, &req.raw_json)
-        .await?;
-    Ok(Json(report))
-}
-
-async fn reorder_sources(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<ReorderSourcesRequest>,
-) -> ApiResult<Json<Vec<ComicSourceSummaryDto>>> {
-    let list = state
-        .services
-        .online
-        .reorder_sources(&user, req.ordered_ids)
-        .await?;
-    Ok(Json(list))
-}
-
-async fn batch_sources(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<BatchComicSourcesInput>,
-) -> ApiResult<Json<BatchComicSourcesReportDto>> {
-    let report = state.services.online.batch_sources(&user, req).await?;
-    Ok(Json(report))
-}
-
-async fn get_source_variable(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Json<SourceVariableResponse>> {
-    let variable = state.services.online.get_source_variable(&user, id).await?;
-    Ok(Json(SourceVariableResponse { variable }))
-}
-
-async fn export_sources_batch(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<ExportSourcesBatchRequest>,
-) -> ApiResult<Response> {
-    let raw = state
-        .services
-        .online
-        .export_sources_batch_json(&user, req.ids)
-        .await?;
-    let mut resp = Response::new(Body::from(raw));
-    resp.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-    resp.headers_mut()
-        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    Ok(resp)
-}
-
-async fn update_source(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<UpdateComicSourceInput>,
-) -> ApiResult<Json<ComicSourceSummaryDto>> {
-    let updated = state.services.online.update_source(&user, id, req).await?;
-    Ok(Json(updated))
-}
-
-async fn delete_source(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<StatusCode> {
-    state.services.online.delete_source(&user, id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn export_source(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let raw = state.services.online.export_source_json(&user, id).await?;
-    let mut resp = Response::new(Body::from(raw));
-    resp.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-    resp.headers_mut()
-        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    Ok(resp)
 }
 
 async fn run_login_action(

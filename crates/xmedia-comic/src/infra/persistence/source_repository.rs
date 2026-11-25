@@ -3,11 +3,13 @@ use jiff::Timestamp;
 use toasty::Db;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_source::crud::{
+    SourceMetadataUpdate, SourceRecord, SourceRepository, SourceSpecAdapter,
+};
+use xmedia_source::model::SourceRuntimeState;
 
-use crate::domain::online::{ComicSourceMetadataUpdate, ComicSourceRecord};
-use crate::domain::repository::ComicSourceRepository;
+use crate::domain::online::ComicSourceSpec;
 use crate::infra::persistence::models::ComicSourceRecordModel;
-use crate::source::model::SourceRuntimeState;
 
 fn db_err(err: impl std::fmt::Display) -> DomainError {
     DomainError::Persistence(err.to_string())
@@ -23,8 +25,8 @@ impl ToastyComicSourceRepository {
         Self { db }
     }
 
-    fn to_domain(m: ComicSourceRecordModel) -> ComicSourceRecord {
-        ComicSourceRecord {
+    fn to_domain(m: ComicSourceRecordModel) -> SourceRecord {
+        SourceRecord {
             id: m.id,
             name: m.name,
             source_url: m.source_url,
@@ -43,8 +45,8 @@ impl ToastyComicSourceRepository {
 }
 
 #[async_trait]
-impl ComicSourceRepository for ToastyComicSourceRepository {
-    async fn list_all(&self) -> DomainResult<Vec<ComicSourceRecord>> {
+impl SourceRepository for ToastyComicSourceRepository {
+    async fn list_all(&self) -> DomainResult<Vec<SourceRecord>> {
         let mut db = self.db.clone();
         let rows = ComicSourceRecordModel::all()
             .exec(&mut db)
@@ -53,7 +55,7 @@ impl ComicSourceRepository for ToastyComicSourceRepository {
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<ComicSourceRecord>> {
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let row = ComicSourceRecordModel::filter_by_id(id)
             .first()
@@ -63,7 +65,7 @@ impl ComicSourceRepository for ToastyComicSourceRepository {
         Ok(row.map(Self::to_domain))
     }
 
-    async fn save(&self, source: &ComicSourceRecord) -> DomainResult<()> {
+    async fn save(&self, source: &SourceRecord) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = ComicSourceRecordModel::filter_by_id(source.id)
             .first()
@@ -112,8 +114,8 @@ impl ComicSourceRepository for ToastyComicSourceRepository {
     async fn update_metadata_if_exists(
         &self,
         id: Uuid,
-        patch: ComicSourceMetadataUpdate,
-    ) -> DomainResult<Option<ComicSourceRecord>> {
+        patch: SourceMetadataUpdate,
+    ) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let Some(mut rec) = ComicSourceRecordModel::filter_by_id(id)
             .first()
@@ -197,29 +199,26 @@ impl ComicSourceRepository for ToastyComicSourceRepository {
     async fn update_test_result(
         &self,
         id: Uuid,
-        runtime_state: SourceRuntimeState,
-        last_test_ok: bool,
-        last_test_msg: Option<String>,
+        ok: bool,
+        message: String,
         updated_at: Timestamp,
-    ) -> DomainResult<bool> {
+    ) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let Some(mut rec) = ComicSourceRecordModel::filter_by_id(id)
+        if let Some(mut rec) = ComicSourceRecordModel::filter_by_id(id)
             .first()
             .exec(&mut db)
             .await
             .map_err(db_err)?
-        else {
-            return Ok(false);
-        };
-        rec.update()
-            .runtime_state(toasty::Json(runtime_state))
-            .last_test_ok(Some(last_test_ok))
-            .last_test_msg(last_test_msg)
-            .updated_at(updated_at)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(true)
+        {
+            rec.update()
+                .last_test_ok(Some(ok))
+                .last_test_msg(Some(message))
+                .updated_at(updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(())
     }
 
     async fn update_weight_if_exists(
@@ -227,7 +226,7 @@ impl ComicSourceRepository for ToastyComicSourceRepository {
         id: Uuid,
         weight: i64,
         updated_at: Timestamp,
-    ) -> DomainResult<Option<ComicSourceRecord>> {
+    ) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let Some(mut rec) = ComicSourceRecordModel::filter_by_id(id)
             .first()
@@ -237,8 +236,13 @@ impl ComicSourceRepository for ToastyComicSourceRepository {
         else {
             return Ok(None);
         };
-        let next_raw =
-            ComicSourceRecord::sync_raw_json_fields(&rec.raw_json, None, Some(weight), None);
+        let next_raw = SourceRecord::sync_raw_json_fields(
+            &rec.raw_json,
+            None,
+            Some(weight),
+            None,
+            ComicSourceSpec::JSON_GROUP_KEY,
+        );
         rec.update()
             .weight(weight)
             .raw_json(next_raw.clone())
@@ -274,11 +278,12 @@ impl ComicSourceRepository for ToastyComicSourceRepository {
             .as_deref()
             .map(|g| g.trim().to_string())
             .unwrap_or_else(|| rec.group_name.clone());
-        let next_raw = ComicSourceRecord::sync_raw_json_fields(
+        let next_raw = SourceRecord::sync_raw_json_fields(
             &rec.raw_json,
             enabled,
             None,
             group_name.as_deref(),
+            ComicSourceSpec::JSON_GROUP_KEY,
         );
         rec.update()
             .enabled(next_enabled)

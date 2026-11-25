@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::series::ReadingDirection;
-use crate::source::model::{
+pub use crate::domain::online::ComicSourceTestMode;
+use crate::domain::online::{
     ComicSearchResult, ExecutionDiagnostics, ExploreCategoryItem, OnlineComicChapter,
     OnlineComicDetail,
 };
+use crate::domain::series::ReadingDirection;
 
 pub type ComicSourceSummaryDto = xmedia_source::crud::SourceSummaryDto;
 pub type ImportComicSourcesReportDto =
@@ -17,21 +18,6 @@ pub type BatchComicSourcesReportDto = xmedia_source::crud::BatchSourcesReportDto
 pub type LoginActionResponseDto =
     xmedia_source::crud::LoginActionResponseDto<ComicSourceSummaryDto>;
 pub type SourceDebugStepDto = xmedia_source::crud::SourceTestStepDto;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ComicSourceTestMode {
-    #[default]
-    Full,
-    Search,
-    Explore,
-    #[serde(alias = "book_info")]
-    Detail,
-    #[serde(alias = "toc")]
-    Chapters,
-    #[serde(alias = "content")]
-    Pages,
-}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]

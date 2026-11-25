@@ -1,9 +1,7 @@
 mod debug;
 mod dto;
 mod helpers;
-mod items;
 mod reader;
-mod sources;
 mod tracked;
 
 use std::collections::HashMap;
@@ -12,21 +10,25 @@ use std::time::Duration;
 
 use uuid::Uuid;
 use xmedia_core::application::ports::RealtimeEventPort;
+use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::user::User;
+use xmedia_source::crud::SourceCrudService;
+use xmedia_source::model::ConcurrentRateSpec;
 
 use crate::application::catalog::ComicCatalogService;
-use crate::application::ports::{ComicFileStoragePort, ThumbnailGeneratorPort};
-use crate::domain::id::ChapterId;
-use crate::domain::repository::{
-    ChapterRepository, ComicReadingRepository, ComicSourceRepository, SeriesRepository,
+use crate::application::ports::{
+    ComicFileStoragePort, ComicSourceEnginePort, ThumbnailGeneratorPort,
 };
-use crate::source::ComicSourceEngine;
+use crate::domain::id::ChapterId;
+use crate::domain::online::ComicSourceSpec;
+use crate::domain::repository::{ChapterRepository, ComicReadingRepository, SeriesRepository};
 
 pub use dto::*;
 use helpers::{AsyncLockMap, RateLimiterMap, get_or_insert_rate_limiter};
-pub use items::ComicOnlineSourceDirectory;
 pub use tracked::{ComicCacheReportDto, TrackOnlineComicInput};
-use xmedia_source::model::ConcurrentRateSpec;
+
+pub type ComicOnlineSourceDirectory = SourceCrudService<ComicSourceSpec>;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -35,27 +37,25 @@ const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 const COMIC_IMAGE_PROXY_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct ComicOnlineService {
-    sources: Arc<dyn ComicSourceRepository>,
-    series: Arc<dyn SeriesRepository>,
-    chapters: Arc<dyn ChapterRepository>,
-    reading: Arc<dyn ComicReadingRepository>,
-    catalog: Arc<ComicCatalogService>,
-    thumbnails: Arc<dyn ThumbnailGeneratorPort>,
-    storage: Arc<dyn ComicFileStoragePort>,
-    events: Arc<dyn RealtimeEventPort>,
-    engine: ComicSourceEngine,
-    source_state_locks: AsyncLockMap<Uuid>,
-    track_locks: AsyncLockMap<(Uuid, String)>,
-    chapter_cache_locks: AsyncLockMap<ChapterId>,
-    rate_limiters: RateLimiterMap,
-    seed_import_lock: tokio::sync::Mutex<()>,
-    allow_private_ips: bool,
+    pub(super) source_crud: Arc<SourceCrudService<ComicSourceSpec>>,
+    pub(super) series: Arc<dyn SeriesRepository>,
+    pub(super) chapters: Arc<dyn ChapterRepository>,
+    pub(super) reading: Arc<dyn ComicReadingRepository>,
+    pub(super) catalog: Arc<ComicCatalogService>,
+    pub(super) thumbnails: Arc<dyn ThumbnailGeneratorPort>,
+    pub(super) storage: Arc<dyn ComicFileStoragePort>,
+    pub(super) events: Arc<dyn RealtimeEventPort>,
+    pub(super) engine: Arc<dyn ComicSourceEnginePort>,
+    pub(super) track_locks: AsyncLockMap<(Uuid, String)>,
+    pub(super) chapter_cache_locks: AsyncLockMap<ChapterId>,
+    pub(super) rate_limiters: RateLimiterMap,
+    pub(super) allow_private_ips: bool,
 }
 
 impl ComicOnlineService {
     #[allow(clippy::too_many_arguments)]
     pub fn with_engine(
-        sources: Arc<dyn ComicSourceRepository>,
+        source_crud: Arc<SourceCrudService<ComicSourceSpec>>,
         _libraries: Arc<dyn LibraryRepository>,
         series: Arc<dyn SeriesRepository>,
         chapters: Arc<dyn ChapterRepository>,
@@ -64,11 +64,11 @@ impl ComicOnlineService {
         thumbnails: Arc<dyn ThumbnailGeneratorPort>,
         storage: Arc<dyn ComicFileStoragePort>,
         events: Arc<dyn RealtimeEventPort>,
-        engine: ComicSourceEngine,
+        engine: Arc<dyn ComicSourceEnginePort>,
         allow_private_ips: bool,
     ) -> Self {
         Self {
-            sources,
+            source_crud,
             series,
             chapters,
             reading,
@@ -77,13 +77,36 @@ impl ComicOnlineService {
             storage,
             events,
             engine,
-            source_state_locks: Arc::new(Mutex::new(HashMap::new())),
             track_locks: Arc::new(Mutex::new(HashMap::new())),
             chapter_cache_locks: Arc::new(Mutex::new(HashMap::new())),
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
-            seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
         }
+    }
+
+    pub fn source_crud(&self) -> &Arc<SourceCrudService<ComicSourceSpec>> {
+        &self.source_crud
+    }
+
+    pub async fn run_login_action(
+        &self,
+        actor: &User,
+        id: Uuid,
+        login_info: HashMap<String, String>,
+        action: Option<String>,
+    ) -> DomainResult<LoginActionResponseDto> {
+        let engine = self.engine.clone();
+        self.source_crud
+            .run_login_action_with(
+                actor,
+                id,
+                login_info,
+                action,
+                move |spec, state, merged_login, act| {
+                    engine.run_login_action_sync(spec, state, merged_login, act)
+                },
+            )
+            .await
     }
 
     pub(super) async fn acquire_rate_slot(

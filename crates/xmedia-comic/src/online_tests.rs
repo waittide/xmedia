@@ -238,7 +238,7 @@ async fn ensure_comic_schema_migrates_legacy_db_without_comic_sources_preserving
     // Verify comic_sources table is now usable
     let repo = crate::infra::persistence::repositories::ToastyComicSourceRepository::new(db);
     assert!(
-        crate::domain::repository::ComicSourceRepository::list_all(&repo)
+        xmedia_source::crud::SourceRepository::list_all(&repo)
             .await
             .unwrap()
             .is_empty()
@@ -351,7 +351,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     assert_eq!(patch_val["group_name"], "UpdatedGroup");
     assert_eq!(patch_val["weight"], 77);
 
-    // Verify export preserves bookSourceGroup for Legado source
+    // Verify export canonicalizes group key to sourceGroup without duplicate bookSourceGroup
     let (st_exp, b_exp) = json_request(
         &h.app,
         "GET",
@@ -362,7 +362,8 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     .await;
     assert_eq!(st_exp, StatusCode::OK);
     let exp_json: serde_json::Value = serde_json::from_slice(&b_exp).unwrap();
-    assert_eq!(exp_json["bookSourceGroup"], "UpdatedGroup");
+    assert_eq!(exp_json["sourceGroup"], "UpdatedGroup");
+    assert!(exp_json.get("bookSourceGroup").is_none());
     assert_eq!(exp_json["enabled"], false);
 
     // Admin GET /sources sees all 6 (including disabled Auth Comic) with masked secrets
@@ -1548,7 +1549,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     assert_eq!(v_ok["ok"], true);
     assert_eq!(v_ok["comic_detail"]["title"], "Real Comic");
 
-    // Bug 7: Clear group_name -> restore group_name -> export must preserve "bookSourceGroup"
+    // Bug 7: Clear group_name -> restore group_name -> export writes canonical "sourceGroup"
     let (st_clr, _) = json_request(
         &h.app,
         "PATCH",
@@ -1577,8 +1578,8 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     .await;
     assert_eq!(st_exp, StatusCode::OK);
     let exp_val: serde_json::Value = serde_json::from_slice(&b_exp).unwrap();
-    assert_eq!(exp_val["bookSourceGroup"], "Restored");
-    assert!(exp_val.get("sourceGroup").is_none());
+    assert_eq!(exp_val["sourceGroup"], "Restored");
+    assert!(exp_val.get("bookSourceGroup").is_none());
 
     // 2. Source WITHOUT ruleDetail running Full mode with target_url still succeeds through toc + pages
     let no_detail_src = serde_json::json!({

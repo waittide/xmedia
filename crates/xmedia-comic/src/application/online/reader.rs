@@ -12,8 +12,9 @@ use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_validated_image_bytes_with_config,
 };
 
-use crate::source::model::{
+use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSearchResult, ComicSourceSpec,
+    parse_reading_direction_opt,
 };
 
 use super::dto::{
@@ -66,7 +67,7 @@ impl ComicOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut sources = self.sources.list_all().await?;
+        let mut sources = self.source_crud.repository().list_all().await?;
         let is_admin = actor.role.is_admin();
 
         if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
@@ -178,6 +179,7 @@ impl ComicOnlineService {
                     Ok(out) => {
                         if out.state != prev_state
                             && let Err(err) = self
+                                .source_crud
                                 .persist_runtime_state_with_base(sid, &prev_state, out.state, false)
                                 .await
                         {
@@ -216,7 +218,10 @@ impl ComicOnlineService {
         explore_url: Option<&str>,
         page: u32,
     ) -> DomainResult<OnlineComicExploreResponseDto> {
-        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let rec = self
+            .source_crud
+            .load_source_for_actor(actor, source_id)
+            .await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
         self.acquire_rate_slot(
@@ -318,6 +323,7 @@ impl ComicOnlineService {
 
         if state != prev_state_cmp
             && let Err(err) = self
+                .source_crud
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, state, false)
                 .await
         {
@@ -344,7 +350,10 @@ impl ComicOnlineService {
         comic_url: &str,
         fallback_hint: Option<ComicJsContext>,
     ) -> DomainResult<OnlineComicDetailResponseDto> {
-        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let rec = self
+            .source_crud
+            .load_source_for_actor(actor, source_id)
+            .await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
         let clean_comic_url =
@@ -481,6 +490,7 @@ impl ComicOnlineService {
 
         if out.state != prev_state_cmp
             && let Err(err) = self
+                .source_crud
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await
         {
@@ -529,7 +539,10 @@ impl ComicOnlineService {
         toc_url: &str,
         comic_ctx: ComicJsContext,
     ) -> DomainResult<OnlineComicChaptersResponseDto> {
-        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let rec = self
+            .source_crud
+            .load_source_for_actor(actor, source_id)
+            .await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
         let clean_toc_url =
@@ -603,6 +616,7 @@ impl ComicOnlineService {
 
         if out.state != prev_state_cmp
             && let Err(err) = self
+                .source_crud
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await
         {
@@ -629,7 +643,10 @@ impl ComicOnlineService {
         comic_ctx: ComicJsContext,
         chapter_ctx: ComicChapterJsContext,
     ) -> DomainResult<OnlineComicPagesResponseDto> {
-        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let rec = self
+            .source_crud
+            .load_source_for_actor(actor, source_id)
+            .await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
         let clean_chapter_url =
@@ -663,7 +680,7 @@ impl ComicOnlineService {
         let reading_direction = comic_ctx
             .reading_direction
             .as_deref()
-            .and_then(crate::source::model::parse_reading_direction_opt)
+            .and_then(parse_reading_direction_opt)
             .unwrap_or_else(|| parsed.effective_reading_direction());
 
         let engine = self.engine.clone();
@@ -716,6 +733,7 @@ impl ComicOnlineService {
 
         if out.state != prev_state_cmp
             && let Err(err) = self
+                .source_crud
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await
         {
@@ -753,7 +771,7 @@ impl ComicOnlineService {
         raw_url: &str,
     ) -> DomainResult<(Vec<u8>, String)> {
         let custom_headers = if let Some(sid) = source_id {
-            let rec = self.load_source_for_actor(actor, sid).await?;
+            let rec = self.source_crud.load_source_for_actor(actor, sid).await?;
             let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
                 .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
             let mut headers = parsed.merged_image_headers_for_target(raw_url);

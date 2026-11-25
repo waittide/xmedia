@@ -23,10 +23,11 @@ use zip::{CompressionMethod, ZipWriter};
 use crate::application::dto::{ChapterItemDto, SeriesDetailDto};
 use crate::domain::chapter::{Chapter, OnlineTrackedChapterMeta};
 use crate::domain::id::{ChapterId, SeriesId};
-use crate::domain::series::{OnlineTrackedSeriesMeta, ReadingDirection, Series, SeriesStatus};
-use crate::source::model::{
+use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, OnlineComicChapter,
+    strip_cross_origin_sensitive_headers,
 };
+use crate::domain::series::{OnlineTrackedSeriesMeta, ReadingDirection, Series, SeriesStatus};
 
 use super::helpers::{CancelOnDrop, get_or_insert_weak_lock};
 use super::{
@@ -81,7 +82,8 @@ impl ComicOnlineService {
         chapter_ctx: ComicChapterJsContext,
     ) -> DomainResult<(Vec<String>, ComicSourceSpec)> {
         let rec = self
-            .sources
+            .source_crud
+            .repository()
             .find_by_id(source_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("漫画源不存在".into()))?;
@@ -151,6 +153,7 @@ impl ComicOnlineService {
 
         if out.state != prev_state_cmp
             && let Err(err) = self
+                .source_crud
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await
         {
@@ -195,7 +198,10 @@ impl ComicOnlineService {
         actor: &User,
         input: TrackOnlineComicInput,
     ) -> DomainResult<SeriesDetailDto> {
-        let rec = self.load_source_for_actor(actor, input.source_id).await?;
+        let rec = self
+            .source_crud
+            .load_source_for_actor(actor, input.source_id)
+            .await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
 
@@ -621,11 +627,7 @@ impl ComicOnlineService {
                 let src_url_c = Arc::clone(&source_url_arc);
                 tasks.push(tokio::spawn(async move {
                     let mut page_headers = (*headers_c).clone();
-                    crate::source::model::strip_cross_origin_sensitive_headers(
-                        &mut page_headers,
-                        &src_url_c,
-                        &img_url,
-                    );
+                    strip_cross_origin_sensitive_headers(&mut page_headers, &src_url_c, &img_url);
                     let cfg = HttpClientConfig {
                         timeout_secs: DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
                         allow_private_ips,

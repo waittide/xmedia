@@ -2,16 +2,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
-    format_test_failure_summary, format_timeout_step, merge_diagnostics,
-    merge_runtime_state_with_base, summarize_steps_outcome,
+    format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
 };
 
-use crate::source::model::{
+use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSearchResult, ComicSourceSpec,
     ExecutionDiagnostics, ExploreCategoryItem, OnlineComicChapter, OnlineComicDetail,
 };
@@ -31,7 +29,7 @@ impl ComicOnlineService {
         input: ComicSourceTestInput,
     ) -> DomainResult<ComicSourceTestReportDto> {
         require_admin(actor)?;
-        let rec = self.load_source(id).await?;
+        let rec = self.source_crud.load_source(id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
 
@@ -746,7 +744,6 @@ impl ComicOnlineService {
             }
         };
 
-        let now = Timestamp::now();
         let last_msg = if report.ok {
             match report.mode {
                 ComicSourceTestMode::Full => {
@@ -774,19 +771,13 @@ impl ComicOnlineService {
             format_test_failure_summary(&report.steps)
         };
 
-        let lock = self.source_state_lock_for(id);
-        let _guard = lock.lock().await;
-        let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged_state = match maybe_final_state {
-            Some(final_state) => {
-                merge_runtime_state_with_base(&base_state, current, final_state, false)
-            }
-            None => current.unwrap_or(base_state),
-        };
-
-        let _ = self
-            .sources
-            .update_test_result(id, merged_state, report.ok, Some(last_msg), now)
+        if let Some(final_state) = maybe_final_state {
+            self.source_crud
+                .persist_runtime_state_with_base(id, &base_state, final_state, false)
+                .await?;
+        }
+        self.source_crud
+            .record_test_outcome(id, report.ok, last_msg)
             .await?;
 
         Ok(report)

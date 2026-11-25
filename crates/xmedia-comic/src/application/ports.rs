@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
@@ -8,6 +11,11 @@ use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::DomainResult;
 
 use crate::domain::chapter::{ChapterKind, ChapterSourceKind};
+use crate::domain::online::{
+    ComicChapterJsContext, ComicJsContext, ComicSourceSpec, ExploreCategoryItem,
+    OnlineComicChapter, OnlineComicDetail, OnlineComicItem, SourceCallError, SourceCallOutput,
+    SourceRuntimeState,
+};
 use crate::domain::series::ReadingDirection;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -205,4 +213,76 @@ pub trait ComicFileStoragePort: Send + Sync {
             .await
     }
     async fn delete_managed_file(&self, path: &str) -> DomainResult<()>;
+}
+
+pub trait ComicSourceEnginePort: Send + Sync {
+    fn parse_explore_categories_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<ExploreCategoryItem>>, SourceCallError>;
+
+    fn search_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        keyword: &str,
+        page: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineComicItem>>, SourceCallError>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn explore_sync_with_categories_and_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        explore_url: &str,
+        page: u32,
+        precomputed_categories: Option<&[ExploreCategoryItem]>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineComicItem>>, SourceCallError>;
+
+    fn fetch_detail_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        comic_url: &str,
+        fallback_hint: Option<&ComicJsContext>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineComicDetail>, SourceCallError>;
+
+    fn fetch_chapters_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        toc_url: &str,
+        comic_ctx: &ComicJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineComicChapter>>, SourceCallError>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_pages_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        chapter_url: &str,
+        comic_ctx: &ComicJsContext,
+        chapter_ctx: &ComicChapterJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<String>>, SourceCallError>;
+
+    fn run_login_action_sync(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        login_info: HashMap<String, String>,
+        action_js: Option<&str>,
+    ) -> Result<SourceCallOutput<String>, SourceCallError>;
 }

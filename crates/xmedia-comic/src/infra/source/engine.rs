@@ -13,10 +13,11 @@ pub use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, split_js_pipeline, strip_js_wrapper};
 
 use super::session::{ReusableComicContext, ReusableComicSession};
-use crate::source::model::{
+use crate::application::ports::ComicSourceEnginePort;
+use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSearchResult, ComicSearchRule, ComicSourceSpec,
     ExecutionDiagnostics, ExploreCategoryItem, OnlineComicChapter, OnlineComicDetail,
-    SourceRuntimeState, parse_reading_direction_opt,
+    OnlineComicItem, SourceRuntimeState, parse_reading_direction_opt,
 };
 
 #[derive(Debug, Clone)]
@@ -1072,23 +1073,25 @@ impl ComicSourceEngine {
         }
     }
 
-    pub fn run_login_action_sync(
+    pub fn run_login_action_checked(
         &self,
         source: &ComicSourceSpec,
         mut state: SourceRuntimeState,
         login_info: HashMap<String, String>,
         action_js: Option<&str>,
-    ) -> Result<SourceCallOutput<String>, String> {
+    ) -> Result<SourceCallOutput<String>, SourceCallError> {
         for (k, v) in login_info {
             state.login_info.insert(k, v);
         }
         let merged_login = state.login_info.clone();
-        let mut session = self.build_lazy_session(
-            source,
-            state,
-            self.js_timeout,
-            Arc::new(AtomicBool::new(false)),
-        )?;
+        let mut session = self
+            .build_lazy_session(
+                source,
+                state,
+                self.js_timeout,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
         let raw_login = source.login_url.as_deref().unwrap_or("").trim();
         let is_plain_http_login_url = raw_login
             .get(..7)
@@ -1110,14 +1113,162 @@ impl ComicSourceEngine {
             Some(act) => Some(act),
             None => login_check_stripped,
         };
-        let out = session
+        match session
             .inner
-            .eval_login_script(login_url_js, effective_action, &merged_login)?;
-        let (final_state, diagnostics) = session.finalize_state();
-        Ok(SourceCallOutput {
-            data: out,
-            state: final_state,
-            diagnostics,
-        })
+            .eval_login_script(login_url_js, effective_action, &merged_login)
+        {
+            Ok(out) => {
+                let (final_state, diagnostics) = session.finalize_state();
+                Ok(SourceCallOutput {
+                    data: out,
+                    state: final_state,
+                    diagnostics,
+                })
+            }
+            Err(err) => Err(SourceCallError::new(err, session.snapshot_diagnostics())),
+        }
+    }
+
+    pub fn run_login_action_sync(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        login_info: HashMap<String, String>,
+        action_js: Option<&str>,
+    ) -> Result<SourceCallOutput<String>, String> {
+        self.run_login_action_checked(source, state, login_info, action_js)
+            .map_err(|e| e.message)
+    }
+}
+
+impl ComicSourceEnginePort for ComicSourceEngine {
+    fn parse_explore_categories_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<ExploreCategoryItem>>, SourceCallError> {
+        ComicSourceEngine::parse_explore_categories_with_control(
+            self,
+            source,
+            state,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn search_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        keyword: &str,
+        page: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineComicItem>>, SourceCallError> {
+        ComicSourceEngine::search_sync_with_control(
+            self,
+            source,
+            state,
+            keyword,
+            page,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn explore_sync_with_categories_and_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        explore_url: &str,
+        page: u32,
+        precomputed_categories: Option<&[ExploreCategoryItem]>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineComicItem>>, SourceCallError> {
+        ComicSourceEngine::explore_sync_with_categories_and_control(
+            self,
+            source,
+            state,
+            explore_url,
+            page,
+            precomputed_categories,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn fetch_detail_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        comic_url: &str,
+        fallback_hint: Option<&ComicJsContext>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineComicDetail>, SourceCallError> {
+        ComicSourceEngine::fetch_detail_sync_with_control(
+            self,
+            source,
+            state,
+            comic_url,
+            fallback_hint,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn fetch_chapters_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        toc_url: &str,
+        comic_ctx: &ComicJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineComicChapter>>, SourceCallError> {
+        ComicSourceEngine::fetch_chapters_sync_with_control(
+            self,
+            source,
+            state,
+            toc_url,
+            comic_ctx,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn fetch_pages_sync_with_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        chapter_url: &str,
+        comic_ctx: &ComicJsContext,
+        chapter_ctx: &ComicChapterJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<String>>, SourceCallError> {
+        ComicSourceEngine::fetch_pages_sync_with_control(
+            self,
+            source,
+            state,
+            chapter_url,
+            comic_ctx,
+            chapter_ctx,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn run_login_action_sync(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        login_info: HashMap<String, String>,
+        action_js: Option<&str>,
+    ) -> Result<SourceCallOutput<String>, SourceCallError> {
+        self.run_login_action_checked(source, state, login_info, action_js)
     }
 }

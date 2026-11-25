@@ -11,13 +11,13 @@ use axum::routing::get;
 use xmedia_source::http::HttpClientConfig;
 
 use super::ComicSourceEngine;
-use super::model::{
+use super::session::extract_img_srcs_from_html;
+use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, SourceRuntimeState,
     parse_reading_direction_opt,
 };
-use super::session::extract_img_srcs_from_html;
-use crate::domain::online::ComicSourceRecord;
 use crate::domain::series::ReadingDirection;
+use xmedia_source::crud::{SourceRecord, SourceSpecAdapter};
 
 #[test]
 fn parse_comic_source_spec_supports_comic_and_legado_aliases_and_object_headers() {
@@ -90,7 +90,7 @@ fn parse_comic_source_spec_supports_comic_and_legado_aliases_and_object_headers(
 
 #[test]
 fn seeds_comic_json_parses_cleanly_with_all_five_verified_sources() {
-    let raw = include_str!("../../testdata/online_sources.json");
+    let raw = include_str!("../../../testdata/online_sources.json");
     let batch =
         ComicSourceSpec::parse_json_batch(raw).expect("testdata/online_sources.json must parse");
     assert_eq!(batch.len(), 5);
@@ -146,20 +146,31 @@ fn seeds_comic_json_parses_cleanly_with_all_five_verified_sources() {
 }
 
 #[test]
-fn sync_raw_json_fields_preserves_legado_vs_comic_group_key() {
+fn sync_raw_json_fields_canonicalizes_legado_and_comic_group_key() {
     let legado_raw =
         r#"{"bookSourceName":"A","bookSourceUrl":"https://a","bookSourceGroup":"Old"}"#;
-    let updated_legado =
-        ComicSourceRecord::sync_raw_json_fields(legado_raw, Some(false), Some(50), Some("New"));
+    let (_, normalized_legado) = ComicSourceSpec::parse_batch(legado_raw).unwrap().remove(0);
+    let updated_legado = SourceRecord::sync_raw_json_fields(
+        &normalized_legado,
+        Some(false),
+        Some(50),
+        Some("New"),
+        ComicSourceSpec::JSON_GROUP_KEY,
+    );
     let v1: serde_json::Value = serde_json::from_str(&updated_legado).unwrap();
-    assert_eq!(v1["bookSourceGroup"], "New");
-    assert!(v1.get("sourceGroup").is_none());
+    assert_eq!(v1["sourceGroup"], "New");
+    assert!(v1.get("bookSourceGroup").is_none());
     assert_eq!(v1["enabled"], false);
     assert_eq!(v1["weight"], 50);
 
     let comic_raw = r#"{"sourceName":"B","sourceUrl":"https://b","sourceGroup":"Old"}"#;
-    let updated_comic =
-        ComicSourceRecord::sync_raw_json_fields(comic_raw, None, None, Some("Manga"));
+    let updated_comic = SourceRecord::sync_raw_json_fields(
+        comic_raw,
+        None,
+        None,
+        Some("Manga"),
+        ComicSourceSpec::JSON_GROUP_KEY,
+    );
     let v2: serde_json::Value = serde_json::from_str(&updated_comic).unwrap();
     assert_eq!(v2["sourceGroup"], "Manga");
     assert!(v2.get("bookSourceGroup").is_none());
@@ -449,17 +460,30 @@ async fn engine_handles_paginated_chapters_paginated_pages_and_explore_fallback(
 }
 
 #[test]
-fn sync_raw_json_fields_preserves_book_source_group_after_clear_and_restore() {
+fn sync_raw_json_fields_canonicalizes_source_group_after_clear_and_restore() {
     let legado_raw = r#"{"bookSourceName":"BugRepro","bookSourceUrl":"https://ex.test","bookSourceGroup":"Original"}"#;
-    let cleared = ComicSourceRecord::sync_raw_json_fields(legado_raw, None, None, Some(""));
+    let (_, normalized) = ComicSourceSpec::parse_batch(legado_raw).unwrap().remove(0);
+    let cleared = SourceRecord::sync_raw_json_fields(
+        &normalized,
+        None,
+        None,
+        Some(""),
+        ComicSourceSpec::JSON_GROUP_KEY,
+    );
     let v_cleared: serde_json::Value = serde_json::from_str(&cleared).unwrap();
     assert!(v_cleared.get("bookSourceGroup").is_none());
     assert!(v_cleared.get("sourceGroup").is_none());
 
-    let restored = ComicSourceRecord::sync_raw_json_fields(&cleared, None, None, Some("Restored"));
+    let restored = SourceRecord::sync_raw_json_fields(
+        &cleared,
+        None,
+        None,
+        Some("Restored"),
+        ComicSourceSpec::JSON_GROUP_KEY,
+    );
     let v_restored: serde_json::Value = serde_json::from_str(&restored).unwrap();
-    assert_eq!(v_restored["bookSourceGroup"], "Restored");
-    assert!(v_restored.get("sourceGroup").is_none());
+    assert_eq!(v_restored["sourceGroup"], "Restored");
+    assert!(v_restored.get("bookSourceGroup").is_none());
 }
 
 #[tokio::test]

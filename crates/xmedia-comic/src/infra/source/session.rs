@@ -12,7 +12,7 @@ use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::{RuleValue, cached_regex};
 
 use super::engine::resolve_relative_url_preserving_options;
-use crate::source::model::{
+use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, ExecutionDiagnostics,
     OnlineComicChapter, SourceMetadata, SourceRuntimeState,
 };

@@ -2,9 +2,9 @@ use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::domain::chapter::OnlineTrackedChapterMeta;
+use crate::domain::online::SourceRuntimeState;
 use crate::domain::reading::SeriesReaderPref;
 use crate::domain::series::OnlineTrackedSeriesMeta;
-use crate::source::model::SourceRuntimeState;
 
 #[derive(Debug, toasty::Model)]
 #[table = "comic_series"]
