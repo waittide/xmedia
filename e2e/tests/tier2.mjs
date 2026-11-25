@@ -3469,23 +3469,25 @@ function buildTier2Cases() {
         assert.ok(typeof ch.json.content === 'string');
 
         // Unified OnlineLibraryService /api/v1/book/online/items roundtrip
-        const onlineItem = await ctx.admin.failLoudlyRequest('POST', '/api/v1/book/online/items', {
+        const onlineItem = await ctx.admin.failLoudlyRequest('PUT', '/api/v1/book/online/items', {
           body: {
             source_id: srcId,
             item_key: bookUrl,
             title: 'Tracked NonReg Book',
             subtitle: 'SIU Mock',
-            is_tracked: true,
+            favorite: true,
           },
           expectedStatus: 200,
         });
         assert.ok(onlineItem.json?.id, 'Expected unified OnlineLibraryItemDto id');
         const listOnlineItems = await ctx.admin.failLoudlyRequest(
           'GET',
-          '/api/v1/book/online/items?tracked=true',
+          '/api/v1/book/online/items?view=favorites',
           { expectedStatus: 200 },
         );
-        assert.ok(Array.isArray(listOnlineItems.json) && listOnlineItems.json.length >= 1);
+        assert.ok(
+          Array.isArray(listOnlineItems.json?.items) && listOnlineItems.json.items.length >= 1,
+        );
       },
     },
     {

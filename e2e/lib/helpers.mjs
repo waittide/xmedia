@@ -252,7 +252,7 @@ export async function openAuthenticatedPage(CdpCtor, baseUrl, client, targetPath
       sameSite: 'Lax',
     });
     await cdp.goto(`${baseUrl}${targetPath}`);
-    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:(?:online\/)?(?:read|watch)|play\/))(?=[/?#]|$)/.test(
+    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:(?:online\/)?(?:read|watch)|play))(?=[/?#]|$)/.test(
       targetPath,
     );
     await cdp.waitForSelector(isFullscreen ? '#app > *' : '[data-workspace-shell]', {
