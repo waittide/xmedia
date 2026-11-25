@@ -69,6 +69,8 @@ const searchOpen = ref(false)
 const dragDepth = ref(0)
 const mainScrollRef = ref<HTMLElement | null>(null)
 const isContentScrolled = ref(false)
+const mobileSecondaryCollapsed = ref(false)
+let lastMainScrollTop = 0
 
 watch(
   () => [authStore.isAuthenticated, authStore.user?.id] as const,
@@ -83,6 +85,8 @@ watch(
 watch(
   () => [route.path, domainStore.activeDomain] as const,
   () => {
+    lastMainScrollTop = 0
+    mobileSecondaryCollapsed.value = false
     if (mainScrollRef.value) {
       mainScrollRef.value.scrollTop = 0
       isContentScrolled.value = false
@@ -92,7 +96,20 @@ watch(
 
 function onMainScroll(ev: Event): void {
   const el = ev.target as HTMLElement | null
-  isContentScrolled.value = Boolean(el && el.scrollTop > 4)
+  if (!el) return
+  const top = Math.max(0, el.scrollTop)
+  isContentScrolled.value = top > 4
+
+  const delta = top - lastMainScrollTop
+  const scrollableRange = el.scrollHeight - el.clientHeight
+  if (top <= 16 || scrollableRange <= 72) {
+    mobileSecondaryCollapsed.value = false
+  } else if (delta > 10 && top > 48) {
+    mobileSecondaryCollapsed.value = true
+  } else if (delta < -8) {
+    mobileSecondaryCollapsed.value = false
+  }
+  lastMainScrollTop = top
 }
 
 const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
@@ -302,7 +319,7 @@ onBeforeUnmount(() => {
       class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-colors duration-150 ease-standard select-none sm:col-start-2"
       :class="isContentScrolled ? 'bg-surface-container' : 'bg-surface'"
     >
-      <header class="flex h-16 items-center justify-between gap-3 px-4 md:px-6">
+      <header class="flex h-14 items-center justify-between gap-3 px-4 sm:h-16 md:px-6">
         <h1 class="text-title-large shrink-0 truncate text-on-surface">
           {{ topBarTitle }}
         </h1>
@@ -430,35 +447,46 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <!-- Domain Secondary Navigation: MD3 Primary Tabs (hidden on /settings*) -->
-      <nav
+      <!-- Domain Secondary Navigation: MD3 Primary Tabs (auto-collapses on downward scroll on <600px) -->
+      <div
         v-if="secondaryTabs.length > 0"
-        :aria-label="t('nav.navigation')"
-        class="no-scrollbar flex items-end gap-1 overflow-x-auto border-b border-outline-variant px-4 md:px-6"
+        class="grid transition-[grid-template-rows,opacity] duration-200 ease-standard sm:block sm:opacity-100"
+        :class="
+          mobileSecondaryCollapsed
+            ? 'pointer-events-none grid-rows-[0fr] opacity-0 sm:pointer-events-auto'
+            : 'grid-rows-[1fr] opacity-100'
+        "
       >
-        <button
-          v-for="tab in secondaryTabs"
-          :key="tab.key"
-          type="button"
-          :data-nav="tab.key"
-          :aria-current="tab.active ? 'page' : undefined"
-          class="md-state text-title-small relative inline-flex h-12 shrink-0 cursor-pointer items-center px-4 whitespace-nowrap transition-colors duration-150 ease-standard"
-          :class="
-            tab.active ? 'text-primary' : 'text-on-surface-variant hover:text-on-surface'
-          "
-          @click="navigateTab(tab)"
-        >
-          <span class="relative inline-flex h-full items-center gap-2">
-            <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
-            <span>{{ tab.label }}</span>
-            <span
-              v-if="tab.active"
-              aria-hidden="true"
-              class="pointer-events-none absolute right-0 bottom-0 left-0 mx-auto h-[3px] min-w-6 rounded-t-[3px] bg-primary"
-            />
-          </span>
-        </button>
-      </nav>
+        <div class="min-h-0 overflow-hidden sm:overflow-visible">
+          <nav
+            :aria-label="t('nav.navigation')"
+            class="no-scrollbar flex items-end gap-1 overflow-x-auto border-b border-outline-variant px-4 md:px-6"
+          >
+            <button
+              v-for="tab in secondaryTabs"
+              :key="tab.key"
+              type="button"
+              :data-nav="tab.key"
+              :aria-current="tab.active ? 'page' : undefined"
+              class="md-state text-title-small relative inline-flex h-11 shrink-0 cursor-pointer items-center px-3.5 whitespace-nowrap transition-colors duration-150 ease-standard sm:h-12 sm:px-4"
+              :class="
+                tab.active ? 'text-primary' : 'text-on-surface-variant hover:text-on-surface'
+              "
+              @click="navigateTab(tab)"
+            >
+              <span class="relative inline-flex h-full items-center gap-2">
+                <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+                <span>{{ tab.label }}</span>
+                <span
+                  v-if="tab.active"
+                  aria-hidden="true"
+                  class="pointer-events-none absolute right-0 bottom-0 left-0 mx-auto h-[3px] min-w-6 rounded-t-[3px] bg-primary"
+                />
+              </span>
+            </button>
+          </nav>
+        </div>
+      </div>
     </div>
 
     <!-- Main Scrollable Route Viewport -->

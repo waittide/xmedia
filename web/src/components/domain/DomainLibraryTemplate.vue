@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, useSlots, type Component } from 'vue'
+import { computed, nextTick, ref, useSlots, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuSlidersHorizontal } from 'vue-icons-plus/lu'
+import { LuSearch, LuSlidersHorizontal, LuX } from 'vue-icons-plus/lu'
 import {
   MdButton,
   MdChip,
   MdEmptyState,
+  MdIconButton,
   MdSheet,
   MdSkeleton,
   MdTabs,
@@ -171,8 +172,27 @@ const skeletonGridClass = computed(() =>
 )
 
 const showSkeleton = useDelayedLoading(() => props.loading)
+const mobileSearchOpen = ref(false)
+const searchFieldRef = ref<InstanceType<typeof MdTextField> | null>(null)
+const isMobileSearchExpanded = computed(
+  () => mobileSearchOpen.value || props.searchQuery.trim().length > 0,
+)
+
+function openMobileSearch(): void {
+  mobileSearchOpen.value = true
+  void nextTick(() => {
+    searchFieldRef.value?.focus()
+  })
+}
+
+function closeMobileSearch(): void {
+  mobileSearchOpen.value = false
+}
 
 function handleScopeUpdate(next: SourceScope): void {
+  if (!props.searchQuery.trim()) {
+    mobileSearchOpen.value = false
+  }
   emit('update:scope', next)
   emit('scope-change', next)
 }
@@ -182,6 +202,7 @@ function handleSearchSubmit(): void {
 }
 
 function handleSearchClear(): void {
+  mobileSearchOpen.value = false
   emit('update:searchQuery', '')
   emit('search-clear')
   emit('search-submit', '')
@@ -189,11 +210,11 @@ function handleSearchClear(): void {
 </script>
 
 <template>
-  <div class="mx-auto w-full space-y-4" :class="maxWidthClass">
+  <div class="mx-auto w-full space-y-2.5 sm:space-y-4" :class="maxWidthClass">
     <!-- Row 1: Compact title + always-visible Local/Online[/Remote] SourceScopeBar -->
-    <header class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex min-w-0 items-baseline gap-2.5">
-        <h1 class="text-headline-small truncate text-on-surface">
+    <header class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+      <div class="flex min-w-0 items-baseline gap-2">
+        <h1 class="text-title-large sm:text-headline-small truncate text-on-surface">
           {{ resolvedTitle }}
         </h1>
         <span
@@ -204,7 +225,7 @@ function handleSearchClear(): void {
         </span>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2">
+      <div class="no-scrollbar flex max-w-full items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:gap-2">
         <SourceScopeBar
           v-if="showScopeBar"
           :model-value="scope"
@@ -227,27 +248,51 @@ function handleSearchClear(): void {
       @update:model-value="emit('update:activeTab', $event)"
     />
 
-    <!-- Row 2: Single compact control bar (1 search input + inline chips + trailing) -->
+    <!-- Row 2: Single compact control bar (mobile search icon toggle + inline chips + trailing) -->
     <div v-if="hasToolbarRow" class="flex flex-wrap items-center gap-2">
+      <MdIconButton
+        v-if="showSearch && !isMobileSearchExpanded"
+        class="sm:hidden"
+        size="sm"
+        :icon="LuSearch"
+        :aria-label="resolvedSearchPlaceholder"
+        @click="openMobileSearch"
+      />
+
       <form
         v-if="showSearch"
-        class="min-w-48 flex-1 sm:max-w-sm"
+        class="items-center gap-1.5 sm:block sm:min-w-48 sm:max-w-sm sm:flex-1"
+        :class="isMobileSearchExpanded ? 'flex w-full' : 'hidden sm:block'"
         @submit.prevent="handleSearchSubmit"
+        @keydown.esc="
+          !searchQuery.trim() && isMobileSearchExpanded ? closeMobileSearch() : undefined
+        "
       >
-        <MdTextField
-          :model-value="searchQuery"
-          type="search"
+        <div class="min-w-0 flex-1">
+          <MdTextField
+            ref="searchFieldRef"
+            :model-value="searchQuery"
+            type="search"
+            size="sm"
+            clearable
+            :placeholder="resolvedSearchPlaceholder"
+            @update:model-value="emit('update:searchQuery', $event)"
+            @clear="handleSearchClear"
+          />
+        </div>
+        <MdIconButton
+          v-if="isMobileSearchExpanded && !searchQuery.trim()"
+          class="sm:hidden"
           size="sm"
-          clearable
-          :placeholder="resolvedSearchPlaceholder"
-          @update:model-value="emit('update:searchQuery', $event)"
-          @clear="handleSearchClear"
+          :icon="LuX"
+          :aria-label="t('common.close')"
+          @click="closeMobileSearch"
         />
       </form>
 
       <div
         v-if="$slots['toolbar-chips'] || hasFilterSheet"
-        class="no-scrollbar flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-0.5"
+        class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 sm:gap-2"
       >
         <MdChip
           v-if="hasFilterSheet"
