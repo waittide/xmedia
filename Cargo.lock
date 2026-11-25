@@ -6058,6 +6058,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "xmedia-formats",
 ]
 
 [[package]]

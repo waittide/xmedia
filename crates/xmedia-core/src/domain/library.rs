@@ -194,4 +194,36 @@ impl Library {
         };
         self.updated_at = Timestamp::now();
     }
+
+    pub fn ensure_scannable(&self) -> DomainResult<()> {
+        if self.kind.is_managed() {
+            return Err(DomainError::Validation(
+                "managed upload library does not require directory scanning".into(),
+            ));
+        }
+        if self.scan_status.is_scanning() {
+            return Err(DomainError::Conflict(
+                "library scan is already in progress".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn ensure_deletable(&self) -> DomainResult<()> {
+        if self.kind.is_managed() {
+            return Err(DomainError::Validation(
+                "default managed library cannot be deleted".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn recover_interrupted_scan(&mut self, reason: impl Into<String>) -> bool {
+        if self.scan_status.is_scanning() {
+            self.mark_scan_failed(reason);
+            true
+        } else {
+            false
+        }
+    }
 }

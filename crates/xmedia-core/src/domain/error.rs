@@ -34,3 +34,15 @@ pub enum DomainError {
 }
 
 pub type DomainResult<T> = Result<T, DomainError>;
+
+impl From<xmedia_formats::FormatError> for DomainError {
+    fn from(err: xmedia_formats::FormatError) -> Self {
+        match err {
+            xmedia_formats::FormatError::Validation(msg) => Self::Validation(msg),
+            xmedia_formats::FormatError::UnsupportedFormat(msg) => Self::UnsupportedFormat(msg),
+            xmedia_formats::FormatError::NotFound(msg) => Self::NotFound(msg),
+            xmedia_formats::FormatError::Conflict(msg) => Self::Conflict(msg),
+            xmedia_formats::FormatError::Io(msg) => Self::Storage(msg),
+        }
+    }
+}

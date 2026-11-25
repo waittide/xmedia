@@ -5,6 +5,7 @@ pub mod library;
 pub mod media;
 #[cfg(feature = "server")]
 pub mod online_item;
+pub mod preferences;
 #[cfg(feature = "server")]
 pub mod repository;
 #[cfg(feature = "server")]

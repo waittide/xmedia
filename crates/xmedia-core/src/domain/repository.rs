@@ -124,4 +124,6 @@ pub trait UserMediaBindingRepository: Send + Sync {
         user_id: UserId,
         media_kind: MediaKind,
     ) -> DomainResult<Vec<Uuid>>;
+
+    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
 }

@@ -1,3 +1,5 @@
+mod scan_reporter;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -10,187 +12,9 @@ use crate::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemE
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use crate::domain::repository::LibraryRepository;
-use crate::domain::user::{User, require_admin};
+use crate::domain::user::User;
 
-/// Reusable throttled scan progress reporter shared across media domain lifecycle scanners.
-/// Handles persisting `ScanStatus` updates and broadcasting `SystemEvent` notifications.
-pub struct ScanProgressReporter {
-    library: Library,
-    libraries: Arc<dyn LibraryRepository>,
-    events: Arc<dyn RealtimeEventPort>,
-    total: Option<u64>,
-    progress_step: u64,
-    scanned: u64,
-}
-
-impl ScanProgressReporter {
-    pub fn new(
-        library: Library,
-        libraries: Arc<dyn LibraryRepository>,
-        events: Arc<dyn RealtimeEventPort>,
-        total: Option<u64>,
-    ) -> Self {
-        let progress_step = match total {
-            Some(t) if t <= 100 => 1,
-            Some(t) if t <= 1000 => 5,
-            Some(_) => 20,
-            None => 10,
-        };
-        Self {
-            library,
-            libraries,
-            events,
-            total,
-            progress_step,
-            scanned: 0,
-        }
-    }
-
-    pub fn with_step(mut self, step: u64) -> Self {
-        self.progress_step = step.max(1);
-        self
-    }
-
-    pub fn library(&self) -> &Library {
-        &self.library
-    }
-
-    pub fn scanned(&self) -> u64 {
-        self.scanned
-    }
-
-    /// Marks the library as scanning at 0 items and broadcasts the initial progress event.
-    pub async fn start(&mut self) {
-        self.scanned = 0;
-        self.library.mark_scanning(0, self.total);
-        let updated = self
-            .libraries
-            .update_scan_state(
-                self.library.id,
-                &self.library.scan_status,
-                self.library.last_scanned_at,
-                self.library.updated_at,
-            )
-            .await
-            .unwrap_or(false);
-        if updated {
-            self.events.publish(SystemEvent::LibraryScanProgress {
-                library_id: self.library.id,
-                library_name: self.library.name.clone(),
-                media_kind: self.library.media_kind,
-                scanned: 0,
-                total: self.total,
-            });
-        }
-    }
-
-    /// Increments the scanned item counter by 1 and emits a throttled progress update.
-    pub async fn advance(&mut self) {
-        self.scanned = self.scanned.saturating_add(1);
-        self.report(self.scanned).await;
-    }
-
-    /// Records the current scanned count and persists/broadcasts when hitting the throttle step or total.
-    pub async fn report(&mut self, scanned: u64) {
-        self.scanned = scanned;
-        let reached_total = self.total.is_some_and(|t| scanned >= t);
-        if scanned.is_multiple_of(self.progress_step) || reached_total {
-            self.library.mark_scanning(scanned, self.total);
-            let updated = self
-                .libraries
-                .update_scan_state(
-                    self.library.id,
-                    &self.library.scan_status,
-                    self.library.last_scanned_at,
-                    self.library.updated_at,
-                )
-                .await
-                .unwrap_or(false);
-            if updated {
-                self.events.publish(SystemEvent::LibraryScanProgress {
-                    library_id: self.library.id,
-                    library_name: self.library.name.clone(),
-                    media_kind: self.library.media_kind,
-                    scanned,
-                    total: self.total,
-                });
-            }
-        }
-    }
-
-    /// Finalizes the scan using the internally tracked `scanned` count, persists completion,
-    /// broadcasts `LibraryScanCompleted`, and emits `MediaChanged` if any items changed.
-    pub async fn complete(self, added: u64, updated: u64, missing: u64) -> DomainResult<Library> {
-        let scanned = self.scanned;
-        self.complete_with_scanned(scanned, added, updated, missing)
-            .await
-    }
-
-    /// Finalizes the scan with an explicit `scanned` count.
-    pub async fn complete_with_scanned(
-        mut self,
-        scanned: u64,
-        added: u64,
-        updated: u64,
-        missing: u64,
-    ) -> DomainResult<Library> {
-        self.library
-            .mark_scan_completed(scanned, added, updated, missing);
-        let existed = self
-            .libraries
-            .update_scan_state(
-                self.library.id,
-                &self.library.scan_status,
-                self.library.last_scanned_at,
-                self.library.updated_at,
-            )
-            .await?;
-        if !existed {
-            return Err(DomainError::NotFound(
-                "library was deleted while scan was in progress".into(),
-            ));
-        }
-        self.events.publish(SystemEvent::LibraryScanCompleted {
-            library_id: self.library.id,
-            library_name: self.library.name.clone(),
-            media_kind: self.library.media_kind,
-            scanned,
-            added,
-            updated,
-            missing,
-        });
-        if added > 0 || updated > 0 || missing > 0 {
-            self.events.publish(SystemEvent::MediaChanged {
-                media_kind: self.library.media_kind,
-            });
-        }
-        Ok(self.library)
-    }
-
-    /// Marks the scan as failed, persists best-effort, and broadcasts `LibraryScanFailed`.
-    pub async fn fail(mut self, message: impl Into<String>) {
-        let msg = message.into();
-        self.library.mark_scan_failed(msg.clone());
-        let existed = self
-            .libraries
-            .update_scan_state(
-                self.library.id,
-                &self.library.scan_status,
-                self.library.last_scanned_at,
-                self.library.updated_at,
-            )
-            .await
-            .unwrap_or(false);
-        if existed {
-            self.events.publish(SystemEvent::LibraryScanFailed {
-                library_id: self.library.id,
-                library_name: self.library.name.clone(),
-                media_kind: self.library.media_kind,
-                message: msg,
-            });
-        }
-    }
-}
+pub use scan_reporter::ScanProgressReporter;
 
 struct ActiveScanEntry {
     scan_seq: u64,
@@ -304,9 +128,8 @@ impl LibraryService {
     pub async fn recover_interrupted_scans(&self) -> DomainResult<()> {
         let libs = self.libraries.list_all().await?;
         for mut lib in libs {
-            if lib.scan_status.is_scanning() {
+            if lib.recover_interrupted_scan("scan interrupted by server restart") {
                 warn!(library_id = %lib.id, name = %lib.name, "resetting interrupted library scan state from previous run");
-                lib.mark_scan_failed("scan interrupted by server restart");
                 let _ = self
                     .libraries
                     .update_scan_state(
@@ -368,7 +191,7 @@ impl LibraryService {
         actor: &User,
         input: CreateLibraryInput,
     ) -> DomainResult<LibraryDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         self.ensure_media_enabled(input.media_kind)?;
 
         let _mount_guard = self.mount_lock.lock().await;
@@ -440,7 +263,7 @@ impl LibraryService {
         id: LibraryId,
         input: RenameLibraryInput,
     ) -> DomainResult<LibraryDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let mut lib = self
             .libraries
             .find_by_id(id)
@@ -459,23 +282,14 @@ impl LibraryService {
     }
 
     pub async fn trigger_scan(&self, actor: &User, id: LibraryId) -> DomainResult<LibraryDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let mut lib = self
             .libraries
             .find_by_id(id)
             .await?
             .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
 
-        if lib.kind.is_managed() {
-            return Err(DomainError::Validation(
-                "managed upload library does not require directory scanning".into(),
-            ));
-        }
-        if lib.scan_status.is_scanning() {
-            return Err(DomainError::Conflict(
-                "library scan is already in progress".into(),
-            ));
-        }
+        lib.ensure_scannable()?;
 
         let handler = self.get_handler(lib.media_kind).ok_or_else(|| {
             DomainError::UnsupportedFormat(format!(
@@ -620,18 +434,14 @@ impl LibraryService {
     }
 
     pub async fn delete_library(&self, actor: &User, id: LibraryId) -> DomainResult<()> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let lib = self
             .libraries
             .find_by_id(id)
             .await?
             .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
 
-        if lib.kind.is_managed() {
-            return Err(DomainError::Validation(
-                "default managed library cannot be deleted".into(),
-            ));
-        }
+        lib.ensure_deletable()?;
 
         let removed_scan = {
             let mut active = self.active_scans.lock().unwrap_or_else(|e| e.into_inner());
@@ -817,14 +627,10 @@ mod tests {
         assert!(verify_mount_allowlist(&sub.canonicalize().unwrap(), &allowlist).is_ok());
         assert!(verify_mount_allowlist(&outside.canonicalize().unwrap(), &allowlist).is_err());
 
-        // Empty directory is allowed when library has 0 indexed items
         assert!(verify_mount_root_alive(&sub, 0).is_ok());
-        // Empty directory is rejected when library already has indexed items (unmount protection)
         assert!(verify_mount_root_alive(&sub, 12).is_err());
-        // Non-empty directory passes
         std::fs::write(sub.join("sample.mkv"), b"ok").unwrap();
         assert!(verify_mount_root_alive(&sub, 12).is_ok());
-        // Missing directory always fails
         assert!(verify_mount_root_alive(&tmp.path().join("missing"), 0).is_err());
     }
 }

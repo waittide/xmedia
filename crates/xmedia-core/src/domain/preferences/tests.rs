@@ -1,0 +1,82 @@
+use super::*;
+
+#[test]
+fn user_preferences_normalize_clamps_numeric_bounds() {
+    let mut prefs = UserPreferences::default();
+    prefs.book.font_family = " ".into();
+    prefs.book.font_size = 200;
+    prefs.book.line_height = f32::NAN;
+    prefs.book.margin_px = 999;
+    prefs.book.pdf_scale = 0.01;
+    prefs.comic.preload_pages = 99;
+    prefs.comic.webtoon_width = 10;
+    prefs.music.volume = 3.5;
+    prefs.video.playback_rate = 10.0;
+    prefs.video.preferred_audio_lang = Some("  ja  ".into());
+    prefs.video.preferred_subtitle_lang = Some("   ".into());
+
+    prefs.normalize();
+
+    assert_eq!(prefs.book.font_family, DEFAULT_FONT_FAMILY);
+    assert_eq!(prefs.book.font_size, MAX_FONT_SIZE);
+    assert_eq!(prefs.book.line_height, DEFAULT_LINE_HEIGHT);
+    assert_eq!(prefs.book.margin_px, MAX_MARGIN_PX);
+    assert_eq!(prefs.book.pdf_scale, MIN_PDF_SCALE);
+    assert_eq!(prefs.comic.preload_pages, MAX_PRELOAD_PAGES);
+    assert_eq!(prefs.comic.webtoon_width, MIN_WEBTOON_WIDTH);
+    assert_eq!(prefs.music.volume, 1.0);
+    assert_eq!(prefs.video.playback_rate, MAX_PLAYBACK_RATE);
+    assert_eq!(prefs.video.preferred_audio_lang.as_deref(), Some("ja"));
+    assert_eq!(prefs.video.preferred_subtitle_lang, None);
+}
+
+#[test]
+fn default_preferences_use_system_mode_and_default_seed() {
+    let prefs = UserPreferences::default();
+    assert_eq!(prefs.theme_mode, ThemeMode::System);
+    assert_eq!(prefs.seed_color, None);
+    assert_eq!(prefs.ui().locale, Locale::ZhCn);
+}
+
+#[test]
+fn seed_color_and_app_icon_are_sanitized_via_ui_preferences() {
+    let mut prefs = UserPreferences::default();
+    prefs.apply_ui(UiPreferences {
+        theme_mode: ThemeMode::Dark,
+        seed_color: Some(" #6750A4 ".into()),
+        app_icon: Some(" Porcelain ".into()),
+        locale: Locale::EnUs,
+    });
+    assert_eq!(prefs.theme_mode, ThemeMode::Dark);
+    assert_eq!(prefs.seed_color.as_deref(), Some("#6750a4"));
+    assert_eq!(prefs.app_icon.as_deref(), Some("porcelain"));
+    assert_eq!(prefs.locale, Locale::EnUs);
+
+    prefs.seed_color = Some("#ABC".into());
+    prefs.normalize();
+    assert_eq!(prefs.seed_color.as_deref(), Some("#aabbcc"));
+
+    for invalid in ["6750a4", "#6750a4ff", "#zzzzzz", ""] {
+        prefs.seed_color = Some(invalid.into());
+        prefs.normalize();
+        assert_eq!(prefs.seed_color, None, "{invalid} should be rejected");
+    }
+
+    for valid in ["obsidian", "MONOLITH"] {
+        prefs.app_icon = Some(valid.into());
+        prefs.normalize();
+        assert_eq!(
+            prefs.app_icon.as_deref(),
+            Some(valid.to_ascii_lowercase().as_str())
+        );
+    }
+
+    for fallback in ["cobalt", "COBALT", "../evil", "", "unknown"] {
+        prefs.app_icon = Some(fallback.into());
+        prefs.normalize();
+        assert_eq!(
+            prefs.app_icon, None,
+            "{fallback} should normalize to default None"
+        );
+    }
+}

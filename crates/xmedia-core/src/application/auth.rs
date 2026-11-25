@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::application::activity::ActivityService;
+use crate::application::bindings::MediaBindingService;
 use crate::application::dto::{
     AuthSessionDto, ChangePasswordInput, CreateUserInput, SetupAdminInput, SetupStatusDto,
     SubsonicCredentials, UpdateUserInput, UserDto,
@@ -14,7 +15,7 @@ use crate::application::ports::{
 };
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
-use crate::domain::repository::UserRepository;
+use crate::domain::repository::{OnlineLibraryItemRepository, UserRepository};
 use crate::domain::user::{User, UserId, UserPreferences, UserRole, require_admin};
 use crate::infra::stream::sha256_hex;
 
@@ -178,6 +179,8 @@ pub struct AuthService {
     tokens: Arc<dyn TokenServicePort>,
     lifecycles: Arc<RwLock<HashMap<MediaKind, Arc<dyn MediaDomainLifecycle>>>>,
     activity: Option<Arc<ActivityService>>,
+    online_items: Option<Arc<dyn OnlineLibraryItemRepository>>,
+    bindings: Option<Arc<MediaBindingService>>,
     setup_lock: Arc<Mutex<()>>,
     throttled_verify_lock: Arc<Mutex<()>>,
     revoked_jtis: Arc<RwLock<HashMap<String, u64>>>,
@@ -197,6 +200,8 @@ impl AuthService {
             tokens,
             lifecycles,
             activity: None,
+            online_items: None,
+            bindings: None,
             setup_lock: Arc::new(Mutex::new(())),
             throttled_verify_lock: Arc::new(Mutex::new(())),
             revoked_jtis: Arc::new(RwLock::new(HashMap::new())),
@@ -212,8 +217,26 @@ impl AuthService {
         self
     }
 
+    pub fn with_online_items(mut self, online_items: Arc<dyn OnlineLibraryItemRepository>) -> Self {
+        self.online_items = Some(online_items);
+        self
+    }
+
+    pub fn with_bindings(mut self, bindings: Arc<MediaBindingService>) -> Self {
+        self.bindings = Some(bindings);
+        self
+    }
+
     pub fn has_activity_cleanup(&self) -> bool {
         self.activity.is_some()
+    }
+
+    pub fn has_online_items_cleanup(&self) -> bool {
+        self.online_items.is_some()
+    }
+
+    pub fn has_bindings_cleanup(&self) -> bool {
+        self.bindings.is_some()
     }
 
     /// Revokes a single JWT (by its `jti`) until its natural expiration timestamp.
@@ -594,27 +617,12 @@ impl AuthService {
         target_id: UserId,
         input: UpdateUserInput,
     ) -> DomainResult<UserDto> {
-        require_admin(actor)?;
+        actor.ensure_can_modify_user(target_id, input.role, input.is_active)?;
         let mut target = self
             .users
             .find_by_id(target_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("target user not found".into()))?;
-
-        if target.id == actor.id {
-            if matches!(input.is_active, Some(false)) {
-                return Err(DomainError::Validation(
-                    "cannot deactivate your own account".into(),
-                ));
-            }
-            if let Some(role) = input.role
-                && !role.is_admin()
-            {
-                return Err(DomainError::Validation(
-                    "cannot demote your own admin role".into(),
-                ));
-            }
-        }
 
         target.update_profile(input.display_name, input.role, input.is_active)?;
         if let Some(ref new_pwd) = input.password
@@ -634,12 +642,7 @@ impl AuthService {
     }
 
     pub async fn delete_user(&self, actor: &User, target_id: UserId) -> DomainResult<()> {
-        require_admin(actor)?;
-        if actor.id == target_id {
-            return Err(DomainError::Validation(
-                "cannot delete your own account".into(),
-            ));
-        }
+        actor.ensure_can_delete_user(target_id)?;
         if self.users.find_by_id(target_id).await?.is_none() {
             return Err(DomainError::NotFound("target user not found".into()));
         }
@@ -653,6 +656,12 @@ impl AuthService {
             .collect();
         for handler in handlers {
             handler.on_user_deleted(target_id).await?;
+        }
+        if let Some(ref online_items) = self.online_items {
+            online_items.delete_by_user(target_id).await?;
+        }
+        if let Some(ref bindings) = self.bindings {
+            bindings.purge_user(target_id).await?;
         }
         if let Some(ref activity) = self.activity {
             activity.purge_user(target_id).await?;

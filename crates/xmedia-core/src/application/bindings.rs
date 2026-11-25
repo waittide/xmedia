@@ -272,4 +272,10 @@ impl MediaBindingService {
             .delete_by_user_and_media(user_id, media_kind)
             .await
     }
+
+    /// Purges all remaining media bindings for `user_id` across every media domain.
+    pub async fn purge_user(&self, user_id: UserId) -> DomainResult<()> {
+        let _guard = self.write_lock.lock().await;
+        self.repo.delete_by_user(user_id).await
+    }
 }

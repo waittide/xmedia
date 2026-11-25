@@ -19,6 +19,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+xmedia-formats = { path = "crates/xmedia-formats" }
 xmedia-core = { path = "crates/xmedia-core" }
 xmedia-source = { path = "crates/xmedia-source" }
 xmedia-book = { path = "crates/xmedia-book" }
