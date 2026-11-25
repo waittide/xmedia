@@ -660,3 +660,41 @@ fn strip_js_wrapper_handles_case_insensitive_at_js_and_tag_js_and_plain_urls() {
     assert_eq!(strip_js_wrapper("中文"), "中文");
     assert_eq!(strip_js_wrapper("<js>中文"), "<js>中文");
 }
+
+#[test]
+fn jsonpath_malformed_brackets_and_single_quotes_never_panic() {
+    let doc = serde_json::json!({
+        "a": "alpha",
+        "'": "single",
+        "\"": "double",
+        "": "empty"
+    });
+    let rv = RuleValue::Json(doc.clone());
+
+    for expr in [
+        "$[']",
+        "$[\"]",
+        "$[]",
+        "$[",
+        "$]",
+        "$[[]",
+        "$['a'",
+        "$[\"a\"",
+        "$.a[']",
+        "$.a[\"]",
+        "$.a[]",
+        "$[?(@.a=='unclosed)]",
+    ] {
+        let _ = eval_jsonpath(&doc, expr);
+        let _ = eval_rule_string(&rv, expr, "", None);
+        let _ = eval_rule_list(&rv, expr, "", None);
+    }
+
+    assert_eq!(eval_rule_string(&rv, "$['a']", "", None).unwrap(), "alpha");
+    assert_eq!(
+        eval_rule_string(&rv, "$[\"a\"]", "", None).unwrap(),
+        "alpha"
+    );
+    assert_eq!(eval_rule_string(&rv, "$['']", "", None).unwrap(), "empty");
+    assert_eq!(eval_rule_string(&rv, "$[\"\"]", "", None).unwrap(), "empty");
+}

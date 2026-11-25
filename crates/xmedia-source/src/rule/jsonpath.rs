@@ -468,10 +468,13 @@ fn parse_jsonpath_steps(mut s: &str) -> Vec<JsonPathStep> {
                 && let Some(filter) = parse_jsonpath_filter(expr)
             {
                 steps.push(JsonPathStep::Filter(filter));
-            } else if (inside.starts_with('\'') && inside.ends_with('\''))
-                || (inside.starts_with('"') && inside.ends_with('"'))
+            } else if inside.len() >= 2
+                && ((inside.starts_with('\'') && inside.ends_with('\''))
+                    || (inside.starts_with('"') && inside.ends_with('"')))
             {
                 steps.push(JsonPathStep::Field(inside[1..inside.len() - 1].to_string()));
+            } else if inside == "'" || inside == "\"" {
+                break;
             } else if let Some((a, b)) = inside.split_once(':') {
                 let start = a.trim().parse::<isize>().ok();
                 let end = b.trim().parse::<isize>().ok();
@@ -502,5 +505,31 @@ pub(super) fn json_val_to_string(v: serde_json::Value) -> String {
             .collect::<Vec<_>>()
             .join(", "),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn parse_quoted_bracket_guard_handles_single_quote_and_empty_inside_without_panic() {
+        // Directly verify single-character quote tokens inside brackets never slice out of bounds,
+        // even if a caller constructs or modifies bracket contents directly.
+        for malformed in ["$[']", "$[\"]", "$[]", "$[", "$['unclosed", "$[\"unclosed"] {
+            let doc = serde_json::json!({"a": 1, "'": 2, "\"": 3, "": 4});
+            let _ = eval_jsonpath(&doc, malformed);
+        }
+
+        // Empty quoted field `$['']` and `$[""]` (len == 2) safely resolves key `""`.
+        let doc_empty_key = serde_json::json!({"": "empty-key-val", "ok": "yes"});
+        assert_eq!(
+            eval_jsonpath(&doc_empty_key, "$['']"),
+            vec![serde_json::json!("empty-key-val")]
+        );
+        assert_eq!(
+            eval_jsonpath(&doc_empty_key, "$[\"\"]"),
+            vec![serde_json::json!("empty-key-val")]
+        );
     }
 }
