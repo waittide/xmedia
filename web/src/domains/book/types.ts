@@ -2,7 +2,14 @@ import type { UserRole } from '@/types/api'
 
 export type { UserRole }
 export type LocaleCode = 'zh-CN' | 'en-US'
-export type BookFormat = 'epub' | 'txt' | 'pdf'
+export type BookFormat = 'epub' | 'txt' | 'pdf' | 'mobi' | 'azw3' | 'fb2'
+export const BOOK_FORMATS: readonly BookFormat[] = ['epub', 'txt', 'pdf', 'mobi', 'azw3', 'fb2']
+export function isBookFormat(val: string): val is BookFormat {
+  return (BOOK_FORMATS as readonly string[]).includes(val)
+}
+export function isTextChapterBookFormat(format: BookFormat): boolean {
+  return format === 'txt' || format === 'fb2' || format === 'mobi' || format === 'azw3'
+}
 export type ReadingFlow = 'paginated' | 'scrolled'
 export type BookSortField = 'created_at' | 'updated_at' | 'title' | 'file_size'
 export type SortOrder = 'asc' | 'desc'
@@ -40,6 +47,9 @@ export interface BookMetadata {
   tags: string[]
   page_count: number | null
   chapter_count: number | null
+  series?: string | null
+  series_index?: number | null
+  rating?: number | null
 }
 
 export interface ReadingLocation {
@@ -145,6 +155,9 @@ export interface UpdateMetadataPatch {
   publisher?: string
   published_at?: string
   tags?: string[]
+  series?: string | null
+  series_index?: number | null
+  rating?: number | null
 }
 
 export interface BookBookmarkItemDto {

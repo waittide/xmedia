@@ -9,7 +9,7 @@ import {
 } from '@/components/ui'
 import { useBookI18n } from '@/domains/book/i18n'
 import { useCatalogStore } from '@/domains/book/store'
-import type { BookFormat, TagMatchMode } from '@/domains/book/types'
+import { BOOK_FORMATS, isBookFormat, type TagMatchMode } from '@/domains/book/types'
 
 defineProps<{
   activeCollectionId: string
@@ -23,13 +23,12 @@ const emit = defineEmits<{
 const { t } = useBookI18n()
 const catalogStore = useCatalogStore()
 
-const BOOK_FORMATS = new Set<string>(['epub', 'txt', 'pdf'])
-
-const formatOptions = computed(() => [
-  { value: 'epub', label: 'EPUB' },
-  { value: 'txt', label: 'TXT' },
-  { value: 'pdf', label: 'PDF' },
-])
+const formatOptions = computed(() =>
+  BOOK_FORMATS.map((fmt) => ({
+    value: fmt,
+    label: fmt.toUpperCase(),
+  })),
+)
 
 const tagModeOptions = computed<SegmentedOption<TagMatchMode>[]>(() => [
   { value: 'any', label: t('search.tagModeAny') },
@@ -69,7 +68,7 @@ const shelfOptions = computed(() => [
 ])
 
 function onUpdateFormats(vals: string[]): void {
-  catalogStore.filterFormats = vals.filter((v): v is BookFormat => BOOK_FORMATS.has(v))
+  catalogStore.filterFormats = vals.filter(isBookFormat)
   emit('refetch')
 }
 </script>

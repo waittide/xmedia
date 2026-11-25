@@ -163,9 +163,6 @@ export interface ComicCacheReportDto {
   failed: string[]
 }
 
-export const ONLINE_COMIC_CTX_KEY = 'xmedia_online_comic_ctx'
-export const ONLINE_COMIC_READER_CTX_KEY = 'xmedia_online_comic_reader_ctx'
-
 export interface OnlineComicContextStorage {
   sourceId: string
   sourceName?: string

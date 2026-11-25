@@ -1,7 +1,7 @@
 import type { ComputedRef, Ref } from 'vue'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { useCatalogStore } from '@/domains/book/store'
-import type { BookFormat } from '@/domains/book/types'
+import { isBookFormat } from '@/domains/book/types'
 import type { LibraryTab, SourceScope } from '@/sources'
 
 export type BookBrowseView = 'items' | 'authors' | 'tags'
@@ -127,19 +127,17 @@ export function useBookCatalogQuerySync(options: {
 
   function applyRouteQuery(): void {
     const qTab = readQueryString(route.query.tab)
-    const qCollection = readQueryString(route.query.collection) || readQueryString(route.query.shelf)
+    const qCollection = readQueryString(route.query.collection)
     const qView = readQueryString(route.query.view)
     const qKeyword = readQueryString(route.query.q)
     const qLibraries = readQueryList(route.query.library)
     const qAuthors = readQueryList(route.query.author)
     const qTags = readQueryList(route.query.tag)
     const qTagMode = readQueryString(route.query.tag_mode)
-    const qFormats = readQueryList(route.query.format).filter(
-      (f): f is BookFormat => f === 'epub' || f === 'txt' || f === 'pdf',
-    )
+    const qFormats = readQueryList(route.query.format).filter(isBookFormat)
     const qMissing = route.query.missing === '1' || route.query.missing === 'true'
-    const qSort = readQueryString(route.query.sort) || readQueryString(route.query.sort_by)
-    const qOrder = readQueryString(route.query.order) || readQueryString(route.query.sort_order)
+    const qSort = readQueryString(route.query.sort)
+    const qOrder = readQueryString(route.query.order)
     const qPage = Number.parseInt(readQueryString(route.query.page), 10)
 
     options.activeTab.value = qCollection && qTab === 'collections' ? 'all' : parseBookTab(qTab)

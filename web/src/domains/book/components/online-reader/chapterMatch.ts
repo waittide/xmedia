@@ -1,7 +1,6 @@
 import type { BookJsContextInput, OnlineChapterItem } from '../../onlineApi'
 
 export interface ReaderContext {
-  shelfId?: string
   sourceId: string
   sourceName: string
   name: string
@@ -11,6 +10,16 @@ export interface ReaderContext {
   coverUrl?: string | null
   intro?: string | null
   currentChapterIndex: number
+}
+
+let inMemoryOnlineBookContext: ReaderContext | null = null
+
+export function setOnlineBookReaderContext(ctx: ReaderContext | null): void {
+  inMemoryOnlineBookContext = ctx ? { ...ctx } : null
+}
+
+export function getOnlineBookReaderContext(): ReaderContext | null {
+  return inMemoryOnlineBookContext ? { ...inMemoryOnlineBookContext } : null
 }
 
 export interface LoadedOnlineChapter {

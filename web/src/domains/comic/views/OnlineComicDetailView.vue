@@ -24,7 +24,6 @@ import {
 import ComicChapterRow from '@/domains/comic/components/ComicChapterRow.vue'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
-  ONLINE_COMIC_READER_CTX_KEY,
   onlineComicApi,
   resolveOnlineComicCoverUrl,
   type ComicReadingDirection,
@@ -34,7 +33,11 @@ import {
   type OnlineComicReaderContextStorage,
 } from '@/domains/comic/onlineApi'
 import { useSidebarStore } from '@/domains/comic/store'
-import { readOnlineComicContext, saveOnlineComicContext } from '@/domains/comic/utils/mappers'
+import {
+  readOnlineComicContext,
+  saveOnlineComicContext,
+  saveOnlineComicReaderContext,
+} from '@/domains/comic/utils/mappers'
 import {
   itemRoute,
   libraryRoute,
@@ -76,14 +79,9 @@ function isAbortError(err: unknown): boolean {
     : err instanceof Error && err.name === 'AbortError'
 }
 
-function readQueryParam(keys: readonly string[]): string {
-  for (const k of keys) {
-    const val = route.query[k]
-    if (typeof val === 'string' && val.trim()) {
-      return val.trim()
-    }
-  }
-  return ''
+function readQueryParam(key: string): string {
+  const val = route.query[key]
+  return typeof val === 'string' && val.trim() ? val.trim() : ''
 }
 
 function hydrateParams(): { sourceId: string; comicUrl: string } {
@@ -92,8 +90,8 @@ function hydrateParams(): { sourceId: string; comicUrl: string } {
   const parsedComicUrl = parsed && parsed.scope !== 'local' ? parsed.ref : ''
   const parsedHints = parsed && parsed.scope !== 'local' ? parsed.hints : undefined
 
-  const qSourceName = readQueryParam(['sourceName', 'source_name'])
-  const qTocUrl = parsedHints?.extra?.toc || readQueryParam(['toc', 'tocUrl', 'toc_url'])
+  const qSourceName = readQueryParam('sourceName')
+  const qTocUrl = parsedHints?.extra?.toc || readQueryParam('toc')
 
   const stored = readOnlineComicContext()
   const matchesStored = Boolean(
@@ -300,14 +298,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [
-    route.query.source,
-    route.query.sourceId,
-    route.query.source_id,
-    route.query.ref,
-    route.query.comicUrl,
-    route.query.comic_url,
-  ],
+  () => [route.query.source, route.query.ref],
   () => {
     void loadDetail()
   },
@@ -346,11 +337,7 @@ function openChapter(ch: OnlineComicChapter, initialPage = 1): void {
     chapterTitle: ch.title,
     chapters: chapters.value,
   }
-  try {
-    sessionStorage.setItem(ONLINE_COMIC_READER_CTX_KEY, JSON.stringify(readerCtx))
-  } catch {
-    // ignore storage errors
-  }
+  saveOnlineComicReaderContext(readerCtx)
 
   const refObj: TrackedItemRef = {
     scope: 'online',

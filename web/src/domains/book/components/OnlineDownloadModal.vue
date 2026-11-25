@@ -23,7 +23,7 @@ import {
   formatDownloadSpeed,
   isOnlineDownloadJobActive,
   useOnlineDownloadsStore,
-} from '@/stores/onlineDownloads'
+} from '@/domains/book/onlineDownloads'
 import {
   buildOnlineDownloadFileUrl,
   onlineBookApi,

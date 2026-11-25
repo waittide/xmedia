@@ -24,6 +24,9 @@ const errorMsg = ref('')
 const formTitle = ref('')
 const formAuthors = ref('')
 const formTags = ref('')
+const formSeries = ref('')
+const formSeriesIndex = ref('')
+const formRating = ref('')
 const formIsbn = ref('')
 const formLanguage = ref('')
 const formPublisher = ref('')
@@ -39,6 +42,10 @@ watch(
     formTitle.value = m.title
     formAuthors.value = m.authors.join(', ')
     formTags.value = m.tags.join(', ')
+    formSeries.value = m.series ?? ''
+    formSeriesIndex.value =
+      m.series_index !== null && m.series_index !== undefined ? String(m.series_index) : ''
+    formRating.value = m.rating !== null && m.rating !== undefined ? String(m.rating) : ''
     formIsbn.value = m.isbn ?? ''
     formLanguage.value = m.language ?? ''
     formPublisher.value = m.publisher ?? ''
@@ -47,6 +54,13 @@ watch(
   },
   { immediate: true },
 )
+
+function parseOptionalNumber(val: string): number | null {
+  const trimmed = val.trim()
+  if (!trimmed) return null
+  const num = Number(trimmed)
+  return Number.isFinite(num) ? num : null
+}
 
 function splitCsv(val: string): string[] {
   return val
@@ -64,6 +78,9 @@ async function handleSave(): Promise<void> {
       title: formTitle.value.trim(),
       authors: splitCsv(formAuthors.value),
       tags: splitCsv(formTags.value),
+      series: formSeries.value.trim() || null,
+      series_index: parseOptionalNumber(formSeriesIndex.value),
+      rating: parseOptionalNumber(formRating.value),
       isbn: formIsbn.value,
       language: formLanguage.value,
       publisher: formPublisher.value,
@@ -105,6 +122,27 @@ async function handleSave(): Promise<void> {
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <MdTextField v-model="formAuthors" :label="t('detail.authors')" />
         <MdTextField v-model="formTags" :label="t('detail.tags')" />
+      </div>
+
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <MdTextField v-model="formSeries" size="sm" :label="t('detail.series')" />
+        <MdTextField
+          v-model="formSeriesIndex"
+          type="number"
+          step="any"
+          min="0"
+          size="sm"
+          :label="t('detail.seriesIndex')"
+        />
+        <MdTextField
+          v-model="formRating"
+          type="number"
+          step="0.1"
+          min="0"
+          max="10"
+          size="sm"
+          :label="t('detail.rating')"
+        />
       </div>
 
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">

@@ -6,8 +6,14 @@ import OnlineMediaSearchShell from '@/components/online-sources/OnlineMediaSearc
 import { useOnlineSearchBrowse } from '@/components/online-sources/useOnlineSearchBrowse'
 import { MdMenuItem } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
-import { itemRoute, playRoute, type MediaItemVM, type TrackedItemRef } from '@/sources'
-import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
+import { useOnlineDownloadsStore } from '@/domains/book/onlineDownloads'
+import {
+  itemRoute,
+  playRoute,
+  type MediaItemVM,
+  type OnlineItemSnapshot,
+  type TrackedItemRef,
+} from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
   buildOnlineCoverUrl,
@@ -18,6 +24,7 @@ import {
 } from '../onlineApi'
 import { useCatalogStore } from '../store'
 import OnlineDownloadModal, { type OnlineDownloadTarget } from './OnlineDownloadModal.vue'
+import { setOnlineBookReaderContext } from './online-reader/chapterMatch'
 
 const props = withDefaults(
   defineProps<{
@@ -94,7 +101,7 @@ const searchState = useOnlineSearchBrowse<AggregatedSearchItemDto, BookSourceSum
         author: item.book.author || undefined,
       },
     }),
-    toMediaItemVM: (item): MediaItemVM => {
+    toMediaItemVM: (item, state?: OnlineItemSnapshot | null): MediaItemVM => {
       const cover = item.book.cover_url ? buildOnlineCoverUrl(item.book.cover_url) || undefined : undefined
       const trackedId = resolveTrackedBookId(item.source_id, item.book.book_url)
       const ref: TrackedItemRef = {
@@ -112,6 +119,10 @@ const searchState = useOnlineSearchBrowse<AggregatedSearchItemDto, BookSourceSum
         item.book.author || t('catalog.unknownAuthor'),
         item.book.word_count || '',
       ].filter(Boolean)
+      const progressPercent =
+        state && state.progressRatio !== null && Number.isFinite(state.progressRatio)
+          ? Math.min(100, Math.max(0, Math.round(state.progressRatio * 100)))
+          : undefined
 
       return {
         ref,
@@ -119,11 +130,12 @@ const searchState = useOnlineSearchBrowse<AggregatedSearchItemDto, BookSourceSum
         subtitle: subtitleParts.join(' · '),
         cover,
         badge: {
-          source: item.source_name,
+          source: item.source_name || state?.sourceName || undefined,
           sourceKind: 'online',
+          progressPercent,
           status: trackedId ? t('online.trackedBadge') : item.book.last_chapter || undefined,
-          availability: 'ok',
-          blocked: false,
+          availability: state?.availability ?? 'ok',
+          blocked: state?.blocked ?? false,
         },
         to: trackedId
           ? itemRoute({ scope: 'local', domain: 'book', id: trackedId })
@@ -170,24 +182,17 @@ function handleOpenReader(vm: MediaItemVM): void {
   }
   const raw = findRawItem(vm)
   if (raw) {
-    try {
-      sessionStorage.setItem(
-        'xmedia_online_reader_ctx',
-        JSON.stringify({
-          sourceId: raw.source_id,
-          sourceName: raw.source_name,
-          name: raw.book.name,
-          author: raw.book.author,
-          bookUrl: raw.book.book_url,
-          tocUrl: '',
-          coverUrl: raw.book.cover_url,
-          intro: raw.book.intro,
-          currentChapterIndex: 0,
-        }),
-      )
-    } catch {
-      // ignore storage errors
-    }
+    setOnlineBookReaderContext({
+      sourceId: raw.source_id,
+      sourceName: raw.source_name,
+      name: raw.book.name,
+      author: raw.book.author,
+      bookUrl: raw.book.book_url,
+      tocUrl: '',
+      coverUrl: raw.book.cover_url,
+      intro: raw.book.intro,
+      currentChapterIndex: 0,
+    })
   }
   void router.push(playRoute(vm.ref))
 }
@@ -327,7 +332,7 @@ defineExpose({
       item-aspect="poster"
       item-cover-style="book"
       :item-states="searchState.itemStates"
-      :show-favorite-on-cards="false"
+      :show-favorite-on-cards="true"
       :has-more="searchState.activeHasMore.value"
       :loading-more="searchState.activeLoadingMore.value"
       :idle-hint="t('online.idleHint')"

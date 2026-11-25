@@ -1,9 +1,9 @@
 import { withAuthUrl } from '@/domains/comic/api'
 import {
-  ONLINE_COMIC_CTX_KEY,
   resolveOnlineComicCoverUrl,
   type ComicSearchResultItem,
   type OnlineComicContextStorage,
+  type OnlineComicReaderContextStorage,
 } from '@/domains/comic/onlineApi'
 import type { SeriesSummaryDto } from '@/domains/comic/types'
 import {
@@ -105,22 +105,21 @@ export function onlineSearchItemToMediaItemVM(
   }
 }
 
+let inMemoryOnlineComicDetailCtx: OnlineComicContextStorage | null = null
+let inMemoryOnlineComicReaderCtx: OnlineComicReaderContextStorage | null = null
+
 export function saveOnlineComicContext(payload: OnlineComicContextStorage): void {
-  try {
-    sessionStorage.setItem(ONLINE_COMIC_CTX_KEY, JSON.stringify(payload))
-  } catch {
-    // ignore storage quota errors
-  }
+  inMemoryOnlineComicDetailCtx = { ...payload }
 }
 
 export function readOnlineComicContext(): OnlineComicContextStorage | null {
-  try {
-    const raw = sessionStorage.getItem(ONLINE_COMIC_CTX_KEY)
-    if (!raw) return null
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as OnlineComicContextStorage
-  } catch {
-    return null
-  }
+  return inMemoryOnlineComicDetailCtx ? { ...inMemoryOnlineComicDetailCtx } : null
+}
+
+export function saveOnlineComicReaderContext(payload: OnlineComicReaderContextStorage): void {
+  inMemoryOnlineComicReaderCtx = { ...payload }
+}
+
+export function readOnlineComicReaderContext(): OnlineComicReaderContextStorage | null {
+  return inMemoryOnlineComicReaderCtx ? { ...inMemoryOnlineComicReaderCtx } : null
 }

@@ -4,13 +4,14 @@ import type {
   RouteLocationRaw,
 } from 'vue-router'
 import { parseItemRef, type ItemHints, type TrackedItemRef } from '@/sources'
-import {
-  ONLINE_VIDEO_CTX_KEY,
-  ONLINE_VIDEO_PLAYER_CTX_KEY,
-  type OnlineVideoContextStorage,
-  type OnlineVideoPlayGroup,
-  type OnlineVideoPlayerContextStorage,
+import type {
+  OnlineVideoContextStorage,
+  OnlineVideoPlayGroup,
+  OnlineVideoPlayerContextStorage,
 } from '../onlineApi'
+
+let inMemoryDetailContext: OnlineVideoContextStorage | null = null
+let inMemoryPlayerContext: OnlineVideoPlayerContextStorage | null = null
 
 export function readQueryString(query: LocationQuery, keys: readonly string[]): string {
   for (const key of keys) {
@@ -31,43 +32,19 @@ export function looksLikeUrlOrPath(val: string): boolean {
 }
 
 export function readStoredDetailContext(): OnlineVideoContextStorage | null {
-  try {
-    const raw = sessionStorage.getItem(ONLINE_VIDEO_CTX_KEY)
-    if (!raw) return null
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as OnlineVideoContextStorage
-  } catch {
-    return null
-  }
+  return inMemoryDetailContext ? { ...inMemoryDetailContext } : null
 }
 
 export function writeStoredDetailContext(ctx: OnlineVideoContextStorage): void {
-  try {
-    sessionStorage.setItem(ONLINE_VIDEO_CTX_KEY, JSON.stringify(ctx))
-  } catch {
-    // ignore storage quota / privacy mode errors
-  }
+  inMemoryDetailContext = { ...ctx }
 }
 
 export function readStoredPlayerContext(): OnlineVideoPlayerContextStorage | null {
-  try {
-    const raw = sessionStorage.getItem(ONLINE_VIDEO_PLAYER_CTX_KEY)
-    if (!raw) return null
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as OnlineVideoPlayerContextStorage
-  } catch {
-    return null
-  }
+  return inMemoryPlayerContext ? { ...inMemoryPlayerContext } : null
 }
 
 export function writeStoredPlayerContext(ctx: OnlineVideoPlayerContextStorage): void {
-  try {
-    sessionStorage.setItem(ONLINE_VIDEO_PLAYER_CTX_KEY, JSON.stringify(ctx))
-  } catch {
-    // ignore storage quota / privacy mode errors
-  }
+  inMemoryPlayerContext = { ...ctx }
 }
 
 export function resolveOnlineVideoItemKey(params: {

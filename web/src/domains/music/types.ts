@@ -2,7 +2,18 @@ import type { PlayMode, TranscodeProfile } from '@/types/api'
 
 export type { PlayMode, TranscodeProfile }
 
-export type AudioFormat = 'flac' | 'mp3' | 'm4a' | 'alac' | 'ogg' | 'opus' | 'wav'
+export type AudioFormat =
+  | 'flac'
+  | 'mp3'
+  | 'm4a'
+  | 'aac'
+  | 'alac'
+  | 'aiff'
+  | 'ape'
+  | 'wv'
+  | 'ogg'
+  | 'opus'
+  | 'wav'
 export type SortOrder = 'asc' | 'desc'
 export type TrackSortField =
   | 'title'

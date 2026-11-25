@@ -10,7 +10,6 @@ import ComicReaderShell, {
 } from '@/domains/comic/components/ComicReaderShell.vue'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
-  ONLINE_COMIC_READER_CTX_KEY,
   onlineComicApi,
   resolveOnlineComicCoverUrl,
   type ComicReadingDirection,
@@ -20,6 +19,10 @@ import {
 } from '@/domains/comic/onlineApi'
 import { useSidebarStore } from '@/domains/comic/store'
 import type { ReaderFitMode, ReaderMode } from '@/domains/comic/types'
+import {
+  readOnlineComicReaderContext,
+  saveOnlineComicReaderContext,
+} from '@/domains/comic/utils/mappers'
 import {
   itemRoute,
   libraryRoute,
@@ -76,35 +79,13 @@ function isAbortError(err: unknown): boolean {
     : err instanceof Error && err.name === 'AbortError'
 }
 
-function readQueryParam(keys: readonly string[]): string {
-  for (const k of keys) {
-    const val = route.query[k]
-    if (typeof val === 'string' && val.trim()) {
-      return val.trim()
-    }
-  }
-  return ''
+function readQueryParam(key: string): string {
+  const val = route.query[key]
+  return typeof val === 'string' && val.trim() ? val.trim() : ''
 }
 
-function readStoredReaderCtx(): OnlineComicReaderContextStorage | null {
-  try {
-    const raw = sessionStorage.getItem(ONLINE_COMIC_READER_CTX_KEY)
-    if (!raw) return null
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as OnlineComicReaderContextStorage
-  } catch {
-    return null
-  }
-}
-
-function saveReaderCtxToStorage(next: OnlineComicReaderContextStorage): void {
-  try {
-    sessionStorage.setItem(ONLINE_COMIC_READER_CTX_KEY, JSON.stringify(next))
-  } catch {
-    // ignore storage errors
-  }
-}
+const readStoredReaderCtx = readOnlineComicReaderContext
+const saveReaderCtxToStorage = saveOnlineComicReaderContext
 
 function mapDirectionToReaderMode(dir: ComicReadingDirection | null | undefined): ReaderMode {
   if (dir === 'webtoon' && preferences.comic.default_reader_mode === 'rtl_double') {
@@ -124,7 +105,7 @@ function hydratePreferencesFromTheme(dir?: ComicReadingDirection | null): void {
 }
 
 function parseExplicitPageQuery(): number | null {
-  const raw = readQueryParam(['page'])
+  const raw = readQueryParam('page')
   if (!raw) return null
   const num = Number.parseInt(raw, 10)
   return Number.isFinite(num) && num >= 1 ? num : null
@@ -135,19 +116,18 @@ function hydrateContextFromRoute(): OnlineComicReaderContextStorage | null {
   const parsedSourceId = parsed && parsed.scope !== 'local' ? parsed.sourceId : ''
   const parsedHints = parsed && parsed.scope !== 'local' ? parsed.hints : undefined
 
-  const qSourceId = parsedSourceId || readQueryParam(['source', 'sourceId', 'source_id'])
-  const qChapterUrl =
-    parsedHints?.extra?.chapter || readQueryParam(['chapter', 'chapterUrl', 'chapter_url'])
-  const rawRef = readQueryParam(['ref', 'comicUrl', 'comic_url'])
-  // parseItemRef may fall back to chapterUrl when only chapter_url is provided (deep-link test)
-  const qComicUrl = rawRef || (parsed && parsed.scope !== 'local' && parsed.ref !== qChapterUrl ? parsed.ref : '')
-  const qTocUrl = parsedHints?.extra?.toc || readQueryParam(['toc', 'tocUrl', 'toc_url'])
-  const qChapterIdxRaw = readQueryParam(['chapterIndex', 'chapter_index'])
-  const qTitle = parsedHints?.title || readQueryParam(['title', 'name'])
-  const qSourceName = readQueryParam(['sourceName', 'source_name'])
-  const qAuthor = parsedHints?.author || readQueryParam(['author'])
-  const qCoverUrl = parsedHints?.cover || readQueryParam(['cover', 'coverUrl', 'cover_url'])
-  const qDirRaw = readQueryParam(['readingDirection', 'reading_direction'])
+  const qSourceId = parsedSourceId || readQueryParam('source')
+  const qChapterUrl = parsedHints?.extra?.chapter || readQueryParam('chapter')
+  const rawRef = readQueryParam('ref')
+  const qComicUrl =
+    rawRef || (parsed && parsed.scope !== 'local' && parsed.ref !== qChapterUrl ? parsed.ref : '')
+  const qTocUrl = parsedHints?.extra?.toc || readQueryParam('toc')
+  const qChapterIdxRaw = readQueryParam('chapterIndex')
+  const qTitle = parsedHints?.title || readQueryParam('title')
+  const qSourceName = readQueryParam('sourceName')
+  const qAuthor = parsedHints?.author || readQueryParam('author')
+  const qCoverUrl = parsedHints?.cover || readQueryParam('cover')
+  const qDirRaw = readQueryParam('readingDirection')
   const qDir: ComicReadingDirection | null =
     qDirRaw === 'rtl' || qDirRaw === 'ltr' || qDirRaw === 'webtoon' ? qDirRaw : null
 
@@ -719,17 +699,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [
-    route.query.source,
-    route.query.sourceId,
-    route.query.source_id,
-    route.query.ref,
-    route.query.comicUrl,
-    route.query.comic_url,
-    route.query.chapter,
-    route.query.chapterUrl,
-    route.query.chapter_url,
-  ],
+  () => [route.query.source, route.query.ref, route.query.chapter],
   () => {
     if (syncingUrl) return
     userOverrodeMode = false

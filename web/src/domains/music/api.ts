@@ -63,15 +63,25 @@ export function buildCoverUrl(idOrKey: string | null | undefined, size = 300): s
   return withAuthToken(`/api/v1/music/covers/${encodeURIComponent(idOrKey)}?size=${size}`)
 }
 
-let cachedAlacSupport: boolean | null = null
+const NATIVE_PROBE_MIMES: Partial<Record<AudioFormat, readonly string[]>> = {
+  alac: ['audio/mp4; codecs="alac"'],
+  aiff: ['audio/aiff', 'audio/x-aiff'],
+  ape: ['audio/x-ape', 'audio/ape'],
+  wv: ['audio/x-wavpack', 'audio/wavpack'],
+}
+
+const nativeFormatSupportCache = new Map<AudioFormat, boolean>()
 
 export function canPlayFormatNatively(format: AudioFormat): boolean {
-  if (format !== 'alac') return true
-  if (cachedAlacSupport === null) {
-    const probe = document.createElement('audio')
-    cachedAlacSupport = probe.canPlayType('audio/mp4; codecs="alac"') !== ''
-  }
-  return cachedAlacSupport
+  const mimes = NATIVE_PROBE_MIMES[format]
+  if (!mimes) return true
+  const cached = nativeFormatSupportCache.get(format)
+  if (cached !== undefined) return cached
+  if (typeof document === 'undefined') return false
+  const probe = document.createElement('audio')
+  const supported = mimes.some((mime) => probe.canPlayType(mime) !== '')
+  nativeFormatSupportCache.set(format, supported)
+  return supported
 }
 
 export function buildStreamUrl(

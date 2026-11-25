@@ -34,6 +34,7 @@ import OnlineDownloadModal, {
 import TocTree from '@/domains/book/components/TocTree.vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onlineApi'
+import { useOnlineDownloadsStore } from '@/domains/book/onlineDownloads'
 import { useCatalogStore } from '@/domains/book/store'
 import type { Bookmark, BookSummaryDto, TocItem } from '@/domains/book/types'
 import {
@@ -44,7 +45,6 @@ import {
 import { libraryRoute, playRoute } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
-import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import { formatBytes } from '@/utils/format'
@@ -162,6 +162,16 @@ const detailSpecs = computed<MediaDetailSpec[]>(() => {
   }
   if (formattedLanguage.value) {
     items.push({ label: t('detail.language'), value: formattedLanguage.value })
+  }
+  if (b.metadata.series) {
+    const idxSuffix =
+      b.metadata.series_index !== null && b.metadata.series_index !== undefined
+        ? ` #${b.metadata.series_index}`
+        : ''
+    items.push({ label: t('detail.series'), value: `${b.metadata.series}${idxSuffix}` })
+  }
+  if (b.metadata.rating !== null && b.metadata.rating !== undefined) {
+    items.push({ label: t('detail.rating'), value: `★ ${b.metadata.rating.toFixed(1)}` })
   }
   if (b.metadata.publisher) {
     items.push({ label: t('detail.publisher'), value: b.metadata.publisher })
@@ -674,6 +684,21 @@ function openBookmarkInReader(bm: Bookmark): void {
 
           <p class="text-label-medium flex flex-wrap items-center gap-x-2 gap-y-0.5 text-on-surface-variant">
             <span class="font-mono uppercase">{{ book.format }}</span>
+            <template v-if="book.metadata.series">
+              <span>·</span>
+              <span>
+                {{ book.metadata.series
+                }}<template
+                  v-if="book.metadata.series_index !== null && book.metadata.series_index !== undefined"
+                >
+                  #{{ book.metadata.series_index }}
+                </template>
+              </span>
+            </template>
+            <template v-if="book.metadata.rating !== null && book.metadata.rating !== undefined">
+              <span>·</span>
+              <span>★ {{ book.metadata.rating.toFixed(1) }}</span>
+            </template>
             <template v-if="book.online_tracking">
               <span>·</span>
               <span>

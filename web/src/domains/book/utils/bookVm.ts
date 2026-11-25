@@ -1,7 +1,14 @@
 import { api } from '@/domains/book/api'
-import { buildOnlineCoverUrl, type OnlineShelfBookDto } from '@/domains/book/onlineApi'
-import { itemRoute, playRoute, type MediaItemVM, type TrackedItemRef } from '@/sources'
+import { buildOnlineCoverUrl } from '@/domains/book/onlineApi'
 import type { BookSummaryDto, ReadingLocation } from '@/domains/book/types'
+import {
+  isAvailabilityBlocked,
+  itemRoute,
+  playRoute,
+  type MediaItemVM,
+  type OnlineItem,
+  type TrackedItemRef,
+} from '@/sources'
 
 export function hasBookProgress(progress: ReadingLocation | null | undefined): boolean {
   if (!progress) return false
@@ -70,53 +77,49 @@ export function bookSummaryToVM(
   }
 }
 
-export function onlineShelfBookToVM(
-  book: OnlineShelfBookDto,
-  unknownAuthor?: string,
-): MediaItemVM {
-  const cover = book.cover_url ? buildOnlineCoverUrl(book.cover_url) || undefined : undefined
+export function onlineBookItemToVM(item: OnlineItem, unknownAuthor?: string): MediaItemVM {
+  const cover = item.cover_url ? buildOnlineCoverUrl(item.cover_url) || undefined : undefined
+  const tocUrl = typeof item.extra?.toc_url === 'string' ? item.extra.toc_url : ''
+  const unitIndex = item.progress?.unit_index ?? 0
   const ref: TrackedItemRef = {
-    scope: 'online',
+    scope: item.source_kind,
     domain: 'book',
-    sourceId: book.source_id,
-    ref: book.book_url,
+    sourceId: item.source_id,
+    ref: item.item_key,
     hints: {
-      title: book.name,
+      title: item.title,
       cover,
-      author: book.author || undefined,
+      author: item.subtitle || undefined,
       extra: {
-        toc: book.toc_url,
-        chapter: String(book.current_chapter_index || 0),
+        ...(tocUrl ? { toc: tocUrl } : {}),
+        chapter: String(unitIndex),
       },
     },
   }
   const progressPercent =
-    book.total_chapters > 0
-      ? Math.min(
-          100,
-          Math.max(
-            0,
-            Math.round(((book.current_chapter_index + book.scroll_ratio) / book.total_chapters) * 100),
-          ),
-        )
+    item.progress_ratio !== null && Number.isFinite(item.progress_ratio)
+      ? Math.min(100, Math.max(0, Math.round(item.progress_ratio * 100)))
       : undefined
+  const blocked = isAvailabilityBlocked(item.availability)
 
   return {
     ref,
-    title: book.name,
-    subtitle: book.current_chapter_title || book.author || unknownAuthor || undefined,
+    title: item.title,
+    subtitle: item.progress?.unit_title || item.subtitle || unknownAuthor || undefined,
     cover,
     badge: {
-      source: book.source_name || undefined,
-      sourceKind: 'online',
+      source: item.source_name || undefined,
+      sourceKind: item.source_kind,
       progressPercent,
-      availability: 'ok',
-      blocked: false,
+      availability: item.availability,
+      blocked,
     },
     to: itemRoute(ref),
-    playTo: playRoute(ref, {
-      unitIndex: book.current_chapter_index,
-      position: book.scroll_ratio,
-    }),
+    playTo: blocked
+      ? undefined
+      : playRoute(ref, {
+          unitIndex,
+          position: item.progress?.position ?? 0,
+        }),
   }
 }

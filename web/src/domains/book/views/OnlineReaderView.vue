@@ -4,6 +4,7 @@ import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuBookMarked,
   LuDownload,
+  LuHeart,
   LuList,
   LuMoreVertical,
   LuRefreshCw,
@@ -39,6 +40,9 @@ const {
   appendError,
   errorMsg,
   savingShelf,
+  favorite,
+  togglingFavorite,
+  toggleFavorite,
   activeOverlay,
   tocQuery,
   switchingKey,
@@ -144,6 +148,19 @@ function handleRetryPrimary(): void {
       >
         {{ globalT('pool.bindBtn') }}
       </MdButton>
+
+      <MdIconButton
+        v-if="readerCtx"
+        size="sm"
+        :variant="favorite ? 'tonal' : 'standard'"
+        :selected="favorite"
+        :disabled="togglingFavorite"
+        :aria-label="favorite ? t('detail.favoriteRemove') : t('detail.favoriteAdd')"
+        :tooltip="favorite ? t('detail.favoriteRemove') : t('detail.favoriteAdd')"
+        @click="toggleFavorite"
+      >
+        <LuHeart class="h-4 w-4" :class="favorite ? 'fill-current' : ''" aria-hidden="true" />
+      </MdIconButton>
 
       <MdIconButton
         size="sm"

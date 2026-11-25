@@ -35,7 +35,13 @@ import TocTree from '@/domains/book/components/TocTree.vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onlineApi'
 import type { PdfFitMode, PdfReaderState } from '@/domains/book/readers/PdfReader.vue'
-import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
+import {
+  isTextChapterBookFormat,
+  type Bookmark,
+  type BookSummaryDto,
+  type ReadingLocation,
+  type TocItem,
+} from '@/domains/book/types'
 import { formatProgressPercentValue } from '@/domains/book/utils/bookVm'
 import { sendKeepalivePutJson } from '@/domains/shared/keepalive'
 import { itemRoute, libraryRoute } from '@/sources'
@@ -359,7 +365,7 @@ async function jumpToTarget(hrefOrLocator: string, scrollRatio = 0): Promise<voi
     await trackedRef.value?.navigateTo(hrefOrLocator, scrollRatio)
   } else if (book.value?.format === 'epub') {
     await epubRef.value?.navigateTo(hrefOrLocator)
-  } else if (book.value?.format === 'txt') {
+  } else if (book.value && isTextChapterBookFormat(book.value.format)) {
     await txtRef.value?.navigateTo(hrefOrLocator, scrollRatio)
   } else if (book.value?.format === 'pdf') {
     await pdfRef.value?.navigateTo(hrefOrLocator)
@@ -575,7 +581,7 @@ onBeforeUnmount(() => {
         @toggle-hud="immersiveRef?.toggleHud()"
       />
       <TxtReader
-        v-else-if="book.format === 'txt'"
+        v-else-if="isTextChapterBookFormat(book.format)"
         :key="`txt-${bookId}`"
         ref="txtRef"
         :book-id="bookId"

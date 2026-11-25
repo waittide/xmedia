@@ -6,7 +6,14 @@ import {
   useContinuousChapterReader,
   type ContinuousChapterSection,
 } from '@/domains/book/readers/useContinuousChapterReader'
-import { libraryRoute, parseItemRef, playRoute } from '@/sources'
+import {
+  libraryRoute,
+  parseItemRef,
+  playRoute,
+  useOnlineItemState,
+  type OnlineItemMetadataInput,
+  type TrackedItemRef,
+} from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { api as bookApi } from '../../api'
 import { useCatalogStore } from '../../store'
@@ -18,8 +25,10 @@ import {
 } from '../../onlineApi'
 import {
   buildBookJsCtxFrom,
+  getOnlineBookReaderContext,
   matchChapterIndexByTitle,
   resolveChapterPos,
+  setOnlineBookReaderContext,
   type ReaderContext,
 } from './chapterMatch'
 
@@ -71,12 +80,43 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     }
   }
 
-  function readQueryStr(keys: readonly string[]): string {
-    for (const key of keys) {
-      const val = route.query[key]
-      if (typeof val === 'string' && val.trim()) return val.trim()
+  const trackedRef = computed<TrackedItemRef | null>(() => {
+    const ctx = readerCtx.value
+    if (!ctx?.sourceId || !ctx.bookUrl) return null
+    return {
+      scope: 'online',
+      domain: 'book',
+      sourceId: ctx.sourceId,
+      ref: ctx.bookUrl,
+      hints: {
+        title: ctx.name || undefined,
+        author: ctx.author || undefined,
+        cover: ctx.coverUrl ?? undefined,
+        extra: ctx.tocUrl ? { toc: ctx.tocUrl } : undefined,
+      },
     }
-    return ''
+  })
+
+  const onlineItemMeta = computed<OnlineItemMetadataInput | null>(() => {
+    const ctx = readerCtx.value
+    if (!ctx) return null
+    return {
+      title: ctx.name || ctx.bookUrl,
+      subtitle: ctx.author || null,
+      coverUrl: ctx.coverUrl ?? null,
+      intro: ctx.intro ?? null,
+      extra: {
+        toc_url: ctx.tocUrl,
+        last_chapter: chapters.value[chapters.value.length - 1]?.title ?? null,
+      },
+    }
+  })
+
+  const onlineItemState = useOnlineItemState(trackedRef, onlineItemMeta)
+
+  function readQueryStr(key: string): string {
+    const val = route.query[key]
+    return typeof val === 'string' && val.trim() ? val.trim() : ''
   }
 
   function buildCanonicalRouteQuery(ctx: ReaderContext): Record<string, string> {
@@ -90,16 +130,11 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     if (ctx.author) q.author = ctx.author
     if (ctx.coverUrl) q.cover = ctx.coverUrl
     if (ctx.sourceName) q.sourceName = ctx.sourceName
-    if (ctx.shelfId) q.shelfId = ctx.shelfId
     return q
   }
 
-  function syncContextToUrlAndStorage(ctx: ReaderContext): void {
-    try {
-      sessionStorage.setItem('xmedia_online_reader_ctx', JSON.stringify(ctx))
-    } catch {
-      // ignore storage errors
-    }
+  function syncContextToUrlAndMemory(ctx: ReaderContext): void {
+    setOnlineBookReaderContext(ctx)
     const nextQuery = buildCanonicalRouteQuery(ctx)
     const same =
       route.path === '/book/play/online' &&
@@ -110,18 +145,34 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     }
   }
 
-  function persistReadingProgress(pos: number, _title: string, immediate = false): void {
+  function persistReadingProgress(
+    pos: number,
+    title: string,
+    scrollRatio: number,
+    immediate = false,
+  ): void {
     const ctx = readerCtx.value
     if (!ctx || unmounted) return
+    if (onlineItemState.record.value) {
+      onlineItemState.saveProgress(
+        {
+          unitIndex: pos,
+          unitTitle: title || undefined,
+          position: scrollRatio,
+          duration: 1,
+          totalUnits: chapters.value.length > 0 ? chapters.value.length : undefined,
+        },
+        { immediate },
+      )
+    }
     if (pos === lastPersistedPos && !immediate) return
 
-    // Ephemeral trial preview: keep position only in URL & sessionStorage until explicitly added to library.
     const commit = () => {
       const curCtx = readerCtx.value
       if (!curCtx || unmounted) return
       lastPersistedPos = pos
       curCtx.currentChapterIndex = pos
-      syncContextToUrlAndStorage(curCtx)
+      syncContextToUrlAndMemory(curCtx)
     }
 
     clearProgressSyncTimer()
@@ -189,8 +240,8 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
         prefetchReadableChapter(findNextReadablePos(pos), readerCtx.value.sourceId)
       }
     },
-    onProgress: ({ pos, chapter, immediate }) => {
-      persistReadingProgress(pos, chapter.title, immediate)
+    onProgress: ({ pos, chapter, scrollRatio, immediate }) => {
+      persistReadingProgress(pos, chapter.title, scrollRatio, immediate)
     },
     progressDebounceMs: 250,
   })
@@ -284,41 +335,18 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
 
   async function initReader(): Promise<void> {
     const parsedRef = parseItemRef(route, 'book')
-    const shelfIdQuery = readQueryStr(['shelfId', 'shelf_id'])
-    const sourceNameQuery = readQueryStr(['sourceName', 'source_name'])
-    const sourceIdQuery =
-      parsedRef && parsedRef.scope !== 'local'
-        ? parsedRef.sourceId
-        : readQueryStr(['source', 'sourceId', 'source_id'])
-    const bookUrlQuery =
-      parsedRef && parsedRef.scope !== 'local'
-        ? parsedRef.ref
-        : readQueryStr(['ref', 'bookUrl', 'book_url'])
-    const tocUrlQuery =
-      parsedRef && parsedRef.scope !== 'local'
-        ? (parsedRef.hints?.extra?.toc ?? readQueryStr(['toc', 'tocUrl', 'toc_url']))
-        : readQueryStr(['toc', 'tocUrl', 'toc_url'])
-    const nameQuery =
-      (parsedRef && parsedRef.scope !== 'local' ? parsedRef.hints?.title : '') ||
-      readQueryStr(['title', 'name'])
-    const authorQuery =
-      (parsedRef && parsedRef.scope !== 'local' ? parsedRef.hints?.author : '') ||
-      readQueryStr(['author'])
-    const coverUrlQuery =
-      (parsedRef && parsedRef.scope !== 'local' ? parsedRef.hints?.cover : '') ||
-      readQueryStr(['cover', 'coverUrl', 'cover_url'])
-    const chapterQuery = readQueryStr(['chapter'])
+    const parsedOnline = parsedRef && parsedRef.scope !== 'local' ? parsedRef : null
+    const sourceNameQuery = readQueryStr('sourceName')
+    const sourceIdQuery = parsedOnline?.sourceId || readQueryStr('source')
+    const bookUrlQuery = parsedOnline?.ref || readQueryStr('ref')
+    const tocUrlQuery = parsedOnline?.hints?.extra?.toc ?? readQueryStr('toc')
+    const nameQuery = parsedOnline?.hints?.title || readQueryStr('title')
+    const authorQuery = parsedOnline?.hints?.author || readQueryStr('author')
+    const coverUrlQuery = parsedOnline?.hints?.cover || readQueryStr('cover')
+    const chapterQuery = readQueryStr('chapter')
     const parsedChapter = chapterQuery ? Number.parseInt(chapterQuery, 10) : NaN
 
-    let storedCtx: ReaderContext | null = null
-    try {
-      const rawStored = sessionStorage.getItem('xmedia_online_reader_ctx')
-      if (rawStored) {
-        storedCtx = JSON.parse(rawStored) as ReaderContext
-      }
-    } catch {
-      storedCtx = null
-    }
+    const storedCtx = getOnlineBookReaderContext()
 
     if (sourceIdQuery && bookUrlQuery) {
       const matchesStored =
@@ -326,12 +354,12 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
         storedCtx.sourceId === sourceIdQuery &&
         storedCtx.bookUrl === bookUrlQuery
 
-      let resolvedTocUrl = tocUrlQuery || (matchesStored ? storedCtx!.tocUrl : '')
-      let resolvedName = nameQuery || (matchesStored ? storedCtx!.name : '')
-      let resolvedAuthor = authorQuery || (matchesStored ? storedCtx!.author : '')
-      let resolvedSourceName = sourceNameQuery || (matchesStored ? storedCtx!.sourceName : '')
-      let resolvedCoverUrl = coverUrlQuery || (matchesStored ? storedCtx!.coverUrl : null)
-      let resolvedIntro = matchesStored ? storedCtx!.intro : null
+      let resolvedTocUrl = tocUrlQuery || (matchesStored ? storedCtx.tocUrl : '')
+      let resolvedName = nameQuery || (matchesStored ? storedCtx.name : '')
+      let resolvedAuthor = authorQuery || (matchesStored ? storedCtx.author : '')
+      let resolvedSourceName = sourceNameQuery || (matchesStored ? storedCtx.sourceName : '')
+      let resolvedCoverUrl = coverUrlQuery || (matchesStored ? storedCtx.coverUrl : null)
+      let resolvedIntro = matchesStored ? storedCtx.intro : null
 
       if (!resolvedTocUrl) {
         try {
@@ -357,7 +385,6 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
 
       if (resolvedTocUrl) {
         readerCtx.value = {
-          shelfId: shelfIdQuery || (matchesStored ? storedCtx!.shelfId : undefined),
           sourceId: sourceIdQuery,
           sourceName: resolvedSourceName,
           name: resolvedName,
@@ -370,7 +397,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
             Number.isFinite(parsedChapter) && parsedChapter >= 0
               ? parsedChapter
               : matchesStored
-                ? storedCtx!.currentChapterIndex
+                ? storedCtx.currentChapterIndex
                 : 0,
         }
       }
@@ -386,7 +413,19 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       return
     }
 
-    syncContextToUrlAndStorage(readerCtx.value)
+    if (!Number.isFinite(parsedChapter)) {
+      const persisted = await onlineItemState.refresh()
+      if (
+        !unmounted &&
+        readerCtx.value &&
+        persisted?.progress?.unitIndex !== undefined &&
+        persisted.progress.unitIndex >= 0
+      ) {
+        readerCtx.value.currentChapterIndex = persisted.progress.unitIndex
+      }
+    }
+
+    syncContextToUrlAndMemory(readerCtx.value)
     await loadTocAndOpen(readerCtx.value.currentChapterIndex || 0)
   }
 
@@ -485,7 +524,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       nextCtx.currentChapterIndex = targetPos
       readerCtx.value = nextCtx
       chapters.value = tocRes.chapters
-      syncContextToUrlAndStorage(nextCtx)
+      syncContextToUrlAndMemory(nextCtx)
       activeOverlay.value = null
 
       await openChapter(targetPos, false)
@@ -546,6 +585,9 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     appendError: reader.appendError,
     errorMsg: computed(() => tocError.value || reader.errorMsg.value),
     savingShelf,
+    favorite: onlineItemState.favorite,
+    togglingFavorite: onlineItemState.loading,
+    toggleFavorite: onlineItemState.toggleFavorite,
     activeOverlay,
     tocQuery,
     switchingKey,

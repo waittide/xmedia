@@ -126,7 +126,7 @@ function onUploadFilesChange(ev: Event): void {
       ref="uploadInputRef"
       type="file"
       multiple
-      accept=".epub,.txt,.pdf"
+      accept=".epub,.txt,.pdf,.mobi,.azw3,.fb2"
       class="hidden"
       @change="onUploadFilesChange"
     />

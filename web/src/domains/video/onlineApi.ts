@@ -170,9 +170,6 @@ export interface VideoCacheReportDto {
   errors: string[]
 }
 
-export const ONLINE_VIDEO_CTX_KEY = 'xmedia_online_video_ctx'
-export const ONLINE_VIDEO_PLAYER_CTX_KEY = 'xmedia_online_video_player_ctx'
-
 export interface OnlineVideoContextStorage {
   sourceId: string
   sourceName?: string
