@@ -155,7 +155,7 @@ impl MusicOnlineService {
         if let Ok(rec) = self.load_source(source_id).await
             && let Ok(spec) = serde_json::from_str::<MusicSourceSpec>(&rec.raw_json)
         {
-            merged = spec.parse_media_headers();
+            merged = spec.parse_media_headers_for_target(target_url);
             if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
                 && spec.enabled_cookie_jar
                 && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)

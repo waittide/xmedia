@@ -184,6 +184,11 @@ pub async fn handle_video_hls_proxy(
         .catalog
         .require_video_bound(user.id, VideoId(uuid))
         .await?;
+    if video.source.is_cached() {
+        return Err(DomainError::Validation(
+            "cached video does not use online HLS proxy".into(),
+        ));
+    }
     let tracking = video
         .source
         .online_tracking_info()
@@ -208,6 +213,17 @@ pub async fn handle_video_hls_proxy(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| DomainError::Validation("missing url parameter".into()))?;
+    if !raw_url
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+        && !raw_url
+            .get(..8)
+            .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+    {
+        return Err(DomainError::Validation(
+            "only http/https HLS proxy URLs are supported".into(),
+        ));
+    }
     let range_header = headers.get(RANGE).and_then(|v| v.to_str().ok());
     let encoded_key = encode_query_component(api_key);
 

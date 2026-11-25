@@ -179,7 +179,7 @@ impl ComicOnlineService {
         parsed: &ComicSourceSpec,
         raw_url: &str,
     ) -> DomainResult<(Vec<u8>, String)> {
-        let mut headers = parsed.merged_image_headers();
+        let mut headers = parsed.merged_image_headers_for_target(raw_url);
         headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         let cfg = HttpClientConfig {
             timeout_secs: DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
@@ -608,20 +608,28 @@ impl ComicOnlineService {
         // Download all page images with bounded concurrency
         let sem = Arc::new(Semaphore::new(PAGE_DOWNLOAD_CONCURRENCY));
         let mut tasks = Vec::with_capacity(limited_urls.len());
-        let mut headers = parsed_spec.merged_image_headers();
-        headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
-        let headers = Arc::new(headers);
+        let mut base_headers = parsed_spec.merged_image_headers();
+        base_headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        let base_headers = Arc::new(base_headers);
+        let source_url_arc = Arc::new(parsed_spec.source_url.clone());
         let allow_private_ips = self.allow_private_ips;
 
         for (idx, img_url) in limited_urls.into_iter().enumerate() {
             let sem_c = Arc::clone(&sem);
-            let headers_c = Arc::clone(&headers);
+            let headers_c = Arc::clone(&base_headers);
+            let src_url_c = Arc::clone(&source_url_arc);
             tasks.push(tokio::spawn(async move {
                 let Ok(_permit) = sem_c.acquire_owned().await else {
                     return Err(DomainError::Storage(
                         "page download scheduler closed".into(),
                     ));
                 };
+                let mut page_headers = (*headers_c).clone();
+                crate::source::model::strip_cross_origin_sensitive_headers(
+                    &mut page_headers,
+                    &src_url_c,
+                    &img_url,
+                );
                 let cfg = HttpClientConfig {
                     timeout_secs: DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
                     allow_private_ips,
@@ -629,7 +637,7 @@ impl ComicOnlineService {
                 };
                 let (bytes, mime) = fetch_validated_image_bytes_with_config(
                     &img_url,
-                    Some(&headers_c),
+                    Some(&page_headers),
                     COMIC_IMAGE_PROXY_MAX_BYTES,
                     &cfg,
                 )

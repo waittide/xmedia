@@ -756,7 +756,7 @@ impl ComicOnlineService {
             let rec = self.load_source_for_actor(actor, sid).await?;
             let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
                 .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
-            let mut headers = parsed.merged_image_headers();
+            let mut headers = parsed.merged_image_headers_for_target(raw_url);
             // Never allow static source config to inject Range and truncate images.
             headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
             Some(headers)

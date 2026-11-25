@@ -87,6 +87,7 @@ impl VideoOnlineService {
         &self,
         actor: &User,
         source_id: Option<Uuid>,
+        target_url: &str,
     ) -> DomainResult<HashMap<String, String>> {
         let Some(sid) = source_id else {
             return Ok(HashMap::new());
@@ -94,7 +95,7 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, sid).await?;
         let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        let mut merged = spec.parse_media_header_map();
+        let mut merged = spec.parse_media_header_map_for_target(target_url);
         // Never allow static source config to override client Range requests or truncate playlists/streams.
         merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         Ok(merged)
@@ -112,7 +113,7 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, sid).await?;
         let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        let mut merged = spec.parse_media_header_map();
+        let mut merged = spec.parse_media_header_map_for_target(target_url);
         merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
             && spec.enabled_cookie_jar
@@ -683,7 +684,9 @@ impl VideoOnlineService {
         raw_url: &str,
         source_id: Option<Uuid>,
     ) -> DomainResult<(Vec<u8>, &'static str)> {
-        let headers = self.resolve_source_media_headers(actor, source_id).await?;
+        let headers = self
+            .resolve_source_media_headers(actor, source_id, raw_url)
+            .await?;
         fetch_validated_image_bytes_with_config(
             raw_url,
             (!headers.is_empty()).then_some(&headers),
@@ -778,7 +781,9 @@ impl VideoOnlineService {
         source_id: Option<Uuid>,
         range_header: Option<&str>,
     ) -> DomainResult<ProxyStreamOutcome> {
-        let source_headers = self.resolve_source_media_headers(actor, source_id).await?;
+        let source_headers = self
+            .resolve_source_media_headers(actor, source_id, raw_url)
+            .await?;
         self.open_stream_proxy_with_headers(raw_url, source_headers, range_header)
             .await
     }
@@ -810,7 +815,7 @@ impl VideoOnlineService {
         let Ok(spec) = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json) else {
             return HashMap::new();
         };
-        let mut merged = spec.parse_media_header_map();
+        let mut merged = spec.parse_media_header_map_for_target(target_url);
         merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
             && spec.enabled_cookie_jar
@@ -939,7 +944,9 @@ impl VideoOnlineService {
         range_header: Option<&str>,
         token: Option<&str>,
     ) -> DomainResult<HlsProxyOutcome> {
-        let source_headers = self.resolve_source_media_headers(actor, source_id).await?;
+        let source_headers = self
+            .resolve_source_media_headers(actor, source_id, raw_url)
+            .await?;
         self.open_hls_proxy_with_rewriter(raw_url, source_headers, range_header, |resolved| {
             build_hls_proxy_url(resolved, source_id, token)
         })
@@ -977,7 +984,7 @@ impl VideoOnlineService {
         let Ok(spec) = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json) else {
             return Ok(HashMap::new());
         };
-        let mut merged = spec.parse_media_header_map();
+        let mut merged = spec.parse_media_header_map_for_target(target_url);
         merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
             && spec.enabled_cookie_jar

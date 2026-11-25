@@ -190,7 +190,7 @@ impl MusicOnlineService {
         let Ok(spec) = serde_json::from_str::<MusicSourceSpec>(&rec.raw_json) else {
             return Ok(HashMap::new());
         };
-        let mut merged = spec.parse_media_headers();
+        let mut merged = spec.parse_media_headers_for_target(target_url);
         // Never allow static source config to override client Range requests.
         merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
 

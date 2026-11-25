@@ -300,6 +300,130 @@ fn remove_header_case_insensitive(map: &mut HashMap<String, String>, target: &st
     }
 }
 
+fn is_sensitive_static_header(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "authorization" | "cookie" | "x-api-key" | "proxy-authorization"
+    )
+}
+
+fn extract_http_host(raw_url: &str, allow_schemeless: bool) -> Option<String> {
+    let trimmed = raw_url.trim();
+    let after_scheme = if trimmed
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+    {
+        &trimmed[7..]
+    } else if trimmed
+        .get(..8)
+        .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+    {
+        &trimmed[8..]
+    } else if allow_schemeless && !trimmed.contains("://") && !trimmed.is_empty() {
+        trimmed
+    } else {
+        return None;
+    };
+    let authority = after_scheme
+        .split(['/', '?', '#', '\\'])
+        .next()
+        .unwrap_or("");
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, hp)| hp)
+        .unwrap_or(authority);
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        let (inside, after) = rest.split_once(']')?;
+        if !after.is_empty()
+            && !after
+                .strip_prefix(':')
+                .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        inside
+    } else {
+        host_port
+            .split_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(host_port)
+    };
+    let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn registrable_domain(host: &str) -> Option<&str> {
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|l| l.is_empty()) {
+        return None;
+    }
+    let n = labels.len();
+    let tld = labels[n - 1];
+    let sld = labels[n - 2];
+    let is_multipart_suffix = (tld.len() == 2
+        && matches!(
+            sld,
+            "com" | "co" | "net" | "org" | "gov" | "edu" | "ac" | "or" | "ne" | "go" | "idv"
+        ))
+        || matches!(
+            (sld, tld),
+            ("github", "io")
+                | ("pages", "dev")
+                | ("workers", "dev")
+                | ("r2", "dev")
+                | ("fly", "dev")
+                | ("vercel", "app")
+                | ("netlify", "app")
+                | ("onrender", "com")
+                | ("cloudfront", "net")
+        );
+    let keep = if is_multipart_suffix { 3 } else { 2 };
+    if labels.len() < keep {
+        return None;
+    }
+    let mut offset = 0usize;
+    for l in &labels[..labels.len() - keep] {
+        offset += l.len() + 1;
+    }
+    Some(&host[offset..])
+}
+
+pub fn has_origin_affinity(source_url: &str, target_url: &str) -> bool {
+    let Some(sh) = extract_http_host(source_url, true) else {
+        return false;
+    };
+    let Some(th) = extract_http_host(target_url, false) else {
+        return false;
+    };
+    if sh == th {
+        return true;
+    }
+    if sh.parse::<std::net::IpAddr>().is_ok() || th.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    matches!(
+        (registrable_domain(&sh), registrable_domain(&th)),
+        (Some(sr), Some(tr)) if sr == tr
+    )
+}
+
+pub fn strip_cross_origin_sensitive_headers(
+    headers: &mut HashMap<String, String>,
+    source_url: &str,
+    target_url: &str,
+) {
+    if !has_origin_affinity(source_url, target_url) {
+        headers.retain(|k, _| !is_sensitive_static_header(k));
+    }
+}
+
 impl ComicSourceSpec {
     /// Parses either a single JSON object or a JSON array of comic sources.
     pub fn parse_json_batch(raw: &str) -> Result<Vec<(Self, String)>, String> {
@@ -352,6 +476,14 @@ impl ComicSourceSpec {
             remove_header_case_insensitive(&mut out, "accept");
             out.insert("Accept".to_string(), DEFAULT_IMAGE_ACCEPT.to_string());
         }
+        out
+    }
+
+    /// Merges image headers and strips sensitive static credentials (`authorization`, `cookie`,
+    /// `x-api-key`, `proxy-authorization`) when `target_url` does not share host or eTLD+1 with `source_url`.
+    pub fn merged_image_headers_for_target(&self, target_url: &str) -> HashMap<String, String> {
+        let mut out = self.merged_image_headers();
+        strip_cross_origin_sensitive_headers(&mut out, &self.source_url, target_url);
         out
     }
 }
@@ -423,4 +555,57 @@ pub struct OnlineComicChapter {
     pub url: String,
     pub update_time: Option<String>,
     pub is_volume: bool,
+}
+
+#[cfg(test)]
+mod origin_affinity_tests {
+    use super::*;
+
+    #[test]
+    fn merged_image_headers_for_target_strips_sensitive_headers_on_cross_origin() {
+        let spec = ComicSourceSpec {
+            source_name: "AuthComic".into(),
+            source_url: "https://api.manga-site.co.uk".into(),
+            header: Some(
+                r#"{"Authorization":"Bearer secret-tok","Cookie":"sid=123","X-Api-Key":"k99","Referer":"https://manga-site.co.uk/"}"#
+                    .into(),
+            ),
+            ..Default::default()
+        };
+
+        // Same registrable domain (eTLD+1 `manga-site.co.uk`) retains credentials
+        let same_site =
+            spec.merged_image_headers_for_target("https://img.cdn.manga-site.co.uk/1.jpg");
+        assert_eq!(
+            same_site.get("Authorization").map(String::as_str),
+            Some("Bearer secret-tok")
+        );
+        assert_eq!(same_site.get("Cookie").map(String::as_str), Some("sid=123"));
+        assert_eq!(same_site.get("X-Api-Key").map(String::as_str), Some("k99"));
+
+        // Different registrable domain under `.co.uk` or unrelated domain strips credentials, keeps Referer
+        for cross_url in [
+            "https://evil-collector.co.uk/1.jpg",
+            "https://attacker.example.org/steal.png",
+            "http://192.0.2.10/1.jpg",
+        ] {
+            let filtered = spec.merged_image_headers_for_target(cross_url);
+            assert!(
+                !filtered
+                    .keys()
+                    .any(|k| k.eq_ignore_ascii_case("authorization"))
+            );
+            assert!(!filtered.keys().any(|k| k.eq_ignore_ascii_case("cookie")));
+            assert!(!filtered.keys().any(|k| k.eq_ignore_ascii_case("x-api-key")));
+            assert!(
+                !filtered
+                    .keys()
+                    .any(|k| k.eq_ignore_ascii_case("proxy-authorization"))
+            );
+            assert_eq!(
+                filtered.get("Referer").map(String::as_str),
+                Some("https://manga-site.co.uk/")
+            );
+        }
+    }
 }
