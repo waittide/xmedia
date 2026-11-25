@@ -461,6 +461,11 @@ export const usePlayerStore = defineStore('player', () => {
   const handleAudioPlay = (): void => {
     isPlaying.value = true
     playbackError.value = null
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('xmedia:claim-audio-focus', { detail: { source: 'music' } }),
+      )
+    }
   }
 
   const handleAudioPause = (): void => {
@@ -1497,13 +1502,28 @@ export const usePlayerStore = defineStore('player', () => {
     api.savePlayQueueKeepalive(payload)
   }
 
+  function handleClaimAudioFocus(event: Event): void {
+    if (
+      event instanceof CustomEvent &&
+      typeof event.detail === 'object' &&
+      event.detail !== null &&
+      'source' in event.detail &&
+      event.detail.source === 'music'
+    ) {
+      return
+    }
+    pause()
+  }
+
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', flushQueueOnPageHide)
+    window.addEventListener('xmedia:claim-audio-focus', handleClaimAudioFocus)
   }
 
   onScopeDispose(() => {
     if (typeof window !== 'undefined') {
       window.removeEventListener('pagehide', flushQueueOnPageHide)
+      window.removeEventListener('xmedia:claim-audio-focus', handleClaimAudioFocus)
     }
     if (queueSyncTimer) {
       clearTimeout(queueSyncTimer)

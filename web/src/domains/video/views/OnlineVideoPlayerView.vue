@@ -3,7 +3,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LuLibrary } from 'vue-icons-plus/lu'
 import { MdButton, type SelectOption } from '@/components/ui'
-import { usePlayerStore } from '@/domains/music/player'
 import { libraryRoute } from '@/sources'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -17,6 +16,7 @@ import {
   writeStoredPlayerContext,
 } from '../composables/useOnlineVideoContext'
 import {
+  claimVideoAudioFocus,
   clearVideoMediaSession,
   createVideoMediaController,
   loadStoredVideoMuted,
@@ -46,7 +46,6 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const preferencesStore = usePreferencesStore()
-const musicPlayerStore = usePlayerStore()
 const videoStore = useVideoStore()
 const snackbar = useSnackbarStore()
 const trackingToLibrary = ref(false)
@@ -364,7 +363,7 @@ function syncMediaSession(): void {
     onPlay: () => {
       const el = videoEl.value
       if (el && el.paused) {
-        musicPlayerStore.pause()
+        claimVideoAudioFocus()
         void el.play().catch(() => {
           isPlaying.value = false
         })
@@ -391,7 +390,7 @@ async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> 
   stopAndClearVideoElement()
   playResult.value = null
   selectedSubtitleIdx.value = 'off'
-  musicPlayerStore.pause()
+  claimVideoAudioFocus()
   isPlaying.value = false
   loadingStream.value = true
   isBuffering.value = false
@@ -580,7 +579,7 @@ function togglePlay(): void {
   const el = videoEl.value
   if (!el || loadError.value || !currentPlayUrl.value) return
   if (el.paused) {
-    musicPlayerStore.pause()
+    claimVideoAudioFocus()
     void el.play().catch(() => {
       isPlaying.value = false
     })
@@ -650,7 +649,7 @@ function onDurationChange(): void {
 function onVideoPlay(): void {
   isPlaying.value = true
   isBuffering.value = false
-  musicPlayerStore.pause()
+  claimVideoAudioFocus()
   setVideoMediaSessionState('playing')
 }
 
@@ -705,7 +704,7 @@ function goBack(): void {
 
 onMounted(() => {
   unmounted = false
-  musicPlayerStore.pause()
+  claimVideoAudioFocus()
   if (videoEl.value) {
     videoEl.value.volume = volume.value
     videoEl.value.muted = muted.value

@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { SelectOption } from '@/components/ui'
-import { usePlayerStore } from '@/domains/music/player'
 import { usePreferencesStore } from '@/stores/preferences'
 import { formatDuration } from '@/utils/format'
 import {
@@ -14,6 +13,7 @@ import {
 } from '../api'
 import VideoPlayerShell, { type VideoPlayerEpisodeItem } from '../components/VideoPlayerShell.vue'
 import {
+  claimVideoAudioFocus,
   clearVideoMediaSession,
   createVideoMediaController,
   loadStoredVideoMuted,
@@ -41,7 +41,6 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const preferencesStore = usePreferencesStore()
-const musicPlayerStore = usePlayerStore()
 const videoStore = useVideoStore()
 
 const shellRef = ref<InstanceType<typeof VideoPlayerShell> | null>(null)
@@ -276,7 +275,7 @@ function syncMediaSession(d: VideoDetailDto): void {
     onPlay: () => {
       const el = videoEl.value
       if (el && el.paused) {
-        musicPlayerStore.pause()
+        claimVideoAudioFocus()
         void el.play().catch(() => {
           isPlaying.value = false
         })
@@ -319,7 +318,7 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
   const d = detail.value
   if (!el || !d) return
 
-  musicPlayerStore.pause()
+  claimVideoAudioFocus()
   loadError.value = null
   isBuffering.value = true
 
@@ -445,7 +444,7 @@ async function initVideo(): Promise<void> {
   loadError.value = null
   rawDurationSecs.value = 0
   streamOffsetSecs.value = 0
-  musicPlayerStore.pause()
+  claimVideoAudioFocus()
 
   const id = String(route.params.id || '').trim()
   if (!id) {
@@ -538,7 +537,7 @@ function togglePlay(): void {
   const el = videoEl.value
   if (!el || !detail.value || loadError.value) return
   if (el.paused) {
-    musicPlayerStore.pause()
+    claimVideoAudioFocus()
     void el.play().catch(() => {
       isPlaying.value = false
     })
@@ -648,7 +647,7 @@ function onDurationChange(): void {
 function onVideoPlay(): void {
   isPlaying.value = true
   isBuffering.value = false
-  musicPlayerStore.pause()
+  claimVideoAudioFocus()
   setVideoMediaSessionState('playing')
 }
 
@@ -713,7 +712,7 @@ function flushVideoProgressOnPageHide(): void {
 }
 
 onMounted(() => {
-  musicPlayerStore.pause()
+  claimVideoAudioFocus()
   if (videoEl.value) {
     videoEl.value.volume = volume.value
     videoEl.value.muted = muted.value

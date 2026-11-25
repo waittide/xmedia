@@ -42,6 +42,13 @@ export function persistVideoAudioPrefs(vol: number, isMuted: boolean): void {
   }
 }
 
+export function claimVideoAudioFocus(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(
+    new CustomEvent('xmedia:claim-audio-focus', { detail: { source: 'video' } }),
+  )
+}
+
 function setMediaSessionAction(
   action: MediaSessionAction,
   handler: MediaSessionActionHandler | null,
