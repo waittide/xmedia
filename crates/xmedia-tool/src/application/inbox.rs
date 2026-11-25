@@ -119,23 +119,11 @@ pub async fn scan_and_import_inbox(
         .target_root_id
         .ok_or_else(|| DomainError::Validation("inbox target_root_id is not configured".into()))?;
 
-    let inbox_dir = PathBuf::from(raw_inbox)
-        .canonicalize()
-        .map_err(|e| DomainError::Validation(format!("inbox directory inaccessible: {e}")))?;
-    if !inbox_dir.is_dir() {
-        return Err(DomainError::Validation(
-            "inbox_path is not a directory".into(),
-        ));
-    }
-
     let target_root = settings_svc.find_root(target_root_id).await?;
     target_root.ensure_writable()?;
 
-    if inbox_dir == target_root.path || inbox_dir.starts_with(&target_root.path) {
-        return Err(DomainError::Validation(
-            "inbox directory cannot be inside the target managed root".into(),
-        ));
-    }
+    let inbox_dir =
+        settings_svc.validate_inbox_directory(raw_inbox, &settings.roots, Some(target_root_id))?;
 
     let mut candidates: Vec<(PathBuf, String)> = Vec::new();
     let mut skipped_count = 0usize;

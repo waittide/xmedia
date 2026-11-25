@@ -135,6 +135,27 @@ async fn txt_segmentation_convert_to_epub_and_dual_mode_epub_edit_roundtrip() {
     .unwrap();
     assert!(img_used.chapter_rel_href.contains("Images/ximg_"));
 
+    // Untrusted SVG or HTML/script payloads must be rejected by insert_epub_image
+    let svg_xss = b"<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"><script>alert(1)</script></svg>";
+    assert!(
+        insert_epub_image(
+            &epub_path,
+            reloaded.chapters[0].source_href.as_deref(),
+            svg_xss,
+            Some("image/svg+xml"),
+        )
+        .is_err()
+    );
+    assert!(
+        insert_epub_image(
+            &epub_path,
+            reloaded.chapters[0].source_href.as_deref(),
+            b"<html><script>alert(1)</script></html>",
+            Some("image/png"),
+        )
+        .is_err()
+    );
+
     let with_img_inputs = vec![SaveBookChapterInput {
         title: "第一卷 含插图章".into(),
         level: 0,

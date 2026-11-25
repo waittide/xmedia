@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -127,20 +127,46 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
     }
 }
 
+pub fn is_blocked_metadata_or_link_local_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.octets()[0] == 0
+                || v4.is_multicast()
+                || v4.is_broadcast()
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_blocked_metadata_or_link_local_ip(IpAddr::V4(mapped));
+            }
+            let s = v6.segments();
+            v6.is_unspecified() || v6.is_multicast() || (s[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// Async TOCTOU-free DNS resolver that pins validated public IPs at connect time
 /// and fails closed on DNS errors or private/reserved targets.
 #[derive(Debug, Default)]
-struct SsrfSafeResolver;
+struct SsrfSafeResolver {
+    allowed_proxy_host: Option<String>,
+}
 
 impl Resolve for SsrfSafeResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_string();
+        let is_proxy_host = self
+            .allowed_proxy_host
+            .as_deref()
+            .is_some_and(|ph| ph.eq_ignore_ascii_case(&host));
         Box::pin(async move {
             let lower = host.to_ascii_lowercase();
             if lower.is_empty()
-                || lower == "localhost"
-                || lower.ends_with(".localhost")
-                || lower.ends_with(".local")
+                || (!is_proxy_host
+                    && (lower == "localhost"
+                        || lower.ends_with(".localhost")
+                        || lower.ends_with(".local")))
             {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -165,7 +191,12 @@ impl Resolve for SsrfSafeResolver {
                     as Box<dyn std::error::Error + Send + Sync>);
             }
             for addr in &addrs {
-                if is_restricted_ip(addr.ip()) {
+                let blocked = if is_proxy_host {
+                    is_blocked_metadata_or_link_local_ip(addr.ip())
+                } else {
+                    is_restricted_ip(addr.ip())
+                };
+                if blocked {
                     return Err(Box::new(std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
                         format!(
@@ -184,6 +215,77 @@ impl Resolve for SsrfSafeResolver {
 
 pub fn validate_public_http_url(raw_url: &str) -> DomainResult<reqwest::Url> {
     validate_artwork_http_url(raw_url, false)
+}
+
+pub async fn validate_public_http_url_async(raw_url: &str) -> DomainResult<reqwest::Url> {
+    validate_target_url_ssrf(raw_url, false).await
+}
+
+/// Validates scheme/credentials/IP-literals AND performs async DNS resolution to block
+/// private/loopback/link-local/metadata IPs even when an upstream `http_proxy` is configured.
+pub async fn validate_target_url_ssrf(
+    raw_url: &str,
+    allow_private_ips: bool,
+) -> DomainResult<reqwest::Url> {
+    let parsed = validate_artwork_http_url(raw_url, allow_private_ips)?;
+    if allow_private_ips {
+        return Ok(parsed);
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| DomainError::Validation("URL missing host".into()))?;
+    if host
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+        .is_ok()
+    {
+        return Ok(parsed);
+    }
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| DomainError::Validation(format!("DNS resolution failed for '{host}': {e}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(DomainError::Validation(format!(
+            "DNS resolution returned no addresses for '{host}'"
+        )));
+    }
+    for addr in &addrs {
+        if is_restricted_ip(addr.ip()) {
+            return Err(DomainError::Validation(format!(
+                "SSRF guard blocked host '{host}' resolving to restricted IP '{}'",
+                addr.ip()
+            )));
+        }
+    }
+    Ok(parsed)
+}
+
+fn validate_proxy_url(proxy_str: &str) -> DomainResult<Option<String>> {
+    let parsed = reqwest::Url::parse(proxy_str)
+        .map_err(|e| DomainError::Validation(format!("invalid proxy URL '{proxy_str}': {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h") {
+        return Err(DomainError::Validation(format!(
+            "unsupported proxy scheme '{}' (allowed: http, https, socks5, socks5h)",
+            parsed.scheme()
+        )));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| DomainError::Validation("proxy URL missing host".into()))?;
+    if let Ok(ip) = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+    {
+        if is_blocked_metadata_or_link_local_ip(ip) {
+            return Err(DomainError::Validation(format!(
+                "disallowed link-local/metadata proxy address '{ip}'"
+            )));
+        }
+        return Ok(None);
+    }
+    Ok(Some(host.to_ascii_lowercase()))
 }
 
 pub fn validate_artwork_http_url(
@@ -270,13 +372,20 @@ pub fn get_or_build_http_client(
         .pool_max_idle_per_host(16)
         .pool_idle_timeout(Duration::from_secs(90));
 
+    let has_proxy = key.proxy_url.is_some();
     if let Some(ref proxy_str) = key.proxy_url {
+        let allowed_proxy_host = validate_proxy_url(proxy_str)?;
         let proxy = reqwest::Proxy::all(proxy_str.as_str()).map_err(|e| {
             DomainError::Validation(format!("invalid proxy URL '{proxy_str}': {e}"))
         })?;
         builder = builder.proxy(proxy);
+        if key.ssrf_guard == SsrfRedirectGuard::PublicOnly {
+            builder = builder.dns_resolver(Arc::new(SsrfSafeResolver { allowed_proxy_host }));
+        }
     } else if key.ssrf_guard == SsrfRedirectGuard::PublicOnly {
-        builder = builder.no_proxy().dns_resolver(Arc::new(SsrfSafeResolver));
+        builder = builder
+            .no_proxy()
+            .dns_resolver(Arc::new(SsrfSafeResolver::default()));
     }
 
     let allow_private_ips = key.ssrf_guard == SsrfRedirectGuard::AllowPrivate;
@@ -295,11 +404,54 @@ pub fn get_or_build_http_client(
                 "HTTPS-to-HTTP redirect downgrade is forbidden",
             ));
         }
-        if let Err(err) = validate_artwork_http_url(attempt.url().as_str(), allow_private_ips) {
-            return attempt.error(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                err.to_string(),
-            ));
+        let validated = match validate_artwork_http_url(attempt.url().as_str(), allow_private_ips) {
+            Ok(u) => u,
+            Err(err) => {
+                return attempt.error(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    err.to_string(),
+                ));
+            }
+        };
+        // When routing through an explicit proxy, `reqwest` delegates target DNS to the proxy,
+        // so also resolve redirect target hostnames locally before following.
+        if has_proxy
+            && !allow_private_ips
+            && let Some(host) = validated.host_str()
+            && host
+                .trim_matches(|c| c == '[' || c == ']')
+                .parse::<IpAddr>()
+                .is_err()
+        {
+            let port = validated.port_or_known_default().unwrap_or(80);
+            match (host, port).to_socket_addrs() {
+                Ok(addrs) => {
+                    let collected: Vec<SocketAddr> = addrs.collect();
+                    if collected.is_empty() {
+                        return attempt.error(std::io::Error::new(
+                            std::io::ErrorKind::AddrNotAvailable,
+                            format!("DNS resolution returned no addresses for '{host}'"),
+                        ));
+                    }
+                    for addr in collected {
+                        if is_restricted_ip(addr.ip()) {
+                            return attempt.error(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                format!(
+                                    "SSRF guard blocked redirect host '{host}' resolving to '{}'",
+                                    addr.ip()
+                                ),
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return attempt.error(std::io::Error::new(
+                        std::io::ErrorKind::AddrNotAvailable,
+                        format!("DNS resolution failed for redirect host '{host}': {e}"),
+                    ));
+                }
+            }
         }
         attempt.follow()
     });
@@ -374,5 +526,37 @@ mod tests {
     fn musicbrainz_enforces_at_least_one_second_interval() {
         assert!(provider_min_interval("musicbrainz") >= Duration::from_secs(1));
         assert!(provider_min_interval("tmdb") >= Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn validate_target_url_ssrf_and_proxy_guard_reject_loopback_and_metadata() {
+        assert!(
+            validate_target_url_ssrf("http://localhost:8080/a.png", false)
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_target_url_ssrf("http://169.254.169.254/latest/meta-data/", false)
+                .await
+                .is_err()
+        );
+        assert!(
+            get_or_build_http_client(
+                Some("http://169.254.169.254:8080"),
+                "ua",
+                10,
+                SsrfRedirectGuard::PublicOnly,
+            )
+            .is_err()
+        );
+        assert!(
+            get_or_build_http_client(
+                Some("http://127.0.0.1:7890"),
+                "ua",
+                10,
+                SsrfRedirectGuard::PublicOnly,
+            )
+            .is_ok()
+        );
     }
 }

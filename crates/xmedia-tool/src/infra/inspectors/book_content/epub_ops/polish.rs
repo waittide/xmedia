@@ -8,7 +8,7 @@ use quick_xml::escape::escape;
 use regex::Regex;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::infra::thumbnail::sniff_image_mime;
+use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 use zip::ZipArchive;
 
 use crate::infra::inspectors::book::{normalize_zip_rel, read_book_meta_any, rewrite_epub_entries};
@@ -29,7 +29,7 @@ pub fn insert_epub_image(
     epub_path: &Path,
     chapter_source_href: Option<&str>,
     bytes: &[u8],
-    mime_hint: Option<&str>,
+    _mime_hint: Option<&str>,
 ) -> DomainResult<InsertedEpubImageDto> {
     if bytes.is_empty() {
         return Err(DomainError::Validation("上传的图片文件为空".into()));
@@ -45,16 +45,14 @@ pub fn insert_epub_image(
         ));
     }
 
-    let sniffed = sniff_image_mime(bytes);
-    let mime_type = if sniffed.starts_with("image/") {
-        sniffed.to_string()
-    } else if let Some(hint) = mime_hint.filter(|m| m.starts_with("image/")) {
-        hint.to_string()
-    } else {
-        return Err(DomainError::Validation(
-            "不支持的图片格式，请上传 JPG/PNG/WebP/GIF/SVG".into(),
-        ));
-    };
+    let mime_type = sniff_raster_image_mime(bytes)
+        .ok_or_else(|| {
+            DomainError::Validation(
+                "不支持的图片格式，仅允许上传 JPG/PNG/WebP/GIF/BMP/ICO/AVIF 光栅图片（禁止 SVG）"
+                    .into(),
+            )
+        })?
+        .to_string();
 
     let img_ext = ext_for_image_mime(&mime_type);
 

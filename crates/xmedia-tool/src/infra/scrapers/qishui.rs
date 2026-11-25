@@ -267,7 +267,9 @@ async fn resolve_qishui_direct_id(
 ) -> Option<String> {
     let trimmed = raw.trim();
     if let Some(m) = RE_QS_SHORT_URL.find(trimmed)
-        && crate::infra::scrapers::http_client::validate_artwork_http_url(m.as_str(), false).is_ok()
+        && crate::infra::scrapers::http_client::validate_target_url_ssrf(m.as_str(), false)
+            .await
+            .is_ok()
         && let Ok(safe_client) =
             crate::infra::scrapers::http_client::build_ssrf_safe_http_client(creds, false)
         && let Ok(resp) = safe_client

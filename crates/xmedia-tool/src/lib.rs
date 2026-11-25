@@ -79,12 +79,28 @@ impl XMediaToolApp {
         .await
     }
 
+    pub async fn init_with_bind_cors_and_lock(
+        cfg: XMediaToolConfig,
+        bind_addr: Option<SocketAddr>,
+        cors_allow_origins: &[String],
+        lock_roots: bool,
+    ) -> anyhow::Result<Self> {
+        Self::init_full(
+            cfg,
+            build_default_scraper_providers(),
+            bind_addr,
+            cors_allow_origins,
+            lock_roots,
+        )
+        .await
+    }
+
     pub async fn init_with_providers_and_cors(
         cfg: XMediaToolConfig,
         providers: Vec<Arc<dyn ScraperProviderPort>>,
         cors_allow_origins: &[String],
     ) -> anyhow::Result<Self> {
-        Self::init_with_providers_bind_and_cors(cfg, providers, None, cors_allow_origins).await
+        Self::init_full(cfg, providers, None, cors_allow_origins, false).await
     }
 
     pub async fn init_with_providers_bind_and_cors(
@@ -92,6 +108,16 @@ impl XMediaToolApp {
         providers: Vec<Arc<dyn ScraperProviderPort>>,
         bind_addr: Option<SocketAddr>,
         cors_allow_origins: &[String],
+    ) -> anyhow::Result<Self> {
+        Self::init_full(cfg, providers, bind_addr, cors_allow_origins, false).await
+    }
+
+    async fn init_full(
+        cfg: XMediaToolConfig,
+        providers: Vec<Arc<dyn ScraperProviderPort>>,
+        bind_addr: Option<SocketAddr>,
+        cors_allow_origins: &[String],
+        lock_roots: bool,
     ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&cfg.data_dir).with_context(|| {
             format!(
@@ -105,7 +131,11 @@ impl XMediaToolApp {
             JsonFileConfigRepository::load_or_init(config_file, &cfg.initial_roots)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?,
         );
-        let settings = ToolSettingsService::new(config_repo);
+        let settings = ToolSettingsService::new(config_repo).with_sandbox_policy(
+            Some(cfg.data_dir.clone()),
+            &cfg.initial_roots,
+            lock_roots,
+        );
 
         let ffmpeg = FfmpegToolkit::from_ffmpeg_bin(&cfg.ffmpeg_bin);
         let inspectors = build_default_inspectors(ffmpeg.clone());

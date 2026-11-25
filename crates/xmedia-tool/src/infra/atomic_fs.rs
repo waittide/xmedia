@@ -50,6 +50,45 @@ pub fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> DomainResult<()> {
     Ok(())
 }
 
+/// Writes sensitive configuration `bytes` to a sibling temporary file with strict owner-only
+/// (`0o600` on Unix) permissions, fsyncs, and atomically replaces `target`.
+pub fn atomic_write_private_bytes(target: &Path, bytes: &[u8]) -> DomainResult<()> {
+    let parent = target.parent().ok_or_else(|| {
+        DomainError::Storage(format!("target path '{}' has no parent", target.display()))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed to create parent directory '{}': {e}",
+            parent.display()
+        ))
+    })?;
+
+    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed to create temp file in '{}': {e}",
+            parent.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600)).map_err(
+            |e| DomainError::Storage(format!("failed setting 0600 permissions on temp file: {e}")),
+        )?;
+    }
+    tmp.write_all(bytes)
+        .map_err(|e| DomainError::Storage(format!("failed writing temp file: {e}")))?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| DomainError::Storage(format!("failed syncing temp file: {e}")))?;
+    tmp.persist(target).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed atomically persisting '{}': {e}",
+            target.display()
+        ))
+    })?;
+    Ok(())
+}
+
 /// Writes a fresh replacement for `target` via `build(temp_path)` without pre-copying `target`,
 /// preserves permissions, fsyncs, and atomically replaces `target`.
 pub fn atomic_write_via_temp<F>(target: &Path, build: F) -> DomainResult<()>

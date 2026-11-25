@@ -701,6 +701,9 @@ pub(crate) fn ext_for_image_mime(mime: &str) -> &'static str {
         "image/webp" => "webp",
         "image/png" => "png",
         "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        "image/x-icon" => "ico",
+        "image/avif" => "avif",
         "image/svg+xml" => "svg",
         _ => "jpg",
     }

@@ -27,6 +27,10 @@ struct Cli {
     #[arg(long = "root", value_name = "DIR")]
     roots: Vec<PathBuf>,
 
+    /// Lock managed roots against runtime additions or removals via HTTP API
+    #[arg(long, env = "XMEDIA_TOOL_LOCK_ROOTS")]
+    lock_roots: bool,
+
     /// Optional access password protecting the Web workbench (required when binding a non-loopback address)
     #[arg(long, env = "XMEDIA_TOOL_PASSWORD")]
     password: Option<String>,
@@ -77,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .local_addr()
         .context("failed resolving bound socket address")?;
 
-    let app = XMediaToolApp::init_with_bind_and_cors(
+    let app = XMediaToolApp::init_with_bind_cors_and_lock(
         XMediaToolConfig {
             data_dir: cli.data_dir,
             initial_roots: cli.roots,
@@ -87,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(bound_addr),
         &cli.cors_allow_origins,
+        cli.lock_roots,
     )
     .await?;
 

@@ -1,14 +1,18 @@
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::config::XmediaWebhookConfig;
-use crate::infra::scrapers::http_client::DEFAULT_TOOL_USER_AGENT;
+use crate::infra::scrapers::http_client::{
+    DEFAULT_TOOL_USER_AGENT, is_blocked_metadata_or_link_local_ip,
+};
 
 #[derive(Debug, Deserialize)]
 struct RemoteLibraryItem {
@@ -32,11 +36,54 @@ pub struct WebhookTestReportDto {
     pub message: String,
 }
 
+#[derive(Debug, Default)]
+struct WebhookSafeResolver;
+
+impl Resolve for WebhookSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::AddrNotAvailable,
+                        format!("DNS resolution failed for webhook host '{host}': {e}"),
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                })?
+                .collect();
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::AddrNotAvailable,
+                    format!("DNS resolution returned no addresses for webhook host '{host}'"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            for addr in &addrs {
+                if is_blocked_metadata_or_link_local_ip(addr.ip()) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "blocked link-local/metadata address '{}' for webhook host '{host}'",
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+            let boxed: Addrs = Box::new(addrs.into_iter());
+            Ok(boxed)
+        })
+    }
+}
+
 fn build_webhook_client() -> DomainResult<reqwest::Client> {
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     let cached = CLIENT.get_or_init(|| {
-        // Disable redirects so the admin `x-api-key` header can never be forwarded to a third-party host.
+        // Disable redirects and ambient proxies, and pin DNS against link-local/cloud-metadata rebinding.
         reqwest::Client::builder()
+            .no_proxy()
+            .dns_resolver(Arc::new(WebhookSafeResolver))
             .user_agent(DEFAULT_TOOL_USER_AGENT)
             .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(5))
@@ -53,7 +100,7 @@ fn paths_overlap_str(a: &Path, b: &Path) -> bool {
     ca == cb || ca.starts_with(&cb) || cb.starts_with(&ca)
 }
 
-fn resolve_webhook_target(cfg: &XmediaWebhookConfig) -> DomainResult<(&str, &str)> {
+async fn resolve_webhook_target(cfg: &XmediaWebhookConfig) -> DomainResult<(&str, &str)> {
     let base = cfg.base_url.trim().trim_end_matches('/');
     let api_key = cfg
         .api_key
@@ -77,13 +124,47 @@ fn resolve_webhook_target(cfg: &XmediaWebhookConfig) -> DomainResult<(&str, &str
                 .into(),
         ));
     }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| DomainError::Validation("webhook base_url missing host".into()))?;
+    if let Ok(ip) = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+    {
+        if is_blocked_metadata_or_link_local_ip(ip) {
+            return Err(DomainError::Validation(format!(
+                "disallowed link-local/metadata/unspecified webhook IP '{ip}'"
+            )));
+        }
+        return Ok((base, api_key));
+    }
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| {
+            DomainError::Validation(format!("DNS resolution failed for webhook '{host}': {e}"))
+        })?
+        .collect();
+    if addrs.is_empty() {
+        return Err(DomainError::Validation(format!(
+            "DNS resolution returned no addresses for webhook '{host}'"
+        )));
+    }
+    for addr in &addrs {
+        if is_blocked_metadata_or_link_local_ip(addr.ip()) {
+            return Err(DomainError::Validation(format!(
+                "disallowed link-local/metadata webhook address '{}' for '{host}'",
+                addr.ip()
+            )));
+        }
+    }
     Ok((base, api_key))
 }
 
 async fn fetch_remote_libraries(
     cfg: &XmediaWebhookConfig,
 ) -> DomainResult<(reqwest::Client, &str, &str, Vec<RemoteLibraryItem>)> {
-    let (base, api_key) = resolve_webhook_target(cfg)?;
+    let (base, api_key) = resolve_webhook_target(cfg).await?;
     let client = build_webhook_client()?;
     let resp = client
         .get(format!("{base}/api/v1/libraries"))
@@ -233,4 +314,39 @@ pub async fn trigger_xmedia_rescan(
         total_libraries,
         message,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn webhook_target_validation_blocks_cloud_metadata_and_unspecified_ips() {
+        for bad in [
+            "http://169.254.169.254",
+            "http://0.0.0.0:8080",
+            "http://[::]:8080",
+            "http://[fe80::1]:8080",
+            "http://user:pass@127.0.0.1:8080",
+        ] {
+            let cfg = XmediaWebhookConfig {
+                enabled: true,
+                base_url: bad.to_string(),
+                api_key: Some("secret".into()),
+                ..Default::default()
+            };
+            assert!(
+                resolve_webhook_target(&cfg).await.is_err(),
+                "expected {bad} to be rejected"
+            );
+        }
+
+        let valid_local = XmediaWebhookConfig {
+            enabled: true,
+            base_url: "http://127.0.0.1:8080".into(),
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
+        assert!(resolve_webhook_target(&valid_local).await.is_ok());
+    }
 }

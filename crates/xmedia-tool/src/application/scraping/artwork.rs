@@ -6,7 +6,7 @@ use super::ScrapingOrchestratorService;
 use crate::domain::media::MediaFileDetail;
 use crate::domain::workspace::RootId;
 use crate::infra::scrapers::http_client::{
-    build_ssrf_safe_http_client, validate_artwork_http_url, validate_public_http_url,
+    build_ssrf_safe_http_client, validate_public_http_url_async, validate_target_url_ssrf,
 };
 
 const MAX_IMAGE_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -55,7 +55,7 @@ impl ScrapingOrchestratorService {
         slot: &str,
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<MediaFileDetail> {
-        let parsed = validate_public_http_url(raw_url)?;
+        let parsed = validate_public_http_url_async(raw_url).await?;
         let creds = self.settings.get_credentials().await?;
         let client = build_ssrf_safe_http_client(&creds, false)?;
         let (bytes, mime) = download_image_bytes(&client, parsed.as_str(), false).await?;
@@ -70,7 +70,7 @@ pub(super) async fn download_image_bytes(
     url: &str,
     allow_private_ips: bool,
 ) -> DomainResult<(Vec<u8>, String)> {
-    let validated = validate_artwork_http_url(url, allow_private_ips)?;
+    let validated = validate_target_url_ssrf(url, allow_private_ips).await?;
     let url_str = validated.as_str();
     let mut req = client.get(validated.clone());
     if url_str.contains(".doubanio.com/") {

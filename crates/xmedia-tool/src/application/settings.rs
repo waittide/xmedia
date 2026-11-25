@@ -12,7 +12,7 @@ use crate::domain::config::{
 };
 use crate::domain::ports::ConfigRepositoryPort;
 use crate::domain::workspace::{ManagedRoot, RootId};
-use crate::infra::workspace_fs::open_managed_root;
+use crate::infra::workspace_fs::{open_managed_root, paths_overlap, validate_safe_host_directory};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettingsDto {
@@ -65,6 +65,9 @@ pub struct UpdateSettingsInput {
 pub struct ToolSettingsService {
     repo: Arc<dyn ConfigRepositoryPort>,
     write_lock: Arc<tokio::sync::Mutex<()>>,
+    data_dir: Option<PathBuf>,
+    cli_root_prefixes: Arc<Vec<PathBuf>>,
+    roots_locked: bool,
 }
 
 impl ToolSettingsService {
@@ -72,7 +75,60 @@ impl ToolSettingsService {
         Self {
             repo,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            data_dir: None,
+            cli_root_prefixes: Arc::new(Vec::new()),
+            roots_locked: false,
         }
+    }
+
+    pub fn with_sandbox_policy(
+        mut self,
+        data_dir: Option<PathBuf>,
+        cli_roots: &[PathBuf],
+        roots_locked: bool,
+    ) -> Self {
+        self.data_dir = data_dir.map(|d| d.canonicalize().unwrap_or(d));
+        let canon_cli: Vec<PathBuf> = cli_roots
+            .iter()
+            .filter_map(|p| p.canonicalize().ok())
+            .collect();
+        self.cli_root_prefixes = Arc::new(canon_cli);
+        self.roots_locked = roots_locked;
+        self
+    }
+
+    pub fn validate_inbox_directory(
+        &self,
+        raw_inbox: &str,
+        roots: &[ManagedRoot],
+        target_root_id: Option<RootId>,
+    ) -> DomainResult<PathBuf> {
+        let inbox_dir = PathBuf::from(raw_inbox.trim())
+            .canonicalize()
+            .map_err(|e| DomainError::Validation(format!("inbox directory inaccessible: {e}")))?;
+        if !inbox_dir.is_dir() {
+            return Err(DomainError::Validation(
+                "inbox_path is not a directory".into(),
+            ));
+        }
+        validate_safe_host_directory(&inbox_dir, "inbox")?;
+        if let Some(ref data_dir) = self.data_dir
+            && paths_overlap(&inbox_dir, data_dir)
+        {
+            return Err(DomainError::Validation(
+                "inbox directory cannot overlap xmedia-tool data directory".into(),
+            ));
+        }
+        for r in roots {
+            if (target_root_id == Some(r.id) || paths_overlap(&inbox_dir, &r.path))
+                && paths_overlap(&inbox_dir, &r.path)
+            {
+                return Err(DomainError::Validation(
+                    "inbox directory cannot be inside or contain a managed root directory".into(),
+                ));
+            }
+        }
+        Ok(inbox_dir)
     }
 
     pub async fn get_raw(&self) -> DomainResult<ToolSettings> {
@@ -113,8 +169,30 @@ impl ToolSettingsService {
         default_kind: Option<MediaKind>,
         read_only: bool,
     ) -> DomainResult<ManagedRoot> {
+        if self.roots_locked {
+            return Err(DomainError::Forbidden(
+                "managed roots are locked by CLI configuration".into(),
+            ));
+        }
         let root = open_managed_root(name, PathBuf::from(path.trim()), default_kind)?
             .with_read_only(read_only);
+        if let Some(ref data_dir) = self.data_dir
+            && paths_overlap(&root.path, data_dir)
+        {
+            return Err(DomainError::Validation(
+                "managed root cannot overlap xmedia-tool data directory".into(),
+            ));
+        }
+        if !self.cli_root_prefixes.is_empty()
+            && !self
+                .cli_root_prefixes
+                .iter()
+                .any(|allowed| root.path.starts_with(allowed))
+        {
+            return Err(DomainError::Forbidden(
+                "cannot add root outside explicitly configured CLI --root directories".into(),
+            ));
+        }
         let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;
         if let Some(existing) = settings
@@ -148,6 +226,11 @@ impl ToolSettingsService {
     }
 
     pub async fn remove_root(&self, root_id: RootId) -> DomainResult<()> {
+        if self.roots_locked {
+            return Err(DomainError::Forbidden(
+                "managed roots are locked by CLI configuration".into(),
+            ));
+        }
         let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;
         let before = settings.roots.len();
@@ -219,7 +302,17 @@ impl ToolSettingsService {
         if let Some(ttl_ms) = input.scrape_cache_ttl_ms {
             settings.scrape_cache_ttl_ms = ttl_ms;
         }
-        if let Some(inbox) = input.inbox {
+        if let Some(mut inbox) = input.inbox {
+            let clean_path = inbox
+                .inbox_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            if let Some(ref raw_inbox) = clean_path {
+                self.validate_inbox_directory(raw_inbox, &settings.roots, inbox.target_root_id)?;
+            }
+            inbox.inbox_path = clean_path;
             settings.inbox = inbox;
         }
         if let Some(enabled) = input.xmedia_webhook_enabled {
@@ -362,5 +455,76 @@ mod tests {
 
         let settings = svc.get_raw().await.unwrap();
         assert_eq!(settings.roots.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn cli_roots_and_inbox_validation_block_system_paths_and_outside_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let cli_root = tmp.path().join("media");
+        let sub_root = cli_root.join("movies");
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&sub_root).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        let cfg_path = data_dir.join("tool-config.json");
+        let repo = Arc::new(
+            JsonFileConfigRepository::load_or_init(cfg_path, std::slice::from_ref(&cli_root))
+                .unwrap(),
+        );
+        let svc = ToolSettingsService::new(repo).with_sandbox_policy(
+            Some(data_dir.clone()),
+            std::slice::from_ref(&cli_root),
+            false,
+        );
+
+        // Subdirectory inside CLI --root is allowed
+        assert!(
+            svc.add_root(
+                "Movies".into(),
+                sub_root.to_string_lossy().into_owned(),
+                Some(MediaKind::Video),
+            )
+            .await
+            .is_ok()
+        );
+        // Directory outside CLI --root is forbidden
+        assert!(matches!(
+            svc.add_root(
+                "Outside".into(),
+                outside_dir.to_string_lossy().into_owned(),
+                None
+            )
+            .await,
+            Err(DomainError::Forbidden(_))
+        ));
+        // System directories like `/` and `/etc` are always rejected for inbox_path
+        assert!(
+            svc.update_settings(UpdateSettingsInput {
+                inbox: Some(InboxConfig {
+                    enabled: true,
+                    inbox_path: Some("/".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .await
+            .is_err()
+        );
+        if std::path::Path::new("/etc").is_dir() {
+            assert!(
+                svc.update_settings(UpdateSettingsInput {
+                    inbox: Some(InboxConfig {
+                        enabled: true,
+                        inbox_path: Some("/etc".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
+            );
+        }
     }
 }
