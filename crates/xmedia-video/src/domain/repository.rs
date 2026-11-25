@@ -24,6 +24,11 @@ pub trait VideoCatalogRepository: Send + Sync {
 
     async fn find_show_by_id(&self, id: ShowId) -> DomainResult<Option<VideoShow>>;
     async fn find_show_by_key(&self, show_key: &str) -> DomainResult<Option<VideoShow>>;
+    async fn find_online_tracked_show(
+        &self,
+        source_id: Uuid,
+        item_id: &str,
+    ) -> DomainResult<Option<VideoShow>>;
     async fn find_shows_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoShow>>;
     async fn list_shows(&self, filter: &ShowQueryFilter) -> DomainResult<Vec<VideoShow>>;
     async fn save_show(&self, show: &VideoShow) -> DomainResult<()>;

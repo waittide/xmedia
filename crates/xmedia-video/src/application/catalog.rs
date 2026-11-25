@@ -215,10 +215,10 @@ impl VideoCatalogService {
             .into_iter()
             .map(|s| {
                 let online_tracking =
-                    s.online_tracked_ref()
-                        .map(|(source_id, item_key)| OnlineTrackedShowDto {
+                    s.online_tracked()
+                        .map(|(source_id, item_id, _)| OnlineTrackedShowDto {
                             source_id,
-                            item_key: item_key.to_string(),
+                            item_key: item_id.to_string(),
                         });
                 ShowSummaryDto {
                     id: s.id,
@@ -531,7 +531,7 @@ impl VideoCatalogService {
             })
             .await?
             .into_iter()
-            .filter(|s| s.online_tracked_ref().is_none())
+            .filter(|s| !s.is_online_tracked())
             .collect();
 
         let movie_dtos = self.enrich_videos(user.id, raw_movies).await?;
@@ -578,7 +578,7 @@ impl VideoCatalogService {
                 })
                 .await?
             {
-                if s.online_tracked_ref().is_none() {
+                if !s.is_online_tracked() {
                     to_bind.push(s.id.0);
                 }
             }
@@ -586,7 +586,7 @@ impl VideoCatalogService {
 
         for raw_id in input.item_ids {
             if let Some(show) = self.catalog.find_show_by_id(ShowId(raw_id)).await? {
-                if show.online_tracked_ref().is_some()
+                if show.is_online_tracked()
                     && !actor.role.is_admin()
                     && !self
                         .bindings
@@ -637,7 +637,7 @@ impl VideoCatalogService {
                 .bindings
                 .unbind_with_gc(target_user_id, MediaKind::Video, show.id.0, || async {
                     if let Some(fresh_show) = self.catalog.find_show_by_id(show.id).await?
-                        && fresh_show.online_tracked_ref().is_some()
+                        && fresh_show.is_online_tracked()
                     {
                         self.delete_show_without_bindings(fresh_show.id).await?;
                         return Ok(true);
@@ -667,7 +667,7 @@ impl VideoCatalogService {
                 if let Some(ref v) = video_opt {
                     if let Some(sid) = v.show_id {
                         if let Some(show) = self.catalog.find_show_by_id(sid).await?
-                            && show.online_tracked_ref().is_some()
+                            && show.is_online_tracked()
                         {
                             self.delete_show_without_bindings(sid).await?;
                             return Ok(true);
@@ -968,8 +968,7 @@ impl VideoCatalogService {
             .await?
             .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
         let key = self.storage.save_poster_bytes(bytes).await?;
-        item.poster_key = Some(key);
-        item.updated_at = Timestamp::now();
+        item.set_poster_key(key, Timestamp::now());
         self.catalog.save_video(&item).await?;
         self.enrich_videos(actor.id, vec![item])
             .await?
@@ -1190,10 +1189,10 @@ impl VideoCatalogService {
         }
         self.catalog.save_show(&show).await?;
         if title_changed {
+            let now = Timestamp::now();
             let episodes = self.catalog.list_episodes_by_show(show_id).await?;
             for mut ep in episodes {
-                ep.show_title = Some(show.title.clone());
-                ep.updated_at = Timestamp::now();
+                ep.set_show_title(show.title.clone(), now);
                 self.catalog.save_video(&ep).await?;
             }
         }
@@ -1222,8 +1221,7 @@ impl VideoCatalogService {
             .await?
             .ok_or_else(|| DomainError::NotFound("show not found".into()))?;
         let key = self.storage.save_poster_bytes(bytes).await?;
-        show.poster_key = Some(key);
-        show.updated_at = Timestamp::now();
+        show.set_poster_key(key, Timestamp::now());
         self.catalog.save_show(&show).await?;
         self.enrich_shows(actor.id, vec![show])
             .await?
@@ -1253,7 +1251,7 @@ impl VideoCatalogService {
             if !matched_pool {
                 let shows = self.catalog.find_shows_by_poster_key(key).await?;
                 for s in &shows {
-                    if s.online_tracked_ref().is_some() {
+                    if s.is_online_tracked() {
                         matched_tracked_binding_ids.push(s.id.0);
                     } else {
                         matched_pool = true;

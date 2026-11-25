@@ -16,6 +16,7 @@ async fn ensure_video_indexes(db: &mut Db) -> DomainResult<()> {
     for ddl in [
         "CREATE INDEX IF NOT EXISTS idx_video_items_poster_key ON video_items (poster_key)",
         "CREATE INDEX IF NOT EXISTS idx_video_shows_poster_key ON video_shows (poster_key)",
+        "CREATE INDEX IF NOT EXISTS idx_video_shows_online_tracked ON video_shows (online_source_id, online_item_id)",
     ] {
         toasty::sql::statement(ddl)
             .exec(db)

@@ -423,46 +423,37 @@ impl VideoOnlineService {
             });
         }
 
-        let show_key = VideoShow::compute_online_tracked_key(input.source_id, &canonical_video_id);
-        let show =
-            if let Some(mut existing_show) = deps.catalog_repo.find_show_by_key(&show_key).await? {
-                let mut dirty = false;
-                if existing_show.poster_key.is_none() && poster_key.is_some() {
-                    existing_show.poster_key = poster_key.clone();
-                    dirty = true;
-                }
-                if existing_show.summary.is_empty() && !summary.is_empty() {
-                    existing_show.summary = summary.clone();
-                    dirty = true;
-                }
-                if existing_show.year.is_none() && year.is_some() {
-                    existing_show.year = year;
-                    dirty = true;
-                }
-                if dirty {
-                    existing_show.updated_at = now;
-                    deps.catalog_repo.save_show(&existing_show).await?;
-                }
-                existing_show
-            } else {
-                let created = VideoShow {
-                    id: ShowId::new(),
-                    library_id: managed_lib.id,
-                    show_key,
-                    title: title.clone(),
-                    summary: summary.clone(),
-                    year,
-                    genres: genres.clone(),
-                    tags: Vec::new(),
-                    poster_key: poster_key.clone(),
-                    season_count: 1,
-                    episode_count: 0,
-                    created_at: now,
-                    updated_at: now,
-                };
-                deps.catalog_repo.save_show(&created).await?;
-                created
-            };
+        let show = if let Some(mut existing_show) = deps
+            .catalog_repo
+            .find_online_tracked_show(input.source_id, &canonical_video_id)
+            .await?
+        {
+            if existing_show.fill_missing_online_metadata(
+                Some(&summary),
+                year,
+                poster_key.clone(),
+                Some(canonical_detail_url.clone()),
+                now,
+            ) {
+                deps.catalog_repo.save_show(&existing_show).await?;
+            }
+            existing_show
+        } else {
+            let created = VideoShow::new_online_tracked(
+                managed_lib.id,
+                input.source_id,
+                canonical_video_id.clone(),
+                Some(canonical_detail_url.clone()),
+                title.clone(),
+                summary.clone(),
+                year,
+                genres.clone(),
+                poster_key.clone(),
+                now,
+            );
+            deps.catalog_repo.save_show(&created).await?;
+            created
+        };
 
         let existing_eps = deps.catalog_repo.list_episodes_by_show(show.id).await?;
         let existing_play_urls: HashSet<String> = existing_eps
@@ -572,10 +563,11 @@ impl VideoOnlineService {
             .find_show_by_id(show_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("剧集不存在".into()))?;
-        let (source_id, item_key) = show
-            .online_tracked_ref()
+        let (source_id, item_key_ref, show_detail_url_ref) = show
+            .online_tracked()
             .ok_or_else(|| DomainError::Validation("该剧集不是在线追更资源".into()))?;
-        let item_key = item_key.to_string();
+        let item_key = item_key_ref.to_string();
+        let show_detail_url = show_detail_url_ref.map(str::to_string);
 
         let existing_eps = deps.catalog_repo.list_episodes_by_show(show.id).await?;
         let first_info = existing_eps
@@ -584,7 +576,8 @@ impl VideoOnlineService {
         let video_id_str = first_info
             .map(|i| i.video_id.clone())
             .unwrap_or_else(|| item_key.clone());
-        let stored_detail_url = first_info.map(|i| i.detail_url.clone());
+        let stored_detail_url =
+            show_detail_url.or_else(|| first_info.map(|i| i.detail_url.clone()));
         let preferred_group = first_info.and_then(|i| i.group_name.clone());
 
         let detail_url_opt = stored_detail_url
@@ -599,24 +592,19 @@ impl VideoOnlineService {
             .ok_or_else(|| DomainError::Validation("刷新失败：上游未返回剧集列表".into()))?;
 
         let now = Timestamp::now();
-        let mut show_dirty = false;
-        if show.poster_key.is_none()
-            && let Some(pk) = self
-                .fetch_and_save_poster_best_effort(deps, source_id, detail.cover_url.as_deref())
+        let fetched_poster = if show.poster_key.is_none() {
+            self.fetch_and_save_poster_best_effort(deps, source_id, detail.cover_url.as_deref())
                 .await
-        {
-            show.poster_key = Some(pk);
-            show_dirty = true;
-        }
-        if show.summary.is_empty()
-            && let Some(ref intro) = detail.intro
-            && !intro.trim().is_empty()
-        {
-            show.summary = intro.trim().to_string();
-            show_dirty = true;
-        }
-        if show_dirty {
-            show.updated_at = now;
+        } else {
+            None
+        };
+        if show.fill_missing_online_metadata(
+            detail.intro.as_deref(),
+            parse_year_opt(detail.year.as_deref()),
+            fetched_poster,
+            stored_detail_url.clone(),
+            now,
+        ) {
             deps.catalog_repo.save_show(&show).await?;
         }
 
@@ -1212,7 +1200,7 @@ impl VideoOnlineService {
             }
         }
 
-        let mut tracking_info = video
+        let tracking_info = video
             .source
             .online_tracking_info()
             .ok_or_else(|| DomainError::Validation("该视频不是在线追更资源".into()))?
@@ -1270,8 +1258,8 @@ impl VideoOnlineService {
             }
         }
 
-        if video.poster_key.is_none()
-            && let Ok(frame_bytes) = deps
+        let fallback_poster_key = if video.poster_key.is_none() {
+            match deps
                 .media_engine
                 .generate_poster_bytes(
                     Path::new(&stored.absolute_path),
@@ -1279,41 +1267,34 @@ impl VideoOnlineService {
                     &video.title,
                 )
                 .await
-            && let Ok(pk) = deps.storage.save_generated_poster_bytes(&frame_bytes).await
-        {
-            video.poster_key = Some(pk);
-        }
+            {
+                Ok(frame_bytes) => deps
+                    .storage
+                    .save_generated_poster_bytes(&frame_bytes)
+                    .await
+                    .ok(),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
 
-        video.container = container;
-        video.file_size = stored.file_size;
-        video.file_hash = stored.file_hash;
-        if probed.duration_secs > 0 {
-            video.duration_secs = probed.duration_secs;
-        }
-        if probed.bit_rate_kbps.is_some() {
-            video.bit_rate_kbps = probed.bit_rate_kbps;
-        }
-        if probed.width.is_some() {
-            video.width = probed.width;
-        }
-        if probed.height.is_some() {
-            video.height = probed.height;
-        }
-        if probed.video_codec.is_some() {
-            video.video_codec = probed.video_codec;
-        }
-        if !probed.audio_streams.is_empty() {
-            video.audio_streams = probed.audio_streams;
-        }
-        if !probed.subtitle_streams.is_empty() {
-            video.subtitle_streams = probed.subtitle_streams;
-        }
-
-        tracking_info.storage_key = Some(stored.storage_key);
-        tracking_info.cached = true;
-        tracking_info.sidecar_subtitles = sidecar_subtitles;
-        video.source = VideoSource::OnlineTracked(Box::new(tracking_info));
-        video.updated_at = Timestamp::now();
+        video.mark_online_cached(
+            container,
+            stored.storage_key,
+            stored.file_size,
+            stored.file_hash,
+            probed.duration_secs,
+            probed.bit_rate_kbps,
+            probed.width,
+            probed.height,
+            probed.video_codec,
+            probed.audio_streams,
+            probed.subtitle_streams,
+            sidecar_subtitles,
+            fallback_poster_key,
+            Timestamp::now(),
+        )?;
 
         deps.catalog_repo.save_video(&video).await?;
         if video.show_id.is_some() {

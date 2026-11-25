@@ -18,6 +18,14 @@ pub(crate) struct VideoShowModel {
     #[unique]
     pub show_key: String,
 
+    pub source_kind: String,
+
+    #[index]
+    pub online_source_id: Option<Uuid>,
+
+    pub online_item_id: Option<String>,
+    pub online_detail_url: Option<String>,
+
     pub title: String,
     pub summary: String,
     pub year: Option<i64>,

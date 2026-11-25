@@ -331,43 +331,20 @@ impl VideoDomainLifecycle {
         let now = Timestamp::now();
         let show_key = VideoShow::compute_show_key(library_id, title);
         if let Some(mut existing) = self.catalog_repo.find_show_by_key(&show_key).await? {
-            let mut dirty = false;
-            if existing.year.is_none() && year.is_some() {
-                existing.year = year;
-                dirty = true;
-            }
-            if existing.genres.is_empty() && !genres.is_empty() {
-                existing.genres = genres.to_vec();
-                dirty = true;
-            }
-            if existing.poster_key.is_none()
-                && let Some(pk) = poster_key
-            {
-                existing.poster_key = Some(pk.to_string());
-                dirty = true;
-            }
-            if dirty {
-                existing.updated_at = now;
+            if existing.fill_missing_scan_metadata(year, genres, poster_key, now) {
                 self.catalog_repo.save_show(&existing).await?;
             }
             return Ok(existing);
         }
 
-        let created = VideoShow {
-            id: ShowId::new(),
+        let created = VideoShow::new_local(
             library_id,
-            show_key,
-            title: title.trim().to_string(),
-            summary: String::new(),
+            title,
             year,
-            genres: genres.to_vec(),
-            tags: Vec::new(),
-            poster_key: poster_key.map(str::to_string),
-            season_count: 1,
-            episode_count: 0,
-            created_at: now,
-            updated_at: now,
-        };
+            genres.to_vec(),
+            poster_key.map(str::to_string),
+            now,
+        );
         self.catalog_repo.save_show(&created).await?;
         Ok(created)
     }
@@ -430,8 +407,7 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                 && sidecar_subtitles == &entry.sidecar_subtitles
             {
                 if existing.is_missing {
-                    existing.is_missing = false;
-                    existing.updated_at = Timestamp::now();
+                    existing.restore_present(Timestamp::now());
                     self.catalog_repo.save_video(&existing).await?;
                     updated_count += 1;
                 }
@@ -486,14 +462,13 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                     )
                 });
             let item = if preserve_moved_edits && let Some(mut migrated) = prev_item.clone() {
-                migrated.source = VideoSource::LocalPath {
-                    relative_path: entry.relative_path,
-                    file_mtime: entry.file_mtime,
-                    sidecar_subtitles: entry.sidecar_subtitles,
-                };
-                migrated.file_hash = file_hash;
-                migrated.is_missing = false;
-                migrated.updated_at = Timestamp::now();
+                migrated.relocate_local_path(
+                    entry.relative_path,
+                    entry.file_mtime,
+                    entry.sidecar_subtitles,
+                    file_hash,
+                    Timestamp::now(),
+                );
                 migrated
             } else {
                 let video_id = prev_ref.map(|v| v.id).unwrap_or_default();
@@ -560,8 +535,7 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
         let mut missing_count = 0u64;
         for (rel, mut old_item) in existing_by_rel {
             if !seen_rel.contains(&rel) && !old_item.is_missing {
-                old_item.is_missing = true;
-                old_item.updated_at = Timestamp::now();
+                old_item.mark_missing(Timestamp::now());
                 self.catalog_repo.save_video(&old_item).await?;
                 missing_count += 1;
             }
@@ -645,7 +619,7 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                 .bindings()
                 .gc_if_orphaned(MediaKind::Video, raw_id, || async {
                     if let Some(show) = self.catalog_repo.find_show_by_id(ShowId(raw_id)).await? {
-                        if show.online_tracked_ref().is_some() {
+                        if show.is_online_tracked() {
                             self.catalog_service
                                 .delete_show_without_bindings(show.id)
                                 .await?;

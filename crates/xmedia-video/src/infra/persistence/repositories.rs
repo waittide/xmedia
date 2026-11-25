@@ -14,8 +14,8 @@ use crate::domain::repository::{
     VideoCatalogRepository, VideoSourceRepository, VideoWatchRepository,
 };
 use crate::domain::video::{
-    ShowQueryFilter, VideoContainer, VideoItem, VideoKindFilter, VideoQueryFilter, VideoShow,
-    VideoSortBy,
+    ShowQueryFilter, ShowSource, VideoContainer, VideoItem, VideoKindFilter, VideoQueryFilter,
+    VideoShow, VideoSortBy,
 };
 use crate::domain::watch::{VideoFavoriteEntry, VideoFavoriteKind, VideoShelf, WatchProgress};
 use crate::source::model::SourceRuntimeState;
@@ -72,10 +72,23 @@ impl ToastyVideoCatalogRepository {
     }
 
     fn show_to_domain(m: VideoShowModel) -> VideoShow {
+        let source = if m.source_kind == "online_tracked"
+            && let (Some(source_id), Some(item_id)) = (m.online_source_id, m.online_item_id)
+            && !item_id.trim().is_empty()
+        {
+            ShowSource::OnlineTracked {
+                source_id,
+                item_id,
+                detail_url: m.online_detail_url,
+            }
+        } else {
+            ShowSource::Local
+        };
         VideoShow {
             id: ShowId(m.id),
             library_id: LibraryId(m.library_id),
             show_key: m.show_key,
+            source,
             title: m.title,
             summary: m.summary,
             year: m.year.and_then(|y| i32::try_from(y).ok()),
@@ -368,6 +381,32 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(row.map(Self::show_to_domain))
     }
 
+    async fn find_online_tracked_show(
+        &self,
+        source_id: Uuid,
+        item_id: &str,
+    ) -> DomainResult<Option<VideoShow>> {
+        let clean_item = item_id.trim();
+        if clean_item.is_empty() {
+            return Ok(None);
+        }
+        let mut db = self.db.clone();
+        let rows = VideoShowModel::filter_by_online_source_id(source_id)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::show_to_domain).find(|s| {
+            matches!(
+                &s.source,
+                ShowSource::OnlineTracked {
+                    source_id: sid,
+                    item_id: iid,
+                    ..
+                } if *sid == source_id && iid == clean_item
+            )
+        }))
+    }
+
     async fn find_shows_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoShow>> {
         let clean = poster_key.trim();
         if clean.is_empty() {
@@ -445,11 +484,28 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         let year_i64 = s.year.map(i64::from);
         let seasons_i64 = i64::from(s.season_count);
         let eps_i64 = i64::from(s.episode_count);
+        let (source_kind, online_source_id, online_item_id, online_detail_url) = match &s.source {
+            ShowSource::Local => ("local".to_string(), None, None, None),
+            ShowSource::OnlineTracked {
+                source_id,
+                item_id,
+                detail_url,
+            } => (
+                "online_tracked".to_string(),
+                Some(*source_id),
+                Some(item_id.clone()),
+                detail_url.clone(),
+            ),
+        };
 
         if let Some(mut rec) = existing {
             rec.update()
                 .library_id(s.library_id.0)
                 .show_key(&s.show_key)
+                .source_kind(source_kind)
+                .online_source_id(online_source_id)
+                .online_item_id(online_item_id)
+                .online_detail_url(online_detail_url)
                 .title(&s.title)
                 .summary(&s.summary)
                 .year(year_i64)
@@ -467,6 +523,10 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
                 id: s.id.0,
                 library_id: s.library_id.0,
                 show_key: s.show_key.clone(),
+                source_kind,
+                online_source_id,
+                online_item_id,
+                online_detail_url,
                 title: s.title.clone(),
                 summary: s.summary.clone(),
                 year: year_i64,

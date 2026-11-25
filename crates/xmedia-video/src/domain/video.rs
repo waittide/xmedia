@@ -210,11 +210,42 @@ impl VideoSource {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ShowSource {
+    #[default]
+    Local,
+    OnlineTracked {
+        source_id: Uuid,
+        item_id: String,
+        detail_url: Option<String>,
+    },
+}
+
+impl ShowSource {
+    pub fn is_online_tracked(&self) -> bool {
+        matches!(self, Self::OnlineTracked { .. })
+    }
+
+    pub fn online_tracked(&self) -> Option<(Uuid, &str, Option<&str>)> {
+        match self {
+            Self::Local => None,
+            Self::OnlineTracked {
+                source_id,
+                item_id,
+                detail_url,
+            } => Some((*source_id, item_id.as_str(), detail_url.as_deref())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoShow {
     pub id: ShowId,
     pub library_id: LibraryId,
     pub show_key: String,
+    #[serde(default)]
+    pub source: ShowSource,
     pub title: String,
     pub summary: String,
     pub year: Option<i32>,
@@ -228,32 +259,165 @@ pub struct VideoShow {
 }
 
 impl VideoShow {
-    pub const ONLINE_TRACKED_KEY_PREFIX: &'static str = "online_tracked:";
-
     pub fn compute_show_key(library_id: LibraryId, title: &str) -> String {
         format!("{}:{}", library_id.0, title.trim().to_lowercase())
     }
 
-    pub fn compute_online_tracked_key(source_id: Uuid, item_key: &str) -> String {
-        format!(
-            "{}{source_id}:{}",
-            Self::ONLINE_TRACKED_KEY_PREFIX,
-            item_key.trim()
-        )
+    fn compute_tracked_unique_key(source_id: Uuid, item_id: &str) -> String {
+        format!("tracked:{source_id}:{}", item_id.trim())
     }
 
-    pub fn online_tracked_ref(&self) -> Option<(Uuid, &str)> {
-        let rest = self
-            .show_key
-            .strip_prefix(Self::ONLINE_TRACKED_KEY_PREFIX)?;
-        let (sid_str, item_key) = rest.split_once(':')?;
-        let source_id = Uuid::parse_str(sid_str.trim()).ok()?;
-        let item_key = item_key.trim();
-        (!item_key.is_empty()).then_some((source_id, item_key))
+    pub fn new_local(
+        library_id: LibraryId,
+        title: &str,
+        year: Option<i32>,
+        genres: Vec<String>,
+        poster_key: Option<String>,
+        now: Timestamp,
+    ) -> Self {
+        let clean_title = title.trim().to_string();
+        let show_key = Self::compute_show_key(library_id, &clean_title);
+        Self {
+            id: ShowId::new(),
+            library_id,
+            show_key,
+            source: ShowSource::Local,
+            title: clean_title,
+            summary: String::new(),
+            year,
+            genres,
+            tags: Vec::new(),
+            poster_key,
+            season_count: 1,
+            episode_count: 0,
+            created_at: now,
+            updated_at: now,
+        }
     }
 
-    /// Applies a metadata patch to this show, syncing `show_key` on rename and normalizing
-    /// `genres`/`tags`. Returns `Ok(true)` if the show title changed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_online_tracked(
+        library_id: LibraryId,
+        source_id: Uuid,
+        item_id: String,
+        detail_url: Option<String>,
+        title: String,
+        summary: String,
+        year: Option<i32>,
+        genres: Vec<String>,
+        poster_key: Option<String>,
+        now: Timestamp,
+    ) -> Self {
+        let clean_item_id = item_id.trim().to_string();
+        let show_key = Self::compute_tracked_unique_key(source_id, &clean_item_id);
+        Self {
+            id: ShowId::new(),
+            library_id,
+            show_key,
+            source: ShowSource::OnlineTracked {
+                source_id,
+                item_id: clean_item_id,
+                detail_url: detail_url
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty()),
+            },
+            title: title.trim().to_string(),
+            summary: summary.trim().to_string(),
+            year,
+            genres,
+            tags: Vec::new(),
+            poster_key,
+            season_count: 1,
+            episode_count: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn is_online_tracked(&self) -> bool {
+        self.source.is_online_tracked()
+    }
+
+    pub fn online_tracked(&self) -> Option<(Uuid, &str, Option<&str>)> {
+        self.source.online_tracked()
+    }
+
+    pub fn set_poster_key(&mut self, poster_key: String, now: Timestamp) {
+        self.poster_key = Some(poster_key);
+        self.updated_at = now;
+    }
+
+    pub fn fill_missing_scan_metadata(
+        &mut self,
+        year: Option<i32>,
+        genres: &[String],
+        poster_key: Option<&str>,
+        now: Timestamp,
+    ) -> bool {
+        let mut dirty = false;
+        if self.year.is_none() && year.is_some() {
+            self.year = year;
+            dirty = true;
+        }
+        if self.genres.is_empty() && !genres.is_empty() {
+            self.genres = genres.to_vec();
+            dirty = true;
+        }
+        if self.poster_key.is_none()
+            && let Some(pk) = poster_key
+        {
+            self.poster_key = Some(pk.to_string());
+            dirty = true;
+        }
+        if dirty {
+            self.updated_at = now;
+        }
+        dirty
+    }
+
+    pub fn fill_missing_online_metadata(
+        &mut self,
+        summary: Option<&str>,
+        year: Option<i32>,
+        poster_key: Option<String>,
+        detail_url: Option<String>,
+        now: Timestamp,
+    ) -> bool {
+        let mut dirty = false;
+        if self.poster_key.is_none() && poster_key.is_some() {
+            self.poster_key = poster_key;
+            dirty = true;
+        }
+        if self.summary.is_empty()
+            && let Some(intro) = summary.map(str::trim).filter(|s| !s.is_empty())
+        {
+            self.summary = intro.to_string();
+            dirty = true;
+        }
+        if self.year.is_none() && year.is_some() {
+            self.year = year;
+            dirty = true;
+        }
+        if let ShowSource::OnlineTracked {
+            detail_url: ref mut existing_detail,
+            ..
+        } = self.source
+            && existing_detail.is_none()
+            && let Some(durl) = detail_url
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+        {
+            *existing_detail = Some(durl);
+            dirty = true;
+        }
+        if dirty {
+            self.updated_at = now;
+        }
+        dirty
+    }
+
+    /// Applies a metadata patch to this show, syncing `show_key` on rename for local shows and
+    /// normalizing `genres`/`tags`. Returns `Ok(true)` if the show title changed.
     pub fn apply_patch(&mut self, patch: ShowMetadataPatch) -> DomainResult<bool> {
         let mut title_changed = false;
         if let Some(title) = patch.title {
@@ -263,7 +427,7 @@ impl VideoShow {
             }
             if self.title != trimmed {
                 self.title = trimmed.to_string();
-                if !self.show_key.starts_with(Self::ONLINE_TRACKED_KEY_PREFIX) {
+                if !self.source.is_online_tracked() {
                     self.show_key = Self::compute_show_key(self.library_id, &self.title);
                 }
                 title_changed = true;
@@ -385,6 +549,99 @@ impl VideoItem {
         self.updated_at = Timestamp::now();
         Ok(())
     }
+
+    pub fn set_poster_key(&mut self, poster_key: String, now: Timestamp) {
+        self.poster_key = Some(poster_key);
+        self.updated_at = now;
+    }
+
+    pub fn set_show_title(&mut self, show_title: String, now: Timestamp) {
+        self.show_title = Some(show_title);
+        self.updated_at = now;
+    }
+
+    pub fn mark_missing(&mut self, now: Timestamp) {
+        self.is_missing = true;
+        self.updated_at = now;
+    }
+
+    pub fn restore_present(&mut self, now: Timestamp) {
+        self.is_missing = false;
+        self.updated_at = now;
+    }
+
+    pub fn relocate_local_path(
+        &mut self,
+        relative_path: String,
+        file_mtime: i64,
+        sidecar_subtitles: Vec<SidecarSubtitle>,
+        file_hash: String,
+        now: Timestamp,
+    ) {
+        self.source = VideoSource::LocalPath {
+            relative_path,
+            file_mtime,
+            sidecar_subtitles,
+        };
+        self.file_hash = file_hash;
+        self.is_missing = false;
+        self.updated_at = now;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn mark_online_cached(
+        &mut self,
+        container: VideoContainer,
+        storage_key: String,
+        file_size: u64,
+        file_hash: String,
+        duration_secs: u32,
+        bit_rate_kbps: Option<u32>,
+        width: Option<u32>,
+        height: Option<u32>,
+        video_codec: Option<String>,
+        audio_streams: Vec<ProbedAudioStream>,
+        subtitle_streams: Vec<ProbedSubtitleStream>,
+        sidecar_subtitles: Vec<SidecarSubtitle>,
+        fallback_poster_key: Option<String>,
+        now: Timestamp,
+    ) -> DomainResult<()> {
+        let VideoSource::OnlineTracked(ref mut tracking_info) = self.source else {
+            return Err(DomainError::Validation("该视频不是在线追更资源".into()));
+        };
+        if self.poster_key.is_none() && fallback_poster_key.is_some() {
+            self.poster_key = fallback_poster_key;
+        }
+        self.container = container;
+        self.file_size = file_size;
+        self.file_hash = file_hash;
+        if duration_secs > 0 {
+            self.duration_secs = duration_secs;
+        }
+        if bit_rate_kbps.is_some() {
+            self.bit_rate_kbps = bit_rate_kbps;
+        }
+        if width.is_some() {
+            self.width = width;
+        }
+        if height.is_some() {
+            self.height = height;
+        }
+        if video_codec.is_some() {
+            self.video_codec = video_codec;
+        }
+        if !audio_streams.is_empty() {
+            self.audio_streams = audio_streams;
+        }
+        if !subtitle_streams.is_empty() {
+            self.subtitle_streams = subtitle_streams;
+        }
+        tracking_info.storage_key = Some(storage_key);
+        tracking_info.cached = true;
+        tracking_info.sidecar_subtitles = sidecar_subtitles;
+        self.updated_at = now;
+        Ok(())
+    }
 }
 
 pub fn normalize_string_list(values: Vec<String>) -> Vec<String> {
@@ -476,6 +733,7 @@ mod tests {
             id: ShowId::new(),
             library_id,
             show_key: VideoShow::compute_show_key(library_id, "Frieren"),
+            source: ShowSource::Local,
             title: "Frieren".into(),
             summary: String::new(),
             year: Some(2023),
@@ -613,5 +871,42 @@ mod tests {
             ..Default::default()
         });
         assert!(matches!(err, Err(DomainError::Validation(_))));
+    }
+
+    #[test]
+    fn online_tracked_show_uses_typed_show_source_without_key_prefix_parsing() {
+        let lib_id = LibraryId::new();
+        let src_id = Uuid::now_v7();
+        let now = Timestamp::now();
+        let mut show = VideoShow::new_online_tracked(
+            lib_id,
+            src_id,
+            "vod-42".into(),
+            Some("https://example.com/vod/42".into()),
+            "Original Show".into(),
+            String::new(),
+            None,
+            vec![],
+            None,
+            now,
+        );
+
+        assert!(show.is_online_tracked());
+        assert_eq!(
+            show.online_tracked(),
+            Some((src_id, "vod-42", Some("https://example.com/vod/42")))
+        );
+
+        let initial_key = show.show_key.clone();
+        let title_changed = show
+            .apply_patch(ShowMetadataPatch {
+                title: Some("Renamed Online Show".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(title_changed);
+        assert_eq!(show.title, "Renamed Online Show");
+        assert_eq!(show.show_key, initial_key);
+        assert!(show.is_online_tracked());
     }
 }
