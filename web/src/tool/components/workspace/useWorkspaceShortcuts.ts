@@ -1,31 +1,22 @@
-import { onBeforeUnmount, onMounted, type ComputedRef, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted } from 'vue'
+import { useToolInspectorStore } from '../../stores/inspector'
+import { useToolScrapeStore } from '../../stores/scrape'
+import { useToolWorkspaceStore } from '../../stores/workspace'
 import { useToolTaskStore } from '../../tasks'
-import type { MediaFileDetail, MediaFileEntry } from '../../types'
-import { PAGE_CHUNK_SIZE, isTypingTarget, type PrimaryNavKey } from './hashState'
+import { PAGE_CHUNK_SIZE, isTypingTarget } from './hashState'
 
 export interface UseWorkspaceShortcutsOptions {
-  activeNav: Ref<PrimaryNavKey>
-  scrapeWorkbenchActive: Ref<boolean>
-  mobileMenuOpen: Ref<boolean>
-  activeDetail: Ref<MediaFileDetail | null>
-  selectedPaths: Ref<Set<string>>
-  inspectingPath: Ref<string | null>
-  visibleLimit: Ref<number>
-  filteredFiles: ComputedRef<MediaFileEntry[]>
-  anyModalOpen: ComputedRef<boolean>
   focusSearch: () => void
-  requestCloseInspector: () => void
-  isInspectorDirty: () => boolean
-  isWorkbenchDirty: () => boolean
-  entrySelectionKey: (entry: Pick<MediaFileEntry, 'root_id' | 'rel_path'>) => string
-  inspectEntry: (entry: MediaFileEntry) => Promise<void>
 }
 
 export function useWorkspaceShortcuts(opts: UseWorkspaceShortcutsOptions) {
+  const workspaceStore = useToolWorkspaceStore()
+  const inspectorStore = useToolInspectorStore()
+  const scrapeStore = useToolScrapeStore()
   const taskStore = useToolTaskStore()
 
   function handleKeydown(ev: KeyboardEvent): void {
-    if (opts.anyModalOpen.value) return
+    if (workspaceStore.anyModalOpen) return
     if (
       typeof document !== 'undefined' &&
       document.querySelector('[aria-modal="true"], [role="menu"], [role="listbox"]')
@@ -38,46 +29,50 @@ export function useWorkspaceShortcuts(opts: UseWorkspaceShortcutsOptions) {
       return
     }
     if (ev.key === 'Escape') {
-      if (opts.mobileMenuOpen.value) {
+      if (workspaceStore.mobileMenuOpen) {
         ev.preventDefault()
-        opts.mobileMenuOpen.value = false
-      } else if (opts.activeDetail.value && !opts.scrapeWorkbenchActive.value) {
+        workspaceStore.mobileMenuOpen = false
+      } else if (inspectorStore.activeDetail && !scrapeStore.scrapeWorkbenchActive) {
         ev.preventDefault()
-        opts.requestCloseInspector()
-      } else if (opts.selectedPaths.value.size > 0) {
+        void inspectorStore.requestCloseInspector()
+      } else if (workspaceStore.selectedPaths.size > 0) {
         ev.preventDefault()
-        opts.selectedPaths.value = new Set()
+        workspaceStore.clearSelection()
       }
       return
     }
     if (isTypingTarget(ev.target)) return
     if (
-      opts.activeNav.value === 'items' &&
-      !opts.scrapeWorkbenchActive.value &&
+      workspaceStore.activeNav === 'items' &&
+      !scrapeStore.scrapeWorkbenchActive &&
       (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')
     ) {
-      const list = opts.filteredFiles.value
+      const list = workspaceStore.filteredFiles
       if (list.length === 0) return
       ev.preventDefault()
-      const curIdx = opts.inspectingPath.value
-        ? list.findIndex((f) => opts.entrySelectionKey(f) === opts.inspectingPath.value)
+      const curIdx = inspectorStore.inspectingPath
+        ? list.findIndex((f) => workspaceStore.entrySelectionKey(f) === inspectorStore.inspectingPath)
         : -1
       const nextIdx =
         ev.key === 'ArrowDown'
           ? Math.min(list.length - 1, curIdx + 1)
           : Math.max(0, curIdx <= 0 ? 0 : curIdx - 1)
-      if (nextIdx >= opts.visibleLimit.value) {
-        opts.visibleLimit.value = nextIdx + PAGE_CHUNK_SIZE
+      if (nextIdx >= workspaceStore.visibleLimit) {
+        workspaceStore.visibleLimit = nextIdx + PAGE_CHUNK_SIZE
       }
       const target = list[nextIdx]
       if (target) {
-        void opts.inspectEntry(target)
+        void workspaceStore.inspectEntry(target)
       }
     }
   }
 
   function handleBeforeUnload(ev: BeforeUnloadEvent): void {
-    if (taskStore.activeCount > 0 || opts.isInspectorDirty() || opts.isWorkbenchDirty()) {
+    if (
+      taskStore.activeCount > 0 ||
+      inspectorStore.isInspectorDirty() ||
+      inspectorStore.isWorkbenchDirty()
+    ) {
       ev.preventDefault()
       ev.returnValue = ''
     }

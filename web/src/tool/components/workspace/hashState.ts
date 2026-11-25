@@ -17,9 +17,22 @@ export interface ParsedToolHash {
   rootId?: string
   relPath?: string
   settingsTab?: ToolSettingsTab
+  workbench?: boolean
+  item?: string
+}
+
+export interface BuildToolHashInput {
+  domain: MediaKind
+  nav: PrimaryNavKey
+  rootId?: string
+  relPath?: string
+  settingsTab?: ToolSettingsTab
+  workbench?: boolean
+  item?: string | null
 }
 
 export function parseToolHash(): ParsedToolHash {
+  if (typeof window === 'undefined') return {}
   const raw = window.location.hash.replace(/^#\/?/, '')
   if (!raw) return {}
   const [pathPart, queryPart = ''] = raw.split('?')
@@ -40,7 +53,32 @@ export function parseToolHash(): ParsedToolHash {
   if (tab === 'appearance' || tab === 'scrapers' || tab === 'roots' || tab === 'templates') {
     out.settingsTab = tab
   }
+  if (params.get('wb') === '1') {
+    out.workbench = true
+  }
+  const item = params.get('item')
+  if (item) {
+    out.item = item
+  }
   return out
+}
+
+export function buildToolHash(state: BuildToolHashInput): string {
+  const params = new URLSearchParams()
+  if (state.nav === 'settings') {
+    params.set('tab', state.settingsTab ?? 'appearance')
+  } else {
+    if (state.rootId) params.set('root', state.rootId)
+    if (state.relPath) params.set('path', state.relPath)
+    if (state.nav === 'items' && state.workbench) {
+      params.set('wb', '1')
+    }
+    if ((state.nav === 'items' || state.nav === 'home') && state.item) {
+      params.set('item', state.item)
+    }
+  }
+  const qs = params.toString()
+  return `#/${state.domain}/${state.nav}${qs ? `?${qs}` : ''}`
 }
 
 export function loadSavedDomain(initialHash: ParsedToolHash): MediaKind {
@@ -54,6 +92,7 @@ export function loadSavedDomain(initialHash: ParsedToolHash): MediaKind {
 
 export function loadSavedNav(initialHash: ParsedToolHash): PrimaryNavKey {
   if (initialHash.nav) return initialHash.nav
+  if (initialHash.workbench) return 'items'
   const saved = localStorage.getItem('xmedia_tool.active_nav')
   if (saved === 'home' || saved === 'items') return saved
   return 'home'

@@ -18,10 +18,17 @@ import { useSnackbarStore } from '@/stores/snackbar'
 import { toolApi } from '../api'
 import type { MetadataHistoryBatchDto, RenameHistoryBatchDto } from '../types'
 
-const props = defineProps<{
-  open: boolean
-  rootId?: string | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    open: boolean
+    rootId?: string | null
+    initialTab?: 'metadata' | 'rename'
+  }>(),
+  {
+    rootId: null,
+    initialTab: 'metadata',
+  },
+)
 
 const emit = defineEmits<{
   close: []
@@ -69,6 +76,7 @@ watch(
   () => props.open,
   (isOpen) => {
     if (isOpen) {
+      activeTab.value = props.initialTab
       errorMsg.value = null
       void loadHistory()
     }

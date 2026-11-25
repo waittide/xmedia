@@ -6,6 +6,7 @@ import {
   LuCheck,
   LuFileSignature,
   LuRefreshCw,
+  LuUndo2,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
@@ -19,7 +20,6 @@ import { DOMAIN_RENAME_TEMPLATE_SPECS } from '../templates'
 import type {
   MediaFileEntry,
   RenameConflictPolicy,
-  RenameHistoryBatchDto,
   RenamePlanItem,
   RenameTemplatesDto,
 } from '../types'
@@ -35,6 +35,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   renamed: [movedCount: number, movedMap: Record<string, string>]
+  openHistory: []
 }>()
 
 const templateInput = ref('')
@@ -54,34 +55,6 @@ const previewSpinning = computed(() => loadingPreview.value || previewFeedback.r
 const executing = ref(false)
 const inlineProgressPct = ref<number | null>(null)
 const errorMsg = ref<string | null>(null)
-const undoHistory = ref<RenameHistoryBatchDto[]>([])
-const showUndoHistory = ref(false)
-const undoingBatchId = ref<string | null>(null)
-const undoNotice = ref<string | null>(null)
-
-async function loadUndoHistory(): Promise<void> {
-  try {
-    undoHistory.value = await toolApi.listRenameHistory(props.rootId)
-  } catch {
-    // ignore history load failure
-  }
-}
-
-async function handleUndoBatch(batchId: string): Promise<void> {
-  undoingBatchId.value = batchId
-  errorMsg.value = null
-  undoNotice.value = null
-  try {
-    const rep = await toolApi.undoRenameBatch(batchId)
-    undoNotice.value = '已撤销并恢复 ' + rep.restored_count + ' 个文件' + (rep.skipped_conflicts.length > 0 ? '（跳过 ' + rep.skipped_conflicts.length + ' 个冲突项）' : '')
-    await loadUndoHistory()
-    emit('renamed', rep.restored_count, {})
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    undoingBatchId.value = null
-  }
-}
 
 const dominantKind = computed<MediaKind>(() => props.entries[0]?.media_kind ?? 'music')
 
@@ -178,7 +151,6 @@ watch(
         suppressPreviewWatch = false
       })
       void runPreview()
-      void loadUndoHistory()
     } else {
       requestSeq += 1
     }
@@ -541,44 +513,6 @@ async function handleExecute(): Promise<void> {
           </div>
         </div>
       </div>
-
-      <!-- Undo History Drawer -->
-      <div
-        v-if="showUndoHistory"
-        class="max-h-44 space-y-2 overflow-y-auto rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3 text-xs"
-      >
-        <div class="flex items-center justify-between">
-          <span class="font-semibold">最近批量重命名记录（一键回滚原路径）</span>
-          <span v-if="undoNotice" class="text-[var(--md-sys-color-success)]">{{ undoNotice }}</span>
-        </div>
-        <div v-if="undoHistory.length === 0" class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-          暂无可撤销的重命名记录。
-        </div>
-        <div v-else class="space-y-1.5">
-          <div
-            v-for="batch in undoHistory"
-            :key="batch.batch_id"
-            class="flex items-center justify-between gap-3 rounded-xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface)] px-3 py-2"
-          >
-            <div class="min-w-0">
-              <div class="font-medium">
-                已移动 {{ batch.moved_count }} 项 · {{ new Date(batch.created_at_unix * 1000).toLocaleString() }}
-              </div>
-              <div class="truncate text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                示例：{{ batch.moves[0]?.from_rel_path }} → {{ batch.moves[0]?.to_rel_path }}
-              </div>
-            </div>
-            <button
-              type="button"
-              :disabled="undoingBatchId === batch.batch_id"
-              class="md-btn md-btn-sm md-state shrink-0 bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]"
-              @click="handleUndoBatch(batch.batch_id)"
-            >
-              {{ undoingBatchId === batch.batch_id ? '回滚中…' : '一键撤销' }}
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
 
     <template #footer>
@@ -587,12 +521,12 @@ async function handleExecute(): Promise<void> {
           共 {{ actionableCount }} 项待归档（冲突项与未变化项会自动跳过）
         </span>
         <button
-          v-if="undoHistory.length > 0"
           type="button"
-          class="md-btn md-btn-sm md-btn-outlined md-state"
-          @click="showUndoHistory = !showUndoHistory"
+          class="md-btn md-btn-sm md-btn-text md-state"
+          @click="emit('openHistory')"
         >
-          {{ showUndoHistory ? '收起撤销历史' : '撤销历史 (' + undoHistory.length + ')' }}
+          <LuUndo2 class="h-3.5 w-3.5" />
+          <span>撤销历史</span>
         </button>
       </div>
       <div class="flex items-center gap-2">

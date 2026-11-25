@@ -1,14 +1,7 @@
 <script setup lang="ts">
 import { defineAsyncComponent } from 'vue'
-import type { MediaKind } from '@/types/api'
-import type {
-  AutoScrapeOptionsDto,
-  BatchMetadataEditReportDto,
-  MediaFileDetail,
-  MediaFileEntry,
-  NormalizeBooksBatchReportDto,
-  PublicSettingsDto,
-} from '../../types'
+import { useToolScrapeStore } from '../../stores/scrape'
+import { useToolWorkspaceStore } from '../../stores/workspace'
 
 const AutoScrapeOptionsModal = defineAsyncComponent(() => import('../AutoScrapeOptionsModal.vue'))
 const BatchMetadataModal = defineAsyncComponent(() => import('../BatchMetadataModal.vue'))
@@ -22,175 +15,130 @@ const MusicToolboxModal = defineAsyncComponent(() => import('../MusicToolboxModa
 const DryRunScrapeModal = defineAsyncComponent(() => import('../DryRunScrapeModal.vue'))
 const VideoToolboxModal = defineAsyncComponent(() => import('../VideoToolboxModal.vue'))
 
-defineProps<{
-  activeDomain: MediaKind
-  settings: PublicSettingsDto | null
-  selectedEntriesForRename: MediaFileEntry[]
-  selectedComicEntries: MediaFileEntry[]
-  effectiveModalRootId: string
-  effectiveHistoryRootId: string
-  effectiveBookNormalizeRootId: string
-  effectiveComicRootId: string
-  effectiveMusicRootId: string
-  effectiveVideoRootId: string
-  effectiveDryRunRootId: string
-  batchMetadataModalOpen: boolean
-  historyModalOpen: boolean
-  renameModalOpen: boolean
-  renameTargetEntries: MediaFileEntry[] | null
-  renameSkippedOrganizedCount: number
-  bookEditorOpen: boolean
-  bookEditorEntry: MediaFileEntry | null
-  bookNormalizeOpen: boolean
-  bookNormalizeEntries: MediaFileEntry[]
-  comicPageManagerOpen: boolean
-  comicPageManagerEntry: MediaFileEntry | null
-  comicSeriesToolsOpen: boolean
-  musicToolsOpen: boolean
-  musicToolsEntries: MediaFileEntry[]
-  videoToolsOpen: boolean
-  videoToolsEntries: MediaFileEntry[]
-  autoScrapeModalOpen: boolean
-  autoScrapeTargetEntries: MediaFileEntry[]
-  dryRunModalOpen: boolean
-  dryRunTargetEntries: MediaFileEntry[] | null
-  dryRunScrapeOptions: AutoScrapeOptionsDto | undefined
-}>()
-
-const emit = defineEmits<{
-  'close-batch-metadata': []
-  'batch-metadata-completed': [report: BatchMetadataEditReportDto]
-  'open-history-from-batch': []
-  'close-history': []
-  'history-restored': []
-  'close-rename': []
-  renamed: [movedCount: number, movedMap: Record<string, string>]
-  'close-book-editor': []
-  'book-content-saved': [updated: MediaFileDetail]
-  'txt-converted': [epubDetail: MediaFileDetail, deletedSourceTxt: boolean]
-  'close-book-normalize': []
-  'book-normalize-completed': [report: NormalizeBooksBatchReportDto]
-  'close-comic-page-manager': []
-  'detail-updated-with-art': [detail: MediaFileDetail]
-  'close-comic-series-tools': []
-  'reload-scope': []
-  'close-music-tools': []
-  'close-video-tools': []
-  'close-auto-scrape': []
-  'auto-scrape-confirmed': [entries: MediaFileEntry[], options: AutoScrapeOptionsDto]
-  'auto-scrape-to-dry-run': [entries: MediaFileEntry[], options: AutoScrapeOptionsDto]
-  'open-scraper-settings': []
-  'close-dry-run': []
-  'dry-run-confirmed': [entries: MediaFileEntry[], options: AutoScrapeOptionsDto | undefined]
-  'dry-run-manual-scrape': [entries: MediaFileEntry[]]
-}>()
+const workspaceStore = useToolWorkspaceStore()
+const scrapeStore = useToolScrapeStore()
 </script>
 
 <template>
   <BatchMetadataModal
-    v-if="batchMetadataModalOpen && effectiveModalRootId"
-    :open="batchMetadataModalOpen"
-    :root-id="effectiveModalRootId"
-    :domain="activeDomain"
-    :entries="selectedEntriesForRename"
-    @close="emit('close-batch-metadata')"
-    @completed="emit('batch-metadata-completed', $event)"
-    @open-history="emit('open-history-from-batch')"
+    v-if="workspaceStore.batchMetadataModalOpen && workspaceStore.effectiveModalRootId"
+    :open="workspaceStore.batchMetadataModalOpen"
+    :root-id="workspaceStore.effectiveModalRootId"
+    :domain="workspaceStore.activeDomain"
+    :entries="workspaceStore.selectedEntriesForRename"
+    @close="workspaceStore.batchMetadataModalOpen = false"
+    @completed="workspaceStore.handleBatchMetadataCompleted"
+    @open-history="
+      workspaceStore.batchMetadataModalOpen = false;
+      workspaceStore.openHistoryModal('metadata')
+    "
   />
 
   <MetadataHistoryModal
-    v-if="historyModalOpen"
-    :open="historyModalOpen"
-    :root-id="effectiveHistoryRootId"
-    @close="emit('close-history')"
-    @restored="emit('history-restored')"
+    v-if="workspaceStore.historyModalOpen"
+    :open="workspaceStore.historyModalOpen"
+    :root-id="workspaceStore.effectiveHistoryRootId"
+    :initial-tab="workspaceStore.historyInitialTab"
+    @close="workspaceStore.historyModalOpen = false"
+    @restored="workspaceStore.handleHistoryRestored"
   />
 
   <BatchRenameModal
-    v-if="renameModalOpen && settings && effectiveModalRootId"
-    :open="renameModalOpen"
-    :root-id="effectiveModalRootId"
-    :entries="renameTargetEntries ?? selectedEntriesForRename"
-    :skipped-organized-count="renameSkippedOrganizedCount"
-    :templates="settings.rename_templates"
-    @close="emit('close-rename')"
-    @renamed="(count, map) => emit('renamed', count, map)"
+    v-if="
+      workspaceStore.renameModalOpen &&
+      workspaceStore.settings &&
+      workspaceStore.effectiveModalRootId
+    "
+    :open="workspaceStore.renameModalOpen"
+    :root-id="workspaceStore.effectiveModalRootId"
+    :entries="workspaceStore.renameTargetEntries ?? workspaceStore.selectedEntriesForRename"
+    :skipped-organized-count="workspaceStore.renameSkippedOrganizedCount"
+    :templates="workspaceStore.settings.rename_templates"
+    @close="workspaceStore.closeRenameModal()"
+    @renamed="(count, map) => workspaceStore.handleRenamed(count, map)"
+    @open-history="
+      workspaceStore.closeRenameModal();
+      workspaceStore.openHistoryModal('rename')
+    "
   />
 
   <BookContentEditorModal
-    v-if="bookEditorOpen"
-    :open="bookEditorOpen"
-    :entry="bookEditorEntry"
-    @close="emit('close-book-editor')"
-    @saved="emit('book-content-saved', $event)"
-    @converted="(detail, deleted) => emit('txt-converted', detail, deleted)"
+    v-if="workspaceStore.bookEditorOpen"
+    :open="workspaceStore.bookEditorOpen"
+    :entry="workspaceStore.bookEditorEntry"
+    @close="workspaceStore.bookEditorOpen = false"
+    @saved="scrapeStore.handleBookContentSaved"
+    @converted="(detail, deleted) => workspaceStore.handleTxtConvertedToEpub(detail, deleted)"
   />
 
   <BookNormalizeEpubModal
-    v-if="bookNormalizeOpen && effectiveBookNormalizeRootId"
-    :open="bookNormalizeOpen"
-    :root-id="effectiveBookNormalizeRootId"
-    :entries="bookNormalizeEntries"
-    @close="emit('close-book-normalize')"
-    @completed="emit('book-normalize-completed', $event)"
+    v-if="workspaceStore.bookNormalizeOpen && workspaceStore.effectiveBookNormalizeRootId"
+    :open="workspaceStore.bookNormalizeOpen"
+    :root-id="workspaceStore.effectiveBookNormalizeRootId"
+    :entries="workspaceStore.bookNormalizeEntries"
+    @close="workspaceStore.bookNormalizeOpen = false"
+    @completed="workspaceStore.handleBookNormalizeCompleted"
   />
 
   <ComicPageManagerModal
-    v-if="comicPageManagerOpen"
-    :open="comicPageManagerOpen"
-    :entry="comicPageManagerEntry"
-    @close="emit('close-comic-page-manager')"
-    @saved="emit('detail-updated-with-art', $event)"
+    v-if="workspaceStore.comicPageManagerOpen"
+    :open="workspaceStore.comicPageManagerOpen"
+    :entry="workspaceStore.comicPageManagerEntry"
+    @close="workspaceStore.comicPageManagerOpen = false"
+    @saved="(detail) => scrapeStore.handleDetailUpdated(detail, true)"
   />
 
   <ComicSeriesToolsModal
-    v-if="comicSeriesToolsOpen"
-    :open="comicSeriesToolsOpen"
-    :root-id="effectiveComicRootId"
-    :entries="selectedComicEntries"
-    @close="emit('close-comic-series-tools')"
-    @completed="emit('reload-scope')"
+    v-if="workspaceStore.comicSeriesToolsOpen"
+    :open="workspaceStore.comicSeriesToolsOpen"
+    :root-id="workspaceStore.effectiveComicRootId"
+    :entries="workspaceStore.selectedComicEntries"
+    @close="workspaceStore.comicSeriesToolsOpen = false"
+    @completed="workspaceStore.reloadCurrentScope()"
   />
 
   <MusicToolboxModal
-    v-if="musicToolsOpen"
-    :open="musicToolsOpen"
-    :root-id="effectiveMusicRootId"
-    :entries="musicToolsEntries"
-    @close="emit('close-music-tools')"
-    @updated="emit('detail-updated-with-art', $event)"
-    @completed="emit('reload-scope')"
+    v-if="workspaceStore.musicToolsOpen"
+    :open="workspaceStore.musicToolsOpen"
+    :root-id="workspaceStore.effectiveMusicRootId"
+    :entries="workspaceStore.musicToolsEntries"
+    @close="workspaceStore.musicToolsOpen = false"
+    @updated="(detail) => scrapeStore.handleDetailUpdated(detail, true)"
+    @completed="workspaceStore.reloadCurrentScope()"
   />
 
   <VideoToolboxModal
-    v-if="videoToolsOpen"
-    :open="videoToolsOpen"
-    :root-id="effectiveVideoRootId"
-    :entries="videoToolsEntries"
-    @close="emit('close-video-tools')"
-    @updated="emit('detail-updated-with-art', $event)"
-    @completed="emit('reload-scope')"
+    v-if="workspaceStore.videoToolsOpen"
+    :open="workspaceStore.videoToolsOpen"
+    :root-id="workspaceStore.effectiveVideoRootId"
+    :entries="workspaceStore.videoToolsEntries"
+    @close="workspaceStore.videoToolsOpen = false"
+    @updated="(detail) => scrapeStore.handleDetailUpdated(detail, true)"
+    @completed="workspaceStore.reloadCurrentScope()"
   />
 
   <AutoScrapeOptionsModal
-    v-if="autoScrapeModalOpen"
-    :open="autoScrapeModalOpen"
-    :domain="activeDomain"
-    :entries="autoScrapeTargetEntries"
-    @close="emit('close-auto-scrape')"
-    @start="(entries, options) => emit('auto-scrape-confirmed', entries, options)"
-    @open-dry-run="(entries, options) => emit('auto-scrape-to-dry-run', entries, options)"
-    @open-settings="emit('open-scraper-settings')"
+    v-if="workspaceStore.autoScrapeModalOpen"
+    :open="workspaceStore.autoScrapeModalOpen"
+    :domain="workspaceStore.activeDomain"
+    :entries="workspaceStore.autoScrapeTargetEntries"
+    @close="workspaceStore.autoScrapeModalOpen = false"
+    @start="(entries, options) => scrapeStore.handleAutoScrapeConfirmed(entries, options)"
+    @open-dry-run="(entries, options) => scrapeStore.handleAutoScrapeToDryRun(entries, options)"
+    @open-settings="
+      workspaceStore.autoScrapeModalOpen = false;
+      workspaceStore.openSettingsTab('scrapers')
+    "
   />
 
   <DryRunScrapeModal
-    v-if="dryRunModalOpen"
-    :open="dryRunModalOpen"
-    :root-id="effectiveDryRunRootId"
-    :entries="dryRunTargetEntries ?? selectedEntriesForRename"
-    :options="dryRunScrapeOptions"
-    @close="emit('close-dry-run')"
-    @confirm="(entries, options) => emit('dry-run-confirmed', entries, options)"
-    @manual-scrape="emit('dry-run-manual-scrape', $event)"
+    v-if="workspaceStore.dryRunModalOpen"
+    :open="workspaceStore.dryRunModalOpen"
+    :root-id="workspaceStore.effectiveDryRunRootId"
+    :entries="workspaceStore.dryRunTargetEntries ?? workspaceStore.selectedEntriesForRename"
+    :options="workspaceStore.dryRunScrapeOptions"
+    @close="workspaceStore.closeDryRunModal()"
+    @confirm="(entries, options) => scrapeStore.enqueueScrapeFiles(entries, undefined, options)"
+    @manual-scrape="scrapeStore.handleDryRunManualScrape"
   />
 </template>

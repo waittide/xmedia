@@ -6,6 +6,8 @@ import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { buildArtworkUrl, toolApi } from '../../api'
 import { entryCompositeKey } from '../../completeness'
+import { saveAndOrganizeEntry } from '../../services/saveEntry'
+import { useToolInspectorStore } from '../../stores/inspector'
 import type {
   MediaFileDetail,
   MediaFileEntry,
@@ -48,6 +50,7 @@ const emit = defineEmits<{
 
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
+const inspectorStore = useToolInspectorStore()
 
 const localForm = useMetadataForm()
 const applyForm = useMetadataForm()
@@ -269,28 +272,13 @@ async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Pr
   errorMsg.value = null
   try {
     const envelope = localForm.buildPatchEnvelope(props.detail.entry.media_kind)
-    let updated = await toolApi.writeMetadata(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
+    const { detail: updated } = await saveAndOrganizeEntry({
+      rootId: props.detail.entry.root_id,
+      relPath: props.detail.entry.rel_path,
+      mediaKind: props.detail.entry.media_kind,
       envelope,
-    )
-    if (organizeAfterSave) {
-      const plan = await toolApi.previewRename(
-        updated.entry.root_id,
-        [updated.entry.rel_path],
-        null,
-        updated.entry.media_kind,
-      )
-      const actionable = plan.find((p) => !p.unchanged && !p.conflict)
-      if (actionable) {
-        await toolApi.executeRename(updated.entry.root_id, [actionable])
-        updated = await toolApi.inspectFile(
-          updated.entry.root_id,
-          actionable.to_rel_path,
-          updated.entry.media_kind,
-        )
-      }
-    }
+      organizeAfterSave,
+    })
     if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
       return
     }
@@ -368,84 +356,26 @@ async function handleApplyAndSave(
     applyForm.applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
 
     const envelope = applyForm.buildPatchEnvelope(props.detail.entry.media_kind)
-    let updated = await toolApi.writeMetadata(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
-      envelope,
-    )
-
-    let bumpedArt = false
-    const coverToUpload = applyForm.pendingCoverUrl.value
-    if (coverToUpload) {
-      try {
-        const slot = updated.entry.media_kind === 'video' ? 'poster' : 'cover'
-        updated = await toolApi.uploadArtworkFromUrl(
-          updated.entry.root_id,
-          updated.entry.rel_path,
-          coverToUpload,
-          slot,
-          updated.entry.media_kind,
-        )
-        bumpedArt = true
-        if (updated.entry.media_kind === 'music' && opts?.writeAlbumCover) {
-          try {
-            updated = await toolApi.uploadArtworkFromUrl(
-              updated.entry.root_id,
-              updated.entry.rel_path,
-              coverToUpload,
-              'album_cover',
-              'music',
-            )
-          } catch {
-            // Non-fatal sidecar album cover failure
-          }
-        }
-      } catch {
-        // Keep persisted metadata even if remote cover download fails
-      }
-      applyForm.pendingCoverUrl.value = null
-    }
-    if (applyForm.pendingBackdropUrl.value && updated.entry.media_kind === 'video') {
-      try {
-        updated = await toolApi.uploadArtworkFromUrl(
-          updated.entry.root_id,
-          updated.entry.rel_path,
-          applyForm.pendingBackdropUrl.value,
-          'fanart',
-          'video',
-        )
-        bumpedArt = true
-      } catch {
-        // Ignore backdrop fetch failure
-      }
-      applyForm.pendingBackdropUrl.value = null
-    }
-
     const organizeAfterSave = Boolean(opts?.organizeAfterSave)
-    if (organizeAfterSave) {
-      const plan = await toolApi.previewRename(
-        updated.entry.root_id,
-        [updated.entry.rel_path],
-        null,
-        updated.entry.media_kind,
-      )
-      const actionable = plan.find((p) => !p.unchanged && !p.conflict)
-      if (actionable) {
-        await toolApi.executeRename(updated.entry.root_id, [actionable])
-        updated = await toolApi.inspectFile(
-          updated.entry.root_id,
-          actionable.to_rel_path,
-          updated.entry.media_kind,
-        )
-      }
-    }
+    const { detail: updated, bumpedArtwork } = await saveAndOrganizeEntry({
+      rootId: props.detail.entry.root_id,
+      relPath: props.detail.entry.rel_path,
+      mediaKind: props.detail.entry.media_kind,
+      envelope,
+      pendingCoverUrl: applyForm.pendingCoverUrl.value,
+      pendingBackdropUrl: applyForm.pendingBackdropUrl.value,
+      writeAlbumCover: opts?.writeAlbumCover,
+      organizeAfterSave,
+    })
+    applyForm.pendingCoverUrl.value = null
+    applyForm.pendingBackdropUrl.value = null
 
     if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
       return
     }
     lastEntryKey = entryCompositeKey(updated.entry)
     localForm.hydrateForm(updated)
-    emit('updated', updated, bumpedArt)
+    emit('updated', updated, bumpedArtwork)
     snackbar.show({
       message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已写入原文件并更新左侧信息',
       actionLabel: '变更历史',
@@ -509,11 +439,19 @@ function handleKeydown(ev: KeyboardEvent): void {
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('resize', handleResize)
+  inspectorStore.registerWorkbenchGuard({
+    isDirty: () => isCurrentDirty.value,
+    confirmDiscard: confirmDiscardIfDirty,
+    requestPickEntry,
+    requestStep,
+    requestExit,
+  })
 })
 onBeforeUnmount(() => {
   saveSeq += 1
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('resize', handleResize)
+  inspectorStore.registerWorkbenchGuard(null)
 })
 
 defineExpose({

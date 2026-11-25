@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, type Component } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuArrowDown,
@@ -18,168 +18,71 @@ import {
   LuUndo2,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import MdSelect from '@/components/ui/MdSelect.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdSelect from '@/components/ui/MdSelect.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
-import type { MediaKind } from '@/types/api'
 import type { ToolCompletenessFilter } from '../completeness'
+import { useToolInspectorStore } from '../stores/inspector'
+import { useToolScrapeStore } from '../stores/scrape'
+import { useToolWorkspaceStore } from '../stores/workspace'
 import { useToolTaskStore, type ScrapeSubItem } from '../tasks'
-import type {
-  DirectorySnapshot,
-  ManagedRootDto,
-  MediaFileEntry,
-  RawFileEntryDto,
-} from '../types'
+import type { MediaFileEntry, RawFileEntryDto } from '../types'
 import ToolFolderManagerView from './browser/ToolFolderManagerView.vue'
 import ToolMediaItemRow from './browser/ToolMediaItemRow.vue'
 import ToolSelectionActionBar from './browser/ToolSelectionActionBar.vue'
+import { PAGE_CHUNK_SIZE, type SortField } from './workspace/hashState'
 
 export type { ToolCompletenessFilter }
-export type ToolSortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
-
-const props = defineProps<{
-  activeDomain: MediaKind
-  activeRootId: string
-  currentRelPath: string
-  domainRoots: ManagedRootDto[]
-  rootFileCounts: Record<string, number>
-  domainLabels: {
-    emptyRootsTitle: string
-    emptyRootsDesc: string
-  }
-  breadcrumbs: Array<{ label: string; relPath: string }>
-  viewMode: 'flat' | 'folders'
-  hasActiveSearchOrFilter: boolean
-  completenessFilter: ToolCompletenessFilter
-  filterItems: Array<{
-    id: ToolCompletenessFilter
-    label: string
-    count: number
-    icon: Component
-  }>
-  focusPaths: Set<string> | null
-  filteredFiles: MediaFileEntry[]
-  visibleFiles: MediaFileEntry[]
-  allFilteredSelected: boolean
-  selectedPaths: Set<string>
-  sortField: ToolSortField
-  sortDir: 'asc' | 'desc'
-  sortOptions: Array<{ value: string; label: string }>
-  checkedFiles: MediaFileEntry[]
-  selectedComicEntries: MediaFileEntry[]
-  selectedMusicEntries: MediaFileEntry[]
-  selectedVideoEntries: MediaFileEntry[]
-  selectedEntriesForRename: MediaFileEntry[]
-  webhookEnabled: boolean
-  notifyingRescan: boolean
-  loadingDir: boolean
-  dirError: string | null
-  snapshot: DirectorySnapshot | null
-  inspectingPath: string | null
-  artworkVersion: number
-  artworkVersions?: Record<string, number>
-  lastScrapeSummary: string
-}>()
-
-const emit = defineEmits<{
-  openSettingsRoots: []
-  selectRoot: [rootId: string, preferredViewMode?: 'flat' | 'folders']
-  enterFolder: [relPath: string, switchToItems?: boolean]
-  setViewMode: [mode: 'flat' | 'folders']
-  selectCompletenessFilter: [filter: ToolCompletenessFilter]
-  clearFocusPaths: []
-  toggleSelectAll: []
-  toggleSelectAllRaw: [paths: string[]]
-  clearSelection: []
-  setSortField: [field: ToolSortField]
-  toggleSortDir: []
-  quickScrapeSelection: []
-  configureScrapeSelection: []
-  openScrapeWorkbench: [entries?: MediaFileEntry[]]
-  openComicSeriesTools: []
-  openMusicToolbox: [entries: MediaFileEntry[]]
-  openVideoToolbox: [entries: MediaFileEntry[]]
-  openDryRun: []
-  openBatchMetadata: []
-  openHistory: []
-  openRename: [entries?: MediaFileEntry[]]
-  requestDeleteFiles: [paths: string[], deleteCompanions: boolean]
-  triggerRescan: []
-  refreshDir: []
-  inspectFile: [entry: MediaFileEntry]
-  toggleSelectFile: [relPath: string, shiftKey?: boolean, orderedPaths?: string[]]
-  openBookContentEditor: [entry: MediaFileEntry]
-  openBookNormalizeEpub: [entries: MediaFileEntry[]]
-  openComicPageManager: [entry: MediaFileEntry]
-  enqueueScrapeFiles: [entries: MediaFileEntry[]]
-  loadMore: []
-  showAll: []
-}>()
+export type ToolSortField = SortField
 
 const { t } = useI18n()
+const workspaceStore = useToolWorkspaceStore()
+const inspectorStore = useToolInspectorStore()
+const scrapeStore = useToolScrapeStore()
 const taskStore = useToolTaskStore()
 
 function fileTaskStatus(file: MediaFileEntry): ScrapeSubItem['status'] | undefined {
   return taskStore.fileStatusMap.get(`${file.root_id}::${file.rel_path}`)
 }
 
-const selectedBookEntries = computed(() =>
-  props.checkedFiles.filter(
-    (f) =>
-      f.media_kind === 'book' &&
-      (f.extension === 'txt' || f.extension === 'epub' || f.extension === 'pdf'),
-  ),
-)
-
-const isMultiRootSummary = computed(
-  () => !props.activeRootId && props.domainRoots.length > 1,
-)
-
 const rootNameMap = computed<Map<string, string>>(() => {
   const m = new Map<string, string>()
-  for (const r of props.domainRoots) {
+  for (const r of workspaceStore.domainRoots) {
     m.set(r.id, r.name)
   }
   return m
 })
 
 function fileSelectionKey(file: MediaFileEntry): string {
-  return isMultiRootSummary.value ? `${file.root_id}::${file.rel_path}` : file.rel_path
+  return workspaceStore.entrySelectionKey(file)
 }
 
 const checkedSelectionKeys = computed<string[]>(() =>
-  props.checkedFiles.map((f) => fileSelectionKey(f)),
-)
-
-const isFolderManagerMode = computed(
-  () =>
-    props.viewMode === 'folders' &&
-    !props.hasActiveSearchOrFilter &&
-    !(props.focusPaths && props.focusPaths.size > 0),
+  workspaceStore.checkedFiles.map((f) => fileSelectionKey(f)),
 )
 
 const effectiveSortOptions = computed(() => {
-  if (!isFolderManagerMode.value) return props.sortOptions
-  return props.sortOptions.filter(
+  if (!workspaceStore.isFolderManagerMode) return workspaceStore.sortOptions
+  return workspaceStore.sortOptions.filter(
     (opt) => opt.value === 'name' || opt.value === 'size' || opt.value === 'modified',
   )
 })
 
 const effectiveSortField = computed<ToolSortField>(() => {
   if (
-    isFolderManagerMode.value &&
-    props.sortField !== 'name' &&
-    props.sortField !== 'size' &&
-    props.sortField !== 'modified'
+    workspaceStore.isFolderManagerMode &&
+    workspaceStore.sortField !== 'name' &&
+    workspaceStore.sortField !== 'size' &&
+    workspaceStore.sortField !== 'modified'
   ) {
     return 'name'
   }
-  return props.sortField
+  return workspaceStore.sortField
 })
 
 const sortedFolders = computed(() => {
-  const folders = props.snapshot?.folders ?? []
-  const dir = props.sortDir === 'desc' ? -1 : 1
+  const folders = workspaceStore.snapshot?.folders ?? []
+  const dir = workspaceStore.sortDir === 'desc' ? -1 : 1
   return [...folders].sort((a, b) => {
     if (effectiveSortField.value === 'size') {
       const diff = a.media_file_count - b.media_file_count
@@ -191,22 +94,23 @@ const sortedFolders = computed(() => {
 
 const mediaEntryMap = computed<Map<string, MediaFileEntry>>(() => {
   const m = new Map<string, MediaFileEntry>()
-  for (const f of props.snapshot?.files ?? []) {
+  for (const f of workspaceStore.snapshot?.files ?? []) {
     m.set(f.rel_path, f)
   }
   return m
 })
 
 const unorganizedCheckedFiles = computed<MediaFileEntry[]>(() =>
-  props.checkedFiles.filter((f) => !f.completeness.is_organized),
+  workspaceStore.checkedFiles.filter((f) => !f.completeness.is_organized),
 )
 
 const sortedRawFiles = computed<RawFileEntryDto[]>(() => {
-  const cur = props.currentRelPath
+  const cur = workspaceStore.currentRelPath
+  const snap = workspaceStore.snapshot
   const rawList: RawFileEntryDto[] =
-    props.snapshot?.raw_files !== undefined
-      ? props.snapshot.raw_files
-      : (props.snapshot?.files ?? [])
+    snap?.raw_files !== undefined
+      ? snap.raw_files
+      : (snap?.files ?? [])
           .filter((f) => {
             const idx = f.rel_path.lastIndexOf('/')
             const parent = idx === -1 ? '' : f.rel_path.slice(0, idx)
@@ -221,7 +125,7 @@ const sortedRawFiles = computed<RawFileEntryDto[]>(() => {
             is_media: true,
             media_kind: f.media_kind,
           }))
-  const dir = props.sortDir === 'asc' ? 1 : -1
+  const dir = workspaceStore.sortDir === 'asc' ? 1 : -1
   return [...rawList].sort((a, b) => {
     if (effectiveSortField.value === 'size') {
       return (a.file_size - b.file_size) * dir
@@ -241,10 +145,10 @@ const folderModeSelectablePaths = computed<string[]>(() => [
 const allFolderItemsSelected = computed(
   () =>
     folderModeSelectablePaths.value.length > 0 &&
-    folderModeSelectablePaths.value.every((p) => props.selectedPaths.has(p)),
+    folderModeSelectablePaths.value.every((p) => workspaceStore.selectedPaths.has(p)),
 )
 
-const selectedRawPaths = computed<string[]>(() => Array.from(props.selectedPaths))
+const selectedRawPaths = computed<string[]>(() => Array.from(workspaceStore.selectedPaths))
 
 const folderRelSet = computed<Set<string>>(
   () => new Set(sortedFolders.value.map((f) => f.rel_path)),
@@ -252,7 +156,7 @@ const folderRelSet = computed<Set<string>>(
 
 const selectedFolderCount = computed<number>(() => {
   let n = 0
-  for (const p of props.selectedPaths) {
+  for (const p of workspaceStore.selectedPaths) {
     if (folderRelSet.value.has(p)) n += 1
   }
   return n
@@ -260,14 +164,19 @@ const selectedFolderCount = computed<number>(() => {
 
 const folderSelectionSummary = computed<string>(() => {
   const dirs = selectedFolderCount.value
-  const files = Math.max(0, props.selectedPaths.size - dirs)
+  const files = Math.max(0, workspaceStore.selectedPaths.size - dirs)
   const parts: string[] = []
   if (dirs > 0) parts.push(t('tool.browser.selectedDirs', { count: dirs }))
   if (files > 0) parts.push(t('tool.browser.selectedFiles', { count: files }))
-  if (parts.length === 0) return t('tool.batch.selectedCount', { count: props.selectedPaths.size })
+  if (parts.length === 0) {
+    return t('tool.batch.selectedCount', { count: workspaceStore.selectedPaths.size })
+  }
   const base = t('tool.browser.selectedPrefix', { summary: parts.join(' · ') })
-  if (dirs > 0 && props.checkedFiles.length > 0) {
-    return t('tool.browser.selectedWithMedia', { base, count: props.checkedFiles.length })
+  if (dirs > 0 && workspaceStore.checkedFiles.length > 0) {
+    return t('tool.browser.selectedWithMedia', {
+      base,
+      count: workspaceStore.checkedFiles.length,
+    })
   }
   return base
 })
@@ -279,7 +188,7 @@ function isOrigBackupFile(fileName: string): boolean {
 function relativeDirBadge(relPath: string): string | null {
   const idx = relPath.lastIndexOf('/')
   const parent = idx === -1 ? '' : relPath.slice(0, idx)
-  const cur = props.currentRelPath
+  const cur = workspaceStore.currentRelPath
   if (!parent || parent === cur) return null
   if (cur && parent.startsWith(`${cur}/`)) {
     return parent.slice(cur.length + 1)
@@ -292,24 +201,24 @@ function relativeDirBadge(relPath: string): string | null {
   <div class="relative min-h-full p-4 pb-24 sm:p-6 sm:pb-24">
     <!-- Domain Empty State -->
     <div
-      v-if="domainRoots.length === 0"
-      class="mx-auto mt-14 max-w-md rounded-[28px] bg-[var(--md-sys-color-surface-container-low)] p-8 text-center"
+      v-if="workspaceStore.domainRoots.length === 0"
+      class="mx-auto mt-14 max-w-md rounded-corner-xl bg-surface-container-low p-8 text-center"
     >
       <div
-        class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
+        class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
       >
         <LuFolderPlus class="h-6 w-6" />
       </div>
-      <h2 class="text-base font-semibold text-[var(--md-sys-color-on-surface)]">
-        {{ domainLabels.emptyRootsTitle }}
+      <h2 class="text-title-medium text-on-surface">
+        {{ workspaceStore.domainLabels.emptyRootsTitle }}
       </h2>
-      <p class="mt-2 text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
-        {{ domainLabels.emptyRootsDesc }}
+      <p class="mt-2 text-body-small leading-relaxed text-on-surface-variant">
+        {{ workspaceStore.domainLabels.emptyRootsDesc }}
       </p>
       <button
         type="button"
         class="md-btn md-btn-filled md-state mt-6"
-        @click="emit('openSettingsRoots')"
+        @click="workspaceStore.openSettingsTab('roots')"
       >
         <LuFolderPlus class="h-4 w-4" />
         <span>{{ t('tool.roots.add') }}</span>
@@ -317,45 +226,50 @@ function relativeDirBadge(relPath: string): string | null {
     </div>
 
     <template v-else>
-      <!-- Clean Calm Header: Breadcrumbs + View Segmented Button + Utility Icons -->
+      <!-- Clean Header: Breadcrumbs + View Segmented Button + Utility Icons -->
       <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-sm">
+        <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-body-medium">
           <button
-            v-if="snapshot && snapshot.parent_rel_path !== null"
+            v-if="workspaceStore.snapshot && workspaceStore.snapshot.parent_rel_path !== null"
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state mr-1"
             :title="t('tool.browser.parentDirTitle')"
             :aria-label="t('tool.browser.parentDirTitle')"
-            @click="emit('enterFolder', snapshot.parent_rel_path, viewMode === 'folders')"
+            @click="
+              workspaceStore.enterFolder(
+                workspaceStore.snapshot.parent_rel_path,
+                workspaceStore.viewMode === 'folders',
+              )
+            "
           >
             <LuCornerLeftUp class="h-4 w-4" />
           </button>
 
-          <template v-for="(bc, idx) in breadcrumbs" :key="bc.relPath || '__root__'">
+          <template v-for="(bc, idx) in workspaceStore.breadcrumbs" :key="bc.relPath || '__root__'">
             <LuChevronRight
               v-if="idx > 0"
               class="h-4 w-4 shrink-0 text-on-surface-variant"
             />
             <button
               type="button"
-              class="md-state rounded-full px-2.5 py-1 transition"
+              class="md-state rounded-corner-full px-2.5 py-1 transition"
               :class="
-                idx === breadcrumbs.length - 1
+                idx === workspaceStore.breadcrumbs.length - 1
                   ? 'font-semibold text-on-surface'
                   : 'text-on-surface-variant hover:text-on-surface'
               "
-              @click="emit('enterFolder', bc.relPath, viewMode === 'folders')"
+              @click="workspaceStore.enterFolder(bc.relPath, workspaceStore.viewMode === 'folders')"
             >
               {{ bc.label }}
             </button>
           </template>
 
           <span
-            v-if="isFolderManagerMode && snapshot"
-            class="ml-2 hidden rounded-full bg-surface-container-high px-2.5 py-0.5 font-mono text-[11px] text-on-surface-variant sm:inline-flex"
+            v-if="workspaceStore.isFolderManagerMode && workspaceStore.snapshot"
+            class="ml-2 hidden rounded-corner-full bg-surface-container-high px-2.5 py-0.5 font-mono text-label-small text-on-surface-variant sm:inline-flex"
           >
-            <template v-if="isMultiRootSummary">
-              {{ t('tool.browser.mountedRootsCount', { count: domainRoots.length }) }}
+            <template v-if="workspaceStore.isMultiRootSummary">
+              {{ t('tool.browser.mountedRootsCount', { count: workspaceStore.domainRoots.length }) }}
             </template>
             <template v-else>
               {{
@@ -370,46 +284,46 @@ function relativeDirBadge(relPath: string): string | null {
 
         <div class="flex flex-wrap items-center gap-2">
           <MdSegmentedButton
-            :model-value="viewMode"
+            :model-value="workspaceStore.viewMode"
             :options="[
               { value: 'flat', label: t('tool.browser.viewFlat'), icon: LuList, title: t('tool.browser.viewFlatTitle') },
               { value: 'folders', label: t('tool.browser.viewFolders'), icon: LuFolder, title: t('tool.browser.viewFoldersTitle') },
             ]"
             size="sm"
-            @update:model-value="emit('setViewMode', $event)"
+            @update:model-value="workspaceStore.setViewMode($event)"
           />
 
-          <div v-if="snapshot" class="flex items-center gap-1">
+          <div v-if="workspaceStore.snapshot" class="flex items-center gap-1">
             <div class="w-28">
               <MdSelect
                 :model-value="effectiveSortField"
                 :options="effectiveSortOptions"
                 size="sm"
-                @update:model-value="emit('setSortField', $event as ToolSortField)"
+                @update:model-value="workspaceStore.setSortField($event as ToolSortField)"
               />
             </div>
             <button
               type="button"
               class="md-icon-btn md-icon-btn-sm md-state"
-              :title="sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
-              :aria-label="sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
-              @click="emit('toggleSortDir')"
+              :title="workspaceStore.sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
+              :aria-label="workspaceStore.sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
+              @click="workspaceStore.toggleSortDir()"
             >
-              <LuArrowUp v-if="sortDir === 'asc'" class="h-4 w-4" />
+              <LuArrowUp v-if="workspaceStore.sortDir === 'asc'" class="h-4 w-4" />
               <LuArrowDown v-else class="h-4 w-4" />
             </button>
           </div>
 
           <button
-            v-if="webhookEnabled"
+            v-if="workspaceStore.settings?.xmedia_webhook_enabled"
             type="button"
-            :disabled="notifyingRescan"
+            :disabled="workspaceStore.notifyingRescan"
             class="md-icon-btn md-icon-btn-sm md-state"
             :title="t('tool.batch.triggerRescan')"
             :aria-label="t('tool.batch.triggerRescan')"
-            @click="emit('triggerRescan')"
+            @click="workspaceStore.triggerManualRescan()"
           >
-            <LuRefreshCw v-if="notifyingRescan" class="h-4 w-4 animate-spin text-primary" />
+            <LuRefreshCw v-if="workspaceStore.notifyingRescan" class="h-4 w-4 animate-spin text-primary" />
             <LuRadio v-else class="h-4 w-4" />
           </button>
 
@@ -418,14 +332,14 @@ function relativeDirBadge(relPath: string): string | null {
             class="md-icon-btn md-icon-btn-sm md-state"
             :title="t('tool.browser.historyTooltip')"
             :aria-label="t('tool.browser.historyTooltip')"
-            @click="emit('openHistory')"
+            @click="workspaceStore.openHistoryModal('metadata')"
           >
             <LuUndo2 class="h-4 w-4" />
           </button>
 
           <RefreshButton
-            :action="() => emit('refreshDir')"
-            :busy="loadingDir"
+            :action="() => workspaceStore.reloadCurrentScope()"
+            :busy="workspaceStore.loadingDir"
             :title="t('tool.actions.refresh')"
           />
         </div>
@@ -433,80 +347,83 @@ function relativeDirBadge(relPath: string): string | null {
 
       <!-- Focused Unmatched Review Banner -->
       <div
-        v-if="focusPaths && focusPaths.size > 0"
-        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-warning-container px-4 py-2.5 text-xs text-on-warning-container"
+        v-if="workspaceStore.workbenchFocusPaths && workspaceStore.workbenchFocusPaths.size > 0"
+        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-corner-lg bg-warning-container px-4 py-2.5 text-body-small text-on-warning-container"
       >
         <span class="font-semibold">
-          {{ t('tool.browser.focusBanner', { count: filteredFiles.length }) }}
+          {{ t('tool.browser.focusBanner', { count: workspaceStore.filteredFiles.length }) }}
         </span>
         <button
           type="button"
-          class="md-state rounded-full px-3 py-1 text-xs font-semibold"
-          @click="emit('clearFocusPaths')"
+          class="md-state rounded-corner-full px-3 py-1 text-label-medium"
+          @click="workspaceStore.workbenchFocusPaths = null"
         >
           {{ t('tool.browser.exitFocus') }}
         </button>
       </div>
 
       <!-- MD3 Filter Chips Row + Lightweight Primary Action -->
-      <div v-if="!isFolderManagerMode" class="mb-4 flex flex-wrap items-center justify-between gap-2">
+      <div
+        v-if="!workspaceStore.isFolderManagerMode"
+        class="mb-4 flex flex-wrap items-center justify-between gap-2"
+      >
         <div class="flex flex-wrap items-center gap-1.5">
           <button
-            v-for="f in filterItems"
+            v-for="f in workspaceStore.filterItems"
             :key="f.id"
             type="button"
             class="md-chip md-state"
-            :class="completenessFilter === f.id ? 'md-chip-selected' : ''"
-            @click="emit('selectCompletenessFilter', f.id)"
+            :class="workspaceStore.completenessFilter === f.id ? 'md-chip-selected' : ''"
+            @click="workspaceStore.selectCompletenessFilter(f.id)"
           >
-            <LuCheck v-if="completenessFilter === f.id" class="h-3.5 w-3.5 shrink-0" />
+            <LuCheck v-if="workspaceStore.completenessFilter === f.id" class="h-3.5 w-3.5 shrink-0" />
             <span>{{ f.label }}</span>
-            <span class="font-mono text-[10px] opacity-75">{{ f.count }}</span>
+            <span class="font-mono text-label-small opacity-75">{{ f.count }}</span>
           </button>
         </div>
 
         <div class="flex items-center gap-2">
           <AppCheckbox
-            v-if="filteredFiles.length > 0"
-            :model-value="allFilteredSelected"
+            v-if="workspaceStore.filteredFiles.length > 0"
+            :model-value="workspaceStore.allFilteredSelected"
             :label="
-              selectedPaths.size > 0
-                ? t('tool.batch.selectedCount', { count: selectedPaths.size })
+              workspaceStore.selectedPaths.size > 0
+                ? t('tool.batch.selectedCount', { count: workspaceStore.selectedPaths.size })
                 : t('tool.actions.selectAll')
             "
-            @change="emit('toggleSelectAll')"
+            @change="workspaceStore.toggleSelectAllFiltered()"
           />
 
           <button
-            v-if="filteredFiles.length > 0 && selectedPaths.size === 0"
+            v-if="workspaceStore.filteredFiles.length > 0 && workspaceStore.selectedPaths.size === 0"
             type="button"
             class="md-btn md-btn-sm md-btn-outlined md-state"
             :title="t('tool.browser.workbenchTooltip')"
-            @click="emit('openScrapeWorkbench')"
+            @click="scrapeStore.openScrapeWorkbench()"
           >
             <LuColumns3 class="h-3.5 w-3.5" />
             <span>{{ t('tool.browser.workbenchBtn') }}</span>
           </button>
 
           <div
-            v-if="filteredFiles.length > 0 && selectedPaths.size === 0"
-            class="inline-flex items-center overflow-hidden rounded-full bg-secondary-container text-on-secondary-container"
+            v-if="workspaceStore.filteredFiles.length > 0 && workspaceStore.selectedPaths.size === 0"
+            class="inline-flex items-center overflow-hidden rounded-corner-full bg-secondary-container text-on-secondary-container"
           >
             <button
               type="button"
-              class="md-state inline-flex h-8 items-center gap-1.5 pr-2.5 pl-3.5 text-xs font-semibold"
-              :title="t('tool.browser.quickScrapeAllTitle', { summary: lastScrapeSummary })"
-              @click="emit('quickScrapeSelection')"
+              class="md-state inline-flex h-8 items-center gap-1.5 pr-2.5 pl-3.5 text-label-large"
+              :title="t('tool.browser.quickScrapeAllTitle', { summary: scrapeStore.lastScrapeSummary })"
+              @click="scrapeStore.quickScrapeSelection()"
             >
               <LuSparkles class="h-3.5 w-3.5" />
-              <span>{{ t('tool.browser.quickScrapeAll', { count: filteredFiles.length }) }}</span>
+              <span>{{ t('tool.browser.quickScrapeAll', { count: workspaceStore.filteredFiles.length }) }}</span>
             </button>
             <button
               type="button"
-              class="md-state inline-flex h-8 items-center border-l border-outline-variant/50 px-2.5 text-xs"
-              :title="t('tool.browser.configureScrapeTitle', { summary: lastScrapeSummary })"
-              :aria-label="t('tool.browser.configureScrapeTitle', { summary: lastScrapeSummary })"
-              @click="emit('configureScrapeSelection')"
+              class="md-state inline-flex h-8 items-center border-l border-outline-variant/50 px-2.5 text-label-large"
+              :title="t('tool.browser.configureScrapeTitle', { summary: scrapeStore.lastScrapeSummary })"
+              :aria-label="t('tool.browser.configureScrapeTitle', { summary: scrapeStore.lastScrapeSummary })"
+              @click="scrapeStore.configureScrapeSelection()"
             >
               <LuSlidersHorizontal class="h-3.5 w-3.5" />
             </button>
@@ -515,97 +432,105 @@ function relativeDirBadge(relPath: string): string | null {
       </div>
 
       <div
-        v-if="dirError"
-        class="mb-4 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]"
+        v-if="workspaceStore.dirError"
+        class="mb-4 rounded-corner-lg bg-error-container px-4 py-3 text-body-small text-on-error-container"
       >
-        {{ dirError }}
+        {{ workspaceStore.dirError }}
       </div>
 
       <!-- Loading Skeleton -->
-      <div v-if="loadingDir && !snapshot" class="space-y-2">
+      <div v-if="workspaceStore.loadingDir && !workspaceStore.snapshot" class="space-y-2">
         <div
           v-for="n in 6"
           :key="n"
-          class="h-16 animate-pulse rounded-2xl bg-[var(--md-sys-color-surface-container-low)]"
+          class="h-16 animate-pulse rounded-corner-lg bg-surface-container-low"
         />
       </div>
 
       <!-- Unified File Manager View -->
       <ToolFolderManagerView
-        v-else-if="isFolderManagerMode"
-        :is-multi-root-summary="isMultiRootSummary"
-        :domain-roots="domainRoots"
-        :root-file-counts="rootFileCounts"
-        :snapshot="snapshot"
+        v-else-if="workspaceStore.isFolderManagerMode"
+        :is-multi-root-summary="workspaceStore.isMultiRootSummary"
+        :domain-roots="workspaceStore.domainRoots"
+        :root-file-counts="workspaceStore.rootFileCounts"
+        :snapshot="workspaceStore.snapshot"
         :sorted-folders="sortedFolders"
         :sorted-raw-files="sortedRawFiles"
         :media-entry-map="mediaEntryMap"
         :folder-mode-selectable-paths="folderModeSelectablePaths"
         :all-folder-items-selected="allFolderItemsSelected"
-        :selected-paths="selectedPaths"
-        :inspecting-path="inspectingPath"
-        @select-root="(rid, mode) => emit('selectRoot', rid, mode)"
-        @enter-folder="(rel, sw) => emit('enterFolder', rel, sw)"
-        @toggle-select-all-raw="emit('toggleSelectAllRaw', $event)"
-        @toggle-select-file="(rel, shift, ordered) => emit('toggleSelectFile', rel, shift, ordered)"
-        @inspect-file="emit('inspectFile', $event)"
-        @open-rename="emit('openRename', $event)"
-        @request-delete-files="(paths, del) => emit('requestDeleteFiles', paths, del)"
+        :selected-paths="workspaceStore.selectedPaths"
+        :inspecting-path="inspectorStore.inspectingPath"
+        @select-root="(rid, mode) => workspaceStore.selectRoot(rid, mode)"
+        @enter-folder="(rel, sw) => workspaceStore.enterFolder(rel, sw)"
+        @toggle-select-all-raw="workspaceStore.toggleSelectAllRaw($event)"
+        @toggle-select-file="(rel, shift, ordered) => workspaceStore.toggleSelectFile(rel, shift, ordered)"
+        @inspect-file="workspaceStore.inspectEntry($event)"
+        @open-rename="workspaceStore.openRenameModal($event)"
+        @request-delete-files="(paths, del) => workspaceStore.requestDeleteFiles(paths, del)"
       />
 
       <!-- Empty File List (Flat / Filtered Mode) -->
       <div
-        v-else-if="filteredFiles.length === 0"
-        class="rounded-[24px] bg-surface-container-low py-16 text-center"
+        v-else-if="workspaceStore.filteredFiles.length === 0"
+        class="rounded-corner-xl bg-surface-container-low py-16 text-center"
       >
-        <p class="text-sm font-semibold text-on-surface">
-          {{ hasActiveSearchOrFilter ? t('tool.browser.emptyFilteredTitle') : t('tool.browser.emptyDirTitle') }}
+        <p class="text-title-small text-on-surface">
+          {{
+            workspaceStore.hasActiveSearchOrFilter
+              ? t('tool.browser.emptyFilteredTitle')
+              : t('tool.browser.emptyDirTitle')
+          }}
         </p>
-        <p class="mt-1 text-xs text-on-surface-variant">
-          {{ hasActiveSearchOrFilter ? t('tool.browser.emptyFilteredDesc') : t('tool.browser.emptyDirDesc') }}
+        <p class="mt-1 text-body-small text-on-surface-variant">
+          {{
+            workspaceStore.hasActiveSearchOrFilter
+              ? t('tool.browser.emptyFilteredDesc')
+              : t('tool.browser.emptyDirDesc')
+          }}
         </p>
       </div>
 
       <!-- MD3 Tonal Media List -->
       <div v-else class="space-y-3">
         <div
-          class="divide-y divide-outline-variant/35 overflow-hidden rounded-[20px] bg-surface-container-low"
+          class="divide-y divide-outline-variant/35 overflow-hidden rounded-corner-lg-increased bg-surface-container-low"
         >
           <ToolMediaItemRow
-            v-for="file in visibleFiles"
+            v-for="file in workspaceStore.visibleFiles"
             :key="fileSelectionKey(file)"
             :file="file"
             :selection-key="fileSelectionKey(file)"
-            :is-inspecting="inspectingPath === fileSelectionKey(file)"
-            :is-selected="selectedPaths.has(fileSelectionKey(file))"
-            :root-badge="isMultiRootSummary ? rootNameMap.get(file.root_id) : undefined"
+            :is-inspecting="inspectorStore.inspectingPath === fileSelectionKey(file)"
+            :is-selected="workspaceStore.selectedPaths.has(fileSelectionKey(file))"
+            :root-badge="workspaceStore.isMultiRootSummary ? rootNameMap.get(file.root_id) : undefined"
             :dir-badge="relativeDirBadge(file.rel_path)"
             :task-status="fileTaskStatus(file)"
-            :artwork-version="artworkVersion + (artworkVersions?.[`${file.root_id}::${file.rel_path}`] ?? 0)"
+            :artwork-version="inspectorStore.getFileArtworkVersion(file.root_id, file.rel_path)"
             :is-orig-backup="isOrigBackupFile(file.file_name)"
-            @inspect-file="emit('inspectFile', $event)"
-            @toggle-select-file="(key, shift) => emit('toggleSelectFile', key, shift)"
-            @open-book-content-editor="emit('openBookContentEditor', $event)"
-            @open-book-normalize-epub="emit('openBookNormalizeEpub', $event)"
-            @open-comic-page-manager="emit('openComicPageManager', $event)"
-            @open-music-toolbox="emit('openMusicToolbox', $event)"
-            @open-video-toolbox="emit('openVideoToolbox', $event)"
-            @open-rename="emit('openRename', $event)"
-            @enqueue-scrape-files="emit('enqueueScrapeFiles', $event)"
-            @request-delete-files="(paths, del) => emit('requestDeleteFiles', paths, del)"
+            @inspect-file="workspaceStore.inspectEntry($event)"
+            @toggle-select-file="(key, shift) => workspaceStore.toggleSelectFile(key, shift)"
+            @open-book-content-editor="workspaceStore.openBookContentEditor($event)"
+            @open-book-normalize-epub="workspaceStore.openBookNormalizeModal($event)"
+            @open-comic-page-manager="workspaceStore.openComicPageManager($event)"
+            @open-music-toolbox="workspaceStore.openMusicToolbox($event)"
+            @open-video-toolbox="workspaceStore.openVideoToolbox($event)"
+            @open-rename="workspaceStore.openRenameModal($event)"
+            @enqueue-scrape-files="scrapeStore.enqueueScrapeFiles($event)"
+            @request-delete-files="(paths, del) => workspaceStore.requestDeleteFiles(paths, del)"
           />
         </div>
 
         <!-- Load More Bar -->
         <div
-          v-if="filteredFiles.length > visibleFiles.length"
-          class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-surface-container-low px-4 py-2.5 text-xs text-on-surface-variant"
+          v-if="workspaceStore.filteredFiles.length > workspaceStore.visibleFiles.length"
+          class="flex flex-wrap items-center justify-between gap-2 rounded-corner-lg bg-surface-container-low px-4 py-2.5 text-body-small text-on-surface-variant"
         >
           <span>
             {{
               t('tool.batch.showingOf', {
-                shown: visibleFiles.length,
-                total: filteredFiles.length,
+                shown: workspaceStore.visibleFiles.length,
+                total: workspaceStore.filteredFiles.length,
               })
             }}
           </span>
@@ -613,18 +538,18 @@ function relativeDirBadge(relPath: string): string | null {
             <button
               type="button"
               class="md-btn md-btn-sm md-btn-tonal md-state"
-              @click="emit('loadMore')"
+              @click="workspaceStore.visibleLimit += PAGE_CHUNK_SIZE"
             >
               {{
                 t('tool.batch.loadMore', {
-                  remaining: filteredFiles.length - visibleFiles.length,
+                  remaining: workspaceStore.filteredFiles.length - workspaceStore.visibleFiles.length,
                 })
               }}
             </button>
             <button
               type="button"
               class="md-btn md-btn-sm md-btn-text md-state"
-              @click="emit('showAll')"
+              @click="workspaceStore.visibleLimit = workspaceStore.filteredFiles.length"
             >
               {{ t('tool.batch.showAll') }}
             </button>
@@ -635,31 +560,31 @@ function relativeDirBadge(relPath: string): string | null {
 
     <!-- MD3 Contextual Floating Action Bar -->
     <ToolSelectionActionBar
-      :selected-count="selectedPaths.size"
-      :is-folder-manager-mode="isFolderManagerMode"
+      :selected-count="workspaceStore.selectedPaths.size"
+      :is-folder-manager-mode="workspaceStore.isFolderManagerMode"
       :folder-selection-summary="folderSelectionSummary"
-      :checked-files="checkedFiles"
+      :checked-files="workspaceStore.checkedFiles"
       :unorganized-checked-files="unorganizedCheckedFiles"
-      :selected-book-entries="selectedBookEntries"
-      :selected-comic-entries="selectedComicEntries"
-      :selected-music-entries="selectedMusicEntries"
-      :selected-video-entries="selectedVideoEntries"
+      :selected-book-entries="workspaceStore.selectedBookEntries"
+      :selected-comic-entries="workspaceStore.selectedComicEntries"
+      :selected-music-entries="workspaceStore.selectedMusicEntries"
+      :selected-video-entries="workspaceStore.selectedVideoEntries"
       :selected-raw-paths="selectedRawPaths"
       :selected-folder-count="selectedFolderCount"
       :checked-selection-keys="checkedSelectionKeys"
-      :last-scrape-summary="lastScrapeSummary"
-      @clear-selection="emit('clearSelection')"
-      @quick-scrape-selection="emit('quickScrapeSelection')"
-      @configure-scrape-selection="emit('configureScrapeSelection')"
-      @open-scrape-workbench="emit('openScrapeWorkbench', $event)"
-      @open-batch-metadata="emit('openBatchMetadata')"
-      @open-rename="emit('openRename', $event)"
-      @open-dry-run="emit('openDryRun')"
-      @open-book-normalize-epub="emit('openBookNormalizeEpub', $event)"
-      @open-comic-series-tools="emit('openComicSeriesTools')"
-      @open-music-toolbox="emit('openMusicToolbox', $event)"
-      @open-video-toolbox="emit('openVideoToolbox', $event)"
-      @request-delete-files="(paths, del) => emit('requestDeleteFiles', paths, del)"
+      :last-scrape-summary="scrapeStore.lastScrapeSummary"
+      @clear-selection="workspaceStore.clearSelection()"
+      @quick-scrape-selection="scrapeStore.quickScrapeSelection()"
+      @configure-scrape-selection="scrapeStore.configureScrapeSelection()"
+      @open-scrape-workbench="scrapeStore.openScrapeWorkbench(undefined, $event)"
+      @open-batch-metadata="workspaceStore.openBatchMetadataModal()"
+      @open-rename="workspaceStore.openRenameModal($event)"
+      @open-dry-run="workspaceStore.openDryRunModal()"
+      @open-book-normalize-epub="workspaceStore.openBookNormalizeModal($event)"
+      @open-comic-series-tools="workspaceStore.openComicSeriesToolsModal()"
+      @open-music-toolbox="workspaceStore.openMusicToolbox($event)"
+      @open-video-toolbox="workspaceStore.openVideoToolbox($event)"
+      @request-delete-files="(paths, del) => workspaceStore.requestDeleteFiles(paths, del)"
     />
   </div>
 </template>

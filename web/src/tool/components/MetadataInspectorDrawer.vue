@@ -28,6 +28,8 @@ import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatBytes, formatDuration } from '@/utils/format'
 import { buildArtworkUrl, resolveScraperCoverUrl, toolApi } from '../api'
+import { saveAndOrganizeEntry } from '../services/saveEntry'
+import { useToolInspectorStore } from '../stores/inspector'
 import type {
   MediaFileDetail,
   MediaFileEntry,
@@ -73,6 +75,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
+const inspectorStore = useToolInspectorStore()
 
 const {
   bookForm,
@@ -241,70 +244,24 @@ async function saveMetadata(
   errorMsg.value = null
   try {
     const envelope = buildPatchEnvelope(props.detail.entry.media_kind)
-    let updated = await toolApi.writeMetadata(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
+    const {
+      detail: updated,
+      bumpedArtwork,
+      artworkWarnings,
+    } = await saveAndOrganizeEntry({
+      rootId: props.detail.entry.root_id,
+      relPath: props.detail.entry.rel_path,
+      mediaKind: props.detail.entry.media_kind,
       envelope,
-    )
-
-    let bumpedArt = false
-    const artworkWarnings: string[] = []
-    if (pendingCoverUrl.value) {
-      try {
-        const slot = updated.entry.media_kind === 'video' ? 'poster' : 'cover'
-        updated = await toolApi.uploadArtworkFromUrl(
-          updated.entry.root_id,
-          updated.entry.rel_path,
-          pendingCoverUrl.value,
-          slot,
-          updated.entry.media_kind,
-        )
-        bumpedArt = true
-      } catch (artErr) {
-        artworkWarnings.push(
-          `封面下载写入失败：${artErr instanceof Error ? artErr.message : String(artErr)}`,
-        )
-      }
-      pendingCoverUrl.value = null
-    }
-    if (pendingBackdropUrl.value && updated.entry.media_kind === 'video') {
-      try {
-        updated = await toolApi.uploadArtworkFromUrl(
-          updated.entry.root_id,
-          updated.entry.rel_path,
-          pendingBackdropUrl.value,
-          'fanart',
-          'video',
-        )
-        bumpedArt = true
-      } catch (artErr) {
-        artworkWarnings.push(
-          `背景图下载写入失败：${artErr instanceof Error ? artErr.message : String(artErr)}`,
-        )
-      }
-      pendingBackdropUrl.value = null
-    }
-
-    if (organizeAfterSave) {
-      const plan = await toolApi.previewRename(
-        updated.entry.root_id,
-        [updated.entry.rel_path],
-        null,
-        updated.entry.media_kind,
-      )
-      const actionable = plan.find((p) => !p.unchanged && !p.conflict)
-      if (actionable) {
-        await toolApi.executeRename(updated.entry.root_id, [actionable])
-        updated = await toolApi.inspectFile(
-          updated.entry.root_id,
-          actionable.to_rel_path,
-          updated.entry.media_kind,
-        )
-      }
-    }
+      pendingCoverUrl: pendingCoverUrl.value,
+      pendingBackdropUrl: pendingBackdropUrl.value,
+      organizeAfterSave,
+    })
+    pendingCoverUrl.value = null
+    pendingBackdropUrl.value = null
 
     hydrateForm(updated)
-    emit('updated', updated, bumpedArt)
+    emit('updated', updated, bumpedArtwork)
     if (artworkWarnings.length > 0) {
       errorMsg.value = artworkWarnings.join('；')
       snackbar.show({
@@ -364,8 +321,18 @@ function handleKeydown(ev: KeyboardEvent): void {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', handleKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown)
+  inspectorStore.registerInspectorGuard({
+    isDirty: () => isCurrentDirty.value,
+    confirmDiscard: confirmDiscardIfDirty,
+    requestClose,
+  })
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown)
+  inspectorStore.registerInspectorGuard(null)
+})
 
 defineExpose({
   isDirty: isCurrentDirty,

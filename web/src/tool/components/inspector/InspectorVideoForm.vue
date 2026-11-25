@@ -8,9 +8,15 @@ import {
   type VideoInspectorForm,
 } from './types'
 
-const props = defineProps<{
-  form: VideoInspectorForm
-}>()
+const props = withDefaults(
+  defineProps<{
+    form: VideoInspectorForm
+    hideLocks?: boolean
+  }>(),
+  {
+    hideLocks: false,
+  },
+)
 
 const nfoKindModel = computed<'movie' | 'episode'>({
   get: () => (props.form.isEpisode ? 'episode' : 'movie'),
@@ -53,6 +59,7 @@ function lockBtnCls(field: string): string {
             {{ form.isEpisode ? '单集标题 (Episode Title)' : '电影标题 (Title)' }}
           </span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('title')"
@@ -71,6 +78,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">所属剧集名 (Show Title)</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('show_title')"
@@ -88,6 +96,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">原名 (Original Title)</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('original_title')"
@@ -116,6 +125,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">年份 (Year)</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('year')"
@@ -133,6 +143,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">评分 (Rating)</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('rating')"
@@ -160,6 +171,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">导演（`/` 分隔）</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('directors')"
@@ -177,6 +189,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">制片厂 / 动画制作</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('studio')"
@@ -194,6 +207,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">演员 / 声优（`/` 分隔）</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('actors')"
@@ -211,6 +225,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">类型 (Genres)</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('genres')"
@@ -228,6 +243,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">标签 (Tags)</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('tags')"
@@ -245,6 +261,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">剧情简介 (Plot)</span>
           <button
+            v-if="!hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('summary')"

@@ -2,14 +2,20 @@
 import { LuFileText, LuLock, LuUnlock } from 'vue-icons-plus/lu'
 import type { BookInspectorForm } from './types'
 
-const props = defineProps<{
-  form: BookInspectorForm
-  bookFormat: string
-  writable: boolean
-  isEpub: boolean
-  hasCover: boolean
-  polishingBook: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    form: BookInspectorForm
+    bookFormat: string
+    writable: boolean
+    isEpub: boolean
+    hasCover: boolean
+    polishingBook: boolean
+    hideLocks?: boolean
+  }>(),
+  {
+    hideLocks: false,
+  },
+)
 
 defineEmits<{
   polish: []
@@ -65,7 +71,7 @@ function lockBtnCls(field: string): string {
     </div>
 
     <div
-      v-if="writable"
+      v-if="writable && !hideLocks"
       class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)]/65 px-3 py-1.5 text-[11px]"
     >
       <span class="flex items-center gap-1.5 text-[var(--md-sys-color-on-surface-variant)]">
@@ -100,7 +106,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">书名 (dc:title)</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('title')"
@@ -118,7 +124,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">作者 (dc:creator，`/` 分隔)</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('authors')"
@@ -137,7 +143,7 @@ function lockBtnCls(field: string): string {
           <div class="mb-1 flex items-center justify-between">
             <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">系列 / 丛书 (Series)</span>
             <button
-              v-if="writable"
+              v-if="writable && !hideLocks"
               type="button"
               class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
               :class="lockBtnCls('series')"
@@ -160,7 +166,7 @@ function lockBtnCls(field: string): string {
           <div class="mb-1 flex items-center justify-between">
             <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">部 / 子系列 (Subseries)</span>
             <button
-              v-if="writable"
+              v-if="writable && !hideLocks"
               type="button"
               class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
               :class="lockBtnCls('subseries')"
@@ -183,7 +189,7 @@ function lockBtnCls(field: string): string {
           <div class="mb-1 flex items-center justify-between">
             <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">卷 / 册号 (Volume)</span>
             <button
-              v-if="writable"
+              v-if="writable && !hideLocks"
               type="button"
               class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
               :class="lockBtnCls('series_index')"
@@ -208,7 +214,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">ISBN</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('isbn')"
@@ -226,7 +232,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">出版社 (dc:publisher)</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('publisher')"
@@ -244,7 +250,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">出版日期 (dc:date)</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('published_at')"
@@ -268,7 +274,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">语言 (dc:language)</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('language')"
@@ -292,7 +298,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">标签 / 主题 (dc:subject，`/` 分隔)</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('tags')"
@@ -310,7 +316,7 @@ function lockBtnCls(field: string): string {
         <div class="mb-1 flex items-center justify-between">
           <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">内容简介 (dc:description)</span>
           <button
-            v-if="writable"
+            v-if="writable && !hideLocks"
             type="button"
             class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
             :class="lockBtnCls('description')"
