@@ -64,15 +64,17 @@ pub enum TranscodeFormat {
     Opus,
     Aac,
     Flac,
+    Wav,
 }
 
 impl TranscodeFormat {
     pub fn parse(raw: &str) -> DomainResult<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "mp3" => Ok(Self::Mp3),
-            "opus" | "ogg" => Ok(Self::Opus),
+            "opus" | "ogg" | "oga" => Ok(Self::Opus),
             "aac" | "m4a" | "mp4" => Ok(Self::Aac),
-            "flac" => Ok(Self::Flac),
+            "flac" | "alac" | "ape" | "wv" | "wavpack" => Ok(Self::Flac),
+            "wav" | "wave" | "aiff" | "aif" | "aifc" => Ok(Self::Wav),
             other => Err(DomainError::UnsupportedFormat(format!(
                 "unsupported transcode target format: {other}"
             ))),
@@ -85,6 +87,7 @@ impl TranscodeFormat {
             Self::Opus => "audio/ogg",
             Self::Aac => "audio/aac",
             Self::Flac => "audio/flac",
+            Self::Wav => "audio/wav",
         }
     }
 
@@ -94,6 +97,7 @@ impl TranscodeFormat {
             Self::Opus => "opus",
             Self::Aac => "aac",
             Self::Flac => "flac",
+            Self::Wav => "wav",
         }
     }
 }

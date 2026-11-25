@@ -171,14 +171,17 @@ fn infer_audio_extension(content_type: &str, format_hint: Option<&str>, raw_url:
     match base_ct.as_str() {
         "audio/flac" | "audio/x-flac" => return "flac".to_string(),
         "audio/mpeg" | "audio/mp3" => return "mp3".to_string(),
-        "audio/mp4" | "audio/x-m4a" | "audio/m4a" | "audio/aac" | "audio/x-aac" => {
+        "audio/aac" | "audio/x-aac" | "audio/aacp" => return "aac".to_string(),
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" => {
             return "m4a".to_string();
         }
         "audio/ogg" | "application/ogg" => return "ogg".to_string(),
         "audio/opus" => return "opus".to_string(),
         "audio/wav" | "audio/x-wav" | "audio/wave" => return "wav".to_string(),
+        "audio/aiff" | "audio/x-aiff" => return "aiff".to_string(),
         "audio/webm" => return "webm".to_string(),
         "audio/x-ape" | "audio/ape" => return "ape".to_string(),
+        "audio/x-wavpack" | "audio/wavpack" => return "wv".to_string(),
         _ => {}
     }
 
@@ -188,25 +191,21 @@ fn infer_audio_extension(content_type: &str, format_hint: Option<&str>, raw_url:
             .chars()
             .filter(|c| c.is_ascii_alphanumeric())
             .collect();
-        if matches!(
-            clean.as_str(),
-            "flac" | "mp3" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "webm" | "ape" | "alac"
-        ) {
-            return if clean == "alac" || clean == "aac" {
-                "m4a".to_string()
-            } else {
-                clean
-            };
+        if let Some(fmt) = crate::domain::catalog::AudioFormat::from_extension(&clean) {
+            return fmt.extension().to_string();
+        }
+        if clean == "webm" {
+            return clean;
         }
     }
 
     let path_part = raw_url.split('?').next().unwrap_or(raw_url);
     if let Some((_, ext)) = path_part.rsplit_once('.') {
         let lower = ext.trim().to_ascii_lowercase();
-        if matches!(
-            lower.as_str(),
-            "flac" | "mp3" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "webm" | "ape"
-        ) {
+        if let Some(fmt) = crate::domain::catalog::AudioFormat::from_extension(&lower) {
+            return fmt.extension().to_string();
+        }
+        if lower == "webm" {
             return lower;
         }
     }

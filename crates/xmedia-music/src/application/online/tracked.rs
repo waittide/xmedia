@@ -129,10 +129,14 @@ fn infer_audio_ext_from_content_type(ct: &str) -> Option<&'static str> {
     match base.as_str() {
         "audio/flac" | "audio/x-flac" => Some("flac"),
         "audio/mpeg" | "audio/mp3" => Some("mp3"),
-        "audio/mp4" | "audio/aac" | "audio/x-m4a" | "video/mp4" | "application/mp4" => Some("m4a"),
+        "audio/aac" | "audio/x-aac" | "audio/aacp" => Some("aac"),
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" | "video/mp4" | "application/mp4" => Some("m4a"),
         "audio/ogg" | "application/ogg" => Some("ogg"),
         "audio/opus" => Some("opus"),
         "audio/wav" | "audio/x-wav" | "audio/wave" => Some("wav"),
+        "audio/aiff" | "audio/x-aiff" => Some("aiff"),
+        "audio/x-ape" | "audio/ape" => Some("ape"),
+        "audio/x-wavpack" | "audio/wavpack" => Some("wv"),
         _ => None,
     }
 }

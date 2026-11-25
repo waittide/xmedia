@@ -12,6 +12,9 @@ use xmedia_core::infra::stream::{
     move_or_copy_file, open_file_range_stream_spec, sanitize_join, sha256_file_hex, sha256_hex,
 };
 use xmedia_core::infra::thumbnail::ThumbnailStore;
+use xmedia_formats::music::{
+    AudioFormatExt, find_album_cover_path, sidecar_lrc_path as resolve_sidecar_lrc_path,
+};
 
 use crate::application::ports::{
     MusicScannerPort, MusicStoragePort, ScannedAudioEntry, StoredManagedAudio,
@@ -242,7 +245,7 @@ impl MusicStoragePort for LocalMusicStorage {
                     }
                 }
                 let audio_p = sanitize_join(root, relative_path)?;
-                let lrc_p = audio_p.with_extension("lrc");
+                let lrc_p = resolve_sidecar_lrc_path(&audio_p);
                 if let Ok(Some(b)) =
                     read_regular_bounded_async(&lrc_p, Some(root), MAX_SIDECAR_LRC_BYTES).await
                 {
@@ -301,7 +304,9 @@ impl MusicScannerPort for LocalMusicScanner {
                 let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if AudioFormat::from_extension(ext).is_none() {
+                if AudioFormatExt::from_extension(ext).is_none()
+                    && AudioFormat::from_extension(ext).is_none()
+                {
                     continue;
                 }
                 let Ok(meta) = entry.metadata() else {
@@ -323,7 +328,7 @@ impl MusicScannerPort for LocalMusicScanner {
                     .unwrap_or("Untitled")
                     .to_string();
 
-                let sidecar_lrc = path.with_extension("lrc");
+                let sidecar_lrc = resolve_sidecar_lrc_path(path);
                 let has_safe_lrc = is_regular_non_symlink(&sidecar_lrc);
                 let sidecar_lrc_relative_path = if has_safe_lrc {
                     sidecar_lrc.strip_prefix(&root).ok().map(|r| {
@@ -338,8 +343,12 @@ impl MusicScannerPort for LocalMusicScanner {
 
                 let parent_dir = path.parent().unwrap_or(&root).to_path_buf();
                 let directory_cover_path = dir_cover_lookup
-                    .entry(parent_dir.clone())
-                    .or_insert_with(|| find_directory_cover(&parent_dir))
+                    .entry(parent_dir)
+                    .or_insert_with(|| {
+                        find_album_cover_path(path)
+                            .filter(|p| is_regular_non_symlink(p))
+                            .map(|p| p.to_string_lossy().into_owned())
+                    })
                     .clone();
 
                 let mut sidecars: Vec<PathBuf> = Vec::new();
@@ -445,24 +454,4 @@ async fn read_regular_bounded_async(
     })
     .await
     .map_err(|e| DomainError::Storage(format!("file read task failed: {e}")))?
-}
-
-fn find_directory_cover(dir: &Path) -> Option<String> {
-    const CANDIDATES: &[&str] = &[
-        "cover.jpg",
-        "cover.jpeg",
-        "cover.png",
-        "cover.webp",
-        "folder.jpg",
-        "folder.png",
-        "front.jpg",
-        "front.png",
-    ];
-    for name in CANDIDATES {
-        let p = dir.join(name);
-        if is_regular_non_symlink(&p) {
-            return Some(p.to_string_lossy().into_owned());
-        }
-    }
-    None
 }

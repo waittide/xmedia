@@ -156,7 +156,7 @@ pub fn parse_duration_secs(raw: &str, unit: Option<&str>) -> Option<u32> {
     Some(secs.round() as u32)
 }
 
-/// Infers audio format from URL path extension (`mp3`, `m4a`, `flac`, `ogg`, `opus`, `wav`).
+/// Infers audio format from URL path extension (`flac`, `mp3`, `m4a`, `alac`, `aac`, `ogg`, `opus`, `wav`, `aiff`, `ape`, `wv`).
 pub fn infer_audio_format(url: &str) -> Option<String> {
     let without_frag = url.split('#').next().unwrap_or(url);
     let without_query = without_frag.split('?').next().unwrap_or(without_frag);

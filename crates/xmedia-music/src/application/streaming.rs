@@ -126,9 +126,14 @@ impl MusicStreamingService {
                 ("mp3", AudioFormat::Mp3)
                     | ("flac", AudioFormat::Flac)
                     | ("opus", AudioFormat::Opus)
-                    | ("ogg", AudioFormat::Ogg)
-                    | ("m4a" | "aac", AudioFormat::M4a)
-                    | ("wav", AudioFormat::Wav)
+                    | ("ogg" | "oga", AudioFormat::Ogg)
+                    | ("m4a" | "mp4", AudioFormat::M4a)
+                    | ("alac", AudioFormat::Alac)
+                    | ("aac", AudioFormat::Aac | AudioFormat::M4a)
+                    | ("wav" | "wave", AudioFormat::Wav)
+                    | ("aiff" | "aif" | "aifc", AudioFormat::Aiff)
+                    | ("ape", AudioFormat::Ape)
+                    | ("wv" | "wavpack", AudioFormat::Wv)
             )
         };
         let bitrate_fits = max_br.is_none_or(|limit_kbps| {

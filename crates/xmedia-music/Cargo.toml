@@ -10,7 +10,6 @@ axum.workspace = true
 bytes.workspace = true
 form_urlencoded.workspace = true
 jiff.workspace = true
-lofty.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,6 +19,7 @@ tracing.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 xmedia-core.workspace = true
+xmedia-formats.workspace = true
 xmedia-source.workspace = true
 
 [dev-dependencies]

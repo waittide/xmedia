@@ -14,9 +14,13 @@ pub enum AudioFormat {
     Mp3,
     M4a,
     Alac,
+    Aac,
     Ogg,
     Opus,
     Wav,
+    Aiff,
+    Ape,
+    Wv,
 }
 
 impl AudioFormat {
@@ -26,9 +30,13 @@ impl AudioFormat {
             Self::Mp3 => "mp3",
             Self::M4a => "m4a",
             Self::Alac => "alac",
+            Self::Aac => "aac",
             Self::Ogg => "ogg",
             Self::Opus => "opus",
             Self::Wav => "wav",
+            Self::Aiff => "aiff",
+            Self::Ape => "ape",
+            Self::Wv => "wv",
         }
     }
 
@@ -37,9 +45,13 @@ impl AudioFormat {
             Self::Flac => "flac",
             Self::Mp3 => "mp3",
             Self::M4a | Self::Alac => "m4a",
+            Self::Aac => "aac",
             Self::Ogg => "ogg",
             Self::Opus => "opus",
             Self::Wav => "wav",
+            Self::Aiff => "aiff",
+            Self::Ape => "ape",
+            Self::Wv => "wv",
         }
     }
 
@@ -48,13 +60,21 @@ impl AudioFormat {
             Self::Flac => "audio/flac",
             Self::Mp3 => "audio/mpeg",
             Self::M4a | Self::Alac => "audio/mp4",
-            Self::Ogg | Self::Opus => "audio/ogg",
+            Self::Aac => "audio/aac",
+            Self::Ogg => "audio/ogg",
+            Self::Opus => "audio/opus",
             Self::Wav => "audio/wav",
+            Self::Aiff => "audio/aiff",
+            Self::Ape => "audio/x-ape",
+            Self::Wv => "audio/x-wavpack",
         }
     }
 
     pub fn is_lossless(self) -> bool {
-        matches!(self, Self::Flac | Self::Alac | Self::Wav)
+        matches!(
+            self,
+            Self::Flac | Self::Alac | Self::Wav | Self::Aiff | Self::Ape | Self::Wv
+        )
     }
 
     pub fn parse(raw: &str) -> DomainResult<Self> {
@@ -66,11 +86,15 @@ impl AudioFormat {
         {
             "flac" => Ok(Self::Flac),
             "mp3" => Ok(Self::Mp3),
-            "m4a" | "aac" | "mp4" => Ok(Self::M4a),
+            "m4a" | "mp4" => Ok(Self::M4a),
             "alac" => Ok(Self::Alac),
+            "aac" => Ok(Self::Aac),
             "ogg" | "oga" => Ok(Self::Ogg),
             "opus" => Ok(Self::Opus),
             "wav" | "wave" => Ok(Self::Wav),
+            "aiff" | "aif" | "aifc" => Ok(Self::Aiff),
+            "ape" => Ok(Self::Ape),
+            "wv" | "wavpack" => Ok(Self::Wv),
             other => Err(DomainError::UnsupportedFormat(format!(
                 "unsupported audio format: {other}"
             ))),

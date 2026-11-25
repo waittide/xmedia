@@ -89,6 +89,10 @@ impl AudioTranscoderPort for FfmpegAudioTranscoder {
                 args.extend(["-c:a".into(), "flac".into(), "-f".into(), "flac".into()]);
                 None
             }
+            TranscodeFormat::Wav => {
+                args.extend(["-c:a".into(), "pcm_s16le".into(), "-f".into(), "wav".into()]);
+                None
+            }
         };
 
         args.push("pipe:1".into());
