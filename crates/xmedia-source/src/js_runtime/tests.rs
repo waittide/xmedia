@@ -573,3 +573,55 @@ fn mustache_template_propagates_sandbox_errors_and_allows_css_fallback() {
         "Rust 书源 / 作者 / Rust 书源 / https://cdn.example.com/cover.jpg / lib:ok"
     );
 }
+
+#[test]
+fn cyclic_object_and_throwing_tojson_in_stringify_clear_pending_js_exception() {
+    let meta = sample_metadata();
+    let (http, _) = make_test_http(true);
+    let mut ctx = JsExecutionContext::new(
+        &meta,
+        http,
+        Arc::new(Mutex::new(SourceRuntimeState::default())),
+        Arc::new(Mutex::new(ExecutionDiagnostics::default())),
+        JsSandboxConfig::with_timeout(Duration::from_secs(5)),
+    )
+    .unwrap();
+
+    let cyclic_err = ctx
+        .eval_rule_js(
+            "var a = {}; a.self = a; a;",
+            &RuleValue::Text(String::new()),
+            "",
+        )
+        .unwrap_err();
+    assert!(
+        cyclic_err.contains("TypeError") || cyclic_err.contains("cyclic"),
+        "expected caught TypeError for cyclic object, got: {cyclic_err}"
+    );
+
+    let tojson_err = ctx
+        .eval_rule_js(
+            "({ toJSON: function() { throw new Error('custom_tojson_boom'); } })",
+            &RuleValue::Text(String::new()),
+            "",
+        )
+        .unwrap_err();
+    assert!(
+        tojson_err.contains("custom_tojson_boom"),
+        "expected caught toJSON message, got: {tojson_err}"
+    );
+
+    // Context must have no pending exception left behind on subsequent evaluations.
+    let recovered_obj = ctx
+        .eval_rule_js("({ healthy: 123 })", &RuleValue::Text(String::new()), "")
+        .unwrap();
+    assert_eq!(
+        recovered_obj,
+        RuleValue::Json(serde_json::json!({ "healthy": 123 }))
+    );
+
+    let recovered_str = ctx
+        .eval_rule_js("helperFn('clean')", &RuleValue::Text(String::new()), "")
+        .unwrap();
+    assert_eq!(recovered_str.as_text(), "lib:clean");
+}

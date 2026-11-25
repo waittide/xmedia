@@ -108,7 +108,7 @@ pub(super) struct SharedBridgeState {
     pub(super) sandbox: JsSandboxConfig,
 }
 
-fn format_caught_js_error(prefix: &str, err: rquickjs::CaughtError<'_>) -> String {
+pub(super) fn format_caught_js_error(prefix: &str, err: rquickjs::CaughtError<'_>) -> String {
     match err {
         rquickjs::CaughtError::Exception(ex) => {
             let name = ex

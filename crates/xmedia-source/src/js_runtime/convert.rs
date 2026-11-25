@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use rquickjs::context::EvalOptions;
-use rquickjs::{Array, Ctx, Function, Object, Value};
+use rquickjs::{Array, CatchResultExt, Ctx, Function, Object, Value};
 
 use crate::model::ExecutionDiagnostics;
 use crate::rule::RuleValue;
@@ -123,9 +123,19 @@ pub(super) fn js_value_to_rule_value<'js>(
         return Ok(RuleValue::Text(f.to_string()));
     }
 
-    let json_obj: rquickjs::Object<'js> = ctx.globals().get("JSON").map_err(|e| e.to_string())?;
-    let stringify: Function<'js> = json_obj.get("stringify").map_err(|e| e.to_string())?;
-    let serialized: Option<String> = stringify.call((val,)).map_err(|e| e.to_string())?;
+    let json_obj: rquickjs::Object<'js> = ctx
+        .globals()
+        .get("JSON")
+        .catch(ctx)
+        .map_err(|e| super::format_caught_js_error("获取 JSON 对象失败", e))?;
+    let stringify: Function<'js> = json_obj
+        .get("stringify")
+        .catch(ctx)
+        .map_err(|e| super::format_caught_js_error("获取 JSON.stringify 失败", e))?;
+    let serialized: Option<String> = stringify
+        .call((val,))
+        .catch(ctx)
+        .map_err(|e| super::format_caught_js_error("序列化 JS 返回值失败", e))?;
     if let Some(s) = serialized
         && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&s)
     {
