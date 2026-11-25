@@ -1,20 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
-import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   LuArrowDown,
   LuArrowUp,
-  LuBookOpen,
   LuLayoutGrid,
   LuList,
   LuPlus,
   LuRefreshCw,
   LuTag,
-  LuTrash2,
   LuUpload,
   LuUser,
-  LuX,
 } from 'vue-icons-plus/lu'
 import { DomainLibraryTemplate, DomainPoolSection, MediaItemCard } from '@/components/domain'
 import RemoteOpdsBrowser from '@/components/remote/RemoteOpdsBrowser.vue'
@@ -22,18 +19,23 @@ import {
   MdButton,
   MdChip,
   MdIconButton,
-  MdMenuItem,
   MdSegmentedButton,
   MdSelect,
   type MdTabItem,
   type SegmentedOption,
 } from '@/components/ui'
 import { api } from '@/domains/book/api'
+import BookCatalogBooksGrid from '@/domains/book/components/catalog/BookCatalogBooksGrid.vue'
 import BookCatalogContinueSection from '@/domains/book/components/catalog/BookCatalogContinueSection.vue'
 import BookCatalogFilterSheet from '@/domains/book/components/catalog/BookCatalogFilterSheet.vue'
 import BookCatalogListTable from '@/domains/book/components/catalog/BookCatalogListTable.vue'
 import BookCatalogSelectionBar from '@/domains/book/components/catalog/BookCatalogSelectionBar.vue'
 import BookCatalogShelvesSection from '@/domains/book/components/catalog/BookCatalogShelvesSection.vue'
+import {
+  parseBookTab,
+  useBookCatalogQuerySync,
+  type BookBrowseView,
+} from '@/domains/book/components/catalog/useBookCatalogQuerySync'
 import { useBookShelfActions } from '@/domains/book/components/catalog/useBookShelfActions'
 import OnlineBookSearchSection from '@/domains/book/components/OnlineBookSearchSection.vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
@@ -44,23 +46,16 @@ import type {
   BookSummaryDto,
   ShelfDto,
 } from '@/domains/book/types'
-import { bookSummaryToVM, hasBookProgress } from '@/domains/book/utils/bookVm'
 import {
-  itemRoute,
-  playRoute,
   useMergedShelf,
   useSourceFilter,
   type LibraryTab,
-  type MediaItemVM,
   type SourceScope,
 } from '@/sources'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
-import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
-
-type BookBrowseView = 'items' | 'authors' | 'tags'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
@@ -69,7 +64,6 @@ const router = useRouter()
 const appClientStore = useAppClientStore()
 const authStore = useAuthStore()
 const catalogStore = useCatalogStore()
-const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
 const uploadStore = useUploadStore()
 
@@ -89,12 +83,20 @@ const localError = ref<string | null>(null)
 
 const uploadInputRef = ref<HTMLInputElement | null>(null)
 const onlineSearchRef = ref<InstanceType<typeof OnlineBookSearchSection> | null>(null)
-let syncingRouteQuery = false
 
 const isLocalScope = computed(() => activeScope.value === 'local')
 const isPoolScope = computed(() => activeScope.value === 'pool')
 const isOnlineScope = computed(() => activeScope.value === 'online')
 const isRemoteScope = computed(() => activeScope.value === 'remote')
+
+const { isSyncing, syncRouteQuery, applyRouteQuery } = useBookCatalogQuerySync({
+  activeScope,
+  getSourceId: () => sourceFilter.filter.value.sourceId,
+  activeTab,
+  activeView,
+  activeCollectionId,
+  searchInput,
+})
 
 const continueShelf = useMergedShelf('book', 'continue', {
   scope: 'all',
@@ -116,148 +118,6 @@ const selectedRemoteSourceId = computed(() => {
   }
   return appClientStore.opdsSources[0]?.id ?? ''
 })
-
-function readQueryString(val: unknown): string {
-  if (typeof val === 'string') return val.trim()
-  if (Array.isArray(val)) {
-    const first = val.find((v): v is string => typeof v === 'string' && v.trim().length > 0)
-    return first ? first.trim() : ''
-  }
-  return ''
-}
-
-function readQueryList(val: unknown): string[] {
-  if (typeof val === 'string') return val.trim() ? [val.trim()] : []
-  if (Array.isArray(val)) {
-    return val
-      .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
-      .map((v) => v.trim())
-  }
-  return []
-}
-
-function parseTab(raw: string): LibraryTab {
-  if (raw === 'continue' || raw === 'favorites' || raw === 'collections') return raw
-  return 'all'
-}
-
-function parseView(raw: string): BookBrowseView {
-  if (raw === 'authors' || raw === 'tags') return raw
-  return 'items'
-}
-
-function buildCanonicalQuery(): LocationQueryRaw {
-  const q: LocationQueryRaw = {}
-  const scope = activeScope.value
-
-  if (scope !== 'local') {
-    q.scope = scope
-    const srcId = sourceFilter.filter.value.sourceId
-    if (srcId) q.source = srcId
-    if (searchInput.value.trim()) q.q = searchInput.value.trim()
-    return q
-  }
-
-  if (activeTab.value !== 'all') q.tab = activeTab.value
-  if (activeCollectionId.value) q.collection = activeCollectionId.value
-  if (activeTab.value === 'all' && !activeCollectionId.value && activeView.value !== 'items') {
-    q.view = activeView.value
-  }
-  if (searchInput.value.trim()) q.q = searchInput.value.trim()
-
-  if (catalogStore.filterLibraryIds.length === 1) {
-    q.library = catalogStore.filterLibraryIds[0]!
-  } else if (catalogStore.filterLibraryIds.length > 1) {
-    q.library = [...catalogStore.filterLibraryIds]
-  }
-  if (catalogStore.filterAuthors.length === 1) {
-    q.author = catalogStore.filterAuthors[0]!
-  } else if (catalogStore.filterAuthors.length > 1) {
-    q.author = [...catalogStore.filterAuthors]
-  }
-  if (catalogStore.filterTags.length === 1) {
-    q.tag = catalogStore.filterTags[0]!
-  } else if (catalogStore.filterTags.length > 1) {
-    q.tag = [...catalogStore.filterTags]
-  }
-  if (catalogStore.filterTags.length > 1 && catalogStore.filterTagMode !== 'any') {
-    q.tag_mode = catalogStore.filterTagMode
-  }
-  if (catalogStore.filterFormats.length === 1) {
-    q.format = catalogStore.filterFormats[0]!
-  } else if (catalogStore.filterFormats.length > 1) {
-    q.format = [...catalogStore.filterFormats]
-  }
-  if (catalogStore.includeMissing) q.missing = '1'
-  if (catalogStore.sortBy !== 'created_at') q.sort = catalogStore.sortBy
-  if (catalogStore.sortOrder !== 'desc') q.order = catalogStore.sortOrder
-  if (catalogStore.page > 1) q.page = String(catalogStore.page)
-
-  return q
-}
-
-function queryValuesEqual(a: unknown, b: unknown): boolean {
-  if (Array.isArray(a) || Array.isArray(b)) {
-    const la = readQueryList(a)
-    const lb = readQueryList(b)
-    return la.length === lb.length && la.every((v, i) => v === lb[i])
-  }
-  return a === b
-}
-
-function syncRouteQuery(): void {
-  const next = buildCanonicalQuery()
-  const cur = route.query
-  const same =
-    route.path === '/book/library' &&
-    Object.keys(next).length === Object.keys(cur).length &&
-    Object.entries(next).every(([k, v]) => queryValuesEqual(cur[k], v))
-  if (same) return
-  syncingRouteQuery = true
-  void router.replace({ path: '/book/library', query: next }).finally(() => {
-    syncingRouteQuery = false
-  })
-}
-
-function applyRouteQuery(): void {
-  const qTab = readQueryString(route.query.tab)
-  const qCollection = readQueryString(route.query.collection) || readQueryString(route.query.shelf)
-  const qView = readQueryString(route.query.view)
-  const qKeyword = readQueryString(route.query.q)
-  const qLibraries = readQueryList(route.query.library)
-  const qAuthors = readQueryList(route.query.author)
-  const qTags = readQueryList(route.query.tag)
-  const qTagMode = readQueryString(route.query.tag_mode)
-  const qFormats = readQueryList(route.query.format).filter(
-    (f): f is BookFormat => f === 'epub' || f === 'txt' || f === 'pdf',
-  )
-  const qMissing = route.query.missing === '1' || route.query.missing === 'true'
-  const qSort = readQueryString(route.query.sort) || readQueryString(route.query.sort_by)
-  const qOrder = readQueryString(route.query.order) || readQueryString(route.query.sort_order)
-  const qPage = Number.parseInt(readQueryString(route.query.page), 10)
-
-  activeTab.value = qCollection && qTab === 'collections' ? 'all' : parseTab(qTab)
-  activeCollectionId.value = qCollection
-  activeView.value = qCollection ? 'items' : parseView(qView)
-  searchInput.value = qKeyword
-
-  catalogStore.activeSection = qCollection ? 'shelf' : 'all'
-  catalogStore.activeLibraryId = ''
-  catalogStore.activeShelfId = qCollection
-  catalogStore.keyword = qKeyword
-  catalogStore.filterLibraryIds = qLibraries
-  catalogStore.filterAuthors = qAuthors
-  catalogStore.filterTags = qTags
-  catalogStore.filterTagMode = qTagMode === 'all' ? 'all' : 'any'
-  catalogStore.filterFormats = qFormats
-  catalogStore.includeMissing = qMissing
-  catalogStore.sortBy =
-    qSort === 'created_at' || qSort === 'updated_at' || qSort === 'title' || qSort === 'file_size'
-      ? qSort
-      : 'created_at'
-  catalogStore.sortOrder = qOrder === 'asc' || qOrder === 'desc' ? qOrder : 'desc'
-  catalogStore.page = Number.isFinite(qPage) && qPage >= 1 ? qPage : 1
-}
 
 async function loadActiveLocalData(): Promise<void> {
   if (!isLocalScope.value) return
@@ -296,7 +156,7 @@ onMounted(() => {
 watch(
   () => route.query,
   () => {
-    if (syncingRouteQuery) return
+    if (isSyncing()) return
     applyRouteQuery()
     if (isLocalScope.value) {
       void loadActiveLocalData()
@@ -378,7 +238,8 @@ function handleLayoutKeydown(event: KeyboardEvent, currentIdx: number): void {
   const nextOpt = opts[nextIdx]
   if (!nextOpt) return
   handleLayoutModeChange(nextOpt.value)
-  const group = (event.currentTarget as HTMLElement | null)?.parentElement
+  const targetEl = event.currentTarget
+  const group = targetEl instanceof HTMLElement ? targetEl.parentElement : null
   const buttons = group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
   buttons?.[nextIdx]?.focus()
 }
@@ -417,16 +278,6 @@ const activeFilterCount = computed(() => {
 
 const totalPages = computed(() =>
   Math.max(1, Math.ceil(catalogStore.total / catalogStore.pageSize)),
-)
-
-const localBookVMs = computed<Array<{ book: BookSummaryDto; vm: MediaItemVM }>>(() =>
-  catalogStore.books.map((book) => ({
-    book,
-    vm: bookSummaryToVM(book, {
-      unknownAuthor: t('catalog.unknownAuthor'),
-      missingLabel: t('catalog.missingBadge'),
-    }),
-  })),
 )
 
 const filteredAuthors = computed(() => {
@@ -528,7 +379,7 @@ function handleScopeChange(nextScope: SourceScope): void {
 }
 
 function handleTabChange(nextTab: string): void {
-  const parsed = parseTab(nextTab)
+  const parsed = parseBookTab(nextTab)
   activeTab.value = parsed
   if (parsed !== 'all') {
     activeView.value = 'items'
@@ -709,44 +560,8 @@ async function toggleBookFavorite(book: BookSummaryDto): Promise<void> {
   }
 }
 
-async function handleDeleteBookFromCard(book: BookSummaryDto): Promise<void> {
-  const confirmed = await dialogStore.confirm({
-    title: t('detail.deleteBook'),
-    message: t('detail.confirmDeleteBook', { title: book.metadata.title }),
-    danger: true,
-  })
-  if (!confirmed) return
-  try {
-    await api.deleteBook(book.id)
-    await Promise.all([catalogStore.refreshSidebarData(), loadActiveLocalData()])
-  } catch (err) {
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  }
-}
-
-async function handleUnbindBookFromCard(book: BookSummaryDto): Promise<void> {
-  const confirmed = await dialogStore.confirm({
-    title: globalT('pool.unbindConfirmTitle'),
-    message: book.online_tracking
-      ? globalT('pool.unbindOnlineConfirmMessage', { title: book.metadata.title })
-      : globalT('pool.unbindConfirmMessage', { title: book.metadata.title }),
-    danger: true,
-    confirmText: globalT('pool.unbindBtn'),
-  })
-  if (!confirmed) return
-  try {
-    await api.unbindItem(book.id)
-    snackbarStore.show(globalT('pool.unboundToast'))
-    await Promise.all([catalogStore.refreshSidebarData(), loadActiveLocalData()])
-  } catch (err) {
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  }
+async function handleCardMutated(): Promise<void> {
+  await Promise.all([catalogStore.refreshSidebarData(), loadActiveLocalData()])
 }
 
 function handlePoolChanged(): void {
@@ -777,7 +592,8 @@ function triggerUpload(): void {
 }
 
 function onUploadFilesChange(ev: Event): void {
-  const input = ev.target as HTMLInputElement
+  const input = ev.target
+  if (!(input instanceof HTMLInputElement)) return
   if (input.files && input.files.length > 0) {
     uploadStore.enqueueFiles(input.files)
   }
@@ -1102,52 +918,12 @@ function onUploadFilesChange(ev: Event): void {
           />
         </div>
 
-        <div
+        <BookCatalogBooksGrid
           v-else-if="catalogStore.viewMode === 'grid'"
-          class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
-        >
-          <MediaItemCard
-            v-for="entry in localBookVMs"
-            :key="entry.book.id"
-            :item="entry.vm"
-            aspect="poster"
-            cover-style="book"
-            show-favorite
-            :favorite="entry.book.is_favorite"
-            @toggle-favorite="toggleBookFavorite(entry.book)"
-          >
-            <template #menu>
-              <MdMenuItem
-                v-if="!entry.book.is_missing"
-                :icon="LuBookOpen"
-                :label="
-                  hasBookProgress(entry.book.progress)
-                    ? t('catalog.continueReading')
-                    : t('catalog.startReading')
-                "
-                :to="playRoute({ scope: 'local', domain: 'book', id: entry.book.id })"
-              />
-              <MdMenuItem
-                :icon="LuBookOpen"
-                :label="t('catalog.openDetail')"
-                :to="itemRoute({ scope: 'local', domain: 'book', id: entry.book.id })"
-              />
-              <MdMenuItem
-                :icon="LuX"
-                :label="globalT('pool.unbindBtn')"
-                destructive
-                @select="handleUnbindBookFromCard(entry.book)"
-              />
-              <MdMenuItem
-                v-if="authStore.isAdmin"
-                :icon="LuTrash2"
-                :label="t('detail.deleteBook')"
-                destructive
-                @select="handleDeleteBookFromCard(entry.book)"
-              />
-            </template>
-          </MediaItemCard>
-        </div>
+          :books="catalogStore.books"
+          @toggle-favorite="toggleBookFavorite"
+          @mutated="handleCardMutated"
+        />
 
         <BookCatalogListTable
           v-else
