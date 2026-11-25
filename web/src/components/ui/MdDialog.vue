@@ -20,6 +20,7 @@ const props = withDefaults(
     hideHeader?: boolean
     noBodyPadding?: boolean
     closeOnBackdrop?: boolean
+    showClose?: boolean
     hideClose?: boolean
     footerAlign?: 'between' | 'end'
   }>(),
@@ -32,6 +33,7 @@ const props = withDefaults(
     hideHeader: false,
     noBodyPadding: false,
     closeOnBackdrop: true,
+    showClose: false,
     hideClose: false,
     footerAlign: 'end',
   },
@@ -129,38 +131,66 @@ const resolvedWidthClass = computed(() => {
               </div>
             </div>
 
-            <!-- MD3 Basic Dialog Header -->
+            <!-- MD3 Basic Dialog Custom Header Slot -->
             <div
-              v-else-if="!hideHeader && (title || $slots.header || $slots.icon)"
+              v-else-if="!hideHeader && $slots.header"
               class="flex items-start justify-between gap-4 px-6 pt-6 pb-3"
             >
-              <slot name="header">
-                <div class="flex min-w-0 items-start gap-3.5">
-                  <div
-                    v-if="$slots.icon"
-                    class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-lg bg-secondary-container text-on-secondary-container"
-                  >
-                    <slot name="icon" />
-                  </div>
-                  <div class="min-w-0">
-                    <h3 :id="titleId" class="text-headline-small text-on-surface">
-                      {{ title }}
-                    </h3>
-                    <p
-                      v-if="subtitle"
-                      :id="subtitleId"
-                      class="text-body-small mt-1 text-on-surface-variant"
-                    >
-                      {{ subtitle }}
-                    </p>
-                  </div>
-                </div>
-              </slot>
+              <slot name="header" />
 
-              <div class="flex shrink-0 items-center gap-1">
+              <div
+                v-if="$slots.headerActions || (showClose && !hideClose)"
+                class="flex shrink-0 items-center gap-1"
+              >
                 <slot name="headerActions" />
                 <MdIconButton
-                  v-if="!hideClose"
+                  v-if="showClose && !hideClose"
+                  size="sm"
+                  :icon="LuX"
+                  :aria-label="t('common.close')"
+                  @click="emit('close')"
+                />
+              </div>
+            </div>
+
+            <!-- MD3 Basic Dialog Header (centered 24dp secondary icon + centered headline) -->
+            <div
+              v-else-if="
+                !hideHeader &&
+                (title || $slots.icon || $slots.headerActions || (showClose && !hideClose))
+              "
+              class="relative flex flex-col items-center px-6 pt-6 pb-3 text-center"
+            >
+              <div
+                v-if="$slots.icon"
+                class="mb-4 flex items-center justify-center text-secondary [&_svg]:h-6 [&_svg]:w-6"
+              >
+                <slot name="icon" />
+              </div>
+
+              <h3
+                v-if="title"
+                :id="titleId"
+                class="text-headline-small text-center text-on-surface"
+                :class="showClose && !hideClose ? 'px-8' : ''"
+              >
+                {{ title }}
+              </h3>
+              <p
+                v-if="subtitle"
+                :id="subtitleId"
+                class="text-body-medium mt-2 text-center text-on-surface-variant"
+              >
+                {{ subtitle }}
+              </p>
+
+              <div
+                v-if="$slots.headerActions || (showClose && !hideClose)"
+                class="absolute top-4 right-4 flex items-center gap-1"
+              >
+                <slot name="headerActions" />
+                <MdIconButton
+                  v-if="showClose && !hideClose"
                   size="sm"
                   :icon="LuX"
                   :aria-label="t('common.close')"

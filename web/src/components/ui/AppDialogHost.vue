@@ -59,7 +59,11 @@ watch(
             class="w-full max-w-sm rounded-corner-xl bg-surface-container-high p-6 text-on-surface shadow-elevation-3 outline-none"
             @submit.prevent="dialogStore.submit()"
           >
-            <h3 v-if="dialogStore.active.title" :id="titleId" class="text-headline-small mb-2">
+            <h3
+              v-if="dialogStore.active.title"
+              :id="titleId"
+              class="text-headline-small mb-3 text-center text-on-surface"
+            >
               {{ dialogStore.active.title }}
             </h3>
             <p :id="descId" class="text-body-medium text-on-surface-variant">
@@ -76,13 +80,12 @@ watch(
             </div>
 
             <div class="mt-6 flex justify-end gap-2">
-              <MdButton variant="text" size="sm" @click="dialogStore.cancel()">
+              <MdButton variant="text" @click="dialogStore.cancel()">
                 {{ dialogStore.active.cancelText || t('common.cancel') }}
               </MdButton>
               <MdButton
                 type="submit"
-                variant="filled"
-                size="sm"
+                variant="text"
                 :tone="dialogStore.active.danger ? 'error' : 'primary'"
               >
                 {{
