@@ -1,5 +1,15 @@
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+
+pub const DEFAULT_TOOL_SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+const DEFAULT_UNLOCK_RATE_WINDOW: Duration = Duration::from_secs(60);
+const DEFAULT_MAX_FAILED_UNLOCKS: usize = 5;
+const MAX_ACTIVE_SESSIONS: usize = 256;
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let max_len = a.len().max(b.len());
@@ -13,53 +23,185 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     len_diff == 0 && byte_diff == 0
 }
 
+fn sha256_digest(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+fn salted_password_digest(salt: &[u8; 32], password: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"xmedia-tool-auth-v2:");
+    hasher.update(salt);
+    hasher.update(b":");
+    hasher.update(password.as_bytes());
+    hasher.finalize().into()
+}
+
+fn generate_csprng_salt() -> [u8; 32] {
+    let mut salt = [0u8; 32];
+    salt[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    salt[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    salt
+}
+
+fn generate_random_session_token() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+struct PasswordVerifier {
+    salt: [u8; 32],
+    digest: [u8; 32],
+}
+
+#[derive(Default)]
+struct AuthState {
+    sessions: HashMap<[u8; 32], Instant>,
+    failed_unlocks: VecDeque<Instant>,
+}
+
+impl AuthState {
+    fn prune_expired_sessions(&mut self, now: Instant) {
+        self.sessions.retain(|_, expires_at| *expires_at > now);
+    }
+
+    fn prune_unlock_window(&mut self, now: Instant, window: Duration) {
+        while let Some(&front) = self.failed_unlocks.front() {
+            if now.saturating_duration_since(front) >= window {
+                self.failed_unlocks.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ToolAuthService {
-    expected_token: Option<String>,
+    verifier: Option<Arc<PasswordVerifier>>,
+    state: Arc<Mutex<AuthState>>,
+    session_ttl: Duration,
+    unlock_window: Duration,
+    max_failed_unlocks: usize,
 }
 
 impl ToolAuthService {
     pub fn new(password: Option<String>) -> Self {
+        Self::with_options(
+            password,
+            DEFAULT_TOOL_SESSION_TTL,
+            DEFAULT_UNLOCK_RATE_WINDOW,
+            DEFAULT_MAX_FAILED_UNLOCKS,
+        )
+    }
+
+    pub fn with_options(
+        password: Option<String>,
+        session_ttl: Duration,
+        unlock_window: Duration,
+        max_failed_unlocks: usize,
+    ) -> Self {
         let clean = password
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty());
-        let expected_token = clean.map(|pwd| {
-            let mut hasher = Sha256::new();
-            hasher.update(b"xmedia-tool-auth-v1:");
-            hasher.update(pwd.as_bytes());
-            hex::encode(hasher.finalize())
+        let verifier = clean.map(|pwd| {
+            let salt = generate_csprng_salt();
+            let digest = salted_password_digest(&salt, &pwd);
+            Arc::new(PasswordVerifier { salt, digest })
         });
-        Self { expected_token }
-    }
-
-    pub fn requires_password(&self) -> bool {
-        self.expected_token.is_some()
-    }
-
-    pub fn unlock(&self, password: &str) -> DomainResult<String> {
-        let Some(ref expected) = self.expected_token else {
-            return Ok("open-mode".to_string());
-        };
-        let mut hasher = Sha256::new();
-        hasher.update(b"xmedia-tool-auth-v1:");
-        hasher.update(password.trim().as_bytes());
-        let candidate = hex::encode(hasher.finalize());
-        if constant_time_eq(candidate.as_bytes(), expected.as_bytes()) {
-            Ok(expected.clone())
-        } else {
-            Err(DomainError::Unauthorized("invalid access password".into()))
+        Self {
+            verifier,
+            state: Arc::new(Mutex::new(AuthState::default())),
+            session_ttl,
+            unlock_window,
+            max_failed_unlocks: max_failed_unlocks.max(1),
         }
     }
 
-    pub fn verify_token(&self, provided: Option<&str>) -> DomainResult<()> {
-        let Some(ref expected) = self.expected_token else {
-            return Ok(());
+    pub fn session_ttl_secs(&self) -> u64 {
+        self.session_ttl.as_secs()
+    }
+
+    pub fn requires_password(&self) -> bool {
+        self.verifier.is_some()
+    }
+
+    pub fn unlock(&self, password: &str) -> DomainResult<String> {
+        let Some(ref verifier) = self.verifier else {
+            return Ok("open-mode".to_string());
         };
-        match provided {
-            Some(tok) if constant_time_eq(tok.trim().as_bytes(), expected.as_bytes()) => Ok(()),
-            _ => Err(DomainError::Unauthorized(
+        let now = Instant::now();
+        let candidate = salted_password_digest(&verifier.salt, password.trim());
+
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.prune_unlock_window(now, self.unlock_window);
+        if guard.failed_unlocks.len() >= self.max_failed_unlocks {
+            return Err(DomainError::TooManyRequests(
+                "too many failed unlock attempts; please wait before retrying".into(),
+            ));
+        }
+
+        if !constant_time_eq(&candidate, &verifier.digest) {
+            guard.failed_unlocks.push_back(now);
+            return Err(DomainError::Unauthorized("invalid access password".into()));
+        }
+
+        guard.prune_expired_sessions(now);
+        if guard.sessions.len() >= MAX_ACTIVE_SESSIONS
+            && let Some(oldest_key) = guard
+                .sessions
+                .iter()
+                .min_by_key(|(_, exp)| **exp)
+                .map(|(k, _)| *k)
+        {
+            guard.sessions.remove(&oldest_key);
+        }
+
+        let token = generate_random_session_token();
+        let token_hash = sha256_digest(token.as_bytes());
+        guard.sessions.insert(token_hash, now + self.session_ttl);
+        Ok(token)
+    }
+
+    pub fn verify_token(&self, provided: Option<&str>) -> DomainResult<()> {
+        if self.verifier.is_none() {
+            return Ok(());
+        }
+        let Some(tok) = provided.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(DomainError::Unauthorized(
                 "access password token required".into(),
-            )),
+            ));
+        };
+        let token_hash = sha256_digest(tok.as_bytes());
+        let now = Instant::now();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.prune_expired_sessions(now);
+        if guard.sessions.contains_key(&token_hash) {
+            Ok(())
+        } else {
+            Err(DomainError::Unauthorized(
+                "access password token required".into(),
+            ))
+        }
+    }
+
+    pub fn lock(&self, provided: Option<&str>) {
+        self.lock_tokens(provided);
+    }
+
+    pub fn lock_tokens<'a>(&self, tokens: impl IntoIterator<Item = &'a str>) {
+        if self.verifier.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.prune_expired_sessions(now);
+        for tok in tokens {
+            let trimmed = tok.trim();
+            if !trimmed.is_empty() {
+                let token_hash = sha256_digest(trimmed.as_bytes());
+                guard.sessions.remove(&token_hash);
+            }
         }
     }
 }
@@ -78,13 +220,57 @@ mod tests {
     }
 
     #[test]
-    fn auth_service_unlock_and_verify_token_work_as_expected() {
+    fn auth_service_issues_distinct_random_sessions_and_invalidates_on_lock() {
         let auth = ToolAuthService::new(Some("secret-pass".into()));
         assert!(auth.requires_password());
         assert!(auth.unlock("wrong").is_err());
-        let token = auth.unlock("secret-pass").unwrap();
-        assert!(auth.verify_token(Some(&token)).is_ok());
+
+        let token1 = auth.unlock("secret-pass").unwrap();
+        let token2 = auth.unlock("secret-pass").unwrap();
+        assert_ne!(token1, token2);
+        assert_eq!(token1.len(), 64);
+        assert!(auth.verify_token(Some(&token1)).is_ok());
+        assert!(auth.verify_token(Some(&token2)).is_ok());
         assert!(auth.verify_token(Some("bad-token")).is_err());
         assert!(auth.verify_token(None).is_err());
+
+        auth.lock(Some(&token1));
+        assert!(auth.verify_token(Some(&token1)).is_err());
+        assert!(auth.verify_token(Some(&token2)).is_ok());
+    }
+
+    #[test]
+    fn auth_service_enforces_session_expiry_and_unlock_rate_limiting() {
+        let auth = ToolAuthService::with_options(
+            Some("secret-pass".into()),
+            Duration::from_millis(25),
+            Duration::from_millis(60),
+            3,
+        );
+
+        let tok = auth.unlock("secret-pass").unwrap();
+        assert!(auth.verify_token(Some(&tok)).is_ok());
+        std::thread::sleep(Duration::from_millis(35));
+        assert!(auth.verify_token(Some(&tok)).is_err());
+
+        assert!(matches!(
+            auth.unlock("bad-1"),
+            Err(DomainError::Unauthorized(_))
+        ));
+        assert!(matches!(
+            auth.unlock("bad-2"),
+            Err(DomainError::Unauthorized(_))
+        ));
+        assert!(matches!(
+            auth.unlock("bad-3"),
+            Err(DomainError::Unauthorized(_))
+        ));
+        assert!(matches!(
+            auth.unlock("secret-pass"),
+            Err(DomainError::TooManyRequests(_))
+        ));
+
+        std::thread::sleep(Duration::from_millis(70));
+        assert!(auth.unlock("secret-pass").is_ok());
     }
 }

@@ -115,6 +115,85 @@ async fn password_guard_and_root_sandbox_traversal_rejection() {
         .await
         .unwrap();
     assert_eq!(trav_res.status(), StatusCode::FORBIDDEN);
+
+    // Anti-DNS-rebinding & anti-CSRF checks
+    let rebind_res = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/tool/status")
+                .header(header::HOST, "evil.rebind.test:8091")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rebind_res.status(), StatusCode::FORBIDDEN);
+
+    let cross_site_res = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/tool/auth/lock")
+                .header(header::HOST, "127.0.0.1:8091")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_site_res.status(), StatusCode::FORBIDDEN);
+
+    let cross_origin_res = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/tool/auth/lock")
+                .header(header::HOST, "127.0.0.1:8091")
+                .header(header::ORIGIN, "http://127.0.0.1:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_origin_res.status(), StatusCode::FORBIDDEN);
+
+    // Server-side session invalidation on POST /auth/lock
+    let lock_res = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/tool/auth/lock")
+                .header(header::HOST, "127.0.0.1:8091")
+                .header(header::ORIGIN, "http://127.0.0.1:8091")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lock_res.status(), StatusCode::OK);
+
+    let after_lock_res = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/tool/settings")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after_lock_res.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

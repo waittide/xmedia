@@ -70,7 +70,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let app = XMediaToolApp::init_with_cors_origins(
+    let listener = TcpListener::bind(cli.bind)
+        .await
+        .with_context(|| format!("failed to bind {}", cli.bind))?;
+    let bound_addr = listener
+        .local_addr()
+        .context("failed resolving bound socket address")?;
+
+    let app = XMediaToolApp::init_with_bind_and_cors(
         XMediaToolConfig {
             data_dir: cli.data_dir,
             initial_roots: cli.roots,
@@ -78,17 +85,14 @@ async fn main() -> anyhow::Result<()> {
             ffmpeg_bin: cli.ffmpeg_bin,
             external_web_dir: cli.web_dir,
         },
+        Some(bound_addr),
         &cli.cors_allow_origins,
     )
     .await?;
 
-    let listener = TcpListener::bind(cli.bind)
-        .await
-        .with_context(|| format!("failed to bind {}", cli.bind))?;
-
     info!(
         "xmedia-tool listening on http://{} (password protection: {})",
-        cli.bind,
+        bound_addr,
         if password_enabled { "enabled" } else { "open" }
     );
 

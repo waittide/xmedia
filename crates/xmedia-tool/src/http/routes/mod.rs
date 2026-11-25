@@ -37,7 +37,8 @@ use xmedia_core::http::ApiResult;
 use crate::application::workbench::WorkbenchProgress;
 use crate::http::ToolHttpState;
 use crate::http::auth::{
-    build_tool_clear_cookie, build_tool_session_cookie, extract_tool_token, require_tool_auth,
+    build_tool_clear_cookie, build_tool_session_cookie, extract_all_tool_tokens,
+    extract_tool_token, require_tool_auth,
 };
 
 pub fn tool_api_router(state: ToolHttpState) -> Router<ToolHttpState> {
@@ -168,13 +169,15 @@ async fn unlock_tool(
     Json(req): Json<UnlockRequest>,
 ) -> ApiResult<Response> {
     let token = state.auth.unlock(&req.password)?;
-    let cookie = build_tool_session_cookie(&token);
+    let cookie = build_tool_session_cookie(&token, state.auth.session_ttl_secs());
     let mut res = (StatusCode::OK, Json(UnlockResponse { token })).into_response();
     res.headers_mut().insert(SET_COOKIE, cookie);
     Ok(res)
 }
 
-async fn lock_tool() -> Response {
+async fn lock_tool(State(state): State<ToolHttpState>, parts: Parts) -> Response {
+    let tokens = extract_all_tool_tokens(&parts);
+    state.auth.lock_tokens(tokens.iter().map(String::as_str));
     let mut res = (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response();
     res.headers_mut()
         .insert(SET_COOKIE, build_tool_clear_cookie());

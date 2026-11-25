@@ -3,12 +3,14 @@ pub mod domain;
 pub mod http;
 pub mod infra;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
 use axum::http::HeaderValue;
+use axum::middleware;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -20,9 +22,10 @@ use crate::application::scraping::ScrapingOrchestratorService;
 use crate::application::settings::ToolSettingsService;
 use crate::application::workbench::MediaWorkbenchService;
 use crate::domain::ports::ScraperProviderPort;
-use crate::http::ToolHttpState;
+use crate::http::auth::guard_tool_http_request;
 use crate::http::routes::tool_api_router;
 use crate::http::static_files::serve_tool_spa;
+use crate::http::{ToolHttpState, ToolRequestSecurityPolicy};
 use crate::infra::config_store::JsonFileConfigRepository;
 use crate::infra::inspectors::build_default_inspectors;
 use crate::infra::scrapers::build_default_scraper_providers;
@@ -45,16 +48,32 @@ pub struct XMediaToolApp {
 
 impl XMediaToolApp {
     pub async fn init(cfg: XMediaToolConfig) -> anyhow::Result<Self> {
-        Self::init_with_providers_and_cors(cfg, build_default_scraper_providers(), &[]).await
+        Self::init_with_providers_bind_and_cors(cfg, build_default_scraper_providers(), None, &[])
+            .await
     }
 
     pub async fn init_with_cors_origins(
         cfg: XMediaToolConfig,
         cors_allow_origins: &[String],
     ) -> anyhow::Result<Self> {
-        Self::init_with_providers_and_cors(
+        Self::init_with_providers_bind_and_cors(
             cfg,
             build_default_scraper_providers(),
+            None,
+            cors_allow_origins,
+        )
+        .await
+    }
+
+    pub async fn init_with_bind_and_cors(
+        cfg: XMediaToolConfig,
+        bind_addr: Option<SocketAddr>,
+        cors_allow_origins: &[String],
+    ) -> anyhow::Result<Self> {
+        Self::init_with_providers_bind_and_cors(
+            cfg,
+            build_default_scraper_providers(),
+            bind_addr,
             cors_allow_origins,
         )
         .await
@@ -63,6 +82,15 @@ impl XMediaToolApp {
     pub async fn init_with_providers_and_cors(
         cfg: XMediaToolConfig,
         providers: Vec<Arc<dyn ScraperProviderPort>>,
+        cors_allow_origins: &[String],
+    ) -> anyhow::Result<Self> {
+        Self::init_with_providers_bind_and_cors(cfg, providers, None, cors_allow_origins).await
+    }
+
+    pub async fn init_with_providers_bind_and_cors(
+        cfg: XMediaToolConfig,
+        providers: Vec<Arc<dyn ScraperProviderPort>>,
+        bind_addr: Option<SocketAddr>,
         cors_allow_origins: &[String],
     ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&cfg.data_dir).with_context(|| {
@@ -89,6 +117,7 @@ impl XMediaToolApp {
             Some(cfg.data_dir.join("scrape-cache")),
         );
         let auth = ToolAuthService::new(cfg.password);
+        let security = ToolRequestSecurityPolicy::new(bind_addr, cors_allow_origins);
 
         let state = ToolHttpState {
             auth,
@@ -97,6 +126,7 @@ impl XMediaToolApp {
             scraping: scraping.clone(),
             ffmpeg,
             external_web_dir: cfg.external_web_dir,
+            security,
         };
 
         let compression_predicate = DefaultPredicate::new()
@@ -108,9 +138,13 @@ impl XMediaToolApp {
         let mut router = Router::new()
             .nest(
                 "/api/v1/tool",
-                tool_api_router(state.clone()).with_state(state),
+                tool_api_router(state.clone()).with_state(state.clone()),
             )
-            .fallback_service(spa_service);
+            .fallback_service(spa_service)
+            .layer(middleware::from_fn_with_state(
+                state,
+                guard_tool_http_request,
+            ));
         if !cors_allow_origins.is_empty() {
             let parsed_origins: Vec<HeaderValue> = cors_allow_origins
                 .iter()
