@@ -33,7 +33,11 @@ import {
   type SelectOption,
 } from '@/components/ui'
 import { formatTime } from '@/utils/format'
-import { VIDEO_SPEED_OPTIONS } from '../composables/useVideoPlayerCore'
+import {
+  VIDEO_SPEED_OPTIONS,
+  type VideoElementBindings,
+  type VideoSubtitleTrackSpec,
+} from '../composables/useVideoPlayerCore'
 import { useVideoI18n as useI18n } from '../i18n'
 
 export interface VideoPlayerEpisodeItem {
@@ -88,6 +92,10 @@ const props = withDefaults(
     episodeGroupOptions?: SelectOption[]
     /** Underlying `<video>` element reference for Picture-in-Picture */
     videoElement?: HTMLVideoElement | null
+    /** Unified `<video>` event bindings when using built-in video stage */
+    videoBindings?: VideoElementBindings | null
+    /** Active VTT subtitle track rendered inside built-in `<video>` */
+    subtitleTrack?: VideoSubtitleTrackSpec | null
   }>(),
   {
     subtitle: '',
@@ -117,6 +125,8 @@ const props = withDefaults(
     episodeGroupValue: '',
     episodeGroupOptions: () => [],
     videoElement: null,
+    videoBindings: null,
+    subtitleTrack: null,
   },
 )
 
@@ -143,6 +153,13 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const shellRootRef = ref<HTMLElement | null>(null)
+const internalVideoEl = ref<HTMLVideoElement | null>(null)
+
+function bindInternalVideo(el: unknown): void {
+  const video = el instanceof HTMLVideoElement ? el : null
+  internalVideoEl.value = video
+  props.videoBindings?.bindElement(video)
+}
 const immersiveRef = ref<InstanceType<typeof ImmersiveMediaTemplate> | null>(null)
 const activeSheet = ref<'settings' | 'episodes' | null>(null)
 const isFullscreen = ref(false)
@@ -227,7 +244,7 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 async function togglePip(): Promise<void> {
-  const el = props.videoElement
+  const el = props.videoElement ?? internalVideoEl.value
   if (
     !el ||
     !document.pictureInPictureEnabled ||
@@ -415,7 +432,35 @@ defineExpose({
           @click="handleStageClick"
           @dblclick="handleStageDblClick"
         >
-          <slot />
+          <slot>
+            <video
+              v-if="videoBindings"
+              :ref="bindInternalVideo"
+              class="h-full w-full bg-black object-contain"
+              crossorigin="use-credentials"
+              playsinline
+              @loadstart="videoBindings.onBufferingStart"
+              @waiting="videoBindings.onBufferingStart"
+              @canplay="videoBindings.onBufferingEnd"
+              @playing="videoBindings.onBufferingEnd"
+              @play="videoBindings.onPlay"
+              @pause="videoBindings.onPause"
+              @timeupdate="videoBindings.onTimeUpdate"
+              @durationchange="videoBindings.onDurationChange"
+              @ended="videoBindings.onEnded"
+              @error="videoBindings.onError"
+            >
+              <track
+                v-if="subtitleTrack?.src"
+                :key="subtitleTrack.src"
+                kind="subtitles"
+                :src="subtitleTrack.src"
+                :srclang="subtitleTrack.srclang || 'und'"
+                :label="subtitleTrack.label || 'Subtitles'"
+                default
+              />
+            </video>
+          </slot>
 
           <!-- Touch Center Play/Pause Button (visible when HUD is open on touch devices) -->
           <div

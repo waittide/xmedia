@@ -18,18 +18,14 @@ import {
 import {
   claimVideoAudioFocus,
   clearVideoMediaSession,
-  createVideoMediaController,
-  loadStoredVideoMuted,
-  loadStoredVideoVolume,
-  persistVideoAudioPrefs,
-  setVideoMediaSessionState,
   updateVideoMediaSession,
+  useVideoPlaybackCore,
+  type VideoSubtitleTrackSpec,
 } from '../composables/useVideoPlayerCore'
 import { useVideoI18n as useI18n } from '../i18n'
 import {
   onlineVideoApi,
   resolveOnlineVideoPosterUrl,
-  resolveOnlineVideoStreamUrl,
   resolveOnlineVideoSubtitleUrl,
   type OnlineVideoEpisode,
   type OnlineVideoPlayGroup,
@@ -51,7 +47,6 @@ const snackbar = useSnackbarStore()
 const trackingToLibrary = ref(false)
 
 const shellRef = ref<InstanceType<typeof VideoPlayerShell> | null>(null)
-const videoEl = ref<HTMLVideoElement | null>(null)
 
 const sourceId = ref('')
 const sourceName = ref('')
@@ -69,34 +64,44 @@ const currentPlayUrl = ref('')
 const playResult = ref<OnlineVideoPlayResponseDto | null>(null)
 const activeStreamType = ref<'hls' | 'mp4'>('mp4')
 const selectedSubtitleIdx = ref<string>('off')
-const playbackRate = ref<number>(preferencesStore.video.playback_rate || 1.0)
-
-watch(
-  () => preferencesStore.video.playback_rate,
-  (next) => {
-    const resolved = next || 1.0
-    if (resolved === playbackRate.value) return
-    playbackRate.value = resolved
-    if (videoEl.value) videoEl.value.playbackRate = resolved
-  },
-)
-
 const loadingStream = ref(true)
-const isBuffering = ref(false)
-const loadError = ref<string | null>(null)
 
-const isPlaying = ref(false)
-const muted = ref(loadStoredVideoMuted())
-const volume = ref(loadStoredVideoVolume())
-const currentTimeSecs = ref(0)
-const durationSecs = ref(0)
-
-const mediaController = createVideoMediaController(videoEl)
 let playSeq = 0
 let detailSeq = 0
 let syncUrlSeq = 0
 let syncingUrl = false
 let unmounted = false
+let detailAbortController: AbortController | null = null
+let playAbortController: AbortController | null = null
+
+const {
+  videoEl,
+  isPlaying,
+  isBuffering,
+  loadError,
+  muted,
+  volume,
+  playbackRate,
+  currentTimeSecs,
+  rawDurationSecs: durationSecs,
+  videoBindings,
+  syncAudioGainToElement,
+  stopAndClearVideoElement,
+  toggleElementPlay,
+  resumeFromMediaSession,
+  onPlaybackRateChange,
+  setVolume,
+  adjustVolume,
+  toggleMute,
+  attachResolvedOnlineStream,
+} = useVideoPlaybackCore({
+  onEnded: () => {
+    if (preferencesStore.video.autoplay_next && hasNextEpisode.value) {
+      goToNextEpisode()
+    }
+  },
+  getErrorMessage: () => t('online.streamLoadFailed'),
+})
 
 const activeGroup = computed<OnlineVideoPlayGroup | null>(() => {
   if (playGroups.value.length === 0) return null
@@ -143,11 +148,17 @@ const subtitleOptions = computed<SelectOption[]>(() => [
   })),
 ])
 
-const activeSubtitle = computed<ResolvedOnlineVideoSubtitle | null>(() => {
+const activeSubtitleTrack = computed<VideoSubtitleTrackSpec | null>(() => {
   if (selectedSubtitleIdx.value === 'off') return null
   const idx = Number.parseInt(selectedSubtitleIdx.value, 10)
   if (!Number.isFinite(idx) || idx < 0) return null
-  return safeSubtitles.value[idx] ?? null
+  const sub = safeSubtitles.value[idx]
+  if (!sub?.resolvedUrl) return null
+  return {
+    src: sub.resolvedUrl,
+    srclang: sub.lang || 'und',
+    label: sub.label || 'Subtitles',
+  }
 })
 
 // Single top-bar combobox: Play Line (when multiple lines), or Subtitle (when 1 line + subtitles available)
@@ -296,9 +307,6 @@ async function handleTrackToLibrary(): Promise<void> {
   }
 }
 
-let detailAbortController: AbortController | null = null
-let playAbortController: AbortController | null = null
-
 async function fetchDetailFallbackIfNeeded(): Promise<boolean> {
   if (playGroups.value.length > 0 && currentPlayUrl.value) return false
   if (!sourceId.value || (!videoId.value && !detailUrl.value)) return false
@@ -348,10 +356,6 @@ async function fetchDetailFallbackIfNeeded(): Promise<boolean> {
   }
 }
 
-function stopAndClearVideoElement(): void {
-  mediaController.stopAndClear()
-}
-
 function syncMediaSession(): void {
   updateVideoMediaSession({
     title: currentEpisode.value?.name
@@ -360,18 +364,8 @@ function syncMediaSession(): void {
     artist: sourceName.value || undefined,
     posterUrl:
       resolveOnlineVideoPosterUrl(proxyCoverUrl.value, coverUrl.value, sourceId.value) || null,
-    onPlay: () => {
-      const el = videoEl.value
-      if (el && el.paused) {
-        claimVideoAudioFocus()
-        void el.play().catch(() => {
-          isPlaying.value = false
-        })
-      }
-    },
-    onPause: () => {
-      videoEl.value?.pause()
-    },
+    onPlay: resumeFromMediaSession,
+    onPause: () => videoEl.value?.pause(),
     onSeekBy: (delta) => seekTo(currentTimeSecs.value + delta),
     onSeekTo: (target) => seekTo(target),
     onPrev: hasPrevEpisode.value ? () => goToPrevEpisode() : null,
@@ -406,7 +400,7 @@ async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> 
 
   if (!currentPlayUrl.value) {
     await fetchDetailFallbackIfNeeded()
-    if (unmounted || seq !== playSeq) return
+    if (unmounted || controller.signal.aborted || seq !== playSeq) return
   }
 
   if (!currentPlayUrl.value) {
@@ -414,8 +408,6 @@ async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> 
     loadError.value = t('online.missingPlayerContext')
     return
   }
-
-  const targetStartSecs = requestedPreserve
 
   persistPlayerContext()
   syncMediaSession()
@@ -430,57 +422,18 @@ async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> 
     if (unmounted || controller.signal.aborted || seq !== playSeq) return
     playResult.value = res
 
-    const isHls = res.stream_type === 'hls' || /\.m3u8(\?|$)/i.test(res.stream_url)
-    activeStreamType.value = isHls ? 'hls' : 'mp4'
-    const proxyHint = isHls
-      ? res.stream_type === 'hls' && res.proxy_stream_url?.includes('hls-proxy')
-        ? res.proxy_stream_url
-        : ''
-      : res.proxy_stream_url
-    const playableUrl = resolveOnlineVideoStreamUrl(
-      proxyHint,
-      res.stream_url,
-      isHls ? 'hls' : 'mp4',
-      sourceId.value,
-    )
-
-    if (!playableUrl) {
-      loadError.value = t('online.streamLoadFailed')
-      return
-    }
-
-    const el = videoEl.value
-    if (!el) return
-
-    el.volume = volume.value
-    el.muted = muted.value
-    el.playbackRate = playbackRate.value
-    isBuffering.value = true
-
-    await mediaController.attachStream({
-      url: playableUrl,
-      isHls,
-      startSecs: targetStartSecs,
-      playbackRate: playbackRate.value,
-      isStale: () => unmounted || seq !== playSeq,
-      onSeekApplied: (target) => {
-        currentTimeSecs.value = target
-      },
-      onManifestReady: () => {
-        isBuffering.value = false
-      },
-      onPlayRejected: () => {
-        isPlaying.value = false
-        isBuffering.value = false
-      },
-      onFatalError: (msg) => {
-        isPlaying.value = false
-        isBuffering.value = false
-        loadError.value = msg
-      },
+    const kind = await attachResolvedOnlineStream({
+      streamType: res.stream_type,
+      streamUrl: res.stream_url,
+      proxyStreamUrl: res.proxy_stream_url,
+      sourceId: sourceId.value,
+      startSecs: requestedPreserve,
+      isStale: () => unmounted || controller.signal.aborted || seq !== playSeq,
       unsupportedHlsMessage: t('player.unsupportedHls'),
       defaultErrorMessage: t('online.streamLoadFailed'),
     })
+    if (!kind) return
+    activeStreamType.value = kind
 
     shellRef.value?.showHud()
   } catch (err) {
@@ -544,7 +497,6 @@ function selectEpisode(
 function onGroupChange(nextGroupName: string): void {
   const grp = playGroups.value.find((g) => g.name === nextGroupName)
   if (!grp || grp.episodes.length === 0) return
-  // Preserve current playback position when switching play lines (V-05)
   const preserveSecs = currentTimeSecs.value
   const targetIdx = grp.episodes[currentEpisodeIndex.value] ? currentEpisodeIndex.value : 0
   selectEpisode(targetIdx, grp.name, { preserveTimeSecs: preserveSecs })
@@ -576,16 +528,7 @@ function goToNextEpisode(): void {
 }
 
 function togglePlay(): void {
-  const el = videoEl.value
-  if (!el || loadError.value || !currentPlayUrl.value) return
-  if (el.paused) {
-    claimVideoAudioFocus()
-    void el.play().catch(() => {
-      isPlaying.value = false
-    })
-  } else {
-    el.pause()
-  }
+  toggleElementPlay(Boolean(currentPlayUrl.value))
 }
 
 function seekTo(targetSecs: number): void {
@@ -596,84 +539,6 @@ function seekTo(targetSecs: number): void {
   const clamped = Math.max(0, Math.min(maxDur, targetSecs))
   el.currentTime = clamped
   currentTimeSecs.value = clamped
-}
-
-function onPlaybackRateChange(rate: number): void {
-  playbackRate.value = rate
-  if (videoEl.value) videoEl.value.playbackRate = rate
-  preferencesStore.updateVideoPreferences({ playback_rate: rate })
-}
-
-function setVolume(val: number): void {
-  const clamped = Math.max(0, Math.min(1, Math.round(val * 100) / 100))
-  volume.value = clamped
-  muted.value = clamped === 0
-  if (videoEl.value) {
-    videoEl.value.volume = clamped
-    videoEl.value.muted = muted.value
-  }
-  persistVideoAudioPrefs(volume.value, muted.value)
-}
-
-function adjustVolume(delta: number): void {
-  const base = muted.value && volume.value === 0 ? 0 : volume.value
-  setVolume(base + delta)
-}
-
-function toggleMute(): void {
-  if (muted.value && volume.value === 0) {
-    volume.value = 0.5
-    muted.value = false
-  } else {
-    muted.value = !muted.value
-  }
-  if (videoEl.value) {
-    videoEl.value.volume = volume.value
-    videoEl.value.muted = muted.value
-  }
-  persistVideoAudioPrefs(volume.value, muted.value)
-}
-
-function onTimeUpdate(): void {
-  const el = videoEl.value
-  if (!el) return
-  currentTimeSecs.value = el.currentTime || 0
-}
-
-function onDurationChange(): void {
-  const el = videoEl.value
-  if (!el) return
-  durationSecs.value = Number.isFinite(el.duration) ? el.duration : 0
-}
-
-function onVideoPlay(): void {
-  isPlaying.value = true
-  isBuffering.value = false
-  claimVideoAudioFocus()
-  setVideoMediaSessionState('playing')
-}
-
-function onVideoPause(): void {
-  isPlaying.value = false
-  setVideoMediaSessionState('paused')
-}
-
-function onVideoEnded(): void {
-  isPlaying.value = false
-  isBuffering.value = false
-  setVideoMediaSessionState('paused')
-  if (preferencesStore.video.autoplay_next && hasNextEpisode.value) {
-    goToNextEpisode()
-  }
-}
-
-function onVideoError(): void {
-  const el = videoEl.value
-  if (!el || (!el.getAttribute('src') && !mediaController.hasHls()) || !el.error) return
-  stopAndClearVideoElement()
-  isPlaying.value = false
-  isBuffering.value = false
-  loadError.value = t('online.streamLoadFailed')
 }
 
 function goBack(): void {
@@ -705,10 +570,7 @@ function goBack(): void {
 onMounted(() => {
   unmounted = false
   claimVideoAudioFocus()
-  if (videoEl.value) {
-    videoEl.value.volume = volume.value
-    videoEl.value.muted = muted.value
-  }
+  syncAudioGainToElement()
   applyHydratedContext()
   void loadPlay()
   if (playGroups.value.length === 0 && currentPlayUrl.value) {
@@ -797,6 +659,8 @@ watch(
     :episode-group-value="activeGroupName"
     :episode-group-options="groupOptions"
     :video-element="videoEl"
+    :video-bindings="videoBindings"
+    :subtitle-track="activeSubtitleTrack"
     @back="goBack"
     @retry="loadPlay({ preserveTimeSecs: currentTimeSecs })"
     @toggle-play="togglePlay"
@@ -825,32 +689,5 @@ watch(
         {{ trackingToLibrary ? t('online.trackingBtn') : t('online.trackToLibraryBtn') }}
       </MdButton>
     </template>
-
-    <video
-      ref="videoEl"
-      class="h-full w-full bg-black object-contain"
-      crossorigin="use-credentials"
-      playsinline
-      @loadstart="isBuffering = true"
-      @waiting="isBuffering = true"
-      @canplay="isBuffering = false"
-      @playing="isBuffering = false"
-      @play="onVideoPlay"
-      @pause="onVideoPause"
-      @timeupdate="onTimeUpdate"
-      @durationchange="onDurationChange"
-      @ended="onVideoEnded"
-      @error="onVideoError"
-    >
-      <track
-        v-if="activeSubtitle"
-        :key="activeSubtitle.resolvedUrl"
-        kind="subtitles"
-        :src="activeSubtitle.resolvedUrl"
-        :srclang="activeSubtitle.lang || 'und'"
-        :label="activeSubtitle.label"
-        default
-      />
-    </video>
   </VideoPlayerShell>
 </template>

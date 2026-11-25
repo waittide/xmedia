@@ -1,6 +1,8 @@
-import type { Ref } from 'vue'
+import { ref, watch, type Ref } from 'vue'
 import type Hls from 'hls.js'
 import type { SelectOption } from '@/components/ui'
+import { usePreferencesStore } from '@/stores/preferences'
+import { resolveOnlineVideoStreamUrl } from '../onlineApi'
 
 const VOLUME_STORAGE_KEY = 'xmedia.video.volume'
 const MUTED_STORAGE_KEY = 'xmedia.video.muted'
@@ -378,5 +380,271 @@ export function createVideoMediaController(
     stopAndClear,
     attachDirectWithSeek,
     attachStream,
+  }
+}
+
+export interface VideoSubtitleTrackSpec {
+  src: string
+  srclang?: string
+  label?: string
+}
+
+export interface VideoElementBindings {
+  bindElement: (el: HTMLVideoElement | null) => void
+  onBufferingStart: () => void
+  onBufferingEnd: () => void
+  onPlay: () => void
+  onPause: () => void
+  onTimeUpdate: () => void
+  onDurationChange: () => void
+  onEnded: () => void
+  onError: () => void
+}
+
+export interface UseVideoPlaybackCoreOptions {
+  onAfterPause?: () => void
+  onEnded?: () => void
+  canReportError?: () => boolean
+  getErrorMessage: () => string
+}
+
+export function useVideoPlaybackCore(options: UseVideoPlaybackCoreOptions) {
+  const preferencesStore = usePreferencesStore()
+
+  const videoEl = ref<HTMLVideoElement | null>(null)
+  const isPlaying = ref(false)
+  const isBuffering = ref(false)
+  const loadError = ref<string | null>(null)
+  const muted = ref(loadStoredVideoMuted())
+  const volume = ref(loadStoredVideoVolume())
+  const playbackRate = ref<number>(preferencesStore.video.playback_rate || 1.0)
+  const streamOffsetSecs = ref(0)
+  const currentTimeSecs = ref(0)
+  const rawDurationSecs = ref(0)
+
+  const mediaController = createVideoMediaController(videoEl)
+
+  function syncAudioGainToElement(): void {
+    const el = videoEl.value
+    if (!el) return
+    el.volume = volume.value
+    el.muted = muted.value
+    el.playbackRate = playbackRate.value
+  }
+
+  function bindElement(el: HTMLVideoElement | null): void {
+    videoEl.value = el
+    if (el) {
+      syncAudioGainToElement()
+    }
+  }
+
+  watch(
+    () => preferencesStore.video.playback_rate,
+    (next) => {
+      const resolved = next || 1.0
+      if (resolved === playbackRate.value) return
+      playbackRate.value = resolved
+      if (videoEl.value) videoEl.value.playbackRate = resolved
+    },
+  )
+
+  function stopAndClearVideoElement(): void {
+    mediaController.stopAndClear()
+  }
+
+  function toggleElementPlay(canPlay: boolean): void {
+    const el = videoEl.value
+    if (!el || loadError.value || !canPlay) return
+    if (el.paused) {
+      claimVideoAudioFocus()
+      void el.play().catch(() => {
+        isPlaying.value = false
+      })
+    } else {
+      el.pause()
+    }
+  }
+
+  function resumeFromMediaSession(): void {
+    const el = videoEl.value
+    if (el && el.paused) {
+      claimVideoAudioFocus()
+      void el.play().catch(() => {
+        isPlaying.value = false
+      })
+    }
+  }
+
+  function onPlaybackRateChange(rate: number): void {
+    playbackRate.value = rate
+    if (videoEl.value) videoEl.value.playbackRate = rate
+    preferencesStore.updateVideoPreferences({ playback_rate: rate })
+  }
+
+  function setVolume(val: number): void {
+    const clamped = Math.max(0, Math.min(1, Math.round(val * 100) / 100))
+    volume.value = clamped
+    muted.value = clamped === 0
+    if (videoEl.value) {
+      videoEl.value.volume = clamped
+      videoEl.value.muted = muted.value
+    }
+    persistVideoAudioPrefs(volume.value, muted.value)
+  }
+
+  function adjustVolume(delta: number): void {
+    const base = muted.value && volume.value === 0 ? 0 : volume.value
+    setVolume(base + delta)
+  }
+
+  function toggleMute(): void {
+    if (muted.value && volume.value === 0) {
+      volume.value = 0.5
+      muted.value = false
+    } else {
+      muted.value = !muted.value
+    }
+    if (videoEl.value) {
+      videoEl.value.volume = volume.value
+      videoEl.value.muted = muted.value
+    }
+    persistVideoAudioPrefs(volume.value, muted.value)
+  }
+
+  async function attachResolvedOnlineStream(params: {
+    streamType?: string | null
+    streamUrl: string
+    proxyStreamUrl?: string | null
+    sourceId?: string | null
+    startSecs: number
+    isStale: () => boolean
+    unsupportedHlsMessage: string
+    defaultErrorMessage: string
+  }): Promise<'hls' | 'mp4' | null> {
+    const rawStream = params.streamUrl || ''
+    const isHls = params.streamType === 'hls' || /\.m3u8(\?|$)/i.test(rawStream)
+    const resolvedKind: 'hls' | 'mp4' = isHls ? 'hls' : 'mp4'
+    const proxyHint = isHls
+      ? params.streamType === 'hls' && params.proxyStreamUrl?.includes('hls-proxy')
+        ? params.proxyStreamUrl
+        : ''
+      : params.proxyStreamUrl
+    const playableUrl = resolveOnlineVideoStreamUrl(
+      proxyHint,
+      rawStream,
+      resolvedKind,
+      params.sourceId,
+    )
+
+    if (!playableUrl) {
+      loadError.value = params.defaultErrorMessage
+      return null
+    }
+
+    const el = videoEl.value
+    if (!el) return resolvedKind
+
+    streamOffsetSecs.value = 0
+    currentTimeSecs.value = params.startSecs
+    syncAudioGainToElement()
+    isBuffering.value = true
+
+    await mediaController.attachStream({
+      url: playableUrl,
+      isHls,
+      startSecs: params.startSecs,
+      playbackRate: playbackRate.value,
+      isStale: params.isStale,
+      onSeekApplied: (target) => {
+        currentTimeSecs.value = target
+      },
+      onManifestReady: () => {
+        isBuffering.value = false
+      },
+      onPlayRejected: () => {
+        isPlaying.value = false
+        isBuffering.value = false
+      },
+      onFatalError: (msg) => {
+        isPlaying.value = false
+        isBuffering.value = false
+        loadError.value = msg
+      },
+      unsupportedHlsMessage: params.unsupportedHlsMessage,
+      defaultErrorMessage: params.defaultErrorMessage,
+    })
+
+    return resolvedKind
+  }
+
+  const videoBindings: VideoElementBindings = {
+    bindElement,
+    onBufferingStart: () => {
+      isBuffering.value = true
+    },
+    onBufferingEnd: () => {
+      isBuffering.value = false
+    },
+    onPlay: () => {
+      isPlaying.value = true
+      isBuffering.value = false
+      claimVideoAudioFocus()
+      setVideoMediaSessionState('playing')
+    },
+    onPause: () => {
+      isPlaying.value = false
+      setVideoMediaSessionState('paused')
+      options.onAfterPause?.()
+    },
+    onTimeUpdate: () => {
+      const el = videoEl.value
+      if (!el) return
+      currentTimeSecs.value = streamOffsetSecs.value + (el.currentTime || 0)
+    },
+    onDurationChange: () => {
+      const el = videoEl.value
+      if (!el) return
+      rawDurationSecs.value = Number.isFinite(el.duration) ? el.duration : 0
+    },
+    onEnded: () => {
+      isPlaying.value = false
+      isBuffering.value = false
+      setVideoMediaSessionState('paused')
+      options.onEnded?.()
+    },
+    onError: () => {
+      const el = videoEl.value
+      if (options.canReportError && !options.canReportError()) return
+      if (!el || (!el.getAttribute('src') && !mediaController.hasHls()) || !el.error) return
+      stopAndClearVideoElement()
+      isPlaying.value = false
+      isBuffering.value = false
+      loadError.value = options.getErrorMessage()
+    },
+  }
+
+  return {
+    videoEl,
+    isPlaying,
+    isBuffering,
+    loadError,
+    muted,
+    volume,
+    playbackRate,
+    streamOffsetSecs,
+    currentTimeSecs,
+    rawDurationSecs,
+    mediaController,
+    videoBindings,
+    syncAudioGainToElement,
+    stopAndClearVideoElement,
+    toggleElementPlay,
+    resumeFromMediaSession,
+    onPlaybackRateChange,
+    setVolume,
+    adjustVolume,
+    toggleMute,
+    attachResolvedOnlineStream,
   }
 }
