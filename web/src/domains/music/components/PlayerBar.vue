@@ -2,11 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  LuBookmark,
   LuCheck,
   LuChevronUp,
   LuDisc3,
-  LuDownload,
   LuHeart,
   LuLibrary,
   LuListMusic,
@@ -23,30 +21,37 @@ import {
   LuVolumeX,
   LuX,
 } from 'vue-icons-plus/lu'
-import { AppSlider, MdBadge, MdButton, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
+import { AppSlider, MdBadge, MdButton, MdIconButton, MdMenu } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useDialogStore } from '@/stores/dialog'
-import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime } from '@/utils/format'
-import { api, buildCoverUrl } from '../api'
-import { downloadQueueItem } from '../download'
+import { buildCoverUrl } from '../api'
+import { usePlayerTransportControls } from '../composables/usePlayerTransportControls'
 import { useMusicI18n as useI18n } from '../i18n'
-import { usePlayerStore } from '../player'
-import { useMusicStore } from '../store'
-import type { TranscodeProfile } from '../types'
+import PlayerOptionsMenuContent from './PlayerOptionsMenuContent.vue'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const dialogStore = useDialogStore()
-const snackbar = useSnackbarStore()
-const playerStore = usePlayerStore()
-const musicStore = useMusicStore()
+
+const {
+  playerStore,
+  scrubPreviewSecs,
+  savingBookmark,
+  downloadingCurrent,
+  displayTimeSecs,
+  isCurrentStarred,
+  playModeTitle,
+  qualityOptions,
+  onlineQualityOptions,
+  hasQualityMenuItems,
+  handleToggleFavorite,
+  saveCurrentBookmark,
+  handleDownloadCurrent,
+} = usePlayerTransportControls()
 
 const audioHostRef = ref<HTMLDivElement | null>(null)
-const scrubPreviewSecs = ref<number | null>(null)
-const savingBookmark = ref(false)
-const downloadingCurrent = ref(false)
 
 const EXCLUDED_SHORTCUT_ROUTES = new Set([
   'book-reader',
@@ -64,30 +69,6 @@ const EXCLUDED_SHORTCUT_ROUTES = new Set([
 
 const SEEK_STEP_SECS = 5
 
-const qualityOptions = computed(() => [
-  {
-    value: 'raw' as TranscodeProfile,
-    label: t('player.qualityRaw'),
-    trailing:
-      playerStore.currentLocalTrack && playerStore.transcodeProfile === 'raw'
-        ? playerStore.qualitySummary
-        : '',
-  },
-  { value: 'opus128' as TranscodeProfile, label: t('player.qualityOpus128'), trailing: '' },
-  { value: 'mp3192' as TranscodeProfile, label: t('player.qualityMp3192'), trailing: '' },
-  { value: 'mp3320' as TranscodeProfile, label: t('player.qualityMp3320'), trailing: '' },
-  { value: 'aac256' as TranscodeProfile, label: t('player.qualityAac256'), trailing: '' },
-])
-
-const onlineQualityOptions = computed(() => {
-  const tr = playerStore.currentTrack
-  if (!tr || tr.kind !== 'online') return []
-  return tr.qualities.map((q) => ({
-    value: q,
-    label: /^\d+$/.test(q) ? `${q}k` : q.toUpperCase(),
-  }))
-})
-
 const currentCoverSrc = computed(() => {
   const tr = playerStore.currentTrack
   if (!tr) return null
@@ -97,69 +78,11 @@ const currentCoverSrc = computed(() => {
   return tr.cover_url
 })
 
-const isCurrentStarred = computed(() => Boolean(playerStore.currentLocalTrack?.starred_at))
-
-const displayTimeSecs = computed(() => scrubPreviewSecs.value ?? playerStore.currentTimeSecs)
-
 const progressPercent = computed(() => {
   const dur = playerStore.durationSecs
   if (dur <= 0) return 0
   return Math.max(0, Math.min(100, (displayTimeSecs.value / dur) * 100))
 })
-
-const playModeTitle = computed(() => {
-  if (playerStore.playMode === 'loop_one') return t('player.modeLoopOne')
-  if (playerStore.playMode === 'shuffle') return t('player.modeShuffle')
-  return t('player.modeSequence')
-})
-
-const hasQualityMenuItems = computed(() => {
-  if (playerStore.currentLocalTrack) return true
-  return playerStore.isCurrentOnline && onlineQualityOptions.value.length > 0
-})
-
-async function handleToggleFavorite(): Promise<void> {
-  if (playerStore.currentLocalTrack) {
-    await musicStore.toggleTrackStar(playerStore.currentLocalTrack)
-  }
-}
-
-async function saveCurrentBookmark(): Promise<void> {
-  const tr = playerStore.currentLocalTrack
-  if (!tr || savingBookmark.value) return
-  savingBookmark.value = true
-  try {
-    await api.saveBookmark(tr.id, Math.round(playerStore.currentTimeSecs * 1000))
-    snackbar.show({ message: t('player.bookmarkSaved') })
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : t('player.playbackError'),
-      tone: 'error',
-    })
-  } finally {
-    savingBookmark.value = false
-  }
-}
-
-async function handleDownloadCurrent(): Promise<void> {
-  const item = playerStore.currentItem
-  if (!item || downloadingCurrent.value) return
-  downloadingCurrent.value = true
-  const title = playerStore.currentTrack?.title || ''
-  try {
-    await downloadQueueItem(item)
-    snackbar.show({ message: t('online.downloadStartedToast', { title }) })
-  } catch (err) {
-    snackbar.show({
-      message: t('online.downloadFailedToast', {
-        message: err instanceof Error ? err.message : String(err),
-      }),
-      tone: 'error',
-    })
-  } finally {
-    downloadingCurrent.value = false
-  }
-}
 
 function isExcludedPlaybackRoute(): boolean {
   if (route.matched.some((record) => Boolean(record.meta.fullscreen))) return true
@@ -567,65 +490,14 @@ onBeforeUnmount(() => {
               />
             </template>
 
-            <template v-if="hasQualityMenuItems">
-              <div
-                class="text-label-small flex items-center justify-between px-3 py-1.5 text-on-surface-variant"
-              >
-                <span>{{ t('player.qualityHeading') }}</span>
-                <span v-if="playerStore.qualitySummary" class="font-mono">
-                  {{ playerStore.qualitySummary }}
-                </span>
-              </div>
-
-              <template v-if="playerStore.currentLocalTrack">
-                <MdMenuItem
-                  v-for="opt in qualityOptions"
-                  :key="opt.value"
-                  :label="opt.label"
-                  :trailing-text="opt.trailing"
-                  :selected="playerStore.transcodeProfile === opt.value"
-                  @select="playerStore.setTranscodeProfile(opt.value)"
-                />
-              </template>
-
-              <template v-else-if="playerStore.isCurrentOnline">
-                <MdMenuItem
-                  v-for="opt in onlineQualityOptions"
-                  :key="opt.value"
-                  :label="opt.label"
-                  :selected="
-                    (playerStore.currentOnlineItem?.selectedQuality ??
-                      onlineQualityOptions[0]?.value) === opt.value
-                  "
-                  @select="playerStore.setOnlineQuality(opt.value)"
-                />
-              </template>
-            </template>
-
-            <div v-if="hasQualityMenuItems" class="my-1 border-t border-outline-variant" role="separator" />
-            <MdMenuItem
-              v-if="playerStore.isCurrentOnline"
-              :icon="playerStore.isCurrentOnlineTracked ? LuCheck : LuLibrary"
-              :label="
-                playerStore.isCurrentOnlineTracked
-                  ? t('online.trackedInLibrary')
-                  : t('online.trackToLibrary')
-              "
-              :disabled="playerStore.trackingCurrentOnline"
-              @select="playerStore.trackCurrentOnlineToLibrary()"
-            />
-            <MdMenuItem
-              :icon="LuDownload"
-              :label="t('common.download')"
-              :disabled="downloadingCurrent"
-              @select="handleDownloadCurrent"
-            />
-            <MdMenuItem
-              v-if="playerStore.currentLocalTrack"
-              :icon="LuBookmark"
-              :label="t('player.bookmarkBtn')"
-              :disabled="savingBookmark"
-              @select="saveCurrentBookmark"
+            <PlayerOptionsMenuContent
+              :quality-options="qualityOptions"
+              :online-quality-options="onlineQualityOptions"
+              :has-quality-menu-items="hasQualityMenuItems"
+              :saving-bookmark="savingBookmark"
+              :downloading-current="downloadingCurrent"
+              @download="handleDownloadCurrent"
+              @bookmark="saveCurrentBookmark"
             />
           </MdMenu>
         </div>

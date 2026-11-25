@@ -4,10 +4,9 @@ import type { SubsonicSongDto } from '@/api/appHost'
 import { claimMediaFocus, registerMediaFocus, releaseMediaFocus } from '@/composables/useMediaFocus'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { api, buildStreamUrl, canPlayFormatNatively } from './api'
+import { api } from './api'
 import { useMusicI18n } from './i18n'
-import { onlineMusicApi, type OnlineMusicTrackDto } from './onlineApi'
-import { buildRemoteSubsonicStreamUrl } from './onlineTrackRef'
+import type { OnlineMusicTrackDto } from './onlineApi'
 import { createPlayerAudioEngine } from './player/audioEngine'
 import { createPlayerCloudSync } from './player/cloudSync'
 import { createLyricsSyncController } from './player/lyricsSync'
@@ -18,21 +17,18 @@ import {
   createShuffleTracker,
   formatPlayerQualitySummary,
   isOnlineItemExpired,
-  isTranscodeProfile,
-  makeLocalQueueItem,
-  makeOnlineQueueItem,
-  makeRemoteQueueItem,
-  pickDefaultOnlineQuality,
   resolveOnlineItemCoverUrl,
   resolveOnlineItemStreamUrl,
   shuffleCopy,
+  toPlayerQueueItems,
   type LocalQueueItem,
   type OnlineQueueItem,
+  type PlayableQueueInput,
   type PlayerQueueItem,
   type PlayerTrackDisplay,
   type RemoteQueueItem,
 } from './player/queueHelpers'
-import { useMusicStore } from './store'
+import { createPlayerTrackLoader } from './player/trackLoader'
 import type { PlayMode, TrackDto, TranscodeProfile } from './types'
 
 export {
@@ -44,10 +40,21 @@ export {
 export type {
   LocalQueueItem,
   OnlineQueueItem,
+  PlayableQueueInput,
   PlayerQueueItem,
   PlayerTrackDisplay,
   RemoteQueueItem,
 }
+
+export interface PlayQueueOptions {
+  startIndex?: number
+  startAtSecs?: number
+  shuffle?: boolean
+  bumpEpoch?: boolean
+  mode?: 'replace' | 'play-or-insert'
+}
+
+export type EnqueueMode = 'end' | 'next' | 'if-absent'
 
 export const usePlayerStore = defineStore('player', () => {
   const preferencesStore = usePreferencesStore()
@@ -67,50 +74,31 @@ export const usePlayerStore = defineStore('player', () => {
   const onlineResolving = ref(false)
   const playbackError = ref<string | null>(null)
   const queueOpen = ref(false)
-
-  let scrobbledCurrent = false
-  let loadSeq = 0
-  let trackResolveAbort: AbortController | null = null
-
-  function abortTrackResolve(): void {
-    trackResolveAbort?.abort()
-    trackResolveAbort = null
-  }
-
-  const shuffleTracker = createShuffleTracker()
-
   const trackingCurrentOnline = ref(false)
   const trackedOnlineKeys = ref<Record<string, boolean>>({})
 
+  let scrobbledCurrent = false
+  const shuffleTracker = createShuffleTracker()
+
   const currentItem = computed<PlayerQueueItem | null>(() => {
     const idx = currentIndex.value
-    if (idx < 0 || idx >= queue.value.length) return null
-    return queue.value[idx] ?? null
+    return idx >= 0 && idx < queue.value.length ? (queue.value[idx] ?? null) : null
   })
-
-  const currentLocalTrack = computed<TrackDto | null>(() => {
-    const item = currentItem.value
-    return item?.kind === 'local' ? item.track : null
-  })
-
-  const currentOnlineItem = computed<OnlineQueueItem | null>(() => {
-    const item = currentItem.value
-    return item?.kind === 'online' ? item : null
-  })
-
-  const currentRemoteItem = computed<RemoteQueueItem | null>(() => {
-    const item = currentItem.value
-    return item?.kind === 'remote' ? item : null
-  })
-
-  const isCurrentOnline = computed<boolean>(() => currentItem.value?.kind === 'online')
-  const isCurrentRemote = computed<boolean>(() => currentItem.value?.kind === 'remote')
-
-  const isCurrentOnlineTracked = computed<boolean>(() => {
+  const currentLocalTrack = computed<TrackDto | null>(() =>
+    currentItem.value?.kind === 'local' ? currentItem.value.track : null,
+  )
+  const currentOnlineItem = computed<OnlineQueueItem | null>(() =>
+    currentItem.value?.kind === 'online' ? currentItem.value : null,
+  )
+  const currentRemoteItem = computed<RemoteQueueItem | null>(() =>
+    currentItem.value?.kind === 'remote' ? currentItem.value : null,
+  )
+  const isCurrentOnline = computed(() => currentItem.value?.kind === 'online')
+  const isCurrentRemote = computed(() => currentItem.value?.kind === 'remote')
+  const isCurrentOnlineTracked = computed(() => {
     const item = currentOnlineItem.value
     return item ? Boolean(trackedOnlineKeys.value[item.key]) : false
   })
-
   const currentTrack = computed<PlayerTrackDisplay | null>(() =>
     buildPlayerTrackDisplay(currentItem.value),
   )
@@ -124,14 +112,12 @@ export const usePlayerStore = defineStore('player', () => {
     return 0
   })
 
-  const bufferedPercent = computed<number>(() => Math.round(bufferedRatio.value * 100))
-  const transcodeProfile = computed<TranscodeProfile>(
-    () => preferencesStore.playback.transcode_profile,
-  )
+  const bufferedPercent = computed(() => Math.round(bufferedRatio.value * 100))
+  const transcodeProfile = computed(() => preferencesStore.playback.transcode_profile)
   const playMode = computed<PlayMode>(() => preferencesStore.playback.play_mode)
-  const volume = computed<number>(() => preferencesStore.playback.volume)
-  const muted = computed<boolean>(() => preferencesStore.playback.muted)
-  const qualitySummary = computed<string>(() =>
+  const volume = computed(() => preferencesStore.playback.volume)
+  const muted = computed(() => preferencesStore.playback.muted)
+  const qualitySummary = computed(() =>
     formatPlayerQualitySummary(currentItem.value, activeEffectiveProfile.value),
   )
 
@@ -148,7 +134,7 @@ export const usePlayerStore = defineStore('player', () => {
     currentTimeSecs,
     onRestoredQueue: async (resumeSecs) => {
       scrobbledCurrent = false
-      await loadAndPlayCurrent(resumeSecs, false)
+      await trackLoader.loadAndPlayCurrent(resumeSecs, false)
     },
   })
 
@@ -156,12 +142,10 @@ export const usePlayerStore = defineStore('player', () => {
     onTimeUpdate: (el) => {
       const t = streamOffsetSecs.value + (el.currentTime || 0)
       currentTimeSecs.value = t
-
       if (el.buffered.length > 0 && durationSecs.value > 0) {
         const end = streamOffsetSecs.value + el.buffered.end(el.buffered.length - 1)
         bufferedRatio.value = Math.max(0, Math.min(1, end / durationSecs.value))
       }
-
       const item = currentItem.value
       if (item?.kind === 'local' && !scrobbledCurrent && durationSecs.value > 0) {
         const threshold = Math.min(240, Math.max(3, durationSecs.value * 0.5))
@@ -188,7 +172,7 @@ export const usePlayerStore = defineStore('player', () => {
     onEnded: () => {
       if (playMode.value === 'loop_one' && currentTrack.value) {
         scrobbledCurrent = false
-        void loadAndPlayCurrent(0, true)
+        void trackLoader.loadAndPlayCurrent(0, true)
         return
       }
       releaseMediaFocus('music')
@@ -206,11 +190,8 @@ export const usePlayerStore = defineStore('player', () => {
     },
   })
 
-  const unregisterMediaFocus = registerMediaFocus('music', () => {
-    pause()
-  })
-
   const { audio, attachAudioElement, detachAudioElement } = audioEngine
+  const unregisterMediaFocus = registerMediaFocus('music', () => pause())
 
   function syncAudioGain(): void {
     audioEngine.syncGain(volume.value, muted.value)
@@ -224,423 +205,168 @@ export const usePlayerStore = defineStore('player', () => {
     })
   }
 
-  watch([volume, muted], syncAudioGain, { immediate: true })
+  const trackLoader = createPlayerTrackLoader({
+    audioEngine,
+    lyricsCtrl,
+    cloudSync,
+    currentItem,
+    currentOnlineItem,
+    currentTrack,
+    transcodeProfile,
+    isPlaying,
+    currentTimeSecs,
+    rawAudioDuration,
+    bufferedRatio,
+    streamOffsetSecs,
+    currentStreamIsTranscoded,
+    activeEffectiveProfile,
+    fallbackFormats,
+    onlineResolving,
+    playbackError,
+    trackingCurrentOnline,
+    trackedOnlineKeys,
+    syncAudioGain,
+    refreshMediaSession,
+    tMusic: (key, params) => tMusic(key, params as never),
+  })
 
+  watch([volume, muted], syncAudioGain, { immediate: true })
   watch(transcodeProfile, (next, prev) => {
     if (!prev || next === prev) return
     if (currentItem.value?.kind === 'local' && activeEffectiveProfile.value !== next) {
-      void loadAndPlayCurrent(currentTimeSecs.value, isPlaying.value)
+      void trackLoader.loadAndPlayCurrent(currentTimeSecs.value, isPlaying.value)
     }
   })
-
-  async function trackCurrentOnlineToLibrary(): Promise<void> {
-    const item = currentOnlineItem.value
-    if (!item || trackingCurrentOnline.value) return
-    trackingCurrentOnline.value = true
-    try {
-      const tr = item.resolved?.track
-        ? {
-            ...item.track,
-            ...item.resolved.track,
-            cover_url:
-              item.resolved.cover_url || item.resolved.track.cover_url || item.track.cover_url,
-          }
-        : item.track
-      await onlineMusicApi.trackOnlineTrack({
-        source_id: tr.source_id,
-        track_id: tr.track_id,
-        title: tr.title,
-        artist: tr.artist,
-        album: tr.album,
-        duration_secs: tr.duration_secs,
-        cover_url: tr.cover_url,
-        cover_id: tr.cover_id,
-        url_id: tr.url_id,
-        lyric_id: tr.lyric_id,
-        play_url: tr.play_url,
-        detail_url: tr.detail_url,
-        format: tr.format,
-        quality: item.selectedQuality ?? tr.qualities?.[0] ?? null,
-      })
-      trackedOnlineKeys.value = { ...trackedOnlineKeys.value, [item.key]: true }
-      const musicStore = useMusicStore()
-      musicStore.bumpCatalogVersion()
-      void musicStore.refreshSidebar()
-      useSnackbarStore().show(tMusic('online.trackedToast', { title: tr.title }))
-    } catch (err) {
-      useSnackbarStore().show({
-        message: err instanceof Error ? err.message : String(err),
-        tone: 'error',
-      })
-    } finally {
-      trackingCurrentOnline.value = false
-    }
-  }
 
   function dismissPlaybackError(): void {
     playbackError.value = null
   }
 
-  async function loadAndPlayCurrent(
-    startAtSecs = 0,
-    autoPlay = true,
-    overrideProfileOrQuality?: TranscodeProfile | string,
-  ): Promise<void> {
-    const item = currentItem.value
-    if (!item) return
-    abortTrackResolve()
-    const seq = ++loadSeq
-    const targetKey = item.key
-    lyricsCtrl.prepareForTrackSwitch(targetKey)
+  // Unified queue API collapsing combinatoric local/online/remote variants
+  function playItems(input: PlayableQueueInput, options: PlayQueueOptions = {}): void {
+    const built = toPlayerQueueItems(input)
+    if (built.length === 0) return
 
-    if (item.kind === 'local') {
-      onlineResolving.value = false
-      playbackError.value = null
-      const track = item.track
-      const overrideProfile = isTranscodeProfile(overrideProfileOrQuality)
-        ? overrideProfileOrQuality
-        : undefined
-
-      syncAudioGain()
-      const requestedProfile = overrideProfile ?? transcodeProfile.value
-      const formatKey = track.format.toLowerCase()
-      const profile =
-        !overrideProfile && requestedProfile === 'raw' && fallbackFormats.value.has(formatKey)
-          ? 'mp3320'
-          : requestedProfile
-      activeEffectiveProfile.value = profile
-      const needsTranscode = profile !== 'raw' || !canPlayFormatNatively(track.format)
-      currentStreamIsTranscoded.value = needsTranscode
-      const useServerOffset = needsTranscode && startAtSecs > 0
-      streamOffsetSecs.value = useServerOffset ? Math.floor(startAtSecs) : 0
-      currentTimeSecs.value = startAtSecs
-      rawAudioDuration.value = 0
-      bufferedRatio.value = 0
-
-      audioEngine.clearPendingSeek()
-      audio.src = buildStreamUrl(track.id, profile, streamOffsetSecs.value, track.format)
-      audio.load()
-
-      if (!useServerOffset && startAtSecs > 0) {
-        audioEngine.scheduleMetadataSeek(
-          startAtSecs,
-          () => seq === loadSeq && currentItem.value?.key === targetKey,
-        )
-      }
-
-      refreshMediaSession(currentTrack.value)
-      lyricsCtrl.clearForPendingTrack(targetKey)
-      if (lyricsCtrl.lyricsOpen.value && !lyricsCtrl.isLoadedFor(targetKey)) {
-        void lyricsCtrl.fetchLyricsFor(item)
-      }
-
-      if (autoPlay) {
-        try {
-          await audio.play()
-          if (seq !== loadSeq) return
-          void api.scrobble(track.id, false).catch(() => {})
-        } catch (err) {
-          if (seq !== loadSeq) return
-          if (err instanceof DOMException && err.name === 'AbortError') return
-          if (!overrideProfile && err instanceof DOMException && err.name === 'NotSupportedError') {
-            fallbackFormats.value.add(formatKey)
-            await loadAndPlayCurrent(startAtSecs, true, 'mp3320')
-            return
-          }
-          const msg =
-            err instanceof Error && err.message ? err.message : tMusic('player.playbackError')
-          playbackError.value = msg
-          isPlaying.value = false
-          useSnackbarStore().show({ message: msg, tone: 'error' })
-        }
-      }
-      if (seq === loadSeq) {
-        cloudSync.scheduleQueueSync()
-      }
-      return
-    }
-
-    if (item.kind === 'remote') {
-      onlineResolving.value = false
-      playbackError.value = null
-      syncAudioGain()
-      currentStreamIsTranscoded.value = false
-      streamOffsetSecs.value = 0
-      currentTimeSecs.value = startAtSecs
-      rawAudioDuration.value = 0
-      bufferedRatio.value = 0
-      audioEngine.clearPendingSeek()
-
-      audio.src =
-        item.song.stream_url || buildRemoteSubsonicStreamUrl(item.source_id, item.song.id)
-      audio.load()
-
-      if (startAtSecs > 0) {
-        audioEngine.scheduleMetadataSeek(
-          startAtSecs,
-          () => seq === loadSeq && currentItem.value?.key === targetKey,
-        )
-      }
-
-      lyricsCtrl.markNoLyricsForKey(targetKey)
-      refreshMediaSession(currentTrack.value)
-
-      if (autoPlay) {
-        try {
-          await audio.play()
-          if (seq !== loadSeq) return
-        } catch (err) {
-          if (seq !== loadSeq) return
-          if (err instanceof DOMException && err.name === 'AbortError') return
-          const msg = err instanceof Error ? err.message : String(err)
-          playbackError.value = msg
-          isPlaying.value = false
-          useSnackbarStore().show({ message: msg, tone: 'error' })
-        }
-      }
-      return
-    }
-
-    const overrideQuality =
-      typeof overrideProfileOrQuality === 'string' ? overrideProfileOrQuality : undefined
-    syncAudioGain()
-    currentStreamIsTranscoded.value = false
-    streamOffsetSecs.value = 0
-    currentTimeSecs.value = startAtSecs
-    rawAudioDuration.value = 0
-    bufferedRatio.value = 0
-    onlineResolving.value = false
-    playbackError.value = null
-    audioEngine.resetSource(true)
-    lyricsCtrl.clearForPendingTrack(targetKey)
-    refreshMediaSession(currentTrack.value)
-
-    const isExpired = isOnlineItemExpired(item)
-    const requestedQuality =
-      overrideQuality ?? item.selectedQuality ?? pickDefaultOnlineQuality(item.track.qualities)
-    const needsFullInfo = !item.resolved || isExpired
-    const needsQualitySwitch =
-      !needsFullInfo && overrideQuality !== undefined && overrideQuality !== item.selectedQuality
-
-    if (needsFullInfo || needsQualitySwitch) {
-      const resolveController = new AbortController()
-      trackResolveAbort = resolveController
-      onlineResolving.value = true
-      try {
-        if (needsFullInfo) {
-          const resolved = await onlineMusicApi.fetchTrackInfo(
-            {
-              source_id: item.source_id,
-              track_id: item.track.track_id || null,
-              detail_url: item.track.detail_url || null,
-              quality: requestedQuality,
-              title: item.track.title || null,
-              artist: item.track.artist || null,
-              album: item.track.album ?? null,
-              duration_secs: item.track.duration_secs ?? null,
-              cover_url: item.track.cover_url ?? null,
-              cover_id: item.track.cover_id ?? null,
-              url_id: item.track.url_id ?? null,
-              lyric_id: item.track.lyric_id ?? null,
-              play_url: item.track.play_url ?? null,
-            },
-            { signal: resolveController.signal },
-          )
-          if (
-            resolveController.signal.aborted ||
-            seq !== loadSeq ||
-            currentItem.value?.key !== targetKey
-          ) {
-            return
-          }
-          item.resolved = resolved
-          item.resolvedAtMs = Date.now()
-          item.selectedQuality = requestedQuality
-          item.activeFormat = resolved.format ?? item.track.format
-          item.activeBitrate = resolved.bitrate
-          lyricsCtrl.applyResolvedLyrics(targetKey, resolved.lyrics, resolved.translated_lyrics)
-        } else if (needsQualitySwitch && item.resolved) {
-          const streamRes = await onlineMusicApi.fetchStream(
-            {
-              source_id: item.source_id,
-              track_id: item.resolved.track.track_id || item.track.track_id || null,
-              url_id: item.resolved.track.url_id ?? item.track.url_id ?? null,
-              play_url: item.resolved.track.play_url ?? item.track.play_url ?? null,
-              quality: overrideQuality ?? null,
-              detail_url: item.resolved.track.detail_url ?? item.track.detail_url ?? null,
-              title: item.resolved.track.title || item.track.title || null,
-              artist: item.resolved.track.artist || item.track.artist || null,
-            },
-            { signal: resolveController.signal },
-          )
-          if (
-            resolveController.signal.aborted ||
-            seq !== loadSeq ||
-            currentItem.value?.key !== targetKey
-          ) {
-            return
-          }
-          item.resolved = {
-            ...item.resolved,
-            stream_url: streamRes.stream_url,
-            proxy_stream_url: streamRes.proxy_stream_url,
-            format: streamRes.format ?? item.resolved.format,
-            bitrate: streamRes.bitrate ?? item.resolved.bitrate,
-            expires_in_secs: streamRes.expires_in_secs,
-          }
-          item.resolvedAtMs = Date.now()
-          item.selectedQuality = overrideQuality ?? null
-          item.activeFormat = streamRes.format ?? item.activeFormat
-          item.activeBitrate = streamRes.bitrate ?? item.activeBitrate
-        }
-      } catch (err) {
-        if (
-          resolveController.signal.aborted ||
-          seq !== loadSeq ||
-          currentItem.value?.key !== targetKey ||
-          (err instanceof Error && err.name === 'AbortError')
-        ) {
-          return
-        }
-        const msg = err instanceof Error ? err.message : String(err)
-        playbackError.value = msg
-        isPlaying.value = false
-        useSnackbarStore().show({ message: msg, tone: 'error' })
+    if (options.mode === 'play-or-insert') {
+      const item = built[0]!
+      const resumeAt = Math.max(0, options.startAtSecs ?? 0)
+      const existingIdx = queue.value.findIndex((existing) => existing.key === item.key)
+      if (existingIdx >= 0) {
+        shuffleTracker.recordJump(currentIndex.value, existingIdx)
+        currentIndex.value = existingIdx
+        scrobbledCurrent = false
+        void trackLoader.loadAndPlayCurrent(resumeAt, true)
         return
-      } finally {
-        if (trackResolveAbort === resolveController) {
-          trackResolveAbort = null
-        }
-        if (seq === loadSeq) {
-          onlineResolving.value = false
-        }
       }
-    } else if (item.resolved) {
-      lyricsCtrl.applyResolvedLyrics(targetKey, item.resolved.lyrics, item.resolved.translated_lyrics)
-    }
-
-    if (seq !== loadSeq || currentItem.value?.key !== targetKey) return
-
-    const streamUrl = resolveOnlineItemStreamUrl(item)
-    if (!streamUrl) {
-      const msg = tMusic('player.noPlayableStream')
-      playbackError.value = msg
-      isPlaying.value = false
-      useSnackbarStore().show({ message: msg, tone: 'error' })
-      return
-    }
-
-    audio.src = streamUrl
-    audio.load()
-
-    if (startAtSecs > 0) {
-      audioEngine.scheduleMetadataSeek(
-        startAtSecs,
-        () => seq === loadSeq && currentItem.value?.key === targetKey,
-      )
-    }
-
-    refreshMediaSession(currentTrack.value)
-
-    if (autoPlay) {
-      try {
-        await audio.play()
-        if (seq !== loadSeq) return
-      } catch (err) {
-        if (seq !== loadSeq) return
-        if (err instanceof DOMException && err.name === 'AbortError') return
-        const msg = err instanceof Error ? err.message : String(err)
-        playbackError.value = msg
-        isPlaying.value = false
+      if (queue.value.length > 0) {
+        const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
+        shuffleTracker.recordInsert(insertAt, currentIndex.value, false)
+        queue.value.splice(insertAt, 0, item)
+        currentIndex.value = insertAt
+        scrobbledCurrent = false
+        void trackLoader.loadAndPlayCurrent(resumeAt, true)
+        return
       }
     }
-  }
 
-  function replaceQueue(
-    items: PlayerQueueItem[],
-    startIndex = 0,
-    startAtSecs = 0,
-    bumpEpoch = true,
-  ): void {
-    if (items.length === 0) return
-    if (bumpEpoch) cloudSync.bumpEpoch()
+    const items = options.shuffle ? shuffleCopy(built) : built
+    if (options.shuffle) {
+      preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
+    }
+    if (options.bumpEpoch ?? true) cloudSync.bumpEpoch()
     cloudSync.resetClearFlag()
     queue.value = items
-    currentIndex.value = Math.max(0, Math.min(items.length - 1, startIndex))
+    currentIndex.value = options.shuffle
+      ? 0
+      : Math.max(0, Math.min(items.length - 1, options.startIndex ?? 0))
     scrobbledCurrent = false
     shuffleTracker.reset()
-    void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
+    void trackLoader.loadAndPlayCurrent(Math.max(0, options.startAtSecs ?? 0), true)
   }
 
-  function shuffleAndReplaceQueue(items: PlayerQueueItem[]): void {
+  function enqueueItems(input: PlayableQueueInput, mode: EnqueueMode = 'end'): void {
+    const items = toPlayerQueueItems(input)
     if (items.length === 0) return
-    preferencesStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
-    replaceQueue(shuffleCopy(items), 0, 0, true)
-  }
-
-  function playOrInsertQueueItem(
-    item: PlayerQueueItem,
-    startAtSecs = 0,
-    bumpEpochOnEmpty = true,
-  ): void {
-    const resumeAt = Math.max(0, startAtSecs)
-    const existingIdx = queue.value.findIndex((existing) => existing.key === item.key)
-    if (existingIdx >= 0) {
-      shuffleTracker.recordJump(currentIndex.value, existingIdx)
-      currentIndex.value = existingIdx
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(resumeAt, true)
-    } else if (queue.value.length > 0) {
+    if (queue.value.length === 0) {
+      playItems(input, { startIndex: 0 })
+      return
+    }
+    if (mode === 'next') {
       const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-      shuffleTracker.recordInsert(insertAt, currentIndex.value, false)
-      queue.value.splice(insertAt, 0, item)
-      currentIndex.value = insertAt
-      scrobbledCurrent = false
-      void loadAndPlayCurrent(resumeAt, true)
+      items.forEach((item, offset) => {
+        shuffleTracker.recordInsert(insertAt + offset, currentIndex.value, true)
+        queue.value.splice(insertAt + offset, 0, item)
+      })
+    } else if (mode === 'if-absent') {
+      for (const item of items) {
+        if (!queue.value.some((existing) => existing.key === item.key)) {
+          queue.value.push(item)
+        }
+      }
     } else {
-      replaceQueue([item], 0, resumeAt, bumpEpochOnEmpty)
+      queue.value.push(...items)
+    }
+    if (input.kind === 'local') {
+      cloudSync.scheduleQueueSync()
     }
   }
 
-  function enqueueQueueItemNext(item: PlayerQueueItem, syncLocal = false): void {
-    if (queue.value.length === 0) {
-      replaceQueue([item], 0, 0, true)
-      return
-    }
-    const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
-    shuffleTracker.recordInsert(insertAt, currentIndex.value, true)
-    queue.value.splice(insertAt, 0, item)
-    if (syncLocal) cloudSync.scheduleQueueSync()
-  }
-
-  function enqueueQueueItemIfAbsent(item: PlayerQueueItem): void {
-    if (queue.value.length === 0) {
-      replaceQueue([item], 0, 0, true)
-      return
-    }
-    if (queue.value.some((existing) => existing.key === item.key)) return
-    queue.value.push(item)
-  }
-
-  function playQueue(tracks: TrackDto[], startIndex = 0): void {
-    replaceQueue(tracks.map(makeLocalQueueItem), startIndex, 0, true)
-  }
-
-  function resumeQueue(tracks: TrackDto[], startIndex = 0, startAtSecs = 0): void {
-    replaceQueue(tracks.map(makeLocalQueueItem), startIndex, startAtSecs, false)
-  }
-
-  function shuffleAndPlay(tracks: TrackDto[]): void {
-    shuffleAndReplaceQueue(tracks.map(makeLocalQueueItem))
-  }
-
-  function playOnlineTracks(tracks: OnlineMusicTrackDto[], startIndex = 0): void {
-    replaceQueue(tracks.map(makeOnlineQueueItem), startIndex, 0, true)
-  }
-
-  function shuffleAndPlayOnline(tracks: OnlineMusicTrackDto[]): void {
-    shuffleAndReplaceQueue(tracks.map(makeOnlineQueueItem))
-  }
+  // Thin 1-line ergonomic aliases for domain views
+  const playQueue = (tracks: TrackDto[], startIndex = 0) =>
+    playItems({ kind: 'local', tracks }, { startIndex })
+  const resumeQueue = (tracks: TrackDto[], startIndex = 0, startAtSecs = 0) =>
+    playItems({ kind: 'local', tracks }, { startIndex, startAtSecs, bumpEpoch: false })
+  const shuffleAndPlay = (tracks: TrackDto[]) =>
+    playItems({ kind: 'local', tracks }, { shuffle: true })
+  const playOnlineTracks = (tracks: OnlineMusicTrackDto[], startIndex = 0) =>
+    playItems({ kind: 'online', tracks }, { startIndex })
+  const shuffleAndPlayOnline = (tracks: OnlineMusicTrackDto[]) =>
+    playItems({ kind: 'online', tracks }, { shuffle: true })
+  const playTrackAt = (track: TrackDto, startAtSecs = 0) =>
+    playItems(
+      { kind: 'local', tracks: [track] },
+      { startAtSecs, bumpEpoch: false, mode: 'play-or-insert' },
+    )
+  const playTrackNow = (track: TrackDto) => playTrackAt(track, 0)
+  const playOnlineTrackAt = (track: OnlineMusicTrackDto, startAtSecs = 0) =>
+    playItems({ kind: 'online', tracks: [track] }, { startAtSecs, mode: 'play-or-insert' })
+  const playOnlineTrackNow = (track: OnlineMusicTrackDto) => playOnlineTrackAt(track, 0)
+  const playRemoteSongs = (
+    sourceId: string,
+    sourceName: string,
+    songs: SubsonicSongDto[],
+    startIndex = 0,
+    startAtSecs = 0,
+  ) => playItems({ kind: 'remote', sourceId, sourceName, songs }, { startIndex, startAtSecs })
+  const shuffleAndPlayRemoteSongs = (
+    sourceId: string,
+    sourceName: string,
+    songs: SubsonicSongDto[],
+  ) => playItems({ kind: 'remote', sourceId, sourceName, songs }, { shuffle: true })
+  const playRemoteSongAt = (
+    sourceId: string,
+    sourceName: string,
+    song: SubsonicSongDto,
+    startAtSecs = 0,
+  ) =>
+    playItems(
+      { kind: 'remote', sourceId, sourceName, songs: [song] },
+      { startAtSecs, mode: 'play-or-insert' },
+    )
+  const enqueueTracks = (tracks: TrackDto[]) => enqueueItems({ kind: 'local', tracks }, 'end')
+  const enqueueNext = (track: TrackDto) => enqueueItems({ kind: 'local', tracks: [track] }, 'next')
+  const enqueueOnlineTrackNext = (track: OnlineMusicTrackDto) =>
+    enqueueItems({ kind: 'online', tracks: [track] }, 'next')
+  const enqueueOnlineTrack = (track: OnlineMusicTrackDto) =>
+    enqueueItems({ kind: 'online', tracks: [track] }, 'if-absent')
+  const enqueueRemoteSong = (sourceId: string, sourceName: string, song: SubsonicSongDto) =>
+    enqueueItems({ kind: 'remote', sourceId, sourceName, songs: [song] }, 'if-absent')
+  const enqueueRemoteSongNext = (sourceId: string, sourceName: string, song: SubsonicSongDto) =>
+    enqueueItems({ kind: 'remote', sourceId, sourceName, songs: [song] }, 'next')
+  const isOnlineTrackInQueue = (track: OnlineMusicTrackDto): boolean =>
+    queue.value.some((item) => item.key === buildOnlineTrackKey(track))
+  const isRemoteSongInQueue = (sourceId: string, songId: string): boolean =>
+    queue.value.some((item) => item.key === buildRemoteSongKey(sourceId, songId))
 
   function playAtIndex(index: number): void {
     if (index < 0 || index >= queue.value.length) return
@@ -651,107 +377,11 @@ export const usePlayerStore = defineStore('player', () => {
     shuffleTracker.recordJump(currentIndex.value, index)
     currentIndex.value = index
     scrobbledCurrent = false
-    void loadAndPlayCurrent(0, true)
-  }
-
-  function playTrackNow(track: TrackDto): void {
-    playTrackAt(track, 0)
-  }
-
-  function playTrackAt(track: TrackDto, startAtSecs = 0): void {
-    playOrInsertQueueItem(makeLocalQueueItem(track), startAtSecs, false)
-  }
-
-  function playOnlineTrackNow(track: OnlineMusicTrackDto): void {
-    playOnlineTrackAt(track, 0)
-  }
-
-  function playOnlineTrackAt(track: OnlineMusicTrackDto, startAtSecs = 0): void {
-    playOrInsertQueueItem(makeOnlineQueueItem(track), startAtSecs, true)
-  }
-
-  function playRemoteSongs(
-    sourceId: string,
-    sourceName: string,
-    songs: SubsonicSongDto[],
-    startIndex = 0,
-    startAtSecs = 0,
-  ): void {
-    replaceQueue(
-      songs.map((song) => makeRemoteQueueItem(sourceId, sourceName, song)),
-      startIndex,
-      startAtSecs,
-      true,
-    )
-  }
-
-  function shuffleAndPlayRemoteSongs(
-    sourceId: string,
-    sourceName: string,
-    songs: SubsonicSongDto[],
-  ): void {
-    shuffleAndReplaceQueue(songs.map((song) => makeRemoteQueueItem(sourceId, sourceName, song)))
-  }
-
-  function playRemoteSongAt(
-    sourceId: string,
-    sourceName: string,
-    song: SubsonicSongDto,
-    startAtSecs = 0,
-  ): void {
-    playOrInsertQueueItem(makeRemoteQueueItem(sourceId, sourceName, song), startAtSecs, true)
-  }
-
-  function enqueueTracks(tracks: TrackDto[]): void {
-    if (tracks.length === 0) return
-    if (queue.value.length === 0) {
-      playQueue(tracks, 0)
-      return
-    }
-    for (const tr of tracks) {
-      queue.value.push(makeLocalQueueItem(tr))
-    }
-    cloudSync.scheduleQueueSync()
-  }
-
-  function enqueueRemoteSong(sourceId: string, sourceName: string, song: SubsonicSongDto): void {
-    enqueueQueueItemIfAbsent(makeRemoteQueueItem(sourceId, sourceName, song))
-  }
-
-  function enqueueRemoteSongNext(
-    sourceId: string,
-    sourceName: string,
-    song: SubsonicSongDto,
-  ): void {
-    enqueueQueueItemNext(makeRemoteQueueItem(sourceId, sourceName, song))
-  }
-
-  function isRemoteSongInQueue(sourceId: string, songId: string): boolean {
-    const key = buildRemoteSongKey(sourceId, songId)
-    return queue.value.some((item) => item.key === key)
-  }
-
-  function enqueueNext(track: TrackDto): void {
-    enqueueQueueItemNext(makeLocalQueueItem(track), true)
-  }
-
-  function enqueueOnlineTrackNext(track: OnlineMusicTrackDto): void {
-    enqueueQueueItemNext(makeOnlineQueueItem(track))
-  }
-
-  function enqueueOnlineTrack(track: OnlineMusicTrackDto): void {
-    enqueueQueueItemIfAbsent(makeOnlineQueueItem(track))
-  }
-
-  function isOnlineTrackInQueue(track: OnlineMusicTrackDto): boolean {
-    const key = buildOnlineTrackKey(track)
-    return queue.value.some((item) => item.key === key)
+    void trackLoader.loadAndPlayCurrent(0, true)
   }
 
   function pause(): void {
-    if (isPlaying.value || !audio.paused) {
-      audio.pause()
-    }
+    if (isPlaying.value || !audio.paused) audio.pause()
   }
 
   async function togglePlay(): Promise<void> {
@@ -759,17 +389,19 @@ export const usePlayerStore = defineStore('player', () => {
     if (!item || onlineResolving.value) return
     if (isPlaying.value) {
       audio.pause()
-    } else if (item.kind === 'online' && (!item.resolved || isOnlineItemExpired(item))) {
-      await loadAndPlayCurrent(currentTimeSecs.value, true)
-    } else if (!audio.src || audio.error) {
-      await loadAndPlayCurrent(currentTimeSecs.value, true)
+    } else if (
+      (item.kind === 'online' && (!item.resolved || isOnlineItemExpired(item))) ||
+      !audio.src ||
+      audio.error
+    ) {
+      await trackLoader.loadAndPlayCurrent(currentTimeSecs.value, true)
     } else {
       try {
         await audio.play()
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return
         if (audio.error) {
-          await loadAndPlayCurrent(currentTimeSecs.value, true)
+          await trackLoader.loadAndPlayCurrent(currentTimeSecs.value, true)
         } else {
           isPlaying.value = false
         }
@@ -784,7 +416,7 @@ export const usePlayerStore = defineStore('player', () => {
       item.resolved = null
       item.resolvedAtMs = null
     }
-    await loadAndPlayCurrent(currentTimeSecs.value, true)
+    await trackLoader.loadAndPlayCurrent(currentTimeSecs.value, true)
   }
 
   function playNext(): void {
@@ -796,7 +428,7 @@ export const usePlayerStore = defineStore('player', () => {
       playMode.value === 'shuffle',
     )
     scrobbledCurrent = false
-    void loadAndPlayCurrent(0, true)
+    void trackLoader.loadAndPlayCurrent(0, true)
   }
 
   function playPrev(): void {
@@ -812,7 +444,7 @@ export const usePlayerStore = defineStore('player', () => {
       playMode.value === 'shuffle',
     )
     scrobbledCurrent = false
-    void loadAndPlayCurrent(0, true)
+    void trackLoader.loadAndPlayCurrent(0, true)
   }
 
   function seekTo(targetSecs: number): void {
@@ -823,35 +455,32 @@ export const usePlayerStore = defineStore('player', () => {
       audio.currentTime = clamped
       currentTimeSecs.value = clamped
     } else {
-      void loadAndPlayCurrent(clamped, isPlaying.value)
+      void trackLoader.loadAndPlayCurrent(clamped, isPlaying.value)
     }
     cloudSync.scheduleQueueSync()
   }
 
   function setTranscodeProfile(next: TranscodeProfile): void {
-    if (next === transcodeProfile.value) return
-    preferencesStore.updatePlaybackPreferences({ transcode_profile: next }, { immediate: true })
+    if (next !== transcodeProfile.value) {
+      preferencesStore.updatePlaybackPreferences({ transcode_profile: next }, { immediate: true })
+    }
   }
 
   function setOnlineQuality(quality: string): void {
     const item = currentOnlineItem.value
     if (!item || !quality || item.selectedQuality === quality) return
-    void loadAndPlayCurrent(currentTimeSecs.value, isPlaying.value, quality)
+    void trackLoader.loadAndPlayCurrent(currentTimeSecs.value, isPlaying.value, quality)
   }
 
   function cyclePlayMode(): void {
     const order: PlayMode[] = ['sequence', 'loop_one', 'shuffle']
-    const idx = order.indexOf(playMode.value)
-    const next = order[(idx + 1) % order.length]!
+    const next = order[(order.indexOf(playMode.value) + 1) % order.length]!
     preferencesStore.updatePlaybackPreferences({ play_mode: next })
   }
 
   function setVolume(nextVol: number): void {
     const clamped = Math.max(0, Math.min(1, nextVol))
-    preferencesStore.updatePlaybackPreferences({
-      volume: clamped,
-      muted: clamped === 0,
-    })
+    preferencesStore.updatePlaybackPreferences({ volume: clamped, muted: clamped === 0 })
   }
 
   function toggleMute(): void {
@@ -896,13 +525,12 @@ export const usePlayerStore = defineStore('player', () => {
     shuffleTracker.remapRemove(idx)
     cloudSync.markRemovedItem(removedItem)
     if (queue.value.length === 0) {
-      loadSeq += 1
-      abortTrackResolve()
+      trackLoader.invalidateLoad()
       clearStoppedRuntimeState(false)
     } else if (wasCurrent) {
       currentIndex.value = Math.min(idx, queue.value.length - 1)
       scrobbledCurrent = false
-      void loadAndPlayCurrent(0, isPlaying.value)
+      void trackLoader.loadAndPlayCurrent(0, isPlaying.value)
     } else if (idx < currentIndex.value) {
       currentIndex.value -= 1
     }
@@ -919,8 +547,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function clearQueue(): void {
-    loadSeq += 1
-    abortTrackResolve()
+    trackLoader.invalidateLoad()
     cloudSync.markClearedWithLocal(queue.value.some((i) => i.kind === 'local'))
     queue.value = []
     clearStoppedRuntimeState(false)
@@ -928,8 +555,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function resetForLogout(): void {
-    loadSeq += 1
-    abortTrackResolve()
+    trackLoader.invalidateLoad()
     cloudSync.resetCloudSync()
     queue.value = []
     isPlaying.value = false
@@ -949,7 +575,7 @@ export const usePlayerStore = defineStore('player', () => {
   onScopeDispose(() => {
     unregisterMediaFocus()
     cloudSync.dispose()
-    abortTrackResolve()
+    trackLoader.abortTrackResolve()
     lyricsCtrl.abortLyricsFetch()
     audioEngine.dispose()
   })
@@ -983,10 +609,12 @@ export const usePlayerStore = defineStore('player', () => {
     activeLyricIndex: lyricsCtrl.activeLyricIndex,
     isCurrentOnlineTracked,
     trackingCurrentOnline,
-    trackCurrentOnlineToLibrary,
+    trackCurrentOnlineToLibrary: trackLoader.trackCurrentOnlineToLibrary,
     dismissPlaybackError,
     attachAudioElement,
     detachAudioElement,
+    playItems,
+    enqueueItems,
     playQueue,
     resumeQueue,
     shuffleAndPlay,

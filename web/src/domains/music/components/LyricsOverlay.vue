@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  LuBookmark,
   LuCheck,
   LuChevronDown,
   LuDisc3,
-  LuDownload,
   LuHeart,
   LuLanguages,
   LuLibrary,
@@ -21,7 +19,6 @@ import {
   LuSkipBack,
   LuSkipForward,
   LuSlidersHorizontal,
-  LuUser,
   LuVolume2,
   LuVolumeX,
   LuX,
@@ -31,46 +28,47 @@ import {
   MdButton,
   MdIconButton,
   MdMenu,
-  MdMenuItem,
   MdTabs,
   type MdTabItem,
 } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
-import { useSnackbarStore } from '@/stores/snackbar'
 import { stripAriaModalOnLeave } from '@/utils/dom'
 import { formatTime } from '@/utils/format'
-import { api, buildCoverUrl } from '../api'
-import { downloadQueueItem } from '../download'
+import { buildCoverUrl } from '../api'
+import { usePlayerTransportControls } from '../composables/usePlayerTransportControls'
 import { useMusicI18n as useI18n } from '../i18n'
-import { usePlayerStore } from '../player'
-import { useMusicStore } from '../store'
-import type { TranscodeProfile } from '../types'
+import LyricsStageCanvas from './LyricsStageCanvas.vue'
+import PlayerOptionsMenuContent from './PlayerOptionsMenuContent.vue'
 import QueueListContent from './QueueListContent.vue'
 
 type MobileStageTab = 'cover' | 'lyrics' | 'queue'
 
 const { t } = useI18n()
 const router = useRouter()
-const snackbar = useSnackbarStore()
-const playerStore = usePlayerStore()
-const musicStore = useMusicStore()
 const escapeStack = useEscapeStack()
 
-const overlayRef = ref<HTMLElement | null>(null)
-const lyricsContainerRef = ref<HTMLDivElement | null>(null)
-const lineRefs = ref<(HTMLButtonElement | null)[]>([])
+const {
+  playerStore,
+  scrubPreviewSecs,
+  savingBookmark,
+  downloadingCurrent,
+  displayTimeSecs,
+  isCurrentStarred,
+  playModeTitle,
+  qualityOptions,
+  onlineQualityOptions,
+  hasQualityMenuItems,
+  handleToggleFavorite,
+  saveCurrentBookmark,
+  handleDownloadCurrent,
+} = usePlayerTransportControls()
 
-const scrubPreviewSecs = ref<number | null>(null)
-const savingBookmark = ref(false)
-const downloadingCurrent = ref(false)
+const overlayRef = ref<HTMLElement | null>(null)
 const showQueuePanel = ref(false)
 const showTranslation = ref(true)
 const mobileTab = ref<MobileStageTab>('lyrics')
-
-const autoScrollPaused = ref(false)
-let autoScrollTimer: ReturnType<typeof setTimeout> | null = null
 
 useFocusTrap(overlayRef, () => playerStore.lyricsOpen && Boolean(playerStore.currentTrack))
 
@@ -85,27 +83,6 @@ escapeStack.register(
   },
 )
 
-function clearAutoScrollPause(): void {
-  autoScrollPaused.value = false
-  if (autoScrollTimer) {
-    clearTimeout(autoScrollTimer)
-    autoScrollTimer = null
-  }
-}
-
-function pauseAutoScroll(): void {
-  autoScrollPaused.value = true
-  if (autoScrollTimer) clearTimeout(autoScrollTimer)
-  autoScrollTimer = setTimeout(() => {
-    autoScrollPaused.value = false
-    autoScrollTimer = null
-  }, 4000)
-}
-
-function setLineRef(el: unknown, idx: number): void {
-  lineRefs.value[idx] = el instanceof HTMLButtonElement ? el : null
-}
-
 watch(
   () => playerStore.lyricsOpen,
   (isOpen) => {
@@ -113,7 +90,6 @@ watch(
       showQueuePanel.value = false
       mobileTab.value = 'lyrics'
       scrubPreviewSecs.value = null
-      clearAutoScrollPause()
     }
   },
 )
@@ -122,80 +98,24 @@ watch(mobileTab, (tab) => {
   showQueuePanel.value = tab === 'queue'
 })
 
-watch(
-  () => [playerStore.currentTrack?.id, playerStore.lyrics] as const,
-  () => {
-    lineRefs.value = []
-    clearAutoScrollPause()
-    if (lyricsContainerRef.value) {
-      lyricsContainerRef.value.scrollTop = 0
-    }
-  },
-)
-
 const backdropCoverUrl = computed(() => {
   const tr = playerStore.currentTrack
   if (!tr) return null
-  if (tr.kind !== 'local') {
-    return tr.cover_url || null
-  }
-  if (!tr.cover_key || !tr.cover_id) return null
-  return buildCoverUrl(tr.cover_id, 512)
+  if (tr.kind !== 'local') return tr.cover_url || null
+  return tr.cover_key && tr.cover_id ? buildCoverUrl(tr.cover_id, 512) : null
 })
 
 const artworkCoverUrl = computed(() => {
   const tr = playerStore.currentTrack
   if (!tr) return null
-  if (tr.kind !== 'local') {
-    return tr.cover_url || null
-  }
-  if (!tr.cover_key || !tr.cover_id) return null
-  return buildCoverUrl(tr.cover_id, 640)
+  if (tr.kind !== 'local') return tr.cover_url || null
+  return tr.cover_key && tr.cover_id ? buildCoverUrl(tr.cover_id, 640) : null
 })
 
-const backdropStyle = computed<Record<string, string>>(() => {
-  if (!backdropCoverUrl.value) return {} as Record<string, string>
+const backdropStyle = computed(() => {
+  if (!backdropCoverUrl.value) return undefined
   const escaped = backdropCoverUrl.value.replace(/["\\]/g, '\\$&')
   return { backgroundImage: `url("${escaped}")` }
-})
-
-const isCurrentStarred = computed(() => Boolean(playerStore.currentLocalTrack?.starred_at))
-
-const displayTimeSecs = computed(() => scrubPreviewSecs.value ?? playerStore.currentTimeSecs)
-
-const playModeTitle = computed(() => {
-  if (playerStore.playMode === 'loop_one') return t('player.modeLoopOne')
-  if (playerStore.playMode === 'shuffle') return t('player.modeShuffle')
-  return t('player.modeSequence')
-})
-
-const qualityOptions = computed(() => [
-  {
-    value: 'raw' as TranscodeProfile,
-    label: t('player.qualityRaw'),
-    trailing:
-      playerStore.currentLocalTrack && playerStore.transcodeProfile === 'raw'
-        ? playerStore.qualitySummary
-        : '',
-  },
-  { value: 'opus128' as TranscodeProfile, label: t('player.qualityOpus128'), trailing: '' },
-  { value: 'mp3192' as TranscodeProfile, label: t('player.qualityMp3192'), trailing: '' },
-  { value: 'mp3320' as TranscodeProfile, label: t('player.qualityMp3320'), trailing: '' },
-  { value: 'aac256' as TranscodeProfile, label: t('player.qualityAac256'), trailing: '' },
-])
-
-const onlineQualityOptions = computed(() => {
-  const tr = playerStore.currentTrack
-  if (!tr || tr.kind !== 'online') return []
-  return tr.qualities.map((q) => ({
-    value: q,
-    label: /^\d+$/.test(q) ? `${q}k` : q.toUpperCase(),
-  }))
-})
-
-const hasQualityMenuItems = computed(() => {
-  if (playerStore.currentLocalTrack) return true
-  return playerStore.isCurrentOnline && onlineQualityOptions.value.length > 0
 })
 
 const mobileStageTabs = computed<MdTabItem<MobileStageTab>[]>(() => [
@@ -212,111 +132,6 @@ const hasTranslatedLyrics = computed(() => {
   const tl = playerStore.translatedLyrics
   return Boolean(tl && (tl.lines.length > 0 || tl.plain_text.trim().length > 0))
 })
-
-const matchedTranslations = computed<Array<string | null>>(() => {
-  const primary = playerStore.lyrics
-  const translated = playerStore.translatedLyrics
-  if (!primary?.synced || !translated?.lines.length) {
-    return []
-  }
-  const tLines = translated.lines
-  return primary.lines.map((line) => {
-    let best: string | null = null
-    let bestDiff = 450
-    for (const candidate of tLines) {
-      const diff = Math.abs(candidate.start_ms - line.start_ms)
-      if (diff <= bestDiff && candidate.text.trim()) {
-        bestDiff = diff
-        best = candidate.text.trim()
-      }
-    }
-    return best
-  })
-})
-
-async function scrollToActiveLyric(behavior: ScrollBehavior = 'smooth'): Promise<void> {
-  const activeIdx = playerStore.activeLyricIndex
-  if (!playerStore.lyricsOpen || activeIdx < 0 || autoScrollPaused.value) return
-  if (showQueuePanel.value) return
-  await nextTick()
-  const container = lyricsContainerRef.value
-  const targetEl = lineRefs.value[activeIdx]
-  if (!container || !targetEl) return
-  const containerRect = container.getBoundingClientRect()
-  const targetRect = targetEl.getBoundingClientRect()
-  const nextScrollTop =
-    container.scrollTop +
-    (targetRect.top - containerRect.top) -
-    container.clientHeight / 2 +
-    targetRect.height / 2
-  container.scrollTo({
-    top: Math.max(0, nextScrollTop),
-    behavior,
-  })
-}
-
-watch(
-  () =>
-    [
-      playerStore.activeLyricIndex,
-      playerStore.lyricsOpen,
-      playerStore.lyrics,
-      showQueuePanel.value,
-      mobileTab.value,
-    ] as const,
-  ([activeIdx, isOpen]) => {
-    if (!isOpen || activeIdx < 0) return
-    void scrollToActiveLyric('smooth')
-  },
-)
-
-function handleLyricLineClick(startMs: number): void {
-  clearAutoScrollPause()
-  playerStore.seekTo(startMs / 1000)
-}
-
-async function handleToggleFavorite(): Promise<void> {
-  if (playerStore.currentLocalTrack) {
-    await musicStore.toggleTrackStar(playerStore.currentLocalTrack)
-  }
-}
-
-async function saveCurrentBookmark(): Promise<void> {
-  const tr = playerStore.currentLocalTrack
-  if (!tr || savingBookmark.value) return
-  savingBookmark.value = true
-  try {
-    await api.saveBookmark(tr.id, Math.round(playerStore.currentTimeSecs * 1000))
-    snackbar.show({ message: t('player.bookmarkSaved') })
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : t('player.playbackError'),
-      tone: 'error',
-    })
-  } finally {
-    savingBookmark.value = false
-  }
-}
-
-async function handleDownloadCurrent(): Promise<void> {
-  const item = playerStore.currentItem
-  if (!item || downloadingCurrent.value) return
-  downloadingCurrent.value = true
-  const title = playerStore.currentTrack?.title || ''
-  try {
-    await downloadQueueItem(item)
-    snackbar.show({ message: t('online.downloadStartedToast', { title }) })
-  } catch (err) {
-    snackbar.show({
-      message: t('online.downloadFailedToast', {
-        message: err instanceof Error ? err.message : String(err),
-      }),
-      tone: 'error',
-    })
-  } finally {
-    downloadingCurrent.value = false
-  }
-}
 
 function closeQueueStage(): void {
   showQueuePanel.value = false
@@ -336,10 +151,6 @@ function navigateAndClose(path: string): void {
   playerStore.lyricsOpen = false
   void router.push(path)
 }
-
-onBeforeUnmount(() => {
-  clearAutoScrollPause()
-})
 </script>
 
 <template>
@@ -355,7 +166,6 @@ onBeforeUnmount(() => {
         :aria-label="t('player.lyricsTitle')"
         class="fixed inset-0 z-[var(--z-fullscreen)] flex h-dvh w-screen flex-col overflow-hidden bg-surface text-on-surface outline-none"
       >
-        <!-- Atmospheric Blurred Artwork Backdrop -->
         <div
           v-if="backdropCoverUrl"
           class="pointer-events-none absolute inset-0 scale-125 bg-cover bg-center opacity-20 blur-3xl"
@@ -365,14 +175,12 @@ onBeforeUnmount(() => {
           class="pointer-events-none absolute inset-0 bg-gradient-to-b from-surface/70 via-surface/85 to-surface/96"
         />
 
-        <!-- Minimalist Top App Bar -->
         <header
           class="safe-pt safe-px relative z-10 flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-8 sm:py-4"
         >
           <div class="flex min-w-0 items-center gap-2">
             <MdButton
               variant="tonal"
-              size="sm"
               :icon="LuChevronDown"
               @click="playerStore.lyricsOpen = false"
             >
@@ -427,81 +235,17 @@ onBeforeUnmount(() => {
                 />
               </template>
 
-              <template v-if="hasQualityMenuItems">
-                <div
-                  class="text-label-small flex items-center justify-between px-3 py-1.5 text-on-surface-variant"
-                >
-                  <span>{{ t('player.qualityHeading') }}</span>
-                  <span v-if="playerStore.qualitySummary" class="font-mono">
-                    {{ playerStore.qualitySummary }}
-                  </span>
-                </div>
-
-                <template v-if="playerStore.currentLocalTrack">
-                  <MdMenuItem
-                    v-for="opt in qualityOptions"
-                    :key="opt.value"
-                    :label="opt.label"
-                    :trailing-text="opt.trailing"
-                    :selected="playerStore.transcodeProfile === opt.value"
-                    @select="playerStore.setTranscodeProfile(opt.value)"
-                  />
-                </template>
-
-                <template v-else-if="playerStore.isCurrentOnline">
-                  <MdMenuItem
-                    v-for="opt in onlineQualityOptions"
-                    :key="opt.value"
-                    :label="opt.label"
-                    :selected="
-                      (playerStore.currentOnlineItem?.selectedQuality ??
-                        onlineQualityOptions[0]?.value) === opt.value
-                    "
-                    @select="playerStore.setOnlineQuality(opt.value)"
-                  />
-                </template>
-              </template>
-
-              <div v-if="hasQualityMenuItems" class="my-1 border-t border-outline-variant" role="separator" />
-              <MdMenuItem
-                v-if="playerStore.isCurrentOnline"
-                :icon="playerStore.isCurrentOnlineTracked ? LuCheck : LuLibrary"
-                :label="
-                  playerStore.isCurrentOnlineTracked
-                    ? t('online.trackedInLibrary')
-                    : t('online.trackToLibrary')
-                "
-                :disabled="playerStore.trackingCurrentOnline"
-                @select="playerStore.trackCurrentOnlineToLibrary()"
+              <PlayerOptionsMenuContent
+                :quality-options="qualityOptions"
+                :online-quality-options="onlineQualityOptions"
+                :has-quality-menu-items="hasQualityMenuItems"
+                :saving-bookmark="savingBookmark"
+                :downloading-current="downloadingCurrent"
+                show-entity-links
+                @download="handleDownloadCurrent"
+                @bookmark="saveCurrentBookmark"
+                @navigate="navigateAndClose"
               />
-              <MdMenuItem
-                :icon="LuDownload"
-                :label="t('common.download')"
-                :disabled="downloadingCurrent"
-                @select="handleDownloadCurrent"
-              />
-              <template v-if="playerStore.currentLocalTrack">
-                <MdMenuItem
-                  :icon="LuBookmark"
-                  :label="t('player.bookmarkBtn')"
-                  :disabled="savingBookmark"
-                  @select="saveCurrentBookmark"
-                />
-                <MdMenuItem
-                  :icon="LuUser"
-                  :label="t('common.viewArtist')"
-                  @select="
-                    navigateAndClose(
-                      `/music/library?artist=${playerStore.currentLocalTrack.artist_id}`,
-                    )
-                  "
-                />
-                <MdMenuItem
-                  :icon="LuDisc3"
-                  :label="t('common.viewAlbum')"
-                  @select="navigateAndClose(`/music/item/${playerStore.currentLocalTrack.album_id}`)"
-                />
-              </template>
             </MdMenu>
           </div>
         </header>
@@ -529,7 +273,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- Compact (< 768px) Stage Tabs: Cover / Lyrics / Queue -->
         <div class="relative z-10 px-4 md:hidden">
           <MdTabs
             v-model="mobileTab"
@@ -540,11 +283,9 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <!-- Main Immersive Split Stage -->
         <div
           class="safe-px safe-pb relative z-10 mx-auto grid min-h-0 w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-hidden px-6 pb-6 sm:px-10 md:grid-cols-12 md:gap-10 md:pb-8"
         >
-          <!-- Left Column: Artwork & Full Controls -->
           <div
             class="min-h-0 flex-col items-center justify-center overflow-y-auto py-4 md:col-span-5 md:flex"
             :class="mobileTab === 'cover' ? 'flex' : 'hidden'"
@@ -633,7 +374,6 @@ onBeforeUnmount(() => {
                 </MdIconButton>
               </div>
 
-              <!-- Real-time Seek Slider -->
               <div class="mt-5">
                 <AppSlider
                   :model-value="playerStore.currentTimeSecs"
@@ -660,7 +400,6 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <!-- Transport Controls -->
               <div class="mt-4 flex items-center justify-center gap-4">
                 <MdIconButton
                   :variant="playerStore.playMode !== 'sequence' ? 'tonal' : 'standard'"
@@ -725,7 +464,6 @@ onBeforeUnmount(() => {
                 />
               </div>
 
-              <!-- Volume Control -->
               <div class="mt-4 flex items-center gap-2">
                 <MdIconButton
                   size="sm"
@@ -750,12 +488,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- Right Column: Borderless Immersive Lyrics OR In-Stage Queue Panel -->
           <div
             class="min-h-0 flex-col md:col-span-7 md:flex"
             :class="mobileTab !== 'cover' ? 'flex' : 'hidden'"
           >
-            <!-- In-Stage Queue Panel -->
             <template v-if="showQueuePanel">
               <div class="flex items-center justify-between py-3">
                 <div class="flex items-center gap-2">
@@ -769,7 +505,6 @@ onBeforeUnmount(() => {
                 </div>
                 <MdButton
                   variant="text"
-                  size="sm"
                   class="hidden md:inline-flex"
                   :icon="LuMic2"
                   @click="closeQueueStage"
@@ -782,84 +517,12 @@ onBeforeUnmount(() => {
               </div>
             </template>
 
-            <!-- Borderless Full-Canvas Lyrics Stage -->
-            <template v-else>
-              <div
-                ref="lyricsContainerRef"
-                class="lyrics-feather min-h-0 flex-1 overflow-y-auto px-1 py-12 sm:px-4"
-                @wheel.passive="pauseAutoScroll"
-                @touchstart.passive="pauseAutoScroll"
-              >
-                <div
-                  v-if="playerStore.lyricsLoading"
-                  class="text-body-medium flex h-full items-center justify-center text-on-surface-variant"
-                >
-                  {{ t('common.loading') }}
-                </div>
+            <LyricsStageCanvas
+              v-else
+              :show-translation="showTranslation"
+              :active="playerStore.lyricsOpen && !showQueuePanel"
+            />
 
-                <!-- Synced Interactive Lyrics (MUST stay <button> for T1-F15-03) -->
-                <div
-                  v-else-if="
-                    playerStore.lyrics &&
-                    playerStore.lyrics.synced &&
-                    playerStore.lyrics.lines.length > 0
-                  "
-                  class="space-y-4 py-16"
-                >
-                  <button
-                    v-for="(line, idx) in playerStore.lyrics.lines"
-                    :key="`${line.start_ms}-${idx}`"
-                    :ref="(el) => setLineRef(el, idx)"
-                    type="button"
-                    class="block w-full origin-left cursor-pointer rounded-corner-md px-3 py-2 text-left transition-all duration-200 ease-standard hover:bg-on-surface/5 focus-visible:outline-2 focus-visible:outline-secondary"
-                    :class="
-                      idx === playerStore.activeLyricIndex
-                        ? 'scale-[1.03] text-headline-small text-on-surface sm:text-headline-medium'
-                        : 'text-title-medium text-on-surface-variant/80 hover:text-on-surface sm:text-title-large'
-                    "
-                    @click="handleLyricLineClick(line.start_ms)"
-                  >
-                    <span class="block leading-snug">{{ line.text || '♪' }}</span>
-                    <span
-                      v-if="showTranslation && matchedTranslations[idx]"
-                      class="mt-1 block text-body-medium leading-snug"
-                      :class="
-                        idx === playerStore.activeLyricIndex
-                          ? 'text-on-surface-variant'
-                          : 'text-on-surface-variant/75'
-                      "
-                    >
-                      {{ matchedTranslations[idx] }}
-                    </span>
-                  </button>
-                </div>
-
-                <!-- Unsynced Plain Text Lyrics -->
-                <div
-                  v-else-if="playerStore.lyrics && playerStore.lyrics.plain_text"
-                  class="text-body-large space-y-6 py-8 leading-loose whitespace-pre-line text-on-surface/90"
-                >
-                  <p>{{ playerStore.lyrics.plain_text }}</p>
-                  <p
-                    v-if="showTranslation && playerStore.translatedLyrics?.plain_text"
-                    class="text-body-medium border-t border-outline-variant pt-6 text-on-surface-variant"
-                  >
-                    {{ playerStore.translatedLyrics.plain_text }}
-                  </p>
-                </div>
-
-                <!-- Empty Lyrics State -->
-                <div
-                  v-else
-                  class="text-body-medium flex h-full flex-col items-center justify-center gap-2 text-center text-on-surface-variant"
-                >
-                  <LuMic2 class="h-8 w-8 opacity-40" aria-hidden="true" />
-                  <p>{{ t('player.noLyrics') }}</p>
-                </div>
-              </div>
-            </template>
-
-            <!-- Mobile Compact Bottom Transport Strip when viewing Lyrics / Queue -->
             <div
               class="mt-2 flex shrink-0 items-center justify-between gap-3 border-t border-outline-variant pt-3 md:hidden"
             >
@@ -904,22 +567,3 @@ onBeforeUnmount(() => {
     </Transition>
   </Teleport>
 </template>
-
-<style scoped>
-.lyrics-feather {
-  mask-image: linear-gradient(
-    to bottom,
-    transparent 0%,
-    var(--md-sys-color-scrim) 10%,
-    var(--md-sys-color-scrim) 90%,
-    transparent 100%
-  );
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0%,
-    var(--md-sys-color-scrim) 10%,
-    var(--md-sys-color-scrim) 90%,
-    transparent 100%
-  );
-}
-</style>

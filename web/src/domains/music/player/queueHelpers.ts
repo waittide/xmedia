@@ -36,6 +36,26 @@ export interface RemoteQueueItem {
 
 export type PlayerQueueItem = LocalQueueItem | OnlineQueueItem | RemoteQueueItem
 
+export type PlayableQueueInput =
+  | { kind: 'local'; tracks: readonly TrackDto[] }
+  | { kind: 'online'; tracks: readonly OnlineMusicTrackDto[] }
+  | {
+      kind: 'remote'
+      sourceId: string
+      sourceName: string
+      songs: readonly SubsonicSongDto[]
+    }
+
+export function toPlayerQueueItems(input: PlayableQueueInput): PlayerQueueItem[] {
+  if (input.kind === 'local') {
+    return input.tracks.map(makeLocalQueueItem)
+  }
+  if (input.kind === 'online') {
+    return input.tracks.map(makeOnlineQueueItem)
+  }
+  return input.songs.map((song) => makeRemoteQueueItem(input.sourceId, input.sourceName, song))
+}
+
 export interface PlayerTrackDisplay {
   kind: 'local' | 'online' | 'remote'
   id: string
