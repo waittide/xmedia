@@ -9,7 +9,8 @@ use regex::Regex;
 use reqwest::header::{COOKIE, HeaderMap, HeaderName, HeaderValue, SET_COOKIE, USER_AGENT};
 
 use super::ssrf::{
-    SsrfSafeResolver, has_ssrf_io_error_in_chain, ssrf_redirect_policy, validate_target_url_static,
+    SsrfSafeResolver, has_ssrf_io_error_in_chain, ssrf_blocking_redirect_policy,
+    ssrf_redirect_policy, validate_target_url, validate_target_url_static,
 };
 use super::url_cookie::{
     HttpClientConfig, HttpFetchResult, merge_cookie_string, normalize_cookie_key, parse_legado_url,
@@ -225,13 +226,15 @@ pub fn get_or_build_blocking_client(
         }
     }
 
+    let has_proxy = key.proxy_url.is_some();
     let mut builder = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(key.timeout_secs))
         .connect_timeout(Duration::from_secs(key.timeout_secs.min(10)))
         .pool_max_idle_per_host(16)
         .pool_idle_timeout(Duration::from_secs(90))
-        .redirect(ssrf_redirect_policy(
+        .redirect(ssrf_blocking_redirect_policy(
             key.allow_private_ips,
+            has_proxy,
             MAX_REDIRECT_HOPS,
         ));
     if let Some(ref proxy) = key.proxy_url {
@@ -531,10 +534,21 @@ impl LegadoHttpClient {
         }
 
         let resolved_url = resolve_relative_url(&parsed.url, base_url);
-        // Static validation runs upfront; DNS resolution & IP checks execute once inside
-        // `SsrfSafeResolver` (when no proxy is configured) to prevent DNS rebinding TOCTOU.
-        let validated = validate_target_url_static(&resolved_url, self.config.allow_private_ips)
-            .map_err(|m| (m, false))?;
+        let has_proxy = self
+            .config
+            .proxy_url
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        // When no proxy is configured, static validation runs upfront and DNS resolution & IP
+        // checks execute once inside `SsrfSafeResolver` to prevent DNS rebinding TOCTOU.
+        // When `proxy_url` is configured, `reqwest` delegates connection setup to the proxy, so
+        // full DNS-resolving SSRF validation must run upfront before dispatching to the proxy.
+        let validated = if has_proxy {
+            validate_target_url(&resolved_url, self.config.allow_private_ips)
+        } else {
+            validate_target_url_static(&resolved_url, self.config.allow_private_ips)
+        }
+        .map_err(|m| (m, false))?;
 
         let method_str = parsed
             .options

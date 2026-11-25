@@ -9,7 +9,7 @@ use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
 use crate::http::{
     DEFAULT_WEBVIEW_UA, HttpClientConfig, build_sanitized_headers, get_or_build_async_client,
-    has_ssrf_io_error_in_chain, validate_target_url_static,
+    has_ssrf_io_error_in_chain, validate_target_url_async,
 };
 
 pub const DEFAULT_IMAGE_PROXY_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -198,7 +198,8 @@ pub async fn fetch_validated_image_bytes(
     max_bytes: usize,
     allow_private_ips: bool,
 ) -> DomainResult<(Vec<u8>, &'static str)> {
-    let validated = validate_target_url_static(raw_url.trim(), allow_private_ips)
+    let validated = validate_target_url_async(raw_url.trim(), allow_private_ips)
+        .await
         .map_err(DomainError::Validation)?;
 
     let mut header_map = headers.map(build_sanitized_headers).unwrap_or_default();

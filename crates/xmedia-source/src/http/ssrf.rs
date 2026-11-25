@@ -146,6 +146,47 @@ pub fn validate_target_url(raw_url: &str, allow_private_ips: bool) -> Result<Url
     Ok(parsed)
 }
 
+/// Async counterpart of [`validate_target_url`] using `tokio::net::lookup_host` so async callers
+/// (including proxied clients that cannot attach [`SsrfSafeResolver`]) enforce DNS-resolving SSRF
+/// checks before dispatching any upstream or proxied request.
+pub async fn validate_target_url_async(
+    raw_url: &str,
+    allow_private_ips: bool,
+) -> Result<Url, String> {
+    let parsed = validate_target_url_static(raw_url, allow_private_ips)?;
+    if allow_private_ips {
+        return Ok(parsed);
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("URL 缺少主机名: {raw_url}"))?;
+    let ip_candidate = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_end_matches('.');
+    if ip_candidate.parse::<IpAddr>().is_ok() {
+        return Ok(parsed);
+    }
+
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("安全策略拒绝未解析目标 '{host}': {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("安全策略拒绝无 DNS 解析结果的目标 '{host}'"));
+    }
+    for addr in addrs {
+        if is_restricted_ip(addr.ip()) {
+            return Err(format!(
+                "安全策略拦截了目标 '{host}' 解析到的内网/保留地址 '{}'",
+                addr.ip()
+            ));
+        }
+    }
+    Ok(parsed)
+}
+
 /// Async custom DNS resolver injected into `reqwest` clients when `allow_private_ips == false`
 /// and no proxy is configured. Validates every resolved IP and returns the validated addresses
 /// directly to `reqwest`, eliminating DNS Rebinding TOCTOU and blocking DNS on Tokio workers.
@@ -219,6 +260,24 @@ impl Resolve for SsrfSafeResolver {
 /// Builds a redirect policy that enforces hop limit and static SSRF validation on every redirect target.
 /// Actual DNS resolution and IP enforcement run asynchronously inside `SsrfSafeResolver` (no blocking DNS).
 pub fn ssrf_redirect_policy(allow_private_ips: bool, max_hops: usize) -> reqwest::redirect::Policy {
+    ssrf_redirect_policy_inner(allow_private_ips, false, max_hops)
+}
+
+/// Redirect policy for blocking clients where `resolve_dns = true` enforces full DNS-resolving
+/// SSRF validation on every redirect hop (used when an outbound proxy bypasses `SsrfSafeResolver`).
+pub fn ssrf_blocking_redirect_policy(
+    allow_private_ips: bool,
+    resolve_dns: bool,
+    max_hops: usize,
+) -> reqwest::redirect::Policy {
+    ssrf_redirect_policy_inner(allow_private_ips, resolve_dns, max_hops)
+}
+
+fn ssrf_redirect_policy_inner(
+    allow_private_ips: bool,
+    resolve_dns: bool,
+    max_hops: usize,
+) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() >= max_hops {
             return attempt.error(std::io::Error::other(format!(
@@ -234,7 +293,12 @@ pub fn ssrf_redirect_policy(allow_private_ips: bool, max_hops: usize) -> reqwest
                 "禁止从 HTTPS 降级重定向至 HTTP",
             ));
         }
-        if let Err(reason) = validate_target_url_static(attempt.url().as_str(), allow_private_ips) {
+        let check_res = if resolve_dns {
+            validate_target_url(attempt.url().as_str(), allow_private_ips)
+        } else {
+            validate_target_url_static(attempt.url().as_str(), allow_private_ips)
+        };
+        if let Err(reason) = check_res {
             return attempt.error(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 reason,

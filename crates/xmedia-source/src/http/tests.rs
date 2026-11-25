@@ -979,3 +979,91 @@ async fn fetch_with_timeout_resilient_retries_503_to_200_and_never_retries_post_
 
     server.abort();
 }
+
+#[tokio::test]
+async fn proxied_requests_enforce_dns_ssrf_validation_before_contacting_proxy() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let proxy_hits = Arc::new(AtomicUsize::new(0));
+    let proxy_hits_c = proxy_hits.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_server = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            proxy_hits_c.fetch_add(1, Ordering::SeqCst);
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream).await;
+        }
+    });
+
+    assert!(
+        validate_target_url_async("http://127.0.0.1/admin", false)
+            .await
+            .is_err()
+    );
+    assert!(
+        validate_target_url_async("http://definitely-nonexistent-ssrf-host.invalid/", false)
+            .await
+            .is_err()
+    );
+    assert!(
+        validate_target_url_async("https://1.1.1.1/ok", false)
+            .await
+            .is_ok()
+    );
+
+    let proxy_url = format!("http://{proxy_addr}");
+    let blocking_err = tokio::task::spawn_blocking({
+        let proxy_url = proxy_url.clone();
+        move || {
+            let client = LegadoHttpClient::new(
+                HttpClientConfig {
+                    timeout_secs: 5,
+                    allow_private_ips: false,
+                    proxy_url: Some(proxy_url),
+                },
+                Arc::new(Mutex::new(HashMap::new())),
+                None,
+                false,
+            )
+            .unwrap();
+            client
+                .fetch("http://definitely-nonexistent-ssrf-host.invalid/secret", "")
+                .unwrap_err()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        blocking_err.contains("安全策略"),
+        "expected SSRF DNS failure before proxy send, got: {blocking_err}"
+    );
+    assert_eq!(
+        proxy_hits.load(Ordering::SeqCst),
+        0,
+        "proxied blocking client must reject SSRF target before opening proxy connection"
+    );
+
+    let async_err = crate::proxy::fetch_validated_image_bytes_with_config(
+        "http://definitely-nonexistent-ssrf-host.invalid/cover.png",
+        None,
+        1024,
+        &HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: false,
+            proxy_url: Some(proxy_url),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        async_err.to_string().contains("安全策略"),
+        "expected async SSRF DNS failure before proxy send, got: {async_err}"
+    );
+    assert_eq!(
+        proxy_hits.load(Ordering::SeqCst),
+        0,
+        "proxied async image fetcher must reject SSRF target before opening proxy connection"
+    );
+
+    proxy_server.abort();
+}

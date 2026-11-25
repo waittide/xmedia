@@ -18,7 +18,8 @@ pub use client::{
 };
 pub use ssrf::{
     SsrfSafeResolver, has_ssrf_io_error_in_chain, is_restricted_hostname, is_restricted_ip,
-    ssrf_redirect_policy, validate_target_url, validate_target_url_static,
+    ssrf_blocking_redirect_policy, ssrf_redirect_policy, validate_target_url,
+    validate_target_url_async, validate_target_url_static,
 };
 pub use template::{
     JsonSigToken, count_comma_open_brace, eval_json_options_template, has_suspicious_option_chars,
