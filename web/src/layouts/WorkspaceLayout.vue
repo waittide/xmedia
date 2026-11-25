@@ -22,6 +22,7 @@ import {
 import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import { MdBadge, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
+import { useMediaFocus } from '@/composables/useMediaFocus'
 import { useShowMusicBar } from '@/composables/useShowMusicBar'
 import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
 import PlayerBar from '@/domains/music/components/PlayerBar.vue'
@@ -58,6 +59,7 @@ const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
 const onlineDownloadsStore = useOnlineDownloadsStore()
 const playerStore = usePlayerStore()
+const mediaFocus = useMediaFocus()
 const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
 
@@ -233,6 +235,7 @@ const accountButtonLabel = computed(
 
 async function handleSignOut(): Promise<void> {
   tasksDrawerOpen.value = false
+  mediaFocus.pauseAll()
   playerStore.pause()
   eventsStore.disconnect()
   await authStore.logout()
