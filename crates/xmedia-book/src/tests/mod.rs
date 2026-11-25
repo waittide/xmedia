@@ -1,4 +1,5 @@
 mod catalog_and_storage;
+mod formats_and_metadata;
 mod online_e2e;
 mod online_unit;
 

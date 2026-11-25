@@ -1,3 +1,5 @@
+mod reading;
+
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{
@@ -5,7 +7,7 @@ use axum::http::header::{
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -22,20 +24,18 @@ use xmedia_core::http::{
 };
 
 use crate::application::dto::{
-    BookBookmarkItemDto, BookHomeOverviewDto, BookSummaryDto, CatalogSearchFilter,
-    PoolBookSummaryDto, ShelfDto, UpdateMetadataPatch,
+    BookSummaryDto, CatalogSearchFilter, PoolBookSummaryDto, UpdateMetadataPatch,
 };
 use crate::application::ports::{TocItem, TxtChapterContent};
-use crate::application::reading::{CreateBookmarkCommand, SaveProgressCommand};
 use crate::domain::book::{
     BookFormat, BookId, BookSortField, FacetCount, PagedResult, SortOrder, TagMatchMode,
 };
-use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, ShelfId};
+use crate::domain::reading::ShelfId;
 use crate::http::state::BookHttpState;
 
 pub fn router() -> Router<BookHttpState> {
     Router::new()
-        .route("/home", get(home_overview))
+        .route("/home", get(reading::home_overview))
         .route("/books", get(search_books))
         .route("/pool", get(search_pool_books))
         .route("/bindings", post(bind_books))
@@ -61,23 +61,29 @@ pub fn router() -> Router<BookHttpState> {
         .route("/books/{id}/resources/{*path}", get(get_epub_resource))
         .route("/authors", get(list_authors))
         .route("/tags", get(list_tags))
-        .route("/recent", get(list_recent_books))
-        .route("/books/{id}/progress", get(get_progress).put(save_progress))
-        .route("/books/{id}/favorite", axum::routing::put(set_favorite))
+        .route("/recent", get(reading::list_recent_books))
+        .route(
+            "/books/{id}/progress",
+            get(reading::get_progress).put(reading::save_progress),
+        )
+        .route("/books/{id}/favorite", put(reading::set_favorite))
         .route(
             "/books/{id}/bookmarks",
-            get(list_bookmarks).post(create_bookmark),
+            get(reading::list_bookmarks).post(reading::create_bookmark),
         )
-        .route("/bookmarks", get(list_all_bookmarks))
-        .route("/bookmarks/{bookmark_id}", delete(delete_bookmark))
-        .route("/shelves", get(list_shelves).post(create_shelf))
+        .route("/bookmarks", get(reading::list_all_bookmarks))
+        .route("/bookmarks/{bookmark_id}", delete(reading::delete_bookmark))
+        .route(
+            "/shelves",
+            get(reading::list_shelves).post(reading::create_shelf),
+        )
         .route(
             "/shelves/{shelf_id}",
-            patch(rename_shelf).delete(delete_shelf),
+            patch(reading::rename_shelf).delete(reading::delete_shelf),
         )
         .route(
             "/shelves/{shelf_id}/books/{book_id}",
-            post(add_book_to_shelf).delete(remove_book_from_shelf),
+            post(reading::add_book_to_shelf).delete(reading::remove_book_from_shelf),
         )
 }
 
@@ -444,8 +450,6 @@ pub(crate) async fn serve_book_file_http(
         .catalog
         .require_book_bound(actor, book_id)
         .await?;
-    // If this is an online-tracked book with newly cached chapters, atomically flush
-    // its standard EPUB 3.0 archive before streaming (transparent for both Web and OPDS).
     state
         .services
         .online
@@ -551,214 +555,4 @@ async fn list_tags(
     WebAuth(actor): WebAuth,
 ) -> ApiResult<Json<Vec<FacetCount>>> {
     Ok(Json(state.services.catalog.list_tags(&actor).await?))
-}
-
-#[derive(Default, Deserialize)]
-struct LimitQuery {
-    limit: Option<u32>,
-}
-
-async fn list_recent_books(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Query(q): Query<LimitQuery>,
-) -> ApiResult<Json<Vec<BookSummaryDto>>> {
-    let items = state
-        .services
-        .reading
-        .list_recent_books(&actor, q.limit.unwrap_or(20), &state.services.catalog)
-        .await?;
-    Ok(Json(items))
-}
-
-async fn get_progress(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Json<Option<ReadingProgress>>> {
-    Ok(Json(
-        state
-            .services
-            .reading
-            .get_progress(&actor, BookId(id))
-            .await?,
-    ))
-}
-
-async fn save_progress(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(cmd): Json<SaveProgressCommand>,
-) -> ApiResult<Json<ReadingProgress>> {
-    Ok(Json(
-        state
-            .services
-            .reading
-            .save_progress(&actor, BookId(id), cmd)
-            .await?,
-    ))
-}
-
-#[derive(Deserialize)]
-struct SetFavoriteRequest {
-    favorite: bool,
-}
-
-async fn set_favorite(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<SetFavoriteRequest>,
-) -> ApiResult<StatusCode> {
-    state
-        .services
-        .reading
-        .set_favorite(&actor, BookId(id), req.favorite)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn list_bookmarks(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Bookmark>>> {
-    Ok(Json(
-        state
-            .services
-            .reading
-            .list_bookmarks(&actor, BookId(id))
-            .await?,
-    ))
-}
-
-async fn home_overview(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-) -> ApiResult<Json<BookHomeOverviewDto>> {
-    Ok(Json(
-        state
-            .services
-            .catalog
-            .home_overview(&actor, &state.services.reading)
-            .await?,
-    ))
-}
-
-async fn list_all_bookmarks(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-) -> ApiResult<Json<Vec<BookBookmarkItemDto>>> {
-    Ok(Json(
-        state.services.reading.list_all_bookmarks(&actor).await?,
-    ))
-}
-
-async fn create_bookmark(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(cmd): Json<CreateBookmarkCommand>,
-) -> ApiResult<(StatusCode, Json<Bookmark>)> {
-    let bm = state
-        .services
-        .reading
-        .create_bookmark(&actor, BookId(id), cmd)
-        .await?;
-    Ok((StatusCode::CREATED, Json(bm)))
-}
-
-async fn delete_bookmark(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(bookmark_id): Path<Uuid>,
-) -> ApiResult<StatusCode> {
-    state
-        .services
-        .reading
-        .delete_bookmark(&actor, BookmarkId(bookmark_id))
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn list_shelves(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-) -> ApiResult<Json<Vec<ShelfDto>>> {
-    Ok(Json(state.services.reading.list_shelves(&actor).await?))
-}
-
-#[derive(Deserialize)]
-struct ShelfNameRequest {
-    name: String,
-}
-
-async fn create_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Json(req): Json<ShelfNameRequest>,
-) -> ApiResult<(StatusCode, Json<ShelfDto>)> {
-    let shelf = state
-        .services
-        .reading
-        .create_shelf(&actor, req.name)
-        .await?;
-    Ok((StatusCode::CREATED, Json(shelf)))
-}
-
-async fn rename_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(shelf_id): Path<Uuid>,
-    Json(req): Json<ShelfNameRequest>,
-) -> ApiResult<Json<ShelfDto>> {
-    Ok(Json(
-        state
-            .services
-            .reading
-            .rename_shelf(&actor, ShelfId(shelf_id), req.name)
-            .await?,
-    ))
-}
-
-async fn delete_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path(shelf_id): Path<Uuid>,
-) -> ApiResult<StatusCode> {
-    state
-        .services
-        .reading
-        .delete_shelf(&actor, ShelfId(shelf_id))
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn add_book_to_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path((shelf_id, book_id)): Path<(Uuid, Uuid)>,
-) -> ApiResult<Json<ShelfDto>> {
-    Ok(Json(
-        state
-            .services
-            .reading
-            .add_book_to_shelf(&actor, ShelfId(shelf_id), BookId(book_id))
-            .await?,
-    ))
-}
-
-async fn remove_book_from_shelf(
-    State(state): State<BookHttpState>,
-    WebAuth(actor): WebAuth,
-    Path((shelf_id, book_id)): Path<(Uuid, Uuid)>,
-) -> ApiResult<Json<ShelfDto>> {
-    Ok(Json(
-        state
-            .services
-            .reading
-            .remove_book_from_shelf(&actor, ShelfId(shelf_id), BookId(book_id))
-            .await?,
-    ))
 }
