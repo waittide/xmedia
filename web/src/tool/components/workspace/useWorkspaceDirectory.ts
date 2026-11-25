@@ -57,9 +57,22 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
   })
 
   let dirLoadSeq = 0
+  let dirAbortController: AbortController | null = null
   let inspectSeq = 0
   let suppressHashSync = false
   let initialLoaded = false
+
+  function nextDirAbortSignal(): AbortController {
+    dirAbortController?.abort()
+    const controller = new AbortController()
+    dirAbortController = controller
+    return controller
+  }
+
+  function isAbortError(err: unknown, controller: AbortController): boolean {
+    if (controller.signal.aborted) return true
+    return err instanceof Error && err.name === 'AbortError'
+  }
 
   function isInitialLoaded(): boolean {
     return initialLoaded
@@ -111,11 +124,14 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
     const reqDomain = opts.activeDomain.value
     const roots = (opts.settings.value?.roots ?? []).filter((r) => r.default_kind === reqDomain)
     if (roots.length === 0) {
+      dirAbortController?.abort()
+      dirAbortController = null
       opts.snapshot.value = null
       opts.rootFileCounts.value = {}
       return
     }
     const seq = ++dirLoadSeq
+    const controller = nextDirAbortSignal()
     const preserveSelection = opts.activeRootId.value === '' && opts.currentRelPath.value === ''
     opts.loadingDir.value = true
     opts.dirError.value = null
@@ -137,11 +153,22 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
     try {
       if (roots.length === 1) {
         const only = roots[0]!
-        const snap = await toolApi.browse(only.id, '', reqDomain, true, (prog) => {
-          taskStore.updateTask(taskId, prog)
-        })
+        const snap = await toolApi.browse(
+          only.id,
+          '',
+          reqDomain,
+          true,
+          (prog) => {
+            if (seq === dirLoadSeq && !controller.signal.aborted) {
+              taskStore.updateTask(taskId, prog)
+            }
+          },
+          controller.signal,
+        )
+        if (seq !== dirLoadSeq || opts.activeDomain.value !== reqDomain || controller.signal.aborted) {
+          return
+        }
         taskStore.completeTask(taskId, `已加载 ${snap.files.length.toLocaleString()} 个媒体文件`)
-        if (seq !== dirLoadSeq || opts.activeDomain.value !== reqDomain) return
         opts.snapshot.value = snap
         opts.rootFileCounts.value = { [only.id]: snap.files.length }
         opts.currentRelPath.value = ''
@@ -168,8 +195,11 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
       }
 
       const snaps = await Promise.all(
-        roots.map((r) => toolApi.browse(r.id, '', reqDomain, true)),
+        roots.map((r) => toolApi.browse(r.id, '', reqDomain, true, undefined, controller.signal)),
       )
+      if (seq !== dirLoadSeq || opts.activeDomain.value !== reqDomain || controller.signal.aborted) {
+        return
+      }
       const counts: Record<string, number> = {}
       const mergedFiles: MediaFileEntry[] = []
       for (let i = 0; i < roots.length; i += 1) {
@@ -179,7 +209,6 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
         mergedFiles.push(...s.files)
       }
       taskStore.completeTask(taskId, `已汇总 ${mergedFiles.length.toLocaleString()} 个媒体文件`)
-      if (seq !== dirLoadSeq || opts.activeDomain.value !== reqDomain) return
 
       opts.snapshot.value = {
         root_id: '',
@@ -209,9 +238,10 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
         opts.activeDetail.value = null
       }
     } catch (err) {
+      if (isAbortError(err, controller)) return
       const msg = err instanceof Error ? err.message : String(err)
-      taskStore.failTask(taskId, msg)
       if (seq === dirLoadSeq && opts.activeDomain.value === reqDomain) {
+        taskStore.failTask(taskId, msg)
         opts.dirError.value = msg
       }
     } finally {
@@ -224,6 +254,7 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
   async function loadDirectory(rootId: string, relPath: string): Promise<void> {
     if (!rootId) return
     const seq = ++dirLoadSeq
+    const controller = nextDirAbortSignal()
     const reqDomain = opts.activeDomain.value
     const preserveSelection =
       rootId === opts.activeRootId.value && relPath === opts.currentRelPath.value
@@ -250,11 +281,21 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
     try {
       while (true) {
         try {
-          snap = await toolApi.browse(rootId, candidateRel, reqDomain, true, (prog) => {
-            taskStore.updateTask(taskId, prog)
-          })
+          snap = await toolApi.browse(
+            rootId,
+            candidateRel,
+            reqDomain,
+            true,
+            (prog) => {
+              if (seq === dirLoadSeq && !controller.signal.aborted) {
+                taskStore.updateTask(taskId, prog)
+              }
+            },
+            controller.signal,
+          )
           break
         } catch (err) {
+          if (isAbortError(err, controller)) throw err
           const errStatus = (err as Error & { status?: number })?.status
           const isNotFound =
             errStatus === 404 ||
@@ -266,12 +307,14 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
           throw err
         }
       }
+      if (seq !== dirLoadSeq || opts.activeDomain.value !== reqDomain || controller.signal.aborted) {
+        return
+      }
       if (!snap) {
         taskStore.completeTask(taskId, '已取消')
         return
       }
       taskStore.completeTask(taskId, `已加载 ${snap.files.length.toLocaleString()} 个媒体文件`)
-      if (seq !== dirLoadSeq || opts.activeDomain.value !== reqDomain) return
       opts.snapshot.value = snap
       opts.currentRelPath.value = snap.current_rel_path
       syncDomainStateToMemory(reqDomain, rootId, snap.current_rel_path)
@@ -298,9 +341,10 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
         opts.activeDetail.value = null
       }
     } catch (err) {
+      if (isAbortError(err, controller)) return
       const msg = err instanceof Error ? err.message : String(err)
-      taskStore.failTask(taskId, msg)
       if (seq === dirLoadSeq && opts.activeDomain.value === reqDomain) {
+        taskStore.failTask(taskId, msg)
         opts.dirError.value = msg
       }
     } finally {
@@ -517,6 +561,7 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
       return
     }
     const seq = ++inspectSeq
+    opts.activeDetail.value = null
     opts.inspectingPath.value = key
     opts.loadingInspector.value = true
     try {
@@ -529,6 +574,7 @@ export function useWorkspaceDirectory(opts: UseWorkspaceDirectoryOptions) {
       opts.activeDetail.value = detail
     } catch (err) {
       if (seq === inspectSeq) {
+        opts.inspectingPath.value = null
         opts.dirError.value = err instanceof Error ? err.message : String(err)
       }
     } finally {

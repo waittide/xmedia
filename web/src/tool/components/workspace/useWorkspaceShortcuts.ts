@@ -14,7 +14,6 @@ export interface UseWorkspaceShortcutsOptions {
   filteredFiles: ComputedRef<MediaFileEntry[]>
   anyModalOpen: ComputedRef<boolean>
   focusSearch: () => void
-  saveInspector: () => void
   requestCloseInspector: () => void
   isInspectorDirty: () => boolean
   isWorkbenchDirty: () => boolean
@@ -26,19 +25,18 @@ export function useWorkspaceShortcuts(opts: UseWorkspaceShortcutsOptions) {
   const taskStore = useToolTaskStore()
 
   function handleKeydown(ev: KeyboardEvent): void {
+    if (opts.anyModalOpen.value) return
+    if (
+      typeof document !== 'undefined' &&
+      document.querySelector('[aria-modal="true"], [role="menu"], [role="listbox"]')
+    ) {
+      return
+    }
     if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
       ev.preventDefault()
       opts.focusSearch()
       return
     }
-    if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 's') {
-      if (opts.activeDetail.value && !opts.anyModalOpen.value) {
-        ev.preventDefault()
-        opts.saveInspector()
-      }
-      return
-    }
-    if (opts.anyModalOpen.value) return
     if (ev.key === 'Escape') {
       if (opts.mobileMenuOpen.value) {
         ev.preventDefault()

@@ -96,9 +96,12 @@ const discNumber = ref<number | null>(1)
 const autoNumberTracks = ref(true)
 const startTrack = ref(1)
 
+let musicLoadSeq = 0
+
 watch(
   () => [props.open, props.entries.length, primaryEntry.value?.rel_path],
   async ([isOpen]) => {
+    const seq = ++musicLoadSeq
     if (!isOpen) return
     errorMsg.value = ''
     successMsg.value = ''
@@ -106,12 +109,10 @@ watch(
     activeTab.value = isSingleMode.value ? 'lyrics' : 'album'
 
     if (isSingleMode.value && primaryEntry.value) {
+      const target = primaryEntry.value
       try {
-        const detail = await toolApi.inspectFile(
-          primaryEntry.value.root_id,
-          primaryEntry.value.rel_path,
-          'music',
-        )
+        const detail = await toolApi.inspectFile(target.root_id, target.rel_path, 'music')
+        if (seq !== musicLoadSeq || !props.open) return
         if (detail.metadata.kind === 'music') {
           lyricsText.value =
             detail.metadata.data.sidecar_lrc || detail.metadata.data.embedded_lyrics || ''

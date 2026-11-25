@@ -373,9 +373,6 @@ useWorkspaceShortcuts({
   filteredFiles,
   anyModalOpen: modals.anyModalOpen,
   focusSearch: () => topHeaderRef.value?.focusSearch(),
-  saveInspector: () => {
-    if (inspectorRef.value) void inspectorRef.value.save()
-  },
   requestCloseInspector: () => {
     if (inspectorRef.value) void inspectorRef.value.requestClose()
   },
@@ -547,10 +544,10 @@ onBeforeUnmount(() => {
         :has-prev="workbench.hasPrevInspect.value"
         :has-next="workbench.hasNextInspect.value"
         @close-mobile="mobileMenuOpen = false"
-        @exit="workbench.exitScrapeWorkbench"
+        @exit="scrapeWorkbenchRef ? scrapeWorkbenchRef.requestExit() : workbench.exitScrapeWorkbench()"
         @toggle-collapse="toggleSidebar"
-        @select-entry="(entry) => { mobileMenuOpen = false; void inspectEntry(entry) }"
-        @step="workbench.stepInspectingFile"
+        @select-entry="(entry) => { mobileMenuOpen = false; if (scrapeWorkbenchRef) void scrapeWorkbenchRef.requestPickEntry(entry); else void inspectEntry(entry) }"
+        @step="(delta) => { if (scrapeWorkbenchRef) void scrapeWorkbenchRef.requestStep(delta); else void workbench.stepInspectingFile(delta) }"
       />
 
       <ToolSidebar

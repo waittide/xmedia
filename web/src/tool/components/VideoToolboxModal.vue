@@ -101,15 +101,20 @@ const remapModeOptions = [
   { value: 'absolute_offset', label: '番剧绝对集数偏移映射 (如 EP25 - 24 → S02E01)' },
 ]
 
+let videoLoadSeq = 0
+
 async function loadVideoContext(): Promise<void> {
   if (!primaryEntry.value) return
+  const seq = ++videoLoadSeq
+  const target = primaryEntry.value
   loading.value = true
   errorMsg.value = ''
   try {
     const [subs, detail] = await Promise.all([
-      toolApi.listVideoSubtitles(primaryEntry.value.root_id, primaryEntry.value.rel_path),
-      toolApi.inspectFile(primaryEntry.value.root_id, primaryEntry.value.rel_path, 'video'),
+      toolApi.listVideoSubtitles(target.root_id, target.rel_path),
+      toolApi.inspectFile(target.root_id, target.rel_path, 'video'),
     ])
+    if (seq !== videoLoadSeq || !props.open) return
     subtitles.value = subs
     selectedSubName.value = subs[0]?.filename ?? ''
     if (detail.metadata.kind === 'video') {
@@ -118,16 +123,23 @@ async function loadVideoContext(): Promise<void> {
       seasonNumber.value = detail.metadata.data.season_number ?? 1
     }
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    if (seq === videoLoadSeq && props.open) {
+      errorMsg.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
-    loading.value = false
+    if (seq === videoLoadSeq) {
+      loading.value = false
+    }
   }
 }
 
 watch(
   () => [props.open, props.entries.length, primaryEntry.value?.rel_path],
   ([isOpen]) => {
-    if (!isOpen) return
+    if (!isOpen) {
+      videoLoadSeq += 1
+      return
+    }
     errorMsg.value = ''
     successMsg.value = ''
     subOffsetMs.value = 0
@@ -135,6 +147,7 @@ watch(
     if (isSingleMode.value) {
       void loadVideoContext()
     } else if (sortedEntries.value[0]) {
+      videoLoadSeq += 1
       showTitle.value = sortedEntries.value[0].display_title
     }
   },

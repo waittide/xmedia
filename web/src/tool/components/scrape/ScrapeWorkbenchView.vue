@@ -67,6 +67,7 @@ const autoSearchOnSwitch = ref(true)
 const autoSearchTrigger = ref(0)
 const candidatePreview = ref<CandidatePreviewState | null>(null)
 let lastEntryKey = ''
+let saveSeq = 0
 
 const isMobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 600 : false)
 const showCompactQueueDropdown = computed(() => props.sidebarCollapsed || isMobileViewport.value)
@@ -200,6 +201,8 @@ async function handleLocalArtworkPicked(ev: Event): Promise<void> {
   const file = input.files?.[0]
   input.value = ''
   if (!file || !props.detail) return
+  const seq = ++saveSeq
+  const startKey = entryCompositeKey(props.detail.entry)
   uploadingArtwork.value = true
   errorMsg.value = null
   try {
@@ -210,18 +213,27 @@ async function handleLocalArtworkPicked(ev: Event): Promise<void> {
       pendingUploadSlot.value,
       props.detail.entry.media_kind,
     )
+    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+      return
+    }
     lastEntryKey = entryCompositeKey(updated.entry)
     emit('updated', updated, true)
     snackbar.show('封面已更新并写入磁盘')
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    if (seq === saveSeq) {
+      errorMsg.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
-    uploadingArtwork.value = false
+    if (seq === saveSeq) {
+      uploadingArtwork.value = false
+    }
   }
 }
 
 async function handlePolishLocalBook(): Promise<void> {
   if (polishingBook.value || !props.detail || props.detail.entry.media_kind !== 'book') return
+  const seq = ++saveSeq
+  const startKey = entryCompositeKey(props.detail.entry)
   polishingBook.value = true
   errorMsg.value = null
   try {
@@ -229,6 +241,9 @@ async function handlePolishLocalBook(): Promise<void> {
       props.detail.entry.root_id,
       props.detail.entry.rel_path,
     )
+    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+      return
+    }
     lastEntryKey = entryCompositeKey(report.detail.entry)
     localForm.hydrateForm(report.detail)
     emit('updated', report.detail, true)
@@ -236,14 +251,20 @@ async function handlePolishLocalBook(): Promise<void> {
       `书籍抛光完成 · ${report.jacket_updated ? '简介页已更新' : '目录已同步'}，清理 ${report.removed_orphan_files} 个冗余资源`,
     )
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    if (seq === saveSeq) {
+      errorMsg.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
-    polishingBook.value = false
+    if (seq === saveSeq) {
+      polishingBook.value = false
+    }
   }
 }
 
 async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Promise<void> {
   if (!props.detail || !canSaveMetadata.value || savingLocal.value) return
+  const seq = ++saveSeq
+  const startKey = entryCompositeKey(props.detail.entry)
   savingLocal.value = true
   errorMsg.value = null
   try {
@@ -270,6 +291,9 @@ async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Pr
         )
       }
     }
+    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+      return
+    }
     lastEntryKey = entryCompositeKey(updated.entry)
     localForm.hydrateForm(updated)
     localEditMode.value = false
@@ -283,9 +307,13 @@ async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Pr
       emit('step', 1)
     }
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    if (seq === saveSeq) {
+      errorMsg.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
-    savingLocal.value = false
+    if (seq === saveSeq) {
+      savingLocal.value = false
+    }
   }
 }
 
@@ -331,6 +359,8 @@ async function handleApplyAndSave(
   opts?: CandidateApplyOptions,
 ): Promise<void> {
   if (!props.detail || !canSaveMetadata.value || saving.value) return
+  const seq = ++saveSeq
+  const startKey = entryCompositeKey(props.detail.entry)
   saving.value = true
   errorMsg.value = null
   try {
@@ -410,6 +440,9 @@ async function handleApplyAndSave(
       }
     }
 
+    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+      return
+    }
     lastEntryKey = entryCompositeKey(updated.entry)
     localForm.hydrateForm(updated)
     emit('updated', updated, bumpedArt)
@@ -423,16 +456,21 @@ async function handleApplyAndSave(
       emit('step', 1)
     }
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    if (seq === saveSeq) {
+      errorMsg.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
-    saving.value = false
+    if (seq === saveSeq) {
+      saving.value = false
+    }
   }
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Escape' && queueDropdownOpen.value) {
-    ev.preventDefault()
-    queueDropdownOpen.value = false
+  if (
+    typeof document !== 'undefined' &&
+    document.querySelector('[aria-modal="true"], [role="menu"], [role="listbox"]')
+  ) {
     return
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
@@ -473,6 +511,7 @@ onMounted(() => {
   window.addEventListener('resize', handleResize)
 })
 onBeforeUnmount(() => {
+  saveSeq += 1
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('resize', handleResize)
 })
@@ -480,6 +519,9 @@ onBeforeUnmount(() => {
 defineExpose({
   isDirty: isCurrentDirty,
   confirmDiscardIfDirty,
+  requestPickEntry,
+  requestStep,
+  requestExit,
 })
 </script>
 

@@ -95,6 +95,7 @@ const saving = ref(false)
 const polishingBook = ref(false)
 const uploadingArtwork = ref(false)
 const errorMsg = ref<string | null>(null)
+const drawerRootRef = ref<HTMLElement | null>(null)
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
 const skipNextHydrateKey = ref<string | null>(null)
@@ -328,9 +329,22 @@ async function saveMetadata(
   }
 }
 
+function hasBlockingExternalOverlay(): boolean {
+  if (typeof document === 'undefined') return false
+  if (document.querySelector('[role="menu"], [role="listbox"]')) return true
+  const rootEl = drawerRootRef.value
+  const modals = document.querySelectorAll('[aria-modal="true"]')
+  for (const modal of modals) {
+    if (!rootEl || (!modal.contains(rootEl) && !rootEl.contains(modal))) {
+      return true
+    }
+  }
+  return false
+}
+
 function handleKeydown(ev: KeyboardEvent): void {
   if (props.shortcutsDisabled) return
-  if (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]')) return
+  if (hasBlockingExternalOverlay()) return
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
     ev.preventDefault()
     void saveMetadata(false, false)
@@ -363,6 +377,7 @@ defineExpose({
 
 <template>
   <aside
+    ref="drawerRootRef"
     class="flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] transition-[width] duration-300 ease-[var(--md-sys-motion-easing-standard)] lg:w-[440px] lg:rounded-l-[24px] xl:w-[470px]"
   >
     <input
@@ -467,6 +482,7 @@ defineExpose({
                   v-if="artworkSrc"
                   :src="artworkSrc"
                   alt="artwork"
+                  referrerpolicy="no-referrer"
                   class="h-full w-full object-cover"
                 />
                 <div

@@ -284,11 +284,25 @@ export function buildEpubAssetUrl(rootId: string, relPath: string, assetPath: st
 
 export function resolveScraperCoverUrl(rawUrl: string | null | undefined): string {
   if (!rawUrl) return ''
-  if (needsScraperImageProxy(rawUrl)) {
-    const params = new URLSearchParams({ url: rawUrl })
-    return `/api/v1/tool/scrapers/image-proxy?${params.toString()}`
+  const cleaned = rawUrl.replace(/[\u0000-\u001F\u007F]+/g, '').trim()
+  if (!cleaned) return ''
+  if (cleaned.startsWith('/')) {
+    if (cleaned.startsWith('//')) return ''
+    return cleaned
   }
-  return rawUrl
+  try {
+    const parsed = new URL(cleaned)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return ''
+    }
+    if (needsScraperImageProxy(parsed.href)) {
+      const params = new URLSearchParams({ url: parsed.href })
+      return `/api/v1/tool/scrapers/image-proxy?${params.toString()}`
+    }
+    return parsed.href
+  } catch {
+    return ''
+  }
 }
 
 export const toolApi = {

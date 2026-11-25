@@ -113,8 +113,20 @@ const DROP_SUBTREE_TAGS = new Set([
   'animatetransform',
   'animatemotion',
   'set',
+  'discard',
   'handler',
   'listener',
+  'use',
+  'symbol',
+  'marker',
+  'pattern',
+  'mask',
+  'clippath',
+  'filter',
+  'feimage',
+  'mpath',
+  'metadata',
+  'switch',
 ])
 
 const SAFE_HYDRATE_TAGS = new Set([
@@ -235,7 +247,6 @@ const SAFE_HYDRATE_ATTRS = new Set([
   'stroke',
   'stroke-width',
   'opacity',
-  'transform',
 ])
 
 const SAFE_RASTER_DATA_URI_RE =
@@ -243,6 +254,19 @@ const SAFE_RASTER_DATA_URI_RE =
 
 function stripControlChars(value: string): string {
   return value.replace(/[\u0000-\u001F\u007F]+/g, '').trim()
+}
+
+function decodeCssEscapes(raw: string): string {
+  return raw
+    .replace(/\\\r?\n/g, '')
+    .replace(/\\([0-9a-fA-F]{1,6})(?:\r\n|[ \t\r\n\f])?/g, (_match, hex: string) => {
+      const cp = Number.parseInt(hex, 16)
+      if (!Number.isFinite(cp) || cp <= 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+        return '\uFFFD'
+      }
+      return String.fromCodePoint(cp)
+    })
+    .replace(/\\([^\r\n\f0-9a-fA-F])/g, '$1')
 }
 
 function isSafeImageSrc(raw: string): boolean {
@@ -267,37 +291,92 @@ function isSafeLinkHref(raw: string): boolean {
   if (!schemeMatch) {
     return !cleaned.startsWith('//')
   }
-  const scheme = schemeMatch[1].toLowerCase()
+  const scheme = schemeMatch[1]!.toLowerCase()
   return scheme === 'http' || scheme === 'https' || scheme === 'mailto'
 }
 
-function sanitizeInlineStyle(raw: string): string {
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/expression\s*\([^)]*\)/gi, '')
-    .replace(/-moz-binding\s*:[^;]*/gi, '')
-    .replace(/behavior\s*:[^;]*/gi, '')
-    .replace(/@import\b[^;]*/gi, '')
-    .replace(/url\s*\([^)]*\)/gi, '')
-    .replace(/javascript\s*:/gi, '')
-    .replace(/vbscript\s*:/gi, '')
-    .trim()
+const SAFE_BOX_SPACING_RE =
+  /^(?:auto|0|\d+(?:\.\d+)?(?:em|rem|px|%))(?:\s+(?:auto|0|\d+(?:\.\d+)?(?:em|rem|px|%))){0,3}$/i
+const SAFE_COLOR_VALUE_RE =
+  /^(?:#[0-9a-f]{3,8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(?:0|1|0?\.\d+)\s*\)|transparent|inherit|currentcolor)$/i
+
+const SAFE_STYLE_PROP_VALIDATORS: Record<string, RegExp> = {
+  'text-align': /^(?:left|right|center|justify|start|end)$/i,
+  'text-indent': /^(?:0|\d+(?:\.\d+)?(?:em|rem|px|%))$/i,
+  'font-style': /^(?:normal|italic|oblique)$/i,
+  'font-weight': /^(?:normal|bold|bolder|lighter|[1-9]00)$/i,
+  'font-size':
+    /^(?:xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger|\d+(?:\.\d+)?(?:em|rem|px|%))$/i,
+  'line-height': /^(?:normal|\d+(?:\.\d+)?(?:em|rem|px|%)?)$/i,
+  'letter-spacing': /^(?:normal|0|\d+(?:\.\d+)?(?:em|rem|px))$/i,
+  'text-decoration':
+    /^(?:none|underline|line-through|overline)(?:\s+(?:underline|line-through|overline))*$/i,
+  'text-decoration-line':
+    /^(?:none|underline|line-through|overline)(?:\s+(?:underline|line-through|overline))*$/i,
+  'vertical-align': /^(?:baseline|sub|super|top|text-top|middle|bottom|text-bottom)$/i,
+  color: SAFE_COLOR_VALUE_RE,
+  'background-color': SAFE_COLOR_VALUE_RE,
+  margin: SAFE_BOX_SPACING_RE,
+  'margin-top': SAFE_BOX_SPACING_RE,
+  'margin-right': SAFE_BOX_SPACING_RE,
+  'margin-bottom': SAFE_BOX_SPACING_RE,
+  'margin-left': SAFE_BOX_SPACING_RE,
+  padding: SAFE_BOX_SPACING_RE,
+  'padding-top': SAFE_BOX_SPACING_RE,
+  'padding-right': SAFE_BOX_SPACING_RE,
+  'padding-bottom': SAFE_BOX_SPACING_RE,
+  'padding-left': SAFE_BOX_SPACING_RE,
+}
+
+export function sanitizeInlineStyle(raw: string): string {
+  if (!raw) return ''
+  const decoded = stripControlChars(decodeCssEscapes(raw.replace(/\/\*[\s\S]*?\*\//g, '')))
+  if (!decoded) return ''
+
+  const kept: string[] = []
+  for (const decl of decoded.split(';')) {
+    const colonIdx = decl.indexOf(':')
+    if (colonIdx <= 0) continue
+    const prop = decl.slice(0, colonIdx).trim().toLowerCase()
+    const val = decl
+      .slice(colonIdx + 1)
+      .replace(/!important\s*$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!prop || !val) continue
+    if (/[<>\\"'`]|\burl\s*\(|\bexpression\s*\(|@import\b|\bvar\s*\(/i.test(val)) continue
+    const validator = SAFE_STYLE_PROP_VALIDATORS[prop]
+    if (!validator || !validator.test(val)) continue
+    kept.push(`${prop}: ${val}`)
+  }
+  return kept.join('; ')
+}
+
+function isSafeSvgPaintValue(raw: string): boolean {
+  const decoded = stripControlChars(decodeCssEscapes(raw))
+  if (!decoded) return false
+  if (decoded.toLowerCase() === 'none') return true
+  if (/\burl\s*\(|[<>\\"'`]/i.test(decoded)) return false
+  return SAFE_COLOR_VALUE_RE.test(decoded)
 }
 
 /**
  * Sanitizes untrusted EPUB CSS before injecting into a `<style>` tag inside an iframe `srcdoc`.
- * Prevents `</style>` tag breakout, `@import` / external `url(...)` tracking requests,
- * and legacy script execution vectors.
+ * Prevents `</style>` tag breakout, CSS hex-escape bypasses, `@import` / external `url(...)`
+ * tracking requests, fixed/sticky overlay spoofing, and legacy script execution vectors.
  */
 export function sanitizeEpubCssForPreview(rawCss: string): string {
   if (!rawCss) return ''
-  return rawCss
+  const decoded = decodeCssEscapes(rawCss.replace(/\/\*[\s\S]*?\*\//g, ''))
+  return decoded
     .replace(/<\s*\/?\s*style\b[^>]*>/gi, '')
     .replace(/</g, '\\3c ')
     .replace(/@import\b[^;\n]*(?:;|$)/gi, '')
     .replace(/expression\s*\(/gi, 'blocked(')
+    .replace(/image-set\s*\(/gi, 'blocked-image-set(')
     .replace(/behavior\s*:/gi, 'x-blocked-behavior:')
     .replace(/-moz-binding\s*:/gi, 'x-blocked-binding:')
+    .replace(/position\s*:\s*(?:fixed|sticky)\b/gi, 'position: static')
     .replace(/url\s*\(\s*(['"]?)([^)'"]*)\1\s*\)/gi, (_match, _q: string, inner: string) => {
       const target = stripControlChars(inner)
       if (SAFE_RASTER_DATA_URI_RE.test(target)) {
@@ -398,11 +477,17 @@ function sanitizeHydratedElement(
           if (!isSafeImageSrc(attr.value)) {
             childEl.removeAttribute(rawName)
           }
-        } else if (tag === 'a') {
+        } else if (tag === 'a' && !childEl.closest('svg')) {
           if (!isSafeLinkHref(attr.value)) {
             childEl.removeAttribute(rawName)
           }
         } else {
+          childEl.removeAttribute(rawName)
+        }
+        continue
+      }
+      if (lowerName === 'fill' || lowerName === 'stroke') {
+        if (!isSafeSvgPaintValue(attr.value)) {
           childEl.removeAttribute(rawName)
         }
         continue

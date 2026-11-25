@@ -12,10 +12,13 @@ import {
   LuLayers,
   LuPanelLeft,
   LuSearch,
+  LuSlidersHorizontal,
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdMenu from '@/components/ui/MdMenu.vue'
+import MdMenuItem from '@/components/ui/MdMenuItem.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { buildArtworkUrl } from '../../api'
 import { entryCompositeKey, isEntryComplete } from '../../completeness'
@@ -132,41 +135,162 @@ const savedSessionCount = computed(() => {
         <LuArrowUp class="h-4 w-4" />
       </button>
 
-      <button
+      <MdMenu
         v-if="showCompactQueueDropdown"
-        type="button"
-        class="md-state flex h-8 max-w-[min(420px,55vw)] min-w-0 items-center gap-2 rounded-full border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] px-3 text-xs font-semibold text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)]"
-        title="点击展开队列并快速跳转"
-        @click="emit('update:queueDropdownOpen', !queueDropdownOpen)"
+        :open="queueDropdownOpen"
+        placement="bottom-start"
+        :min-width="320"
+        :max-width="440"
+        aria-label="快速切换队列条目"
+        @update:open="emit('update:queueDropdownOpen', $event)"
       >
-        <span
-          v-if="positionLabel"
-          class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[var(--md-sys-color-on-primary-container)]"
-        >
-          {{ positionLabel }}
-        </span>
-        <span class="min-w-0 flex-1 truncate">
-          {{ detail?.entry.file_name || '未选择条目' }}
-        </span>
-        <span
-          v-if="isCurrentDirty"
-          class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
-        >
-          未保存
-        </span>
-        <LuChevronDown
-          class="h-3.5 w-3.5 shrink-0 opacity-70 transition"
-          :class="queueDropdownOpen ? 'rotate-180' : ''"
-        />
-      </button>
+        <template #trigger="{ open, toggle, triggerAttrs }">
+          <button
+            type="button"
+            v-bind="triggerAttrs"
+            class="md-state flex h-8 max-w-[min(420px,55vw)] min-w-0 items-center gap-2 rounded-corner-full border border-outline-variant/70 bg-surface px-3 text-label-medium text-on-surface transition hover:border-primary"
+            title="点击展开队列并快速跳转"
+            @click="toggle"
+          >
+            <span
+              v-if="positionLabel"
+              class="shrink-0 rounded-corner-full bg-primary-container px-1.5 py-0.5 font-mono text-label-small text-on-primary-container"
+            >
+              {{ positionLabel }}
+            </span>
+            <span class="min-w-0 flex-1 truncate">
+              {{ detail?.entry.file_name || '未选择条目' }}
+            </span>
+            <span
+              v-if="isCurrentDirty"
+              class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-label-small text-on-warning-container"
+            >
+              未保存
+            </span>
+            <LuChevronDown
+              class="h-3.5 w-3.5 shrink-0 opacity-70 transition"
+              :class="open ? 'rotate-180' : ''"
+            />
+          </button>
+        </template>
+
+        <template #default="{ close }">
+          <div class="flex max-h-[64vh] w-[min(420px,88vw)] flex-col overflow-hidden">
+            <div class="shrink-0 space-y-2 border-b border-outline-variant/45 p-2.5">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-label-large text-on-surface">
+                  快速切换队列条目（{{ entries.length }} 项）
+                </span>
+                <MdIconButton
+                  size="sm"
+                  :icon="LuX"
+                  aria-label="关闭队列切换菜单"
+                  @click="close"
+                />
+              </div>
+
+              <div class="flex h-8 items-center gap-1.5 rounded-corner-full bg-surface px-2.5">
+                <LuSearch class="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
+                <input
+                  v-model="dropdownQuery"
+                  type="text"
+                  aria-label="搜索队列条目"
+                  placeholder="搜索标题或文件名…"
+                  class="min-w-0 flex-1 bg-transparent text-body-small text-on-surface outline-none"
+                />
+              </div>
+
+              <MdSegmentedButton
+                v-model="dropdownFilter"
+                :options="dropdownFilterOptions"
+                size="sm"
+              />
+            </div>
+
+            <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-1.5">
+              <div
+                v-if="dropdownEntries.length === 0"
+                class="py-8 text-center text-body-small text-on-surface-variant"
+              >
+                无匹配条目
+              </div>
+              <button
+                v-for="entry in dropdownEntries"
+                :key="entryCompositeKey(entry)"
+                type="button"
+                role="menuitem"
+                class="md-state flex w-full items-center gap-2.5 rounded-corner-md px-2.5 py-2 text-left transition"
+                :class="
+                  detail && entryCompositeKey(detail.entry) === entryCompositeKey(entry)
+                    ? 'bg-secondary-container text-on-secondary-container'
+                    : 'text-on-surface hover:bg-surface-container-high'
+                "
+                @click="close(); emit('selectEntry', entry)"
+              >
+                <div
+                  class="shrink-0 overflow-hidden rounded-corner-xs bg-surface-container-high"
+                  :class="entry.media_kind === 'music' ? 'h-9 w-9' : 'h-10 w-8'"
+                >
+                  <img
+                    v-if="entry.completeness.has_cover"
+                    :src="
+                      buildArtworkUrl(
+                        entry.root_id,
+                        entry.rel_path,
+                        entry.media_kind,
+                        resolveArtworkVersion(entry.root_id, entry.rel_path),
+                        entry.media_kind === 'video' ? 'poster' : 'cover',
+                      )
+                    "
+                    alt=""
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                    class="h-full w-full object-cover"
+                  />
+                  <div
+                    v-else
+                    class="flex h-full w-full items-center justify-center text-on-surface-variant/50"
+                  >
+                    <LuBookOpen v-if="entry.media_kind === 'book'" class="h-3.5 w-3.5" />
+                    <LuLayers v-else-if="entry.media_kind === 'comic'" class="h-3.5 w-3.5" />
+                    <LuDisc3 v-else-if="entry.media_kind === 'music'" class="h-3.5 w-3.5" />
+                    <LuClapperboard v-else class="h-3.5 w-3.5" />
+                  </div>
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-label-large">
+                    {{ entry.display_title || entry.file_name }}
+                  </div>
+                  <div class="truncate font-mono text-label-small opacity-70">
+                    {{ entry.file_name }}
+                  </div>
+                </div>
+                <span
+                  v-if="savedKeys.has(entryCompositeKey(entry))"
+                  class="inline-flex shrink-0 items-center text-success"
+                  aria-label="本次会话已保存"
+                >
+                  <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+                </span>
+                <span
+                  v-else-if="!entry.completeness.has_cover"
+                  class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-label-small text-on-warning-container"
+                >
+                  缺封
+                </span>
+              </button>
+            </div>
+          </div>
+        </template>
+      </MdMenu>
 
       <div
         v-else
-        class="flex h-8 max-w-[min(440px,48vw)] min-w-0 items-center gap-2 rounded-full bg-[var(--md-sys-color-surface-container)] px-3 text-xs font-semibold text-[var(--md-sys-color-on-surface)]"
+        class="flex h-8 max-w-[min(440px,48vw)] min-w-0 items-center gap-2 rounded-corner-full bg-surface-container px-3 text-label-medium text-on-surface"
       >
         <span
           v-if="positionLabel"
-          class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[var(--md-sys-color-on-primary-container)]"
+          class="shrink-0 rounded-corner-full bg-primary-container px-1.5 py-0.5 font-mono text-label-small text-on-primary-container"
         >
           {{ positionLabel }}
         </span>
@@ -175,7 +299,7 @@ const savedSessionCount = computed(() => {
         </span>
         <span
           v-if="isCurrentDirty"
-          class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
+          class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-label-small text-on-warning-container"
         >
           未保存
         </span>
@@ -184,145 +308,48 @@ const savedSessionCount = computed(() => {
       <button
         type="button"
         :disabled="!hasNext"
-        class="md-icon-btn md-icon-btn-sm md-state !h-8 !w-8 shrink-0 disabled:opacity-35"
+        class="md-icon-btn md-icon-btn-sm md-state shrink-0 disabled:opacity-35"
         title="下一项 (Alt+↓)"
         aria-label="下一项"
         @click="emit('step', 1)"
       >
         <LuArrowDown class="h-4 w-4" />
       </button>
-
-      <!-- Compact Dropdown Queue Popover -->
-      <template v-if="showCompactQueueDropdown && queueDropdownOpen">
-        <div
-          class="fixed inset-0 z-30"
-          @click="emit('update:queueDropdownOpen', false)"
-        />
-        <div
-          class="absolute top-10 left-1/2 z-40 flex max-h-[68vh] w-[min(440px,92vw)] -translate-x-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--md-sys-color-outline-variant)]/75 bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)]"
-        >
-          <div class="shrink-0 space-y-2 border-b border-[var(--md-sys-color-outline-variant)]/45 p-3">
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-                快速切换队列条目（{{ entries.length }} 项）
-              </span>
-              <MdIconButton
-                size="sm"
-                :icon="LuX"
-                aria-label="关闭队列切换弹窗"
-                @click="emit('update:queueDropdownOpen', false)"
-              />
-            </div>
-
-            <div
-              class="flex h-8 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-surface)] px-2.5"
-            >
-              <LuSearch class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
-              <input
-                v-model="dropdownQuery"
-                type="text"
-                placeholder="搜索标题或文件名…"
-                class="min-w-0 flex-1 bg-transparent text-xs text-[var(--md-sys-color-on-surface)] outline-none"
-              />
-            </div>
-
-            <MdSegmentedButton
-              v-model="dropdownFilter"
-              :options="dropdownFilterOptions"
-              size="sm"
-            />
-          </div>
-
-          <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-            <div
-              v-if="dropdownEntries.length === 0"
-              class="py-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              无匹配条目
-            </div>
-            <button
-              v-for="entry in dropdownEntries"
-              :key="entryCompositeKey(entry)"
-              type="button"
-              class="md-state flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition"
-              :class="
-                detail && entryCompositeKey(detail.entry) === entryCompositeKey(entry)
-                  ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                  : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]'
-              "
-              @click="emit('selectEntry', entry)"
-            >
-              <div
-                class="shrink-0 overflow-hidden rounded-md bg-[var(--md-sys-color-surface-container-high)]"
-                :class="entry.media_kind === 'music' ? 'h-9 w-9' : 'h-10 w-8'"
-              >
-                <img
-                  v-if="entry.completeness.has_cover"
-                  :src="
-                    buildArtworkUrl(
-                      entry.root_id,
-                      entry.rel_path,
-                      entry.media_kind,
-                      resolveArtworkVersion(entry.root_id, entry.rel_path),
-                      entry.media_kind === 'video' ? 'poster' : 'cover',
-                    )
-                  "
-                  alt=""
-                  loading="lazy"
-                  class="h-full w-full object-cover"
-                />
-                <div
-                  v-else
-                  class="flex h-full w-full items-center justify-center text-[var(--md-sys-color-on-surface-variant)]/50"
-                >
-                  <LuBookOpen v-if="entry.media_kind === 'book'" class="h-3.5 w-3.5" />
-                  <LuLayers v-else-if="entry.media_kind === 'comic'" class="h-3.5 w-3.5" />
-                  <LuDisc3 v-else-if="entry.media_kind === 'music'" class="h-3.5 w-3.5" />
-                  <LuClapperboard v-else class="h-3.5 w-3.5" />
-                </div>
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="truncate text-xs font-semibold">
-                  {{ entry.display_title || entry.file_name }}
-                </div>
-                <div class="truncate font-mono text-[10px] opacity-70">
-                  {{ entry.file_name }}
-                </div>
-              </div>
-              <span
-                v-if="savedKeys.has(entryCompositeKey(entry))"
-                class="inline-flex shrink-0 items-center text-success"
-                aria-label="本次会话已保存"
-              >
-                <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
-              </span>
-              <span
-                v-else-if="!entry.completeness.has_cover"
-                class="shrink-0 rounded-full bg-warning-container px-1.5 py-0.5 text-[10px] font-medium text-on-warning-container"
-              >
-                缺封
-              </span>
-            </button>
-          </div>
-        </div>
-      </template>
     </div>
 
-    <!-- Right: Session Saved Counter & Auto Search Toggle -->
-    <div class="flex shrink-0 items-center gap-2.5">
+    <!-- Right: Session Saved Counter & Strategy Menu -->
+    <div class="flex shrink-0 items-center gap-2">
       <span
-        class="hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-1 font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)] sm:inline-flex"
+        class="hidden rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-label-small text-on-surface-variant sm:inline-flex"
       >
         已存 {{ savedSessionCount }} / {{ entries.length }}
       </span>
 
-      <div class="hidden lg:inline-flex">
+      <div class="hidden xl:inline-flex">
         <AppCheckbox
           :model-value="autoSearchOnSwitch"
           label="切项自动搜"
           @update:model-value="emit('update:autoSearchOnSwitch', $event)"
         />
       </div>
+
+      <MdMenu placement="bottom-end" :min-width="210" aria-label="工作台选项" class="xl:hidden">
+        <template #trigger="{ toggle, triggerAttrs }">
+          <MdIconButton
+            size="sm"
+            :icon="LuSlidersHorizontal"
+            aria-label="工作台选项"
+            tooltip="工作台选项"
+            v-bind="triggerAttrs"
+            @click="toggle"
+          />
+        </template>
+        <MdMenuItem
+          label="切换条目时自动搜索"
+          :selected="autoSearchOnSwitch"
+          @select="emit('update:autoSearchOnSwitch', !autoSearchOnSwitch)"
+        />
+      </MdMenu>
     </div>
   </div>
 </template>
