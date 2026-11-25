@@ -7,7 +7,7 @@ use xmedia_core::domain::library::MediaKind;
 
 use super::{
     MediaWorkbenchService, PreviewRenameOptions, RenameHistoryBatchDto, RenameMoveRecord,
-    UndoRenameReportDto, WorkbenchProgress, count_subtree_children, progress_step_for,
+    UndoRenameReportDto, WorkbenchProgress, dir_has_any_media_file, progress_step_for,
 };
 use crate::application::webhook::notify_xmedia_rescan;
 use crate::domain::media::{MediaMetadataPayload, RenameConflictPolicy, RenamePlanItem};
@@ -48,59 +48,71 @@ impl MediaWorkbenchService {
         let _root_guard = root_lock.lock().await;
         let root = self.settings.find_root(RootId(batch.root_id)).await?;
         root.ensure_writable()?;
-        let mut restored_count = 0usize;
-        let mut skipped_conflicts = Vec::new();
-        let mut remaining_moves = Vec::new();
-        let mut restored_path_pairs = Vec::new();
+        let moves = batch.moves;
+        let (restored_count, skipped_conflicts, remaining_moves, restored_path_pairs) =
+            tokio::task::spawn_blocking(move || {
+                let mut restored_count = 0usize;
+                let mut skipped_conflicts = Vec::new();
+                let mut remaining_moves = Vec::new();
+                let mut restored_path_pairs = Vec::new();
 
-        for mv in batch.moves.iter().rev() {
-            let Ok(cur) = resolve_existing_in_root(&root, &mv.to_rel_path) else {
-                skipped_conflicts.push(mv.to_rel_path.clone());
-                remaining_moves.push(mv.clone());
-                continue;
-            };
-            let Ok(orig) = resolve_target_in_root(&root, &mv.from_rel_path) else {
-                skipped_conflicts.push(mv.from_rel_path.clone());
-                remaining_moves.push(mv.clone());
-                continue;
-            };
-            if orig.exists() && orig != cur.abs_path {
-                skipped_conflicts.push(mv.from_rel_path.clone());
-                remaining_moves.push(mv.clone());
-                continue;
-            }
-            let cur_parent = cur.abs_path.parent().map(Path::to_path_buf);
-            if let Some(p) = orig.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            if std::fs::rename(&cur.abs_path, &orig).is_err() {
-                skipped_conflicts.push(mv.to_rel_path.clone());
-                remaining_moves.push(mv.clone());
-                continue;
-            }
-            restored_count += 1;
-            restored_path_pairs.push((mv.to_rel_path.clone(), mv.from_rel_path.clone()));
-
-            for (comp_from, comp_to) in mv.companion_moves.iter().rev() {
-                if let Ok(comp_cur) = resolve_existing_in_root(&root, comp_to)
-                    && let Ok(comp_orig) = resolve_target_in_root(&root, comp_from)
-                    && !comp_orig.exists()
-                {
-                    if let Some(p) = comp_orig.parent() {
+                for mv in moves.iter().rev() {
+                    let Ok(cur) = resolve_existing_in_root(&root, &mv.to_rel_path) else {
+                        skipped_conflicts.push(mv.to_rel_path.clone());
+                        remaining_moves.push(mv.clone());
+                        continue;
+                    };
+                    let Ok(orig) = resolve_target_in_root(&root, &mv.from_rel_path) else {
+                        skipped_conflicts.push(mv.from_rel_path.clone());
+                        remaining_moves.push(mv.clone());
+                        continue;
+                    };
+                    if orig.exists() && orig != cur.abs_path {
+                        skipped_conflicts.push(mv.from_rel_path.clone());
+                        remaining_moves.push(mv.clone());
+                        continue;
+                    }
+                    let cur_parent = cur.abs_path.parent().map(Path::to_path_buf);
+                    if let Some(p) = orig.parent() {
                         let _ = std::fs::create_dir_all(p);
                     }
-                    if let Err(err) = std::fs::rename(&comp_cur.abs_path, &comp_orig) {
-                        tracing::warn!(from = %comp_to, to = %comp_from, error = %err, "failed to restore companion file during rename undo");
-                        skipped_conflicts.push(comp_to.clone());
+                    if std::fs::rename(&cur.abs_path, &orig).is_err() {
+                        skipped_conflicts.push(mv.to_rel_path.clone());
+                        remaining_moves.push(mv.clone());
+                        continue;
+                    }
+                    restored_count += 1;
+                    restored_path_pairs.push((mv.to_rel_path.clone(), mv.from_rel_path.clone()));
+
+                    for (comp_from, comp_to) in mv.companion_moves.iter().rev() {
+                        if let Ok(comp_cur) = resolve_existing_in_root(&root, comp_to)
+                            && let Ok(comp_orig) = resolve_target_in_root(&root, comp_from)
+                            && !comp_orig.exists()
+                        {
+                            if let Some(p) = comp_orig.parent() {
+                                let _ = std::fs::create_dir_all(p);
+                            }
+                            if let Err(err) = std::fs::rename(&comp_cur.abs_path, &comp_orig) {
+                                tracing::warn!(from = %comp_to, to = %comp_from, error = %err, "failed to restore companion file during rename undo");
+                                skipped_conflicts.push(comp_to.clone());
+                            }
+                        }
+                    }
+
+                    if let Some(ref prev_dir) = cur_parent {
+                        cleanup_empty_parent_dirs(prev_dir, &root.path);
                     }
                 }
-            }
-
-            if let Some(ref prev_dir) = cur_parent {
-                cleanup_empty_parent_dirs(prev_dir, &root.path);
-            }
-        }
-        remaining_moves.reverse();
+                remaining_moves.reverse();
+                (
+                    restored_count,
+                    skipped_conflicts,
+                    remaining_moves,
+                    restored_path_pairs,
+                )
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("undo rename task failed: {e}")))?;
 
         if restored_count > 0 {
             self.update_metadata_history_paths(RootId(batch.root_id), &restored_path_pairs)
@@ -192,7 +204,13 @@ impl MediaWorkbenchService {
 
         let effective_pref = preferred_kind.or(root.default_kind);
         for (idx, rel) in rel_paths.iter().enumerate() {
-            let sandbox = resolve_existing_in_root(&root, rel)?;
+            let root_for_resolve = root.clone();
+            let rel_clone = rel.clone();
+            let sandbox = tokio::task::spawn_blocking(move || {
+                resolve_existing_in_root(&root_for_resolve, &rel_clone)
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("resolve rename path failed: {e}")))??;
             let Some(inspector) =
                 self.resolve_inspector_for_path(&sandbox.abs_path, effective_pref)
             else {
@@ -203,7 +221,8 @@ impl MediaWorkbenchService {
                 .abs_path
                 .extension()
                 .and_then(|s| s.to_str())
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .to_string();
 
             let tpl = match &meta {
                 MediaMetadataPayload::Book(_) => clean_primary_tpl
@@ -233,290 +252,309 @@ impl MediaWorkbenchService {
                 }
             };
 
-            let parent_rel = sandbox
-                .rel_path
-                .parent()
-                .map(path_to_slash)
-                .unwrap_or_default();
-            let (mut to_rel, mut rendered_stem) =
-                render_template_target(&tpl, &parent_rel, &meta, &sandbox.abs_path, ext);
-            let target_parent_rel = Path::new(&to_rel)
-                .parent()
-                .map(path_to_slash)
-                .unwrap_or_default();
+            let root_for_plan = root.clone();
+            let planned_snapshot = std::mem::take(&mut planned_targets);
+            let (plan_item, updated_targets) = tokio::task::spawn_blocking(
+                move || -> DomainResult<(RenamePlanItem, std::collections::HashSet<String>)> {
+                    let mut planned_targets = planned_snapshot;
+                    let parent_rel = sandbox
+                        .rel_path
+                        .parent()
+                        .map(path_to_slash)
+                        .unwrap_or_default();
+                    let (mut to_rel, mut rendered_stem) =
+                        render_template_target(&tpl, &parent_rel, &meta, &sandbox.abs_path, &ext);
+                    let target_parent_rel = Path::new(&to_rel)
+                        .parent()
+                        .map(path_to_slash)
+                        .unwrap_or_default();
 
-            let from_rel = sandbox.rel_slash_string();
-            let mut unchanged = from_rel == to_rel;
+                    let from_rel = sandbox.rel_slash_string();
+                    let mut unchanged = from_rel == to_rel;
 
-            let target_abs = resolve_target_in_root(&root, &to_rel)?;
-            let mut conflict = None;
-            let mut will_overwrite = false;
-            if let MediaMetadataPayload::Video(ref v) = meta
-                && v.is_episode
-                && v.episode_number.is_none()
-                && tpl.to_ascii_lowercase().contains("{episode")
-            {
-                conflict = Some("剧集模板缺少集号".to_string());
-            } else if !unchanged {
-                let exists_on_disk = target_abs.exists() && target_abs != sandbox.abs_path;
-                let duplicate_in_batch = planned_targets.contains(&to_rel.to_lowercase());
-                match conflict_policy {
-                    RenameConflictPolicy::Skip => {
-                        if exists_on_disk {
-                            conflict = Some("目标文件已存在".to_string());
-                        } else if duplicate_in_batch {
-                            conflict = Some("批次内目标文件名重复".to_string());
-                        } else {
-                            planned_targets.insert(to_rel.to_lowercase());
-                        }
-                    }
-                    RenameConflictPolicy::AutoSuffix => {
-                        if exists_on_disk || duplicate_in_batch {
-                            let mut resolved = false;
-                            for suffix_idx in 2..=999usize {
-                                let cand_stem = format!("{rendered_stem} ({suffix_idx})");
-                                let cand_name = if ext.is_empty() {
-                                    cand_stem.clone()
+                    let target_abs = resolve_target_in_root(&root_for_plan, &to_rel)?;
+                    let mut conflict = None;
+                    let mut will_overwrite = false;
+                    if let MediaMetadataPayload::Video(ref v) = meta
+                        && v.is_episode
+                        && v.episode_number.is_none()
+                        && tpl.to_ascii_lowercase().contains("{episode")
+                    {
+                        conflict = Some("剧集模板缺少集号".to_string());
+                    } else if !unchanged {
+                        let exists_on_disk = target_abs.exists() && target_abs != sandbox.abs_path;
+                        let duplicate_in_batch = planned_targets.contains(&to_rel.to_lowercase());
+                        match conflict_policy {
+                            RenameConflictPolicy::Skip => {
+                                if exists_on_disk {
+                                    conflict = Some("目标文件已存在".to_string());
+                                } else if duplicate_in_batch {
+                                    conflict = Some("批次内目标文件名重复".to_string());
                                 } else {
-                                    format!("{cand_stem}.{ext}")
-                                };
-                                let cand_rel = if target_parent_rel.is_empty() {
-                                    cand_name
-                                } else {
-                                    format!("{target_parent_rel}/{cand_name}")
-                                };
-                                let cand_abs = resolve_target_in_root(&root, &cand_rel)?;
-                                let cand_exists = cand_abs.exists() && cand_abs != sandbox.abs_path;
-                                let cand_dup = planned_targets.contains(&cand_rel.to_lowercase());
-                                if !cand_exists && !cand_dup {
-                                    to_rel = cand_rel;
-                                    rendered_stem = cand_stem;
-                                    unchanged = from_rel == to_rel;
                                     planned_targets.insert(to_rel.to_lowercase());
-                                    resolved = true;
-                                    break;
                                 }
                             }
-                            if !resolved {
-                                conflict = Some("无法生成不冲突的目标文件名".to_string());
+                            RenameConflictPolicy::AutoSuffix => {
+                                if exists_on_disk || duplicate_in_batch {
+                                    let mut resolved = false;
+                                    for suffix_idx in 2..=999usize {
+                                        let cand_stem = format!("{rendered_stem} ({suffix_idx})");
+                                        let cand_name = if ext.is_empty() {
+                                            cand_stem.clone()
+                                        } else {
+                                            format!("{cand_stem}.{ext}")
+                                        };
+                                        let cand_rel = if target_parent_rel.is_empty() {
+                                            cand_name
+                                        } else {
+                                            format!("{target_parent_rel}/{cand_name}")
+                                        };
+                                        let cand_abs =
+                                            resolve_target_in_root(&root_for_plan, &cand_rel)?;
+                                        let cand_exists =
+                                            cand_abs.exists() && cand_abs != sandbox.abs_path;
+                                        let cand_dup =
+                                            planned_targets.contains(&cand_rel.to_lowercase());
+                                        if !cand_exists && !cand_dup {
+                                            to_rel = cand_rel;
+                                            rendered_stem = cand_stem;
+                                            unchanged = from_rel == to_rel;
+                                            planned_targets.insert(to_rel.to_lowercase());
+                                            resolved = true;
+                                            break;
+                                        }
+                                    }
+                                    if !resolved {
+                                        conflict = Some("无法生成不冲突的目标文件名".to_string());
+                                    }
+                                } else {
+                                    planned_targets.insert(to_rel.to_lowercase());
+                                }
                             }
-                        } else {
-                            planned_targets.insert(to_rel.to_lowercase());
-                        }
-                    }
-                    RenameConflictPolicy::Overwrite => {
-                        if duplicate_in_batch {
-                            conflict = Some("批次内目标文件名重复".to_string());
-                        } else {
-                            if exists_on_disk {
-                                will_overwrite = true;
+                            RenameConflictPolicy::Overwrite => {
+                                if duplicate_in_batch {
+                                    conflict = Some("批次内目标文件名重复".to_string());
+                                } else {
+                                    if exists_on_disk {
+                                        will_overwrite = true;
+                                    }
+                                    planned_targets.insert(to_rel.to_lowercase());
+                                }
                             }
-                            planned_targets.insert(to_rel.to_lowercase());
                         }
                     }
-                }
-            }
 
-            let mut companion_moves = Vec::new();
-            if !unchanged {
-                for (comp_abs, suffix) in find_companion_sidecars(&sandbox.abs_path) {
-                    if let Ok(comp_rel) = comp_abs.strip_prefix(&root.path) {
-                        let comp_from = path_to_slash(comp_rel);
-                        let next_comp_name = format!("{rendered_stem}{suffix}");
-                        let comp_to = if target_parent_rel.is_empty() {
-                            next_comp_name
-                        } else {
-                            format!("{target_parent_rel}/{next_comp_name}")
-                        };
-                        companion_moves.push((comp_from, comp_to));
-                    }
-                }
+                    let mut companion_moves = Vec::new();
+                    if !unchanged {
+                        for (comp_abs, suffix) in find_companion_sidecars(&sandbox.abs_path) {
+                            if let Ok(comp_rel) = comp_abs.strip_prefix(&root_for_plan.path) {
+                                let comp_from = path_to_slash(comp_rel);
+                                let next_comp_name = format!("{rendered_stem}{suffix}");
+                                let comp_to = if target_parent_rel.is_empty() {
+                                    next_comp_name
+                                } else {
+                                    format!("{target_parent_rel}/{next_comp_name}")
+                                };
+                                companion_moves.push((comp_from, comp_to));
+                            }
+                        }
 
-                // Carry Calibre single-book `metadata.opf` and `cover.*` when moving a dedicated book folder
-                if matches!(meta, MediaMetadataPayload::Book(_))
-                    && parent_rel != target_parent_rel
-                    && !target_parent_rel.is_empty()
-                    && let Some(old_dir) = sandbox.abs_path.parent()
-                    && old_dir != root.path
-                    && dir_has_single_book(old_dir)
-                {
-                    for fname in [
-                        "metadata.opf",
-                        "cover.jpg",
-                        "cover.jpeg",
-                        "cover.png",
-                        "cover.webp",
-                    ] {
-                        let cand = old_dir.join(fname);
-                        if cand.is_file()
-                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
+                        // Carry Calibre single-book `metadata.opf` and `cover.*` when moving a dedicated book folder
+                        if matches!(meta, MediaMetadataPayload::Book(_))
+                            && parent_rel != target_parent_rel
+                            && !target_parent_rel.is_empty()
+                            && let Some(old_dir) = sandbox.abs_path.parent()
+                            && old_dir != root_for_plan.path
+                            && dir_has_single_book(old_dir)
                         {
-                            companion_moves.push((
-                                path_to_slash(rel_c),
-                                format!("{target_parent_rel}/{fname}"),
-                            ));
-                        }
-                    }
-                }
-
-                // Carry Navidrome/Picard album-level cover (`cover.*`, `folder.*`, `front.*`) when moving music folders
-                if matches!(meta, MediaMetadataPayload::Music(_))
-                    && parent_rel != target_parent_rel
-                    && !target_parent_rel.is_empty()
-                    && let Some(old_dir) = sandbox.abs_path.parent()
-                    && old_dir != root.path
-                    && old_dir
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|n| !is_generic_music_folder(n))
-                {
-                    for fname in [
-                        "cover.jpg",
-                        "cover.jpeg",
-                        "cover.png",
-                        "cover.webp",
-                        "folder.jpg",
-                        "folder.jpeg",
-                        "folder.png",
-                        "folder.webp",
-                        "front.jpg",
-                        "front.jpeg",
-                        "front.png",
-                        "front.webp",
-                    ] {
-                        let cand = old_dir.join(fname);
-                        if cand.is_file()
-                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
-                        {
-                            companion_moves.push((
-                                path_to_slash(rel_c),
-                                format!("{target_parent_rel}/{fname}"),
-                            ));
-                        }
-                    }
-                }
-
-                // Carry Komga/Kavita series-level cover (`cover.*`, `folder.*`) when moving comic series folders
-                if matches!(meta, MediaMetadataPayload::Comic(_))
-                    && parent_rel != target_parent_rel
-                    && !target_parent_rel.is_empty()
-                    && let Some(old_dir) = sandbox.abs_path.parent()
-                    && old_dir != root.path
-                    && old_dir
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|n| !is_generic_comic_folder(n))
-                {
-                    for fname in [
-                        "cover.jpg",
-                        "cover.jpeg",
-                        "cover.png",
-                        "cover.webp",
-                        "folder.jpg",
-                        "folder.jpeg",
-                        "folder.png",
-                        "folder.webp",
-                    ] {
-                        let cand = old_dir.join(fname);
-                        if cand.is_file()
-                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
-                        {
-                            companion_moves.push((
-                                path_to_slash(rel_c),
-                                format!("{target_parent_rel}/{fname}"),
-                            ));
-                        }
-                    }
-                }
-
-                // Also carry Jellyfin directory-level NFO & artwork (`movie.nfo`, `season.nfo`, `tvshow.nfo`, `poster.*`, `fanart.*`)
-                if let MediaMetadataPayload::Video(ref v) = meta
-                    && parent_rel != target_parent_rel
-                    && !target_parent_rel.is_empty()
-                    && let Some(old_dir) = sandbox.abs_path.parent()
-                    && old_dir != root.path
-                {
-                    let dir_files: &[&str] = if v.is_episode {
-                        &[
-                            "season.nfo",
-                            "poster.jpg",
-                            "poster.jpeg",
-                            "poster.png",
-                            "poster.webp",
-                            "fanart.jpg",
-                            "fanart.jpeg",
-                            "fanart.png",
-                            "fanart.webp",
-                        ]
-                    } else if dir_has_single_video(old_dir) {
-                        &[
-                            "movie.nfo",
-                            "poster.jpg",
-                            "poster.jpeg",
-                            "poster.png",
-                            "poster.webp",
-                            "fanart.jpg",
-                            "fanart.jpeg",
-                            "fanart.png",
-                            "fanart.webp",
-                        ]
-                    } else {
-                        &[]
-                    };
-                    for fname in dir_files {
-                        let cand = old_dir.join(fname);
-                        if cand.is_file()
-                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
-                        {
-                            companion_moves.push((
-                                path_to_slash(rel_c),
-                                format!("{target_parent_rel}/{fname}"),
-                            ));
-                        }
-                    }
-
-                    if v.is_episode
-                        && let Some(old_show_dir) = old_dir.parent()
-                        && old_show_dir != root.path
-                        && old_show_dir.starts_with(&root.path)
-                        && let Some(new_show_parent) = Path::new(&target_parent_rel).parent()
-                    {
-                        let new_show_rel = path_to_slash(new_show_parent);
-                        if !new_show_rel.is_empty() {
                             for fname in [
-                                "tvshow.nfo",
-                                "poster.jpg",
-                                "poster.jpeg",
-                                "poster.png",
-                                "poster.webp",
-                                "fanart.jpg",
-                                "fanart.jpeg",
-                                "fanart.png",
-                                "fanart.webp",
+                                "metadata.opf",
+                                "cover.jpg",
+                                "cover.jpeg",
+                                "cover.png",
+                                "cover.webp",
                             ] {
-                                let cand = old_show_dir.join(fname);
+                                let cand = old_dir.join(fname);
                                 if cand.is_file()
-                                    && let Ok(rel_c) = cand.strip_prefix(&root.path)
+                                    && let Ok(rel_c) = cand.strip_prefix(&root_for_plan.path)
                                 {
                                     companion_moves.push((
                                         path_to_slash(rel_c),
-                                        format!("{new_show_rel}/{fname}"),
+                                        format!("{target_parent_rel}/{fname}"),
                                     ));
                                 }
                             }
                         }
-                    }
-                }
-            }
 
-            plans.push(RenamePlanItem {
-                from_rel_path: from_rel,
-                to_rel_path: to_rel,
-                companion_moves,
-                conflict,
-                unchanged,
-                will_overwrite,
-            });
+                        // Carry Navidrome/Picard album-level cover (`cover.*`, `folder.*`, `front.*`) when moving music folders
+                        if matches!(meta, MediaMetadataPayload::Music(_))
+                            && parent_rel != target_parent_rel
+                            && !target_parent_rel.is_empty()
+                            && let Some(old_dir) = sandbox.abs_path.parent()
+                            && old_dir != root_for_plan.path
+                            && old_dir
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .is_some_and(|n| !is_generic_music_folder(n))
+                        {
+                            for fname in [
+                                "cover.jpg",
+                                "cover.jpeg",
+                                "cover.png",
+                                "cover.webp",
+                                "folder.jpg",
+                                "folder.jpeg",
+                                "folder.png",
+                                "folder.webp",
+                                "front.jpg",
+                                "front.jpeg",
+                                "front.png",
+                                "front.webp",
+                            ] {
+                                let cand = old_dir.join(fname);
+                                if cand.is_file()
+                                    && let Ok(rel_c) = cand.strip_prefix(&root_for_plan.path)
+                                {
+                                    companion_moves.push((
+                                        path_to_slash(rel_c),
+                                        format!("{target_parent_rel}/{fname}"),
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Carry Komga/Kavita series-level cover (`cover.*`, `folder.*`) when moving comic series folders
+                        if matches!(meta, MediaMetadataPayload::Comic(_))
+                            && parent_rel != target_parent_rel
+                            && !target_parent_rel.is_empty()
+                            && let Some(old_dir) = sandbox.abs_path.parent()
+                            && old_dir != root_for_plan.path
+                            && old_dir
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .is_some_and(|n| !is_generic_comic_folder(n))
+                        {
+                            for fname in [
+                                "cover.jpg",
+                                "cover.jpeg",
+                                "cover.png",
+                                "cover.webp",
+                                "folder.jpg",
+                                "folder.jpeg",
+                                "folder.png",
+                                "folder.webp",
+                            ] {
+                                let cand = old_dir.join(fname);
+                                if cand.is_file()
+                                    && let Ok(rel_c) = cand.strip_prefix(&root_for_plan.path)
+                                {
+                                    companion_moves.push((
+                                        path_to_slash(rel_c),
+                                        format!("{target_parent_rel}/{fname}"),
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Also carry Jellyfin directory-level NFO & artwork (`movie.nfo`, `season.nfo`, `tvshow.nfo`, `poster.*`, `fanart.*`)
+                        if let MediaMetadataPayload::Video(ref v) = meta
+                            && parent_rel != target_parent_rel
+                            && !target_parent_rel.is_empty()
+                            && let Some(old_dir) = sandbox.abs_path.parent()
+                            && old_dir != root_for_plan.path
+                        {
+                            let dir_files: &[&str] = if v.is_episode {
+                                &[
+                                    "season.nfo",
+                                    "poster.jpg",
+                                    "poster.jpeg",
+                                    "poster.png",
+                                    "poster.webp",
+                                    "fanart.jpg",
+                                    "fanart.jpeg",
+                                    "fanart.png",
+                                    "fanart.webp",
+                                ]
+                            } else if dir_has_single_video(old_dir) {
+                                &[
+                                    "movie.nfo",
+                                    "poster.jpg",
+                                    "poster.jpeg",
+                                    "poster.png",
+                                    "poster.webp",
+                                    "fanart.jpg",
+                                    "fanart.jpeg",
+                                    "fanart.png",
+                                    "fanart.webp",
+                                ]
+                            } else {
+                                &[]
+                            };
+                            for fname in dir_files {
+                                let cand = old_dir.join(fname);
+                                if cand.is_file()
+                                    && let Ok(rel_c) = cand.strip_prefix(&root_for_plan.path)
+                                {
+                                    companion_moves.push((
+                                        path_to_slash(rel_c),
+                                        format!("{target_parent_rel}/{fname}"),
+                                    ));
+                                }
+                            }
+
+                            if v.is_episode
+                                && let Some(old_show_dir) = old_dir.parent()
+                                && old_show_dir != root_for_plan.path
+                                && old_show_dir.starts_with(&root_for_plan.path)
+                                && let Some(new_show_parent) =
+                                    Path::new(&target_parent_rel).parent()
+                            {
+                                let new_show_rel = path_to_slash(new_show_parent);
+                                if !new_show_rel.is_empty() {
+                                    for fname in [
+                                        "tvshow.nfo",
+                                        "poster.jpg",
+                                        "poster.jpeg",
+                                        "poster.png",
+                                        "poster.webp",
+                                        "fanart.jpg",
+                                        "fanart.jpeg",
+                                        "fanart.png",
+                                        "fanart.webp",
+                                    ] {
+                                        let cand = old_show_dir.join(fname);
+                                        if cand.is_file()
+                                            && let Ok(rel_c) =
+                                                cand.strip_prefix(&root_for_plan.path)
+                                        {
+                                            companion_moves.push((
+                                                path_to_slash(rel_c),
+                                                format!("{new_show_rel}/{fname}"),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Ok((
+                        RenamePlanItem {
+                            from_rel_path: from_rel,
+                            to_rel_path: to_rel,
+                            companion_moves,
+                            conflict,
+                            unchanged,
+                            will_overwrite,
+                        },
+                        planned_targets,
+                    ))
+                },
+            )
+            .await
+            .map_err(|e| DomainError::Storage(format!("preview rename task failed: {e}")))??;
+            planned_targets = updated_targets;
+            plans.push(plan_item);
 
             let done = (idx + 1) as u64;
             if done.is_multiple_of(step) || done == total {
@@ -563,169 +601,208 @@ impl MediaWorkbenchService {
             total: Some(total),
             detail: None,
         });
-        let mut moved_count = 0usize;
-        let mut recorded_moves: Vec<RenameMoveRecord> = Vec::new();
-        let mut first_err: Option<DomainError> = None;
 
-        for item in plans {
-            if item.unchanged || item.conflict.is_some() {
-                continue;
-            }
-            let src = match resolve_existing_in_root(&root, &item.from_rel_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    first_err = Some(e);
+        let plans_owned = plans.to_vec();
+        let root_for_exec = root.clone();
+        let inspectors = self.inspectors.clone();
+        let (progress_tx, mut progress_rx) =
+            tokio::sync::mpsc::unbounded_channel::<WorkbenchProgress>();
+
+        let exec_handle = tokio::task::spawn_blocking(move || {
+            let mut moved_count = 0usize;
+            let mut recorded_moves: Vec<RenameMoveRecord> = Vec::new();
+            let mut deferred_shared_sidecars: Vec<(PathBuf, PathBuf)> = Vec::new();
+            let mut old_parents_to_clean: Vec<PathBuf> = Vec::new();
+            let mut first_err: Option<DomainError> = None;
+
+            for item in &plans_owned {
+                if item.unchanged || item.conflict.is_some() {
+                    continue;
+                }
+                let src = match resolve_existing_in_root(&root_for_exec, &item.from_rel_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        first_err = Some(e);
+                        break;
+                    }
+                };
+                let old_parent = src.abs_path.parent().map(Path::to_path_buf);
+                let src_stem_lower = src
+                    .abs_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let dst = match resolve_target_in_root(&root_for_exec, &item.to_rel_path) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        first_err = Some(e);
+                        break;
+                    }
+                };
+                let mut overwrite_backup: Option<PathBuf> = None;
+                if dst.exists() && dst != src.abs_path {
+                    if !item.will_overwrite {
+                        first_err = Some(DomainError::Conflict(format!(
+                            "目标文件已存在：'{}'",
+                            item.to_rel_path
+                        )));
+                        break;
+                    }
+                    if dst.is_dir() {
+                        first_err = Some(DomainError::Conflict(format!(
+                            "目标路径是目录，无法覆盖：'{}'",
+                            item.to_rel_path
+                        )));
+                        break;
+                    }
+                    let backup_path = dst.with_file_name(format!(
+                        ".xmedia_overwrite_{}.bak",
+                        Uuid::now_v7().simple()
+                    ));
+                    if let Err(e) = std::fs::rename(&dst, &backup_path) {
+                        first_err = Some(DomainError::Storage(format!(
+                            "无法暂存待覆盖文件 '{}': {e}",
+                            item.to_rel_path
+                        )));
+                        break;
+                    }
+                    overwrite_backup = Some(backup_path);
+                }
+                if let Some(parent) = dst.parent()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    if let Some(bak) = overwrite_backup.take() {
+                        let _ = std::fs::rename(&bak, &dst);
+                    }
+                    first_err = Some(DomainError::Storage(format!("failed creating folder: {e}")));
                     break;
                 }
-            };
-            let old_parent = src.abs_path.parent().map(Path::to_path_buf);
-            let src_stem_lower = src
-                .abs_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let dst = match resolve_target_in_root(&root, &item.to_rel_path) {
-                Ok(d) => d,
-                Err(e) => {
-                    first_err = Some(e);
-                    break;
-                }
-            };
-            let mut overwrite_backup: Option<PathBuf> = None;
-            if dst.exists() && dst != src.abs_path {
-                if !item.will_overwrite {
-                    first_err = Some(DomainError::Conflict(format!(
-                        "目标文件已存在：'{}'",
-                        item.to_rel_path
-                    )));
-                    break;
-                }
-                if dst.is_dir() {
-                    first_err = Some(DomainError::Conflict(format!(
-                        "目标路径是目录，无法覆盖：'{}'",
-                        item.to_rel_path
-                    )));
-                    break;
-                }
-                let backup_path = dst
-                    .with_file_name(format!(".xmedia_overwrite_{}.bak", Uuid::now_v7().simple()));
-                if let Err(e) = std::fs::rename(&dst, &backup_path) {
+                if let Err(e) = std::fs::rename(&src.abs_path, &dst) {
+                    if let Some(bak) = overwrite_backup.take() {
+                        let _ = std::fs::rename(&bak, &dst);
+                    }
                     first_err = Some(DomainError::Storage(format!(
-                        "无法暂存待覆盖文件 '{}': {e}",
-                        item.to_rel_path
+                        "failed renaming '{}' -> '{}': {e}",
+                        item.from_rel_path, item.to_rel_path
                     )));
                     break;
                 }
-                overwrite_backup = Some(backup_path);
-            }
-            if let Some(parent) = dst.parent()
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                if let Some(bak) = overwrite_backup.take() {
-                    let _ = std::fs::rename(&bak, &dst);
+                if let Some(bak) = overwrite_backup {
+                    let _ = std::fs::remove_file(&bak);
                 }
-                first_err = Some(DomainError::Storage(format!("failed creating folder: {e}")));
-                break;
-            }
-            if let Err(e) = std::fs::rename(&src.abs_path, &dst) {
-                if let Some(bak) = overwrite_backup.take() {
-                    let _ = std::fs::rename(&bak, &dst);
-                }
-                first_err = Some(DomainError::Storage(format!(
-                    "failed renaming '{}' -> '{}': {e}",
-                    item.from_rel_path, item.to_rel_path
-                )));
-                break;
-            }
-            if let Some(bak) = overwrite_backup {
-                let _ = std::fs::remove_file(&bak);
-            }
-            moved_count += 1;
+                moved_count += 1;
 
-            let mut moved_companions: Vec<(String, String)> = Vec::new();
-            let mut migrated_shared_dirs: Vec<(PathBuf, PathBuf)> = Vec::new();
-            for (comp_from, comp_to) in &item.companion_moves {
-                if let Ok(comp_src) = resolve_existing_in_root(&root, comp_from)
-                    && let Ok(comp_dst) = resolve_target_in_root(&root, comp_to)
-                {
-                    let comp_name = comp_src
-                        .abs_path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or_default();
-                    let is_shared_dir_sidecar = is_shared_dir_sidecar_name(comp_name);
-                    let comp_parent = comp_src.abs_path.parent();
-                    let same_dir_stem_match = old_parent.as_deref() == comp_parent
-                        && !src_stem_lower.is_empty()
-                        && comp_name.to_ascii_lowercase().starts_with(&src_stem_lower);
-                    let ancestor_shared_match = is_shared_dir_sidecar
-                        && old_parent
-                            .as_deref()
-                            .is_some_and(|op| comp_parent.is_some_and(|cp| op.starts_with(cp)));
-                    if !same_dir_stem_match && !ancestor_shared_match {
-                        tracing::warn!(
-                            from = %comp_from,
-                            media = %item.from_rel_path,
-                            "ignoring unverified companion move outside media file scope"
-                        );
-                        continue;
-                    }
-                    if !comp_dst.exists()
-                        || (item.will_overwrite
-                            && comp_dst.is_file()
-                            && comp_dst != comp_src.abs_path)
+                let mut moved_companions: Vec<(String, String)> = Vec::new();
+                for (comp_from, comp_to) in &item.companion_moves {
+                    if let Ok(comp_src) = resolve_existing_in_root(&root_for_exec, comp_from)
+                        && let Ok(comp_dst) = resolve_target_in_root(&root_for_exec, comp_to)
                     {
-                        if let Some(p) = comp_dst.parent() {
-                            let _ = std::fs::create_dir_all(p);
+                        let comp_name = comp_src
+                            .abs_path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or_default();
+                        let is_shared_dir_sidecar = is_shared_dir_sidecar_name(comp_name);
+                        let comp_parent = comp_src.abs_path.parent();
+                        let same_dir_stem_match = old_parent.as_deref() == comp_parent
+                            && !src_stem_lower.is_empty()
+                            && comp_name.to_ascii_lowercase().starts_with(&src_stem_lower);
+                        let ancestor_shared_match = is_shared_dir_sidecar
+                            && old_parent
+                                .as_deref()
+                                .is_some_and(|op| comp_parent.is_some_and(|cp| op.starts_with(cp)));
+                        if !same_dir_stem_match && !ancestor_shared_match {
+                            tracing::warn!(
+                                from = %comp_from,
+                                media = %item.from_rel_path,
+                                "ignoring unverified companion move outside media file scope"
+                            );
+                            continue;
                         }
-                        if comp_dst.exists() && item.will_overwrite && comp_dst != comp_src.abs_path
+                        if !comp_dst.exists()
+                            || (item.will_overwrite
+                                && comp_dst.is_file()
+                                && comp_dst != comp_src.abs_path)
                         {
-                            let _ = std::fs::remove_file(&comp_dst);
-                        }
-                        if is_shared_dir_sidecar {
-                            if std::fs::copy(&comp_src.abs_path, &comp_dst).is_ok() {
-                                migrated_shared_dirs
-                                    .push((comp_src.abs_path.clone(), comp_dst.clone()));
+                            if let Some(p) = comp_dst.parent() {
+                                let _ = std::fs::create_dir_all(p);
                             }
-                        } else if std::fs::rename(&comp_src.abs_path, &comp_dst).is_ok() {
-                            moved_companions.push((comp_from.clone(), comp_to.clone()));
+                            if comp_dst.exists()
+                                && item.will_overwrite
+                                && comp_dst != comp_src.abs_path
+                            {
+                                let _ = std::fs::remove_file(&comp_dst);
+                            }
+                            if is_shared_dir_sidecar {
+                                if std::fs::copy(&comp_src.abs_path, &comp_dst).is_ok() {
+                                    deferred_shared_sidecars
+                                        .push((comp_src.abs_path.clone(), comp_dst));
+                                }
+                            } else if std::fs::rename(&comp_src.abs_path, &comp_dst).is_ok() {
+                                moved_companions.push((comp_from.clone(), comp_to.clone()));
+                            }
+                        } else if is_shared_dir_sidecar {
+                            deferred_shared_sidecars.push((comp_src.abs_path.clone(), comp_dst));
                         }
-                    } else if is_shared_dir_sidecar {
-                        migrated_shared_dirs.push((comp_src.abs_path.clone(), comp_dst));
+                    }
+                }
+
+                if let Some(prev_dir) = old_parent {
+                    cleanup_empty_parent_dirs(&prev_dir, &root_for_exec.path);
+                    if !old_parents_to_clean.contains(&prev_dir) {
+                        old_parents_to_clean.push(prev_dir);
+                    }
+                }
+
+                recorded_moves.push(RenameMoveRecord {
+                    from_rel_path: item.from_rel_path.clone(),
+                    to_rel_path: item.to_rel_path.clone(),
+                    companion_moves: moved_companions,
+                });
+
+                let done = moved_count as u64;
+                if done.is_multiple_of(step) || done == total {
+                    let _ = progress_tx.send(WorkbenchProgress {
+                        processed: done,
+                        total: Some(total),
+                        detail: Some(item.to_rel_path.clone()),
+                    });
+                }
+            }
+
+            // Clean up migrated shared directory sidecars ONCE at the end of the batch,
+            // caching directory media presence to avoid O(N^2) subtree walks.
+            let mut empty_media_dir_cache: std::collections::HashMap<PathBuf, bool> =
+                std::collections::HashMap::new();
+            for (src_sidecar, dst_sidecar) in deferred_shared_sidecars {
+                if src_sidecar == dst_sidecar || !src_sidecar.is_file() || !dst_sidecar.is_file() {
+                    continue;
+                }
+                if let Some(dir) = src_sidecar.parent() {
+                    let has_media = *empty_media_dir_cache
+                        .entry(dir.to_path_buf())
+                        .or_insert_with(|| dir_has_any_media_file(dir, &inspectors));
+                    if !has_media {
+                        let _ = std::fs::remove_file(&src_sidecar);
+                        cleanup_empty_parent_dirs(dir, &root_for_exec.path);
                     }
                 }
             }
-
-            for (src_sidecar, dst_sidecar) in migrated_shared_dirs {
-                if dst_sidecar.is_file()
-                    && src_sidecar != dst_sidecar
-                    && let Some(dir) = src_sidecar.parent()
-                    && count_subtree_children(dir, &self.inspectors, None).1 == 0
-                {
-                    let _ = std::fs::remove_file(&src_sidecar);
-                }
+            for prev_dir in old_parents_to_clean {
+                cleanup_empty_parent_dirs(&prev_dir, &root_for_exec.path);
             }
 
-            if let Some(ref prev_dir) = old_parent {
-                cleanup_empty_parent_dirs(prev_dir, &root.path);
-            }
+            (moved_count, recorded_moves, first_err)
+        });
 
-            recorded_moves.push(RenameMoveRecord {
-                from_rel_path: item.from_rel_path.clone(),
-                to_rel_path: item.to_rel_path.clone(),
-                companion_moves: moved_companions,
-            });
-
-            let done = moved_count as u64;
-            if done.is_multiple_of(step) || done == total {
-                on_progress(WorkbenchProgress {
-                    processed: done,
-                    total: Some(total),
-                    detail: Some(item.to_rel_path.clone()),
-                });
-            }
+        while let Some(prog) = progress_rx.recv().await {
+            on_progress(prog);
         }
+
+        let (moved_count, recorded_moves, first_err) = exec_handle
+            .await
+            .map_err(|e| DomainError::Storage(format!("execute rename task failed: {e}")))?;
 
         if !recorded_moves.is_empty() {
             let path_pairs: Vec<(String, String)> = recorded_moves

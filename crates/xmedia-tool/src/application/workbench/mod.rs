@@ -178,7 +178,7 @@ impl MediaWorkbenchService {
         inspector: &dyn MediaInspectorPort,
         rename_templates: &RenameTemplates,
     ) -> DomainResult<MediaFileEntry> {
-        let fs_meta = std::fs::metadata(abs_path).map_err(|e| {
+        let fs_meta = tokio::fs::metadata(abs_path).await.map_err(|e| {
             DomainError::Storage(format!("failed stating '{}': {e}", abs_path.display()))
         })?;
         let modified_unix_secs = fs_meta
@@ -257,49 +257,28 @@ fn is_entry_organized(
     rel_path == to_rel
 }
 
-pub(super) fn count_subtree_children(
+pub(super) fn dir_has_any_media_file(
     dir_path: &Path,
     inspectors: &[Arc<dyn MediaInspectorPort>],
-    domain_filter: Option<MediaKind>,
-) -> (usize, usize) {
-    let mut immediate_dirs = 0usize;
-    if let Ok(entries) = std::fs::read_dir(dir_path) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir()
-                && !p
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|n| n.starts_with('.'))
-            {
-                immediate_dirs += 1;
-            }
-        }
-    }
-
-    let mut total_media_files = 0usize;
-    for entry in WalkDir::new(dir_path)
+) -> bool {
+    WalkDir::new(dir_path)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
-            e.depth() == 0 || !e.file_name().to_str().is_some_and(|n| n.starts_with('.'))
+            e.depth() == 0
+                || (!e.path_is_symlink()
+                    && !e.file_name().to_str().is_some_and(|n| n.starts_with('.')))
         })
         .flatten()
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if let Some(ext) = entry.path().extension().and_then(|s| s.to_str()) {
-            let lower = ext.to_ascii_lowercase();
-            let matched = inspectors.iter().any(|ins| {
-                ins.supports_extension(&lower)
-                    && domain_filter.is_none_or(|want| ins.media_kind() == want)
-            });
-            if matched {
-                total_media_files += 1;
-            }
-        }
-    }
-
-    (immediate_dirs, total_media_files)
+        .any(|entry| {
+            entry.file_type().is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .is_some_and(|lower| {
+                        inspectors.iter().any(|ins| ins.supports_extension(&lower))
+                    })
+        })
 }
