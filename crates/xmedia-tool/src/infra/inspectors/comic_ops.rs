@@ -168,6 +168,33 @@ fn probe_image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     reader.into_dimensions().ok()
 }
 
+fn probe_reader_dimensions<R: Read>(mut reader: R, size_hint: u64) -> Option<(u32, u32)> {
+    const HEADER_PROBE_BYTES: u64 = 256 * 1024;
+    const EXIF_FALLBACK_BYTES: u64 = 4 * 1024 * 1024;
+
+    let mut buf = Vec::with_capacity(size_hint.min(64 * 1024) as usize);
+    if reader
+        .by_ref()
+        .take(HEADER_PROBE_BYTES)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return None;
+    }
+    if let Some(dims) = probe_image_dimensions(&buf) {
+        return Some(dims);
+    }
+    if (buf.len() as u64) == HEADER_PROBE_BYTES
+        && reader
+            .take(EXIF_FALLBACK_BYTES - HEADER_PROBE_BYTES)
+            .read_to_end(&mut buf)
+            .is_ok()
+    {
+        return probe_image_dimensions(&buf);
+    }
+    None
+}
+
 fn is_cbz_or_zip(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
@@ -230,11 +257,8 @@ pub fn list_comic_pages(path: &Path) -> DomainResult<ComicPagesSnapshotDto> {
             && ex.height.is_some()
         {
             (ex.width, ex.height)
-        } else if let Ok(mut entry) = archive.by_name(&entry_name) {
-            // Read up to 64KB header first; fall back to full buffer only if needed
-            let mut buf = Vec::with_capacity(file_size.min(128 * 1024) as usize);
-            let _ = entry.read_to_end(&mut buf);
-            match probe_image_dimensions(&buf) {
+        } else if let Ok(entry) = archive.by_name(&entry_name) {
+            match probe_reader_dimensions(entry, file_size) {
                 Some((w, h)) => (Some(w), Some(h)),
                 None => (None, None),
             }
@@ -413,11 +437,11 @@ struct RenderedPageMeta<'a> {
     dims: Option<(u32, u32)>,
 }
 
-struct PreparedPagePayload {
+struct StreamedPageRecord {
     target_name: String,
-    bytes: Vec<u8>,
     page_type: String,
     double_page: bool,
+    size: u64,
     dims: Option<(u32, u32)>,
 }
 
@@ -463,102 +487,13 @@ pub fn save_comic_pages(
     let mut meta = read_comic_meta(path)?;
     let existing_comic_info = extract_existing_comic_info_bytes(path);
 
-    let file = File::open(path)
-        .map_err(|e| DomainError::Storage(format!("open comic archive failed: {e}")))?;
-    let mut archive = ZipArchive::new(BufReader::new(file))
-        .map_err(|e| DomainError::Validation(format!("invalid comic archive: {e}")))?;
-
-    let mut page_payloads: Vec<PreparedPagePayload> = Vec::with_capacity(pages.len());
+    let mut page_count = 0usize;
     let mut reencoded_pages = 0usize;
-
-    const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
-    for (new_idx, spec) in pages.iter().enumerate() {
-        let entry = archive.by_name(&spec.entry_name).map_err(|_| {
-            DomainError::Validation(format!("page '{}' not found in archive", spec.entry_name))
-        })?;
-        let mut raw = Vec::with_capacity(entry.size().min(1024 * 1024) as usize);
-        entry
-            .take(MAX_COMIC_PAGE_BYTES + 1)
-            .read_to_end(&mut raw)
-            .map_err(|e| {
-                DomainError::Storage(format!("read page '{}' failed: {e}", spec.entry_name))
-            })?;
-        if (raw.len() as u64) > MAX_COMIC_PAGE_BYTES {
-            return Err(DomainError::Validation(format!(
-                "comic page '{}' exceeds 64 MiB safety limit",
-                spec.entry_name
-            )));
-        }
-
-        let orig_ext = Path::new(&spec.entry_name)
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_ascii_lowercase())
-            .unwrap_or_else(|| "jpg".to_string());
-
-        let (final_bytes, final_ext, did_reencode, dims) =
-            maybe_reencode_page_image(raw, &orig_ext, reencode, jpeg_quality, max_width);
-        if did_reencode {
-            reencoded_pages += 1;
-        }
-
-        let target_name = if spec.page_type.eq_ignore_ascii_case("FrontCover") && new_idx == 0 {
-            format!("000_cover.{final_ext}")
-        } else {
-            format!("{:04}.{final_ext}", new_idx + 1)
-        };
-        let sanitized_type = match spec.page_type.as_str() {
-            "FrontCover" | "InnerCover" | "BackCover" | "Advertisement" | "Story" => {
-                spec.page_type.clone()
-            }
-            _ => "Story".to_string(),
-        };
-        page_payloads.push(PreparedPagePayload {
-            target_name,
-            bytes: final_bytes,
-            page_type: sanitized_type,
-            double_page: spec.double_page,
-            dims,
-        });
-    }
-
     let mut removed_junk_entries = 0usize;
-    for idx in 0..archive.len() {
-        if let Ok(entry) = archive.by_index(idx)
-            && !entry.is_dir()
-            && let Ok(name_raw) = entry.name()
-            && is_junk_zip_entry(&name_raw)
-        {
-            removed_junk_entries += 1;
-        }
-    }
-    drop(archive);
-
-    meta.page_count = page_payloads.len() as u32;
-    let xml_page_meta: Vec<RenderedPageMeta<'_>> = page_payloads
-        .iter()
-        .enumerate()
-        .map(|(i, p)| RenderedPageMeta {
-            index: i,
-            page_type: p.page_type.as_str(),
-            double_page: p.double_page,
-            size: p.bytes.len() as u64,
-            dims: p.dims,
-        })
-        .collect();
-    let pages_xml = render_pages_xml_block(&xml_page_meta);
-    let comic_info_xml =
-        render_comic_info_xml_preserving(&meta, existing_comic_info.as_deref(), Some(&pages_xml));
-
-    let reserved_names: std::collections::HashSet<String> = page_payloads
-        .iter()
-        .map(|p| p.target_name.to_ascii_lowercase())
-        .chain(std::iter::once("comicinfo.xml".to_string()))
-        .collect();
 
     atomic_write_via_temp(path, |tmp| {
         let src_file = File::open(path)
-            .map_err(|e| DomainError::Storage(format!("reopen source cbz failed: {e}")))?;
+            .map_err(|e| DomainError::Storage(format!("open comic archive failed: {e}")))?;
         let mut src_archive = ZipArchive::new(BufReader::new(src_file))
             .map_err(|e| DomainError::Validation(format!("invalid comic archive: {e}")))?;
         let out = File::create(tmp)
@@ -570,7 +505,12 @@ pub fn save_comic_pages(
         let mut preserved_mimetype = false;
         if let Ok(mut mt_entry) = src_archive.by_name("mimetype") {
             let mut mt_bytes = Vec::new();
-            if mt_entry.read_to_end(&mut mt_bytes).is_ok() {
+            if mt_entry
+                .by_ref()
+                .take(1024)
+                .read_to_end(&mut mt_bytes)
+                .is_ok()
+            {
                 writer
                     .start_file("mimetype", stored)
                     .map_err(|e| DomainError::Storage(format!("write mimetype failed: {e}")))?;
@@ -581,23 +521,131 @@ pub fn save_comic_pages(
             }
         }
 
-        writer
-            .start_file("ComicInfo.xml", deflated)
-            .map_err(|e| DomainError::Storage(format!("write ComicInfo.xml header failed: {e}")))?;
-        writer
-            .write_all(comic_info_xml.as_bytes())
-            .map_err(|e| DomainError::Storage(format!("write ComicInfo.xml failed: {e}")))?;
+        let mut recorded_pages: Vec<StreamedPageRecord> = Vec::with_capacity(pages.len());
+        let mut local_reencoded = 0usize;
+        const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
+        const HEADER_PROBE_BYTES: u64 = 256 * 1024;
 
-        for p in &page_payloads {
+        for (new_idx, spec) in pages.iter().enumerate() {
+            let orig_ext = Path::new(&spec.entry_name)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_else(|| "jpg".to_string());
+            let sanitized_type = match spec.page_type.as_str() {
+                "FrontCover" | "InnerCover" | "BackCover" | "Advertisement" | "Story" => {
+                    spec.page_type.clone()
+                }
+                _ => "Story".to_string(),
+            };
+
+            if reencode == ComicImageReencodeFormat::Keep && max_width.is_none() {
+                let target_name =
+                    if spec.page_type.eq_ignore_ascii_case("FrontCover") && new_idx == 0 {
+                        format!("000_cover.{orig_ext}")
+                    } else {
+                        format!("{:04}.{orig_ext}", new_idx + 1)
+                    };
+                let mut entry = src_archive.by_name(&spec.entry_name).map_err(|_| {
+                    DomainError::Validation(format!(
+                        "page '{}' not found in archive",
+                        spec.entry_name
+                    ))
+                })?;
+                if entry.size() > MAX_COMIC_PAGE_BYTES {
+                    return Err(DomainError::Validation(format!(
+                        "comic page '{}' exceeds 64 MiB safety limit",
+                        spec.entry_name
+                    )));
+                }
+                let mut head = Vec::with_capacity(entry.size().min(64 * 1024) as usize);
+                entry
+                    .by_ref()
+                    .take(HEADER_PROBE_BYTES)
+                    .read_to_end(&mut head)
+                    .map_err(|e| {
+                        DomainError::Storage(format!("read page '{}' failed: {e}", spec.entry_name))
+                    })?;
+                let dims = probe_image_dimensions(&head);
+
+                writer
+                    .start_file(&target_name, stored)
+                    .map_err(|e| DomainError::Storage(format!("write page header failed: {e}")))?;
+                writer
+                    .write_all(&head)
+                    .map_err(|e| DomainError::Storage(format!("write page bytes failed: {e}")))?;
+                let remaining_cap = MAX_COMIC_PAGE_BYTES + 1 - (head.len() as u64);
+                let rest = std::io::copy(&mut entry.take(remaining_cap), &mut writer)
+                    .map_err(|e| DomainError::Storage(format!("stream page bytes failed: {e}")))?;
+                let written = (head.len() as u64) + rest;
+                if written > MAX_COMIC_PAGE_BYTES {
+                    return Err(DomainError::Validation(format!(
+                        "comic page '{}' exceeds 64 MiB safety limit",
+                        spec.entry_name
+                    )));
+                }
+                recorded_pages.push(StreamedPageRecord {
+                    target_name,
+                    page_type: sanitized_type,
+                    double_page: spec.double_page,
+                    size: written,
+                    dims,
+                });
+                continue;
+            }
+
+            let entry = src_archive.by_name(&spec.entry_name).map_err(|_| {
+                DomainError::Validation(format!("page '{}' not found in archive", spec.entry_name))
+            })?;
+            let mut raw = Vec::with_capacity(entry.size().min(1024 * 1024) as usize);
+            entry
+                .take(MAX_COMIC_PAGE_BYTES + 1)
+                .read_to_end(&mut raw)
+                .map_err(|e| {
+                    DomainError::Storage(format!("read page '{}' failed: {e}", spec.entry_name))
+                })?;
+            if (raw.len() as u64) > MAX_COMIC_PAGE_BYTES {
+                return Err(DomainError::Validation(format!(
+                    "comic page '{}' exceeds 64 MiB safety limit",
+                    spec.entry_name
+                )));
+            }
+
+            let (final_bytes, final_ext, did_reencode, dims) =
+                maybe_reencode_page_image(raw, &orig_ext, reencode, jpeg_quality, max_width);
+            if did_reencode {
+                local_reencoded += 1;
+            }
+            let target_name = if spec.page_type.eq_ignore_ascii_case("FrontCover") && new_idx == 0 {
+                format!("000_cover.{final_ext}")
+            } else {
+                format!("{:04}.{final_ext}", new_idx + 1)
+            };
+            let byte_len = final_bytes.len() as u64;
             writer
-                .start_file(&p.target_name, stored)
+                .start_file(&target_name, stored)
                 .map_err(|e| DomainError::Storage(format!("write page header failed: {e}")))?;
             writer
-                .write_all(&p.bytes)
+                .write_all(&final_bytes)
                 .map_err(|e| DomainError::Storage(format!("write page bytes failed: {e}")))?;
+            drop(final_bytes);
+
+            recorded_pages.push(StreamedPageRecord {
+                target_name,
+                page_type: sanitized_type,
+                double_page: spec.double_page,
+                size: byte_len,
+                dims,
+            });
         }
 
-        // Preserve non-image, non-ComicInfo, non-junk companion files inside the archive
+        let reserved_names: std::collections::HashSet<String> = recorded_pages
+            .iter()
+            .map(|p| p.target_name.to_ascii_lowercase())
+            .chain(std::iter::once("comicinfo.xml".to_string()))
+            .collect();
+
+        let mut local_junk = 0usize;
         for idx in 0..src_archive.len() {
             let entry = src_archive
                 .by_index(idx)
@@ -606,11 +654,14 @@ pub fn save_comic_pages(
                 continue;
             };
             let name = name_raw.to_string();
+            if !entry.is_dir() && is_junk_zip_entry(&name) {
+                local_junk += 1;
+                continue;
+            }
             let lower = name.to_ascii_lowercase();
             if entry.is_dir()
                 || (preserved_mimetype && name == "mimetype")
                 || is_image_entry(&name)
-                || is_junk_zip_entry(&name)
                 || lower == "comicinfo.xml"
                 || lower.ends_with("/comicinfo.xml")
                 || reserved_names.contains(&lower)
@@ -622,9 +673,39 @@ pub fn save_comic_pages(
             })?;
         }
 
+        meta.page_count = recorded_pages.len() as u32;
+        let xml_page_meta: Vec<RenderedPageMeta<'_>> = recorded_pages
+            .iter()
+            .enumerate()
+            .map(|(i, p)| RenderedPageMeta {
+                index: i,
+                page_type: p.page_type.as_str(),
+                double_page: p.double_page,
+                size: p.size,
+                dims: p.dims,
+            })
+            .collect();
+        let pages_xml = render_pages_xml_block(&xml_page_meta);
+        let comic_info_xml = render_comic_info_xml_preserving(
+            &meta,
+            existing_comic_info.as_deref(),
+            Some(&pages_xml),
+        );
+
+        writer
+            .start_file("ComicInfo.xml", deflated)
+            .map_err(|e| DomainError::Storage(format!("write ComicInfo.xml header failed: {e}")))?;
+        writer
+            .write_all(comic_info_xml.as_bytes())
+            .map_err(|e| DomainError::Storage(format!("write ComicInfo.xml failed: {e}")))?;
+
         writer
             .finish()
             .map_err(|e| DomainError::Storage(format!("finish cbz failed: {e}")))?;
+
+        page_count = recorded_pages.len();
+        reencoded_pages = local_reencoded;
+        removed_junk_entries = local_junk;
         Ok(())
     })?;
 
@@ -633,7 +714,7 @@ pub fn save_comic_pages(
     Ok(ComicOptimizeReportDto {
         before_bytes,
         after_bytes,
-        page_count: page_payloads.len(),
+        page_count,
         reencoded_pages,
         removed_junk_entries,
     })
@@ -704,83 +785,7 @@ pub fn merge_comics_to_cbz(
         ..Default::default()
     };
 
-    let mut all_pages: Vec<PreparedPagePayload> = Vec::new();
-    for src in sources {
-        let file = File::open(src)
-            .map_err(|e| DomainError::Storage(format!("open source comic failed: {e}")))?;
-        let mut archive = ZipArchive::new(BufReader::new(file))
-            .map_err(|e| DomainError::Validation(format!("invalid source comic zip: {e}")))?;
-
-        let mut names: Vec<String> = Vec::new();
-        for idx in 0..archive.len() {
-            if let Ok(entry) = archive.by_index(idx)
-                && let Ok(name_raw) = entry.name()
-                && is_image_entry(&name_raw)
-            {
-                names.push(name_raw.to_string());
-            }
-        }
-        names.sort_by_key(|a| natural_sort_key(a));
-
-        const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
-        for name in names {
-            if let Ok(entry) = archive.by_name(&name) {
-                let mut bytes = Vec::with_capacity(entry.size().min(1024 * 1024) as usize);
-                if entry
-                    .take(MAX_COMIC_PAGE_BYTES + 1)
-                    .read_to_end(&mut bytes)
-                    .is_ok()
-                    && (bytes.len() as u64) <= MAX_COMIC_PAGE_BYTES
-                {
-                    let ext = Path::new(&name)
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.to_ascii_lowercase())
-                        .unwrap_or_else(|| "jpg".to_string());
-                    let dims = probe_image_dimensions(&bytes);
-                    let dp = dims.is_some_and(|(w, h)| h > 0 && (w as f32) / (h as f32) >= 1.2);
-                    let page_idx = all_pages.len() + 1;
-                    let target_name = if page_idx == 1 {
-                        format!("000_cover.{ext}")
-                    } else {
-                        format!("{page_idx:04}.{ext}")
-                    };
-                    all_pages.push(PreparedPagePayload {
-                        target_name,
-                        bytes,
-                        page_type: if page_idx == 1 {
-                            "FrontCover".to_string()
-                        } else {
-                            "Story".to_string()
-                        },
-                        double_page: dp,
-                        dims,
-                    });
-                }
-            }
-        }
-    }
-
-    if all_pages.is_empty() {
-        return Err(DomainError::Validation(
-            "no image pages found in selected comic archives".into(),
-        ));
-    }
-
-    merged_meta.page_count = all_pages.len() as u32;
-    let xml_page_meta: Vec<RenderedPageMeta<'_>> = all_pages
-        .iter()
-        .enumerate()
-        .map(|(i, p)| RenderedPageMeta {
-            index: i,
-            page_type: p.page_type.as_str(),
-            double_page: p.double_page,
-            size: p.bytes.len() as u64,
-            dims: p.dims,
-        })
-        .collect();
-    let pages_xml = render_pages_xml_block(&xml_page_meta);
-    let comic_info_xml = render_comic_info_xml_with_pages(&merged_meta, Some(&pages_xml));
+    let mut total_pages = 0usize;
 
     atomic_write_via_temp(output_path, |tmp| {
         let out = File::create(tmp)
@@ -789,6 +794,109 @@ pub fn merge_comics_to_cbz(
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
+        let mut recorded_pages: Vec<StreamedPageRecord> = Vec::new();
+        const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
+        const HEADER_PROBE_BYTES: u64 = 256 * 1024;
+
+        for src in sources {
+            let file = File::open(src)
+                .map_err(|e| DomainError::Storage(format!("open source comic failed: {e}")))?;
+            let mut archive = ZipArchive::new(BufReader::new(file))
+                .map_err(|e| DomainError::Validation(format!("invalid source comic zip: {e}")))?;
+
+            let mut names: Vec<String> = Vec::new();
+            for idx in 0..archive.len() {
+                if let Ok(entry) = archive.by_index(idx)
+                    && let Ok(name_raw) = entry.name()
+                    && is_image_entry(&name_raw)
+                {
+                    names.push(name_raw.to_string());
+                }
+            }
+            names.sort_by_key(|a| natural_sort_key(a));
+
+            for name in names {
+                let Ok(mut entry) = archive.by_name(&name) else {
+                    continue;
+                };
+                if entry.size() > MAX_COMIC_PAGE_BYTES {
+                    continue;
+                }
+                let mut head = Vec::with_capacity(entry.size().min(64 * 1024) as usize);
+                if entry
+                    .by_ref()
+                    .take(HEADER_PROBE_BYTES)
+                    .read_to_end(&mut head)
+                    .is_err()
+                {
+                    continue;
+                }
+                let ext = Path::new(&name)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_else(|| "jpg".to_string());
+                let dims = probe_image_dimensions(&head);
+                let dp = dims.is_some_and(|(w, h)| h > 0 && (w as f32) / (h as f32) >= 1.2);
+                let page_idx = recorded_pages.len() + 1;
+                let target_name = if page_idx == 1 {
+                    format!("000_cover.{ext}")
+                } else {
+                    format!("{page_idx:04}.{ext}")
+                };
+
+                writer.start_file(&target_name, stored).map_err(|e| {
+                    DomainError::Storage(format!("write merged page header failed: {e}"))
+                })?;
+                writer.write_all(&head).map_err(|e| {
+                    DomainError::Storage(format!("write merged page bytes failed: {e}"))
+                })?;
+                let remaining_cap = MAX_COMIC_PAGE_BYTES + 1 - (head.len() as u64);
+                let rest =
+                    std::io::copy(&mut entry.take(remaining_cap), &mut writer).map_err(|e| {
+                        DomainError::Storage(format!("stream merged page bytes failed: {e}"))
+                    })?;
+                let written = (head.len() as u64) + rest;
+                if written > MAX_COMIC_PAGE_BYTES {
+                    return Err(DomainError::Validation(format!(
+                        "comic page '{name}' exceeds 64 MiB safety limit"
+                    )));
+                }
+                recorded_pages.push(StreamedPageRecord {
+                    target_name,
+                    page_type: if page_idx == 1 {
+                        "FrontCover".to_string()
+                    } else {
+                        "Story".to_string()
+                    },
+                    double_page: dp,
+                    size: written,
+                    dims,
+                });
+            }
+        }
+
+        if recorded_pages.is_empty() {
+            return Err(DomainError::Validation(
+                "no image pages found in selected comic archives".into(),
+            ));
+        }
+
+        merged_meta.page_count = recorded_pages.len() as u32;
+        let xml_page_meta: Vec<RenderedPageMeta<'_>> = recorded_pages
+            .iter()
+            .enumerate()
+            .map(|(i, p)| RenderedPageMeta {
+                index: i,
+                page_type: p.page_type.as_str(),
+                double_page: p.double_page,
+                size: p.size,
+                dims: p.dims,
+            })
+            .collect();
+        let pages_xml = render_pages_xml_block(&xml_page_meta);
+        let comic_info_xml = render_comic_info_xml_with_pages(&merged_meta, Some(&pages_xml));
+
         writer
             .start_file("ComicInfo.xml", deflated)
             .map_err(|e| DomainError::Storage(format!("write ComicInfo.xml header failed: {e}")))?;
@@ -796,18 +904,11 @@ pub fn merge_comics_to_cbz(
             .write_all(comic_info_xml.as_bytes())
             .map_err(|e| DomainError::Storage(format!("write ComicInfo.xml failed: {e}")))?;
 
-        for p in &all_pages {
-            writer.start_file(&p.target_name, stored).map_err(|e| {
-                DomainError::Storage(format!("write merged page header failed: {e}"))
-            })?;
-            writer.write_all(&p.bytes).map_err(|e| {
-                DomainError::Storage(format!("write merged page bytes failed: {e}"))
-            })?;
-        }
-
         writer
             .finish()
             .map_err(|e| DomainError::Storage(format!("finish merged cbz failed: {e}")))?;
+
+        total_pages = recorded_pages.len();
         Ok(())
     })?;
 
@@ -815,7 +916,7 @@ pub fn merge_comics_to_cbz(
     Ok(MergeComicsReportDto {
         output_rel_path,
         source_count: sources.len(),
-        total_pages: all_pages.len(),
+        total_pages,
         output_bytes,
     })
 }
