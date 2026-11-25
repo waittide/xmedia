@@ -87,13 +87,7 @@ impl VideoShelf {
         description: impl Into<String>,
         video_ids: Vec<VideoId>,
     ) -> DomainResult<Self> {
-        let name = name.into().trim().to_string();
-        let char_len = name.chars().count();
-        if char_len == 0 || char_len > 120 {
-            return Err(DomainError::Validation(
-                "shelf name must be between 1 and 120 characters".into(),
-            ));
-        }
+        let name = Self::validate_name(name.into())?;
         let now = Timestamp::now();
         Ok(Self {
             id: VideoShelfId::new(),
@@ -104,5 +98,50 @@ impl VideoShelf {
             created_at: now,
             updated_at: now,
         })
+    }
+
+    pub fn update(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        video_ids: Vec<VideoId>,
+    ) -> DomainResult<()> {
+        self.name = Self::validate_name(name.into())?;
+        self.description = description.into().trim().to_string();
+        self.video_ids = video_ids;
+        self.updated_at = Timestamp::now();
+        Ok(())
+    }
+
+    fn validate_name(raw: String) -> DomainResult<String> {
+        let name = raw.trim().to_string();
+        let char_len = name.chars().count();
+        if char_len == 0 || char_len > 120 {
+            return Err(DomainError::Validation(
+                "shelf name must be between 1 and 120 characters".into(),
+            ));
+        }
+        Ok(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_shelf_update_enforces_character_count_invariant_for_multibyte_names() {
+        let mut shelf = VideoShelf::new(UserId::new(), "Initial", "Desc", Vec::new()).unwrap();
+        let cjk_60 = "漫".repeat(60);
+        assert_eq!(cjk_60.len(), 180);
+        shelf
+            .update(&cjk_60, "  Updated Desc  ", Vec::new())
+            .expect("60 CJK chars (180 UTF-8 bytes) must be accepted");
+        assert_eq!(shelf.name, cjk_60);
+        assert_eq!(shelf.description, "Updated Desc");
+
+        let cjk_121 = "漫".repeat(121);
+        assert!(shelf.update(cjk_121, "", Vec::new()).is_err());
+        assert!(shelf.update("   ", "", Vec::new()).is_err());
     }
 }

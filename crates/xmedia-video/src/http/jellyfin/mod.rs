@@ -166,7 +166,7 @@ fn verify_user_scope(auth_user: &User, raw_user_id: &str) -> DomainResult<()> {
     }
     let parsed =
         Uuid::parse_str(trimmed).map_err(|_| DomainError::NotFound("invalid user id".into()))?;
-    if parsed == auth_user.id.0 || auth_user.role.is_admin() {
+    if parsed == auth_user.id.0 {
         Ok(())
     } else {
         Err(DomainError::Forbidden(
@@ -510,8 +510,11 @@ async fn dispatch_jellyfin_inner(
             })),
         )
             .into_response()),
-        (&Method::GET, ["items", _, "specialfeatures"])
-        | (&Method::GET, ["users", _, "items", _, "specialfeatures"]) => {
+        (&Method::GET, ["items", _, "specialfeatures"]) => {
+            Ok((StatusCode::OK, Json(Vec::<serde_json::Value>::new())).into_response())
+        }
+        (&Method::GET, ["users", _, "items", _, "specialfeatures"]) => {
+            verify_user_scope(&user, &raw_slice[1])?;
             Ok((StatusCode::OK, Json(Vec::<serde_json::Value>::new())).into_response())
         }
         (&Method::GET, ["items", _, "thememedia"]) => Ok((

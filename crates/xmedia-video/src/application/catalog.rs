@@ -899,13 +899,13 @@ impl VideoCatalogService {
             for g in s.genres {
                 let clean = g.trim();
                 if !clean.is_empty() {
-                    genre_counts.entry(clean.to_string()).or_insert(1);
+                    *genre_counts.entry(clean.to_string()).or_insert(0) += 1;
                 }
             }
             for t in s.tags {
                 let clean = t.trim();
                 if !clean.is_empty() {
-                    tag_counts.entry(clean.to_string()).or_insert(1);
+                    *tag_counts.entry(clean.to_string()).or_insert(0) += 1;
                 }
             }
         }

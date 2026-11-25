@@ -328,17 +328,14 @@ pub async fn handle_image(
     let uuid = Uuid::parse_str(raw_item_id.trim())
         .map_err(|_| DomainError::NotFound("invalid item id".into()))?;
 
-    let (poster_key, online_tracked_video, online_tracked_show) =
+    let (poster_key, target_video, target_show) =
         if let Some(video) = state.services.catalog.find_raw_video(VideoId(uuid)).await? {
-            let is_tracked = video.source.is_online_tracked();
-            (video.poster_key, is_tracked.then_some(video.id), None)
+            (video.poster_key, Some(video.id), None)
         } else if let Some(show) = state.services.catalog.find_raw_show(ShowId(uuid)).await? {
-            let is_tracked = show.online_tracked_ref().is_some();
-            (show.poster_key, None, is_tracked.then_some(show.id))
+            (show.poster_key, None, Some(show.id))
         } else if let Some((show_id, _season_num)) = resolve_synthetic_season(state, uuid).await? {
             if let Some(show) = state.services.catalog.find_raw_show(show_id).await? {
-                let is_tracked = show.online_tracked_ref().is_some();
-                (show.poster_key, None, is_tracked.then_some(show.id))
+                (show.poster_key, None, Some(show.id))
             } else {
                 (None, None, None)
             }
@@ -355,13 +352,13 @@ pub async fn handle_image(
     let tag_matches = tag_param.is_some_and(|t| t == poster_key.as_str());
     match authenticated_user {
         Some(user) => {
-            if let Some(vid) = online_tracked_video {
+            if let Some(vid) = target_video {
                 state
                     .services
                     .catalog
                     .require_video_bound(user.id, vid)
                     .await?;
-            } else if let Some(sid) = online_tracked_show {
+            } else if let Some(sid) = target_show {
                 state
                     .services
                     .catalog

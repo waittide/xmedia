@@ -167,8 +167,18 @@ pub async fn handle_item_detail(
             )
             .await?
             .len();
-        let dto = build_library_view_item(&lib, None, movie_cnt + show_cnt);
-        return Ok((StatusCode::OK, Json(dto)).into_response());
+        let total_cnt = movie_cnt + show_cnt;
+        if total_cnt > 0 {
+            let collection_type = if show_cnt > 0 && movie_cnt == 0 {
+                Some("tvshows")
+            } else if movie_cnt > 0 && show_cnt == 0 {
+                Some("movies")
+            } else {
+                None
+            };
+            let dto = build_library_view_item(&lib, collection_type, total_cnt);
+            return Ok((StatusCode::OK, Json(dto)).into_response());
+        }
     }
 
     if let Some((show_id, season_num)) = resolve_synthetic_season(state, uuid).await? {

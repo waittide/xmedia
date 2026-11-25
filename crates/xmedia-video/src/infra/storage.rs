@@ -665,6 +665,9 @@ fn discover_and_parse_nfo(
                 if base.year.is_none() {
                     base.year = parsed.year;
                 }
+                if base.season.is_none() {
+                    base.season = parsed.season;
+                }
                 if base.genres.is_empty() {
                     base.genres = parsed.genres;
                 }
@@ -761,7 +764,7 @@ fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {
                                     any_found = true;
                                 }
                             }
-                            "season" if meta.season.is_none() => {
+                            "season" | "seasonnumber" if meta.season.is_none() => {
                                 if let Ok(s) = val.parse::<u32>() {
                                     meta.season = Some(s);
                                     any_found = true;
@@ -894,5 +897,42 @@ mod tests {
                 idx + 1
             )));
         }
+    }
+
+    #[tokio::test]
+    async fn parse_nfo_xml_supports_seasonnumber_and_scanner_inherits_season_nfo() {
+        let season_xml = "<season><title>Season 2</title><seasonnumber>2</seasonnumber></season>";
+        let parsed_season = parse_nfo_xml(season_xml).expect("should parse season.nfo");
+        assert_eq!(parsed_season.season, Some(2));
+        assert_eq!(parsed_season.title, None);
+
+        let tmp = TempDir::new().unwrap();
+        let show_dir = tmp.path().join("Bocchi");
+        let special_dir = show_dir.join("Arc Two");
+        std::fs::create_dir_all(&special_dir).unwrap();
+        std::fs::write(
+            show_dir.join("tvshow.nfo"),
+            "<tvshow><title>Bocchi the Rock!</title></tvshow>",
+        )
+        .unwrap();
+        std::fs::write(special_dir.join("season.nfo"), season_xml).unwrap();
+        std::fs::write(special_dir.join("01 - Opening.mp4"), b"fake-mp4").unwrap();
+        std::fs::write(
+            special_dir.join("01 - Opening.nfo"),
+            "<episodedetails><title>Opening</title><episode>1</episode></episodedetails>",
+        )
+        .unwrap();
+
+        let scanner = LocalVideoScanner;
+        let entries = scanner
+            .scan_video_entries(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        let nfo = entries[0].nfo.as_ref().expect("merged NFO");
+        assert_eq!(nfo.title.as_deref(), Some("Opening"));
+        assert_eq!(nfo.show_title.as_deref(), Some("Bocchi the Rock!"));
+        assert_eq!(nfo.season, Some(2));
+        assert_eq!(nfo.episode, Some(1));
     }
 }

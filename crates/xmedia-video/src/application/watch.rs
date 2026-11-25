@@ -332,17 +332,8 @@ impl VideoWatchService {
             .await?
             .filter(|s| s.user_id == user.id)
             .ok_or_else(|| DomainError::NotFound("video shelf not found".into()))?;
-        let trimmed = input.name.trim();
-        if trimmed.is_empty() || trimmed.len() > 120 {
-            return Err(DomainError::Validation(
-                "shelf name must be between 1 and 120 characters".into(),
-            ));
-        }
         let filtered_ids = self.filter_bound_video_ids(user, input.video_ids).await?;
-        shelf.name = trimmed.to_string();
-        shelf.description = input.description.trim().to_string();
-        shelf.video_ids = filtered_ids;
-        shelf.updated_at = Timestamp::now();
+        shelf.update(input.name, input.description, filtered_ids)?;
         self.watch_repo.save_shelf(&shelf).await?;
         self.get_shelf(user, shelf.id).await
     }
