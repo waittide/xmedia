@@ -24,8 +24,8 @@ use xmedia_core::domain::repository::UserRepository;
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::persistence::repositories::{
-    ToastyLibraryRepository, ToastyUserActivityRepository, ToastyUserMediaBindingRepository,
-    ToastyUserRepository,
+    ToastyLibraryRepository, ToastyOnlineLibraryItemRepository, ToastyUserActivityRepository,
+    ToastyUserMediaBindingRepository, ToastyUserRepository,
 };
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{
@@ -169,6 +169,7 @@ impl XMediaApp {
         let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
         let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
         let binding_repo = Arc::new(ToastyUserMediaBindingRepository::new(db.clone()));
+        let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
         let activity_repo = Arc::new(ToastyUserActivityRepository::new(db.clone()));
         let activity = Arc::new(ActivityService::new(activity_repo));
         let lifecycles = Arc::new(RwLock::new(HashMap::new()));
@@ -183,7 +184,9 @@ impl XMediaApp {
 
         let auth = Arc::new(
             AuthService::new(users_repo.clone(), security, tokens, lifecycles.clone())
-                .with_activity(activity.clone()),
+                .with_activity(activity.clone())
+                .with_online_items(online_items_repo)
+                .with_bindings(bindings.clone()),
         );
         let libraries = Arc::new(LibraryService::with_data_dir(
             libraries_repo.clone(),

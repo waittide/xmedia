@@ -178,10 +178,14 @@ async fn main() -> anyhow::Result<()> {
         info!("Music OpenSubsonic API: http://{}/rest", cli.bind);
     }
 
-    axum::serve(listener, app.router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("http server error")?;
+    axum::serve(
+        listener,
+        app.router
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("http server error")?;
 
     Ok(())
 }
