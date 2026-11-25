@@ -360,7 +360,6 @@ defineExpose({
             <div class="flex items-center gap-1.5">
               <MdButton
                 variant="tonal"
-                size="sm"
                 :icon="LuPlay"
                 @click="playerStore.playRemoteSongs(activeSourceId, activeSourceName, searchSongs, 0)"
               >
@@ -368,7 +367,6 @@ defineExpose({
               </MdButton>
               <MdButton
                 variant="text"
-                size="sm"
                 :icon="LuShuffle"
                 @click="playerStore.shuffleAndPlayRemoteSongs(activeSourceId, activeSourceName, searchSongs)"
               >
@@ -377,11 +375,11 @@ defineExpose({
             </div>
           </div>
 
-          <div class="divide-y divide-outline-variant/35 overflow-hidden rounded-corner-lg bg-surface-container-low">
+          <div class="space-y-1 overflow-hidden rounded-corner-lg bg-surface-container-low p-1.5">
             <div
               v-for="song in searchSongs"
               :key="song.id"
-              class="flex cursor-pointer items-center gap-3 px-3.5 py-2.5 transition-colors hover:bg-surface-container-high/60"
+              class="flex cursor-pointer items-center gap-3 rounded-corner-md px-3.5 py-2.5 transition-colors hover:bg-surface-container-high/60"
               :class="isSongCurrent(song) ? 'bg-secondary-container/50' : ''"
               @click="playSong(song, searchSongs)"
             >
@@ -537,10 +535,9 @@ defineExpose({
       @close="albumSheetOpen = false"
     >
       <template v-if="albumSongs.length > 0" #subheader>
-        <div class="flex items-center gap-2 border-b border-outline-variant pb-3">
+        <div class="flex items-center gap-2 rounded-corner-md bg-surface-container-low px-3 py-2">
           <MdButton
             variant="filled"
-            size="sm"
             :icon="LuPlay"
             @click="playerStore.playRemoteSongs(activeSourceId, activeSourceName, albumSongs, 0)"
           >
@@ -548,7 +545,6 @@ defineExpose({
           </MdButton>
           <MdButton
             variant="tonal"
-            size="sm"
             :icon="LuShuffle"
             @click="playerStore.shuffleAndPlayRemoteSongs(activeSourceId, activeSourceName, albumSongs)"
           >

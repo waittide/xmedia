@@ -8,12 +8,11 @@ defineProps<{
 </script>
 
 <template>
-  <div class="overflow-hidden rounded-corner-lg bg-surface-container">
+  <div class="space-y-1.5 rounded-corner-lg bg-surface-container-low p-2">
     <div
-      v-for="(field, fIdx) in fields"
+      v-for="field in fields"
       :key="field.label"
-      class="grid grid-cols-1 gap-1 px-4 py-3 sm:grid-cols-[11rem_1fr] sm:gap-3"
-      :class="fIdx > 0 ? 'border-t border-outline-variant/50' : ''"
+      class="grid grid-cols-1 gap-1 rounded-corner-md bg-surface-container px-3.5 py-2.5 sm:grid-cols-[11rem_1fr] sm:gap-3"
     >
       <div class="font-mono text-label-medium text-on-surface-variant">
         {{ field.label }}

@@ -439,7 +439,6 @@ function openImportedBook(): void {
           v-if="activeJob && isJobActive(activeJob.status)"
           variant="outlined"
           tone="error"
-          size="sm"
           :icon="LuBan"
           :loading="cancelling"
           class="mr-auto"
@@ -448,7 +447,7 @@ function openImportedBook(): void {
           {{ cancelling ? t('online.cancellingJobBtn') : t('online.cancelJobBtn') }}
         </MdButton>
 
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" @click="emit('close')">
           {{
             activeJob && isJobActive(activeJob.status)
               ? t('online.closeBackgroundBtn')
@@ -462,7 +461,6 @@ function openImportedBook(): void {
           <MdButton
             v-if="activeJob.imported_book_id"
             variant="tonal"
-            size="sm"
             :icon="LuBookOpen"
             @click="openImportedBook"
           >
@@ -471,7 +469,6 @@ function openImportedBook(): void {
 
           <MdButton
             variant="filled"
-            size="sm"
             :icon="LuDownload"
             :href="buildOnlineDownloadFileUrl(activeJob.id)"
             :download="activeJob.output_file_name || undefined"
@@ -483,7 +480,6 @@ function openImportedBook(): void {
         <MdButton
           v-else-if="!activeJob"
           variant="filled"
-          size="sm"
           :icon="LuDownload"
           :loading="starting"
           @click="handleStart"

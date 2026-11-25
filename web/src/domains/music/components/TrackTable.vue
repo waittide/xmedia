@@ -272,7 +272,7 @@ async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
   <div class="overflow-hidden rounded-corner-lg bg-surface-container-low">
     <table class="w-full table-fixed border-collapse text-left">
       <thead>
-        <tr class="text-label-medium border-b border-outline-variant/60 text-on-surface-variant">
+        <tr class="text-label-medium bg-surface-container text-on-surface-variant">
           <th class="w-11 px-2 py-3 text-center sm:px-3">{{ t('catalog.colIndex') }}</th>
           <th class="px-2 py-3 sm:px-3">{{ t('catalog.colTitle') }}</th>
           <th v-if="showAlbum" class="hidden w-44 px-3 py-3 lg:table-cell">

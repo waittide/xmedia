@@ -138,7 +138,7 @@ async function handleDelete(pl: PlaylistSummaryDto): Promise<void> {
       <span class="text-body-small text-on-surface-variant">
         {{ filteredPlaylists.length }}
       </span>
-      <MdButton variant="tonal" size="sm" :icon="LuPlus" @click="handleCreatePlaylist">
+      <MdButton variant="tonal" :icon="LuPlus" @click="handleCreatePlaylist">
         {{ t('nav.newPlaylist') }}
       </MdButton>
     </div>

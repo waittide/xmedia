@@ -444,7 +444,6 @@ defineExpose({ refresh })
           <div class="flex items-center gap-1.5">
             <MdButton
               variant="tonal"
-              size="sm"
               :icon="LuPlay"
               @click="playerStore.playQueue(filteredRecentTracks, 0)"
             >
@@ -452,7 +451,6 @@ defineExpose({ refresh })
             </MdButton>
             <MdButton
               variant="text"
-              size="sm"
               :icon="LuShuffle"
               @click="playerStore.shuffleAndPlay(filteredRecentTracks)"
             >

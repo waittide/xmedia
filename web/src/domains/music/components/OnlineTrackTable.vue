@@ -197,11 +197,10 @@ async function handleTrackAllToLibrary(): Promise<void> {
   <div class="overflow-hidden rounded-corner-lg bg-surface-container-low">
     <div
       v-if="tracks.length > 1"
-      class="flex items-center justify-end border-b border-outline-variant/50 px-3 py-2"
+      class="flex items-center justify-end bg-surface-container px-3 py-2"
     >
       <MdButton
         variant="tonal"
-        size="sm"
         :icon="LuLibrary"
         :loading="batchTracking"
         :disabled="batchTracking"
@@ -216,7 +215,7 @@ async function handleTrackAllToLibrary(): Promise<void> {
     </div>
     <table class="w-full table-fixed border-collapse text-left">
       <thead>
-        <tr class="text-label-medium border-b border-outline-variant/60 text-on-surface-variant">
+        <tr class="text-label-medium bg-surface-container text-on-surface-variant">
           <th class="w-11 px-2 py-3 text-center sm:px-3">{{ t('catalog.colIndex') }}</th>
           <th class="px-2 py-3 sm:px-3">{{ t('catalog.colTitle') }}</th>
           <th v-if="showAlbum" class="hidden w-40 px-3 py-3 lg:table-cell">

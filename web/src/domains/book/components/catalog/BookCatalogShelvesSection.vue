@@ -32,7 +32,7 @@ const { t } = useBookI18n()
     class="flex flex-wrap items-center justify-between gap-3 rounded-corner-md bg-surface-container-low px-4 py-3"
   >
     <div class="flex min-w-0 items-center gap-2.5">
-      <MdButton variant="text" size="sm" :icon="LuArrowLeft" @click="emit('back')">
+      <MdButton variant="text" :icon="LuArrowLeft" @click="emit('back')">
         {{ t('collections.backToShelves') }}
       </MdButton>
       <span class="text-title-medium truncate text-on-surface">
@@ -44,13 +44,12 @@ const { t } = useBookI18n()
     </div>
 
     <div v-if="!activeShelf.is_favorite" class="flex items-center gap-1">
-      <MdButton variant="text" size="sm" :icon="LuPencil" @click="emit('rename', activeShelf)">
+      <MdButton variant="text" :icon="LuPencil" @click="emit('rename', activeShelf)">
         {{ t('collections.renameShelf') }}
       </MdButton>
       <MdButton
         variant="text"
         tone="error"
-        size="sm"
         :icon="LuTrash2"
         @click="emit('delete', activeShelf)"
       >

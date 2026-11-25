@@ -164,7 +164,7 @@ onBeforeUnmount(clearAutoScrollPause)
       <p>{{ playerStore.lyrics.plain_text }}</p>
       <p
         v-if="showTranslation && playerStore.translatedLyrics?.plain_text"
-        class="text-body-medium border-t border-outline-variant pt-6 text-on-surface-variant"
+        class="text-body-medium rounded-corner-lg bg-surface-container-low/60 p-4 text-on-surface-variant"
       >
         {{ playerStore.translatedLyrics.plain_text }}
       </p>

@@ -680,7 +680,6 @@ watch(
     <template v-if="sourceId && (videoId || detailUrl)" #header-actions>
       <MdButton
         variant="tonal"
-        size="sm"
         :icon="LuLibrary"
         :loading="trackingToLibrary"
         :disabled="trackingToLibrary"

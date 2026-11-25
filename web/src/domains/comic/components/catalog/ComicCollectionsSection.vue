@@ -31,7 +31,7 @@ const { t } = useComicI18n()
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="min-w-0 flex-1 space-y-1">
         <div class="flex flex-wrap items-center gap-2">
-          <MdButton variant="text" size="sm" :icon="LuArrowLeft" @click="emit('back')">
+          <MdButton variant="text" :icon="LuArrowLeft" @click="emit('back')">
             {{ t('library.backToCollections') }}
           </MdButton>
           <span class="text-label-medium text-on-surface-variant">
@@ -49,7 +49,6 @@ const { t } = useComicI18n()
       <div class="flex shrink-0 items-center gap-1.5">
         <MdButton
           variant="tonal"
-          size="sm"
           :icon="LuPencil"
           @click="emit('edit', activeCollection)"
         >

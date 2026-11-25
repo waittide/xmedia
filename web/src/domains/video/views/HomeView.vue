@@ -262,7 +262,6 @@ watch(
             </h2>
             <MdButton
               variant="text"
-              size="sm"
               :to="libraryRoute('video', { view: 'shows' })"
             >
               <span>{{ globalT('common.viewAll') }}</span>
@@ -285,7 +284,6 @@ watch(
             </h2>
             <MdButton
               variant="text"
-              size="sm"
               :to="libraryRoute('video', { tab: 'favorites' })"
             >
               <span>{{ globalT('common.viewAll') }}</span>

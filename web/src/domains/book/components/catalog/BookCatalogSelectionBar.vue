@@ -67,22 +67,21 @@ async function batchAddTag(): Promise<void> {
       {{ t('catalog.selectedCount', { count: catalogStore.selectedBookIds.size }) }}
     </span>
     <div class="flex flex-wrap items-center gap-1.5">
-      <MdButton variant="elevated" size="sm" :icon="LuHeart" @click="batchFavorite(true)">
+      <MdButton variant="elevated" :icon="LuHeart" @click="batchFavorite(true)">
         {{ t('catalog.batchStar') }}
       </MdButton>
-      <MdButton variant="elevated" size="sm" @click="batchFavorite(false)">
+      <MdButton variant="elevated" @click="batchFavorite(false)">
         {{ t('catalog.batchUnstar') }}
       </MdButton>
       <MdButton
         v-if="authStore.isAdmin"
         variant="elevated"
-        size="sm"
         :icon="LuTag"
         @click="batchAddTag"
       >
         {{ t('catalog.batchAddTag') }}
       </MdButton>
-      <MdButton variant="text" size="sm" @click="catalogStore.clearSelection()">
+      <MdButton variant="text" @click="catalogStore.clearSelection()">
         {{ t('catalog.clearSelection') }}
       </MdButton>
     </div>

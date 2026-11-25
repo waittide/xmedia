@@ -549,7 +549,7 @@ onBeforeUnmount(() => {
         @retry="loadBook(bookId)"
       >
         <template #action>
-          <MdButton variant="tonal" size="sm" @click="exitReader">
+          <MdButton variant="tonal" @click="exitReader">
             {{ t('reader.backToBook') }}
           </MdButton>
         </template>

@@ -67,7 +67,6 @@ const fitOptions = computed<SegmentedOption<ReaderFitMode>[]>(() => [
           v-for="opt in modeOptions"
           :key="opt.value"
           :variant="readerMode === opt.value ? 'tonal' : 'outlined'"
-          size="sm"
           :icon="opt.icon"
           @click="emit('update:readerMode', opt.value)"
         >
@@ -97,7 +96,6 @@ const fitOptions = computed<SegmentedOption<ReaderFitMode>[]>(() => [
         </span>
         <MdButton
           variant="text"
-          size="sm"
           :disabled="zoomPercent === 100"
           @click="emit('reset-zoom')"
         >
@@ -172,7 +170,7 @@ const fitOptions = computed<SegmentedOption<ReaderFitMode>[]>(() => [
       />
     </div>
 
-    <p class="text-body-small border-t border-outline-variant pt-3 text-on-surface-variant">
+    <p class="text-body-small rounded-corner-md bg-surface-container-low px-3.5 py-2.5 text-on-surface-variant">
       {{ t('reader.shortcutsHint') }}
     </p>
   </div>

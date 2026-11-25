@@ -465,7 +465,6 @@ async function copyDebugReport(): Promise<void> {
                   </div>
                   <MdButton
                     variant="tonal"
-                    size="sm"
                     :disabled="running"
                     class="shrink-0"
                     @click="handleDebugComicItem(item)"
@@ -503,7 +502,6 @@ async function copyDebugReport(): Promise<void> {
             </span>
             <MdButton
               variant="tonal"
-              size="sm"
               :disabled="running || !report.comic_detail.toc_url"
               @click="handleDebugChaptersFromDetail"
             >

@@ -75,7 +75,7 @@ async function handleCreateShelf(): Promise<void> {
     class="space-y-4 rounded-corner-lg bg-surface-container-low p-4 sm:p-5"
   >
     <div class="flex items-center">
-      <MdButton variant="text" size="sm" :icon="LuArrowLeft" @click="emit('back')">
+      <MdButton variant="text" :icon="LuArrowLeft" @click="emit('back')">
         {{ t('shelf.backToCollections') }}
       </MdButton>
     </div>
@@ -112,7 +112,6 @@ async function handleCreateShelf(): Promise<void> {
           <MdButton
             v-if="firstPlayableShelfVideo"
             variant="filled"
-            size="sm"
             :icon="LuPlay"
             :to="{
               path: `/video/play/${encodeURIComponent(firstPlayableShelfVideo.id)}`,
@@ -124,7 +123,6 @@ async function handleCreateShelf(): Promise<void> {
 
           <MdButton
             variant="tonal"
-            size="sm"
             :icon="LuPencil"
             @click="emit('rename', shelfDetail.shelf.id, shelfDetail.shelf.name)"
           >
@@ -174,7 +172,6 @@ async function handleCreateShelf(): Promise<void> {
     <MdButton
       type="submit"
       variant="tonal"
-      size="sm"
       :icon="LuPlus"
       :loading="creatingShelf"
       :disabled="!newShelfName.trim()"

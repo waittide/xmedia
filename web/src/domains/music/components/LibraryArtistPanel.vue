@@ -83,7 +83,7 @@ watch(() => props.artistId, loadArtist)
 <template>
   <div class="space-y-6">
     <div>
-      <MdButton variant="text" size="sm" :icon="LuArrowLeft" @click="emit('back')">
+      <MdButton variant="text" :icon="LuArrowLeft" @click="emit('back')">
         {{ t('nav.artists') }}
       </MdButton>
     </div>

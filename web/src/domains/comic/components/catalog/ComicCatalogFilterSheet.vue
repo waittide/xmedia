@@ -92,7 +92,7 @@ const orderOptions = computed<SelectOption[]>(() => [
       />
     </div>
 
-    <div class="space-y-4 border-t border-outline-variant pt-4">
+    <div class="space-y-4 rounded-corner-md bg-surface-container-low p-3.5">
       <div class="space-y-1.5">
         <span class="text-label-medium block text-on-surface-variant">
           {{ t('library.sortLabel') }}

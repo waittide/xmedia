@@ -114,7 +114,7 @@ defineExpose({
         @retry="emit('retry')"
       >
         <template v-if="showSwitchSourceOnError" #action>
-          <MdButton variant="tonal" size="sm" :icon="LuRepeat" @click="emit('switch-source')">
+          <MdButton variant="tonal" :icon="LuRepeat" @click="emit('switch-source')">
             {{ t('reader.trySwitchSource') }}
           </MdButton>
         </template>
@@ -126,9 +126,9 @@ defineExpose({
           v-for="(item, itemIdx) in chapters"
           :key="`ch-${item.pos}-${item.chapterIndex}`"
           :data-chapter-pos="item.pos"
-          :class="itemIdx > 0 ? 'mt-14 border-t border-outline-variant/60 pt-10' : ''"
+          :class="itemIdx > 0 ? 'mt-16 pt-4' : ''"
         >
-          <header class="mb-8 flex items-start justify-between gap-3 border-b border-outline-variant/60 pb-4">
+          <header class="mb-8 flex items-start justify-between gap-3 rounded-corner-lg bg-on-surface/[0.04] px-4 py-3.5">
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2 text-label-medium text-primary">
                 <span
@@ -208,7 +208,7 @@ defineExpose({
             class="flex flex-wrap items-center justify-center gap-2 rounded-corner-md bg-error-container px-4 py-2.5 text-on-error-container"
           >
             <span>{{ t('reader.appendErrorPrefix', { error: appendError }) }}</span>
-            <MdButton variant="filled" size="sm" @click="emit('retry-append')">
+            <MdButton variant="filled" @click="emit('retry-append')">
               {{ t('reader.retry') }}
             </MdButton>
           </div>
@@ -220,11 +220,10 @@ defineExpose({
 
         <!-- Chapter Navigation Footer -->
         <div
-          class="mt-6 flex items-center justify-between gap-3 border-t border-outline-variant/60 pt-6"
+          class="mt-6 flex items-center justify-between gap-3 rounded-corner-lg bg-on-surface/[0.04] px-4 py-3"
         >
           <MdButton
             variant="tonal"
-            size="sm"
             :icon="LuChevronLeft"
             :disabled="!hasPrev"
             @click="emit('prev-chapter')"
@@ -235,7 +234,6 @@ defineExpose({
           <MdButton
             v-if="showTocButton"
             variant="text"
-            size="sm"
             :icon="LuList"
             @click="emit('open-toc')"
           >
@@ -250,7 +248,6 @@ defineExpose({
 
           <MdButton
             variant="filled"
-            size="sm"
             :disabled="!hasNext || appendingNext"
             @click="emit('next-chapter')"
           >

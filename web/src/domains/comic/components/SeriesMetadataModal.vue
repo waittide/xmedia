@@ -168,7 +168,7 @@ async function onSave(): Promise<void> {
       </div>
 
       <!-- Collapsible Publishing & Classification Group -->
-      <div class="border-t border-outline-variant pt-3">
+      <div class="rounded-corner-lg bg-surface-container-low p-3.5">
         <button
           type="button"
           :aria-expanded="showAdvanced"

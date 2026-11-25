@@ -299,7 +299,6 @@ function handleFileInputChange(ev: Event): void {
             </h2>
             <MdButton
               variant="text"
-              size="sm"
               :to="{ path: '/music/library', query: { tab: 'favorites' } }"
             >
               <span>{{ globalT('common.viewAll') }}</span>
@@ -336,7 +335,6 @@ function handleFileInputChange(ev: Event): void {
             <div class="flex items-center gap-1.5">
               <MdButton
                 variant="tonal"
-                size="sm"
                 :icon="LuPlay"
                 @click="playerStore.playQueue(overview!.random_tracks, 0)"
               >

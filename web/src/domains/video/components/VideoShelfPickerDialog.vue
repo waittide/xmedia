@@ -95,7 +95,6 @@ async function handleCreateAndAdd(): Promise<void> {
         <MdButton
           type="submit"
           variant="tonal"
-          size="sm"
           :icon="LuPlus"
           :loading="creating"
           :disabled="!newShelfName.trim() || !videoId"
@@ -106,7 +105,7 @@ async function handleCreateAndAdd(): Promise<void> {
 
       <div
         v-if="videoStore.shelves.length > 0"
-        class="max-h-72 divide-y divide-outline-variant/50 overflow-y-auto rounded-corner-md bg-surface-container-low"
+        class="max-h-72 space-y-1 overflow-y-auto rounded-corner-md bg-surface-container-low p-1.5"
       >
         <MdListItem
           v-for="sh in videoStore.shelves"

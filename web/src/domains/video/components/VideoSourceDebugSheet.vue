@@ -414,7 +414,6 @@ async function copyDebugReport(): Promise<void> {
                 </div>
                 <MdButton
                   variant="tonal"
-                  size="sm"
                   :disabled="running"
                   @click="handleDebugVideoItem(item)"
                 >

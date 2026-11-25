@@ -193,7 +193,7 @@ onBeforeUnmount(() => {
 
 <template>
   <footer
-    class="safe-px relative z-20 flex w-full shrink-0 flex-col border-t border-outline-variant bg-surface-container text-on-surface"
+    class="safe-px relative z-20 flex w-full shrink-0 flex-col bg-surface-container text-on-surface shadow-elevation-1"
   >
     <div ref="audioHostRef" class="hidden" aria-hidden="true" />
 
@@ -212,13 +212,13 @@ onBeforeUnmount(() => {
     <div
       v-if="playerStore.playbackError"
       role="alert"
-      class="text-body-small flex items-center justify-between gap-2 border-b border-error/25 bg-error-container px-3 py-1.5 text-on-error-container sm:px-6"
+      class="text-body-small flex items-center justify-between gap-2 bg-error-container px-3 py-1.5 text-on-error-container sm:px-6"
     >
       <span class="min-w-0 flex-1 truncate" :title="playerStore.playbackError">
         {{ playerStore.playbackError }}
       </span>
       <div class="flex shrink-0 items-center gap-1">
-        <MdButton variant="tonal" size="sm" @click="playerStore.retryCurrentPlayback()">
+        <MdButton variant="tonal" @click="playerStore.retryCurrentPlayback()">
           {{ t('player.retryPlayback') }}
         </MdButton>
         <MdIconButton

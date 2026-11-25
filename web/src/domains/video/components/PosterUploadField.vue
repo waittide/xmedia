@@ -57,7 +57,6 @@ function handleChange(ev: Event): void {
       />
       <MdButton
         variant="tonal"
-        size="sm"
         :icon="LuUpload"
         @click="inputRef?.click()"
       >

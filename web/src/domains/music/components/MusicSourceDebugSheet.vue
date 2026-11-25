@@ -487,7 +487,6 @@ onBeforeUnmount(() => {
                 </div>
                 <MdButton
                   variant="tonal"
-                  size="sm"
                   :disabled="running"
                   class="shrink-0"
                   @click="handleDebugTrack(item)"

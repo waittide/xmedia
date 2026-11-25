@@ -172,7 +172,6 @@ function itemKey(item: MediaItemVM, idx: number): string {
             </h2>
             <MdButton
               variant="text"
-              size="sm"
               :to="libraryRoute('comic', { tab: 'favorites' })"
             >
               <span>{{ globalT('common.viewAll') }}</span>

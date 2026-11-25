@@ -150,7 +150,7 @@ function onUpdateFormats(vals: string[]): void {
       </template>
     </AppMultiSelect>
 
-    <div class="border-t border-outline-variant pt-3">
+    <div class="rounded-corner-md bg-surface-container-low px-3.5 py-2.5">
       <AppCheckbox
         v-model="catalogStore.includeMissing"
         :label="t('search.includeMissing')"

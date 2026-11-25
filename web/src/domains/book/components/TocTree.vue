@@ -211,7 +211,7 @@ function onVolumeRowClick(node: TocTreeNode): void {
         <span class="text-label-small text-on-surface-variant">
           {{ t('reader.volumeStructureHint', { volumes: parentKeys.length }) }}
         </span>
-        <MdButton variant="text" size="sm" @click="toggleExpandAll">
+        <MdButton variant="text" @click="toggleExpandAll">
           {{ allExpanded ? t('reader.collapseAll') : t('reader.expandAll') }}
         </MdButton>
       </div>

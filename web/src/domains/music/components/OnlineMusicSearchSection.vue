@@ -177,7 +177,6 @@ defineExpose({
         <template v-if="exploreTargetSourceId" #action>
           <MdButton
             variant="tonal"
-            size="sm"
             :icon="LuCompass"
             :loading="browse.browsing.value"
             @click="handleTriggerExplore"
@@ -192,7 +191,6 @@ defineExpose({
       <MdButton
         v-if="exploreTargetSourceId"
         variant="text"
-        size="sm"
         :icon="LuCompass"
         :loading="browse.browsing.value"
         @click="handleTriggerExplore"
@@ -201,7 +199,6 @@ defineExpose({
       </MdButton>
       <MdButton
         variant="tonal"
-        size="sm"
         :icon="LuPlay"
         @click="playerStore.playOnlineTracks(displayTracks, 0)"
       >
@@ -209,7 +206,6 @@ defineExpose({
       </MdButton>
       <MdButton
         variant="text"
-        size="sm"
         :icon="LuShuffle"
         @click="playerStore.shuffleAndPlayOnline(displayTracks)"
       >

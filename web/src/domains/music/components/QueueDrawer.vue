@@ -79,10 +79,10 @@ function requestRestoreCloudQueue(): void {
           {{ t('player.clearQueueConfirm', { count: playerStore.queue.length }) }}
         </span>
         <div class="flex shrink-0 items-center gap-1">
-          <MdButton variant="filled" tone="error" size="sm" @click="confirmClearQueue">
+          <MdButton variant="filled" tone="error" @click="confirmClearQueue">
             {{ t('player.clearQueueConfirmAction') }}
           </MdButton>
-          <MdButton variant="text" size="sm" @click="confirmingClear = false">
+          <MdButton variant="text" @click="confirmingClear = false">
             {{ t('player.cancel') }}
           </MdButton>
         </div>
@@ -99,13 +99,12 @@ function requestRestoreCloudQueue(): void {
         <div class="flex shrink-0 items-center gap-1">
           <MdButton
             variant="filled"
-            size="sm"
             :loading="restoring"
             @click="runRestoreCloudQueue"
           >
             {{ t('player.syncFromCloudConfirmAction') }}
           </MdButton>
-          <MdButton variant="text" size="sm" @click="confirmingRestore = false">
+          <MdButton variant="text" @click="confirmingRestore = false">
             {{ t('player.cancel') }}
           </MdButton>
         </div>
@@ -114,11 +113,10 @@ function requestRestoreCloudQueue(): void {
       <!-- Default Action Bar -->
       <div
         v-else
-        class="flex items-center justify-between gap-2 border-b border-outline-variant pb-3"
+        class="flex items-center justify-between gap-2 rounded-corner-md bg-surface-container-low px-3 py-2"
       >
         <MdButton
           variant="text"
-          size="sm"
           :icon="LuDownload"
           :loading="restoring"
           @click="requestRestoreCloudQueue"
@@ -130,7 +128,6 @@ function requestRestoreCloudQueue(): void {
           v-if="playerStore.queue.length > 0"
           variant="tonal"
           tone="error"
-          size="sm"
           :icon="LuTrash2"
           @click="requestClearQueue"
         >

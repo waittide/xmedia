@@ -35,8 +35,8 @@ watch(
 </script>
 
 <template>
-  <div v-if="toc.length > 0 || bookmarks.length > 0" class="space-y-2">
-    <section v-if="toc.length > 0" class="border-t border-outline-variant pt-3">
+  <div v-if="toc.length > 0 || bookmarks.length > 0" class="space-y-3">
+    <section v-if="toc.length > 0" class="rounded-corner-lg bg-surface-container-low p-3">
       <button
         type="button"
         :aria-expanded="tocExpanded"
@@ -51,7 +51,7 @@ watch(
 
       <div
         v-if="tocExpanded"
-        class="mt-2 max-h-96 overflow-y-auto rounded-corner-md bg-surface-container-low p-3"
+        class="mt-2 max-h-96 overflow-y-auto rounded-corner-md bg-surface-container p-3"
       >
         <TocTree
           :items="toc"
@@ -62,7 +62,7 @@ watch(
       </div>
     </section>
 
-    <section v-if="bookmarks.length > 0" class="border-t border-outline-variant pt-3">
+    <section v-if="bookmarks.length > 0" class="rounded-corner-lg bg-surface-container-low p-3">
       <button
         type="button"
         :aria-expanded="bookmarksExpanded"
@@ -79,7 +79,7 @@ watch(
         <div
           v-for="bm in bookmarks"
           :key="bm.id"
-          class="flex items-center justify-between gap-2 rounded-corner-md bg-surface-container-low px-3.5 py-2.5"
+          class="flex items-center justify-between gap-2 rounded-corner-md bg-surface-container px-3.5 py-2.5"
         >
           <button
             type="button"

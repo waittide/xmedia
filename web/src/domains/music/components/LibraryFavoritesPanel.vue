@@ -134,7 +134,6 @@ defineExpose({ refresh })
       >
         <MdButton
           variant="tonal"
-          size="sm"
           :icon="LuPlay"
           @click="playerStore.playQueue(visibleTracks, 0)"
         >
@@ -142,7 +141,6 @@ defineExpose({ refresh })
         </MdButton>
         <MdButton
           variant="text"
-          size="sm"
           :icon="LuShuffle"
           @click="playerStore.shuffleAndPlay(visibleTracks)"
         >

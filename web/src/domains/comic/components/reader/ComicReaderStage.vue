@@ -115,7 +115,6 @@ defineExpose({
             <MdButton
               v-if="getDisplayPageSrc(p)"
               variant="tonal"
-              size="sm"
               :icon="LuRotateCw"
               @click="emit('retryPage', p)"
             >
@@ -182,7 +181,6 @@ defineExpose({
             <MdButton
               v-if="getDisplayPageSrc(p)"
               variant="tonal"
-              size="sm"
               :icon="LuRotateCw"
               @click="emit('retryPage', p)"
             >

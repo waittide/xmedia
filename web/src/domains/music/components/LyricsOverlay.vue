@@ -260,7 +260,7 @@ function navigateAndClose(path: string): void {
             {{ playerStore.playbackError }}
           </span>
           <div class="flex shrink-0 items-center gap-1">
-            <MdButton variant="tonal" size="sm" @click="playerStore.retryCurrentPlayback()">
+            <MdButton variant="tonal" @click="playerStore.retryCurrentPlayback()">
               {{ t('player.retryPlayback') }}
             </MdButton>
             <MdIconButton
@@ -524,7 +524,7 @@ function navigateAndClose(path: string): void {
             />
 
             <div
-              class="mt-2 flex shrink-0 items-center justify-between gap-3 border-t border-outline-variant pt-3 md:hidden"
+              class="mt-2 flex shrink-0 items-center justify-between gap-3 rounded-corner-lg bg-surface-container-low/80 px-3.5 py-2.5 md:hidden"
             >
               <div class="min-w-0 flex-1">
                 <p class="text-title-small truncate text-on-surface">

@@ -50,7 +50,7 @@ function openBookDetail(bookId: string): void {
   <div class="overflow-x-auto rounded-corner-md bg-surface-container-low">
     <table class="w-full border-collapse text-left">
       <thead>
-        <tr class="text-label-medium border-b border-outline-variant text-on-surface-variant">
+        <tr class="text-label-medium bg-surface-container text-on-surface-variant">
           <th class="w-10 py-3 pl-4">
             <AppCheckbox
               :model-value="allCurrentSelected"

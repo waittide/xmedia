@@ -476,7 +476,6 @@ async function handleTrackToLibrary(): Promise<void> {
 
             <MdButton
               variant="outlined"
-              size="sm"
               :icon="LuArrowUpDown"
               @click="orderAsc = !orderAsc"
             >

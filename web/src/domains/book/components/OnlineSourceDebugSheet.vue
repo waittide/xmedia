@@ -503,7 +503,6 @@ async function copyContentText(): Promise<void> {
 
                 <MdButton
                   variant="tonal"
-                  size="sm"
                   :disabled="running"
                   class="shrink-0"
                   @click="handleDebugBookItem(item)"
@@ -564,7 +563,6 @@ async function copyContentText(): Promise<void> {
             </span>
             <MdButton
               variant="tonal"
-              size="sm"
               :disabled="running || !report.book_detail.toc_url"
               @click="handleDebugTocFromDetail"
             >
@@ -675,7 +673,6 @@ async function copyContentText(): Promise<void> {
             </div>
             <MdButton
               variant="tonal"
-              size="sm"
               :icon="LuCopy"
               class="shrink-0"
               @click="copyContentText"
