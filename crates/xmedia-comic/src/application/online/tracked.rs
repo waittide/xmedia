@@ -11,7 +11,8 @@ use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::user::User;
-use xmedia_core::domain::xml::xml_escape;
+use xmedia_formats::comic::comicinfo::ComicInfoMeta;
+use xmedia_formats::comic::comicinfo_write::render_comic_info_xml_preserving;
 use xmedia_source::http::{HttpClientConfig, resolve_literal_http_url};
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_validated_image_bytes_with_config,
@@ -878,13 +879,14 @@ fn init_disk_comic_cbz(
 ) -> DomainResult<ZipWriter<std::fs::File>> {
     let mut zip = ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    let info_xml = format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<ComicInfo>\n  <Series>{}</Series>\n  <Title>{}</Title>\n  <Number>{}</Number>\n  <PageCount>{}</PageCount>\n</ComicInfo>\n",
-        xml_escape(series_title),
-        xml_escape(chapter_title),
-        chapter_number,
-        total_pages,
-    );
+    let meta = ComicInfoMeta {
+        series: Some(series_title.to_owned()),
+        title: Some(chapter_title.to_owned()),
+        number: Some(chapter_number),
+        page_count: u32::try_from(total_pages).ok(),
+        ..Default::default()
+    };
+    let info_xml = render_comic_info_xml_preserving(&meta, None, None);
     zip.start_file("ComicInfo.xml", opts)
         .map_err(|e| DomainError::Storage(format!("CBZ write ComicInfo.xml failed: {e}")))?;
     zip.write_all(info_xml.as_bytes())

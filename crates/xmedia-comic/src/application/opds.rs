@@ -633,11 +633,10 @@ fn to_opds_chapter(
     last_read_page: Option<u32>,
     last_read_at: Option<Timestamp>,
 ) -> OpdsChapterEntry {
-    let archive_mime = if ch.source_path.to_lowercase().ends_with(".epub") {
-        "application/epub+zip"
-    } else {
-        "application/vnd.comicbook+zip"
-    };
+    let archive_mime =
+        xmedia_formats::comic::ComicFormatExt::from_path(std::path::Path::new(&ch.source_path))
+            .filter(|fmt| fmt.is_zip_based())
+            .map_or("application/vnd.comicbook+zip", |fmt| fmt.mime_type());
     let authors = if ch.writers.is_empty() {
         series_writers.to_vec()
     } else {

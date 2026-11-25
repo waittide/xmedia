@@ -6,19 +6,27 @@ use std::sync::RwLock;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
 use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::stream::open_file_range_stream_spec;
+use xmedia_formats::FormatError;
+use xmedia_formats::book::BookFormatExt;
+use xmedia_formats::book::opf::parse_opf_xml;
+use xmedia_formats::comic::comicinfo::{
+    ComicInfoMeta, apply_epub_opf_into_comic_meta, extract_existing_comic_info_bytes,
+    parse_comic_info_pages_map, parse_comic_info_xml,
+};
+use xmedia_formats::comic::filename::natural_page_entry_cmp;
+use xmedia_formats::comic::{
+    ComicFormatExt, ProbedComicPage, is_comic_image_entry, probe_comic_pages,
+};
+use xmedia_formats::common::probe_reader_dimensions;
 use zip::ZipArchive;
 
 use crate::application::ports::{
     ArchiveInspection, ArchiveReaderPort, ComicInfoMetadata, PageContent, PageDescriptor,
 };
 use crate::domain::chapter::ChapterSourceKind;
-use crate::domain::natural::natural_cmp;
-use crate::infra::comicinfo::{append_xml_ref, parse_comic_info_xml};
 
 #[derive(Debug, Clone)]
 struct CachedPageIndex {
@@ -80,6 +88,52 @@ impl PureRustArchiveReader {
     }
 }
 
+fn ensure_zip_based_format(path: &Path) -> DomainResult<Option<ComicFormatExt>> {
+    let fmt = ComicFormatExt::from_path(path);
+    if let Some(ext) = fmt
+        && !ext.is_zip_based()
+    {
+        return Err(DomainError::UnsupportedFormat(format!(
+            ".{} comic archives require an external extractor and are not supported",
+            ext.as_str()
+        )));
+    }
+    Ok(fmt)
+}
+
+fn map_format_error(err: FormatError) -> DomainError {
+    match err {
+        FormatError::UnsupportedFormat(msg) => DomainError::UnsupportedFormat(msg),
+        FormatError::Validation(msg) => DomainError::Validation(msg),
+        FormatError::NotFound(msg) => DomainError::NotFound(msg),
+        FormatError::Conflict(msg) => DomainError::Conflict(msg),
+        FormatError::Io(msg) => DomainError::Storage(msg),
+    }
+}
+
+fn probed_to_descriptors(pages: Vec<ProbedComicPage>) -> (Vec<PageDescriptor>, Vec<PageEntryRef>) {
+    let mut descriptors = Vec::with_capacity(pages.len());
+    let mut refs = Vec::with_capacity(pages.len());
+    for page in pages {
+        let mime_type = guess_image_mime(&page.entry_name);
+        descriptors.push(PageDescriptor {
+            page_number: (page.index + 1) as u32,
+            entry_name: page.entry_name.clone(),
+            mime_type: mime_type.clone(),
+            file_size: page.file_size,
+            width: page.width,
+            height: page.height,
+            page_type: page.page_type,
+            double_page: page.double_page,
+        });
+        refs.push(PageEntryRef {
+            entry_name: page.entry_name,
+            mime_type,
+        });
+    }
+    (descriptors, refs)
+}
+
 #[async_trait]
 impl ArchiveReaderPort for PureRustArchiveReader {
     async fn inspect_source(
@@ -114,7 +168,8 @@ impl ArchiveReaderPort for PureRustArchiveReader {
     }
 
     async fn inspect_bytes(&self, filename: &str, bytes: &[u8]) -> DomainResult<ArchiveInspection> {
-        let is_epub = filename.to_ascii_lowercase().ends_with(".epub");
+        let fmt = ensure_zip_based_format(Path::new(filename))?;
+        let is_epub = fmt == Some(ComicFormatExt::Epub);
         let owned = bytes.to_vec();
         tokio::task::spawn_blocking(move || {
             let file_size = owned.len() as u64;
@@ -185,6 +240,7 @@ impl ArchiveReaderPort for PureRustArchiveReader {
                     } else {
                         path_owned.clone()
                     };
+                    let _ = ensure_zip_based_format(Path::new(&archive_path))?;
                     let file = File::open(&archive_path).map_err(|e| {
                         if e.kind() == std::io::ErrorKind::NotFound {
                             DomainError::NotFound(format!("archive '{archive_path}' not found"))
@@ -280,44 +336,17 @@ impl ArchiveReaderPort for PureRustArchiveReader {
         spec: ByteRangeSpec,
     ) -> DomainResult<(ByteRangeStream, String, String)> {
         let path = Path::new(source_path);
+        let fmt = ensure_zip_based_format(path)?;
         let stream = open_file_range_stream_spec(path, spec).await?;
         let filename = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "chapter.cbz".into());
-        let mime = if filename.to_ascii_lowercase().ends_with(".epub") {
-            "application/epub+zip".to_owned()
-        } else {
-            "application/vnd.comicbook+zip".to_owned()
-        };
+        let mime = fmt
+            .map_or("application/vnd.comicbook+zip", ComicFormatExt::mime_type)
+            .to_owned();
         Ok((stream, filename, mime))
     }
-}
-
-pub fn is_supported_archive_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cbz" | "zip" | "epub"))
-}
-
-pub fn is_supported_image_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    if lower.contains("__macosx/") || lower.ends_with(".ds_store") {
-        return false;
-    }
-    let filename = lower.rsplit('/').next().unwrap_or(&lower);
-    if filename.starts_with('.') {
-        return false;
-    }
-    Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| {
-            matches!(
-                ext,
-                "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "avif"
-            )
-        })
 }
 
 pub fn guess_image_mime(name: &str) -> String {
@@ -342,15 +371,30 @@ pub fn fast_file_fingerprint(path: &Path) -> DomainResult<(u64, String)> {
 }
 
 fn inspect_archive_file(path: &Path) -> DomainResult<(ArchiveInspection, Vec<PageEntryRef>)> {
+    let fmt = ensure_zip_based_format(path)?;
     let (file_size, file_hash) = fast_file_fingerprint(path)?;
-    let is_epub = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("epub"));
-    let file = File::open(path).map_err(|e| {
-        DomainError::Storage(format!("failed to open archive '{}': {e}", path.display()))
-    })?;
-    let (pages, refs, comic_info) = inspect_zip_reader(file, is_epub)?;
+    if fmt == Some(ComicFormatExt::Epub) {
+        let file = File::open(path).map_err(|e| {
+            DomainError::Storage(format!("failed to open archive '{}': {e}", path.display()))
+        })?;
+        let (pages, refs, comic_info) = inspect_zip_reader(file, true)?;
+        return Ok((
+            ArchiveInspection {
+                page_count: pages.len() as u32,
+                pages,
+                comic_info,
+                file_size,
+                file_hash,
+            },
+            refs,
+        ));
+    }
+
+    let probed = probe_comic_pages(path).map_err(map_format_error)?;
+    let comic_info = extract_existing_comic_info_bytes(path)
+        .and_then(|xml| parse_comic_info_xml(&xml))
+        .map(ComicInfoMetadata::from);
+    let (pages, refs) = probed_to_descriptors(probed);
     Ok((
         ArchiveInspection {
             page_count: pages.len() as u32,
@@ -384,7 +428,7 @@ fn inspect_zip_reader<R: Read + Seek>(
         )));
     }
 
-    let mut image_names: Vec<String> = Vec::new();
+    let mut image_entries: Vec<(String, u64)> = Vec::new();
     let mut comic_info_entry: Option<String> = None;
     let mut opf_candidates: Vec<String> = Vec::new();
 
@@ -409,30 +453,27 @@ fn inspect_zip_reader<R: Read + Seek>(
             opf_candidates.push(name);
             continue;
         }
-        if is_supported_image_name(&name) {
-            image_names.push(name);
+        if is_comic_image_entry(&name) {
+            image_entries.push((name, entry.size()));
         }
     }
 
-    let mut comic_info = if let Some(ci_name) = comic_info_entry {
-        if let Ok(entry) = archive.by_name(&ci_name) {
-            let mut xml = Vec::new();
-            if entry
-                .take(MAX_XML_ENTRY_BYTES + 1)
-                .read_to_end(&mut xml)
-                .is_ok()
-                && (xml.len() as u64) <= MAX_XML_ENTRY_BYTES
-            {
-                parse_comic_info_xml(&xml)
-            } else {
-                None
-            }
-        } else {
-            None
+    let mut pages_map = HashMap::new();
+    let mut comic_info_meta: Option<ComicInfoMeta> = None;
+    if let Some(ci_name) = comic_info_entry
+        && let Ok(entry) = archive.by_name(&ci_name)
+    {
+        let mut xml = Vec::new();
+        if entry
+            .take(MAX_XML_ENTRY_BYTES + 1)
+            .read_to_end(&mut xml)
+            .is_ok()
+            && (xml.len() as u64) <= MAX_XML_ENTRY_BYTES
+        {
+            pages_map = parse_comic_info_pages_map(&xml);
+            comic_info_meta = parse_comic_info_xml(&xml);
         }
-    } else {
-        None
-    };
+    }
 
     let mut ordered_by_opf = false;
     if is_epub
@@ -446,35 +487,56 @@ fn inspect_zip_reader<R: Read + Seek>(
             .is_ok()
             && (opf_bytes.len() as u64) <= MAX_XML_ENTRY_BYTES
         {
-            let (opf_meta, ordered_imgs) = parse_epub_opf(&opf_bytes, opf_path);
-            if comic_info.is_none() && opf_meta.is_some() {
-                comic_info = opf_meta;
+            if comic_info_meta.is_none() {
+                let mut fallback = ComicInfoMeta::default();
+                apply_epub_opf_into_comic_meta(&opf_bytes, &mut fallback);
+                if fallback != ComicInfoMeta::default() {
+                    comic_info_meta = Some(fallback);
+                }
             }
+            let ordered_imgs = ordered_epub_manifest_images(&opf_bytes, opf_path);
             if !ordered_imgs.is_empty() {
-                let available: HashSet<String> = image_names.iter().cloned().collect();
-                let filtered: Vec<String> = ordered_imgs
+                let sizes: HashMap<String, u64> = image_entries.iter().cloned().collect();
+                let filtered: Vec<(String, u64)> = ordered_imgs
                     .into_iter()
-                    .filter(|p| available.contains(p))
+                    .filter_map(|p| sizes.get(&p).map(|&sz| (p, sz)))
                     .collect();
                 if !filtered.is_empty() {
-                    image_names = filtered;
+                    image_entries = filtered;
                     ordered_by_opf = true;
                 }
             }
         }
     }
     if !ordered_by_opf {
-        image_names.sort_by(|a, b| natural_cmp(a, b));
+        image_entries.sort_by(|a, b| natural_page_entry_cmp(&a.0, &b.0));
     }
 
-    let mut pages = Vec::with_capacity(image_names.len());
-    let mut refs = Vec::with_capacity(image_names.len());
-    for (idx, entry_name) in image_names.into_iter().enumerate() {
+    let mut pages = Vec::with_capacity(image_entries.len());
+    let mut refs = Vec::with_capacity(image_entries.len());
+    for (idx, (entry_name, file_size)) in image_entries.into_iter().enumerate() {
+        let existing = pages_map.get(&idx);
+        let (width, height) = if let Some(ex) = existing
+            && ex.width.is_some()
+            && ex.height.is_some()
+        {
+            (ex.width, ex.height)
+        } else if let Ok(entry) = archive.by_name(&entry_name) {
+            probe_reader_dimensions(entry, file_size)
+                .map_or((None, None), |(w, h)| (Some(w), Some(h)))
+        } else {
+            (None, None)
+        };
         let mime_type = guess_image_mime(&entry_name);
         pages.push(PageDescriptor {
             page_number: (idx + 1) as u32,
             entry_name: entry_name.clone(),
             mime_type: mime_type.clone(),
+            file_size,
+            width,
+            height,
+            page_type: existing.and_then(|e| e.page_type.clone()),
+            double_page: existing.and_then(|e| e.double_page),
         });
         refs.push(PageEntryRef {
             entry_name,
@@ -482,71 +544,59 @@ fn inspect_zip_reader<R: Read + Seek>(
         });
     }
 
-    Ok((pages, refs, comic_info))
+    Ok((pages, refs, comic_info_meta.map(ComicInfoMetadata::from)))
+}
+
+fn ordered_epub_manifest_images(opf_bytes: &[u8], opf_path: &str) -> Vec<String> {
+    let base_dir = opf_path
+        .rsplit_once('/')
+        .map(|(dir, _)| format!("{dir}/"))
+        .unwrap_or_default();
+    let opf = parse_opf_xml(opf_bytes, BookFormatExt::Epub, "");
+    let mut seen = HashSet::new();
+    let mut images = Vec::new();
+    for item in opf.manifest {
+        let is_img = item.media_type.starts_with("image/") || is_comic_image_entry(&item.href);
+        if is_img {
+            let full = format!("{base_dir}{}", item.href.trim_start_matches("./"));
+            if seen.insert(full.clone()) {
+                images.push(full);
+            }
+        }
+    }
+    images.sort_by(|a, b| natural_page_entry_cmp(a, b));
+    images
 }
 
 fn inspect_image_directory(dir: &Path) -> DomainResult<(ArchiveInspection, Vec<PageEntryRef>)> {
-    let entries = fs::read_dir(dir).map_err(|e| {
-        DomainError::Storage(format!("cannot read directory '{}': {e}", dir.display()))
-    })?;
-
-    let mut files: Vec<(String, u64, u128)> = Vec::new();
-    let mut comic_info: Option<ComicInfoMetadata> = None;
-
-    for item in entries.flatten() {
-        let path = item.path();
-        let Ok(ft) = item.file_type() else {
-            continue;
-        };
-        if !ft.is_file() {
-            continue;
-        }
-        let name = item.file_name().to_string_lossy().into_owned();
-        if name.eq_ignore_ascii_case("ComicInfo.xml") {
-            if let Ok(bytes) = fs::read(&path) {
-                comic_info = parse_comic_info_xml(&bytes);
-            }
-            continue;
-        }
-        if is_supported_image_name(&name)
-            && let Ok(meta) = item.metadata()
-        {
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            files.push((name, meta.len(), mtime));
-        }
+    if !dir.is_dir() {
+        return Err(DomainError::Storage(format!(
+            "cannot read directory '{}'",
+            dir.display()
+        )));
     }
-
-    files.sort_by(|a, b| natural_cmp(&a.0, &b.0));
+    let probed = probe_comic_pages(dir).map_err(map_format_error)?;
+    let comic_info = extract_existing_comic_info_bytes(dir)
+        .and_then(|xml| parse_comic_info_xml(&xml))
+        .map(ComicInfoMetadata::from);
 
     let mut total_size = 0_u64;
     let mut hasher = blake3::Hasher::new();
-    let mut pages = Vec::with_capacity(files.len());
-    let mut refs = Vec::with_capacity(files.len());
-
-    for (idx, (name, size, mtime)) in files.into_iter().enumerate() {
-        total_size += size;
-        hasher.update(name.as_bytes());
-        hasher.update(&size.to_le_bytes());
+    for page in &probed {
+        total_size += page.file_size;
+        let mtime = fs::metadata(dir.join(&page.entry_name))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        hasher.update(page.entry_name.as_bytes());
+        hasher.update(&page.file_size.to_le_bytes());
         hasher.update(&mtime.to_le_bytes());
-
-        let mime_type = guess_image_mime(&name);
-        pages.push(PageDescriptor {
-            page_number: (idx + 1) as u32,
-            entry_name: name.clone(),
-            mime_type: mime_type.clone(),
-        });
-        refs.push(PageEntryRef {
-            entry_name: name,
-            mime_type,
-        });
     }
 
     let file_hash = hasher.finalize().to_hex().to_string();
+    let (pages, refs) = probed_to_descriptors(probed);
     Ok((
         ArchiveInspection {
             page_count: pages.len() as u32,
@@ -559,119 +609,100 @@ fn inspect_image_directory(dir: &Path) -> DomainResult<(ArchiveInspection, Vec<P
     ))
 }
 
-fn parse_epub_opf(opf_bytes: &[u8], opf_path: &str) -> (Option<ComicInfoMetadata>, Vec<String>) {
-    let base_dir = opf_path
-        .rsplit_once('/')
-        .map(|(dir, _)| format!("{dir}/"))
-        .unwrap_or_default();
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
 
-    let mut reader = Reader::from_reader(opf_bytes);
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
+    use image::{ImageBuffer, ImageFormat, Rgba};
+    use tempfile::TempDir;
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
-    let mut meta = ComicInfoMetadata::default();
-    let mut current_tag: Option<String> = None;
-    let mut text_acc = String::new();
-    let mut images: Vec<String> = Vec::new();
-    let mut found_meta = false;
+    use super::*;
 
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let local = e.local_name().as_ref().to_ascii_lowercase();
-                if local == "item" {
-                    collect_opf_image_item(&e, &base_dir, &mut images);
-                }
-                current_tag = Some(local);
-                text_acc.clear();
-            }
-            Ok(Event::Empty(e)) => {
-                let local = e.local_name().as_ref().to_ascii_lowercase();
-                if local == "item" {
-                    collect_opf_image_item(&e, &base_dir, &mut images);
-                }
-            }
-            Ok(Event::End(_)) => {
-                if let Some(tag) = current_tag.take() {
-                    let trimmed = text_acc.trim();
-                    if !trimmed.is_empty() {
-                        match tag.as_str() {
-                            "title" => {
-                                meta.title = Some(trimmed.to_owned());
-                                found_meta = true;
-                            }
-                            "creator" => {
-                                meta.writers.push(trimmed.to_owned());
-                                found_meta = true;
-                            }
-                            "description" => {
-                                meta.summary = Some(trimmed.to_owned());
-                                found_meta = true;
-                            }
-                            "publisher" => {
-                                meta.publisher = Some(trimmed.to_owned());
-                                found_meta = true;
-                            }
-                            "language" => {
-                                meta.language_iso = Some(trimmed.to_owned());
-                                found_meta = true;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                text_acc.clear();
-            }
-            Ok(Event::Text(t)) => {
-                if current_tag.is_some() {
-                    text_acc.push_str(&t.xml10_content());
-                }
-            }
-            Ok(Event::GeneralRef(r)) => {
-                if current_tag.is_some() {
-                    append_xml_ref(&mut text_acc, &r);
-                }
-            }
-            Ok(Event::CData(c)) => {
-                if current_tag.is_some() {
-                    text_acc.push_str(c.as_ref());
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
+    fn tiny_png(w: u32, h: u32) -> Vec<u8> {
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(w, h, |_, _| Rgba([40, 80, 120, 255]));
+        let mut out = Cursor::new(Vec::new());
+        img.write_to(&mut out, ImageFormat::Png).unwrap();
+        out.into_inner()
     }
 
-    images.sort_by(|a, b| natural_cmp(a, b));
-    images.dedup();
-    (if found_meta { Some(meta) } else { None }, images)
-}
+    #[tokio::test]
+    async fn cbr_and_cb7_report_clear_unsupported_format_errors() {
+        let tmp = TempDir::new().unwrap();
+        let cbr_path = tmp.path().join("Vol.01.cbr");
+        let cb7_path = tmp.path().join("Vol.02.cb7");
+        fs::write(&cbr_path, b"Rar!\x1a\x07\x00").unwrap();
+        fs::write(&cb7_path, b"7z\xbc\xaf\x27\x1c").unwrap();
 
-fn collect_opf_image_item(
-    elem: &quick_xml::events::BytesStart<'_>,
-    base_dir: &str,
-    images: &mut Vec<String>,
-) {
-    let mut href: Option<String> = None;
-    let mut media_type: Option<String> = None;
-    for attr in elem.attributes().flatten() {
-        let key = attr.key.local_name().as_ref().to_ascii_lowercase();
-        let val = attr.value.into_owned();
-        if key == "href" {
-            href = Some(val);
-        } else if key == "media-type" {
-            media_type = Some(val);
+        assert_eq!(
+            ComicFormatExt::from_path(&cbr_path),
+            Some(ComicFormatExt::Cbr)
+        );
+        assert_eq!(
+            ComicFormatExt::from_path(&cb7_path),
+            Some(ComicFormatExt::Cb7)
+        );
+
+        let reader = PureRustArchiveReader::new();
+        for p in [&cbr_path, &cb7_path] {
+            let err = reader
+                .inspect_source(ChapterSourceKind::ArchiveFile, &p.to_string_lossy())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DomainError::UnsupportedFormat(_)));
         }
+        let bytes_err = reader
+            .inspect_bytes("issue1.cbr", b"Rar!\x1a\x07\x00")
+            .await
+            .unwrap_err();
+        assert!(matches!(bytes_err, DomainError::UnsupportedFormat(_)));
     }
-    if let Some(h) = href {
-        let is_img = media_type
-            .as_deref()
-            .is_some_and(|m| m.starts_with("image/"))
-            || is_supported_image_name(&h);
-        if is_img {
-            let full = format!("{base_dir}{}", h.trim_start_matches("./"));
-            images.push(full);
+
+    #[tokio::test]
+    async fn inspect_probes_page_dimensions_for_cbz_and_image_folder() {
+        let tmp = TempDir::new().unwrap();
+        let p1 = tiny_png(320, 480);
+        let p2 = tiny_png(640, 480);
+
+        let cbz_path = tmp.path().join("test.cbz");
+        {
+            let f = File::create(&cbz_path).unwrap();
+            let mut zw = ZipWriter::new(f);
+            let opts = SimpleFileOptions::default();
+            zw.start_file("002.png", opts).unwrap();
+            zw.write_all(&p2).unwrap();
+            zw.start_file("001.png", opts).unwrap();
+            zw.write_all(&p1).unwrap();
+            zw.finish().unwrap();
         }
+
+        let reader = PureRustArchiveReader::new();
+        let cbz_ins = reader
+            .inspect_source(ChapterSourceKind::ArchiveFile, &cbz_path.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(cbz_ins.page_count, 2);
+        assert_eq!(cbz_ins.pages[0].entry_name, "001.png");
+        assert_eq!(cbz_ins.pages[0].width, Some(320));
+        assert_eq!(cbz_ins.pages[0].height, Some(480));
+        assert_eq!(cbz_ins.pages[1].width, Some(640));
+
+        let img_dir = tmp.path().join("Ch.1");
+        fs::create_dir_all(&img_dir).unwrap();
+        fs::write(img_dir.join("01.png"), &p1).unwrap();
+        fs::write(img_dir.join("02.png"), &p2).unwrap();
+
+        let dir_ins = reader
+            .inspect_source(
+                ChapterSourceKind::ImageDirectory,
+                &img_dir.to_string_lossy(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dir_ins.page_count, 2);
+        assert_eq!(dir_ins.pages[0].width, Some(320));
+        assert_eq!(dir_ins.pages[1].width, Some(640));
     }
 }

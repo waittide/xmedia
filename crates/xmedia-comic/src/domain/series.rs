@@ -59,6 +59,26 @@ impl ReadingDirection {
     }
 }
 
+impl From<xmedia_formats::comic::ComicReadingDirection> for ReadingDirection {
+    fn from(dir: xmedia_formats::comic::ComicReadingDirection) -> Self {
+        match dir {
+            xmedia_formats::comic::ComicReadingDirection::Rtl => Self::Rtl,
+            xmedia_formats::comic::ComicReadingDirection::Ltr => Self::Ltr,
+            xmedia_formats::comic::ComicReadingDirection::Webtoon => Self::Webtoon,
+        }
+    }
+}
+
+impl From<ReadingDirection> for xmedia_formats::comic::ComicReadingDirection {
+    fn from(dir: ReadingDirection) -> Self {
+        match dir {
+            ReadingDirection::Rtl => Self::Rtl,
+            ReadingDirection::Ltr => Self::Ltr,
+            ReadingDirection::Webtoon => Self::Webtoon,
+        }
+    }
+}
+
 pub const ONLINE_TRACKED_SERIES_DIR_PREFIX: &str = "online_tracked:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

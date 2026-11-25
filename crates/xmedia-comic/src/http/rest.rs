@@ -658,12 +658,7 @@ async fn upload_comic_archive(
     {
         let field_name = field.name().unwrap_or("").to_owned();
         if let Some(filename) = field.file_name().map(ToString::to_string) {
-            let lower = filename.to_ascii_lowercase();
-            if !(lower.ends_with(".cbz") || lower.ends_with(".zip") || lower.ends_with(".epub")) {
-                return Err(ApiError(DomainError::UnsupportedFormat(
-                    "only .cbz, .zip, and .epub comic archives are supported".into(),
-                )));
-            }
+            crate::application::catalog::validate_archive_filename(&filename)?;
             let ext = std::path::Path::new(&filename)
                 .extension()
                 .and_then(|s| s.to_str());

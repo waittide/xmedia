@@ -6,8 +6,8 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::id::{ChapterId, SeriesId};
-use crate::domain::natural::{build_chapter_sort_key, natural_cmp};
 use crate::domain::series::normalize_list;
+use xmedia_formats::comic::filename::{ComicChapterKind, build_chapter_sort_key, natural_cmp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -40,6 +40,16 @@ impl ChapterKind {
             Self::Volume => 0,
             Self::Chapter => 1,
             Self::Special => 2,
+        }
+    }
+}
+
+impl From<ComicChapterKind> for ChapterKind {
+    fn from(kind: ComicChapterKind) -> Self {
+        match kind {
+            ComicChapterKind::Volume => Self::Volume,
+            ComicChapterKind::Chapter => Self::Chapter,
+            ComicChapterKind::Special => Self::Special,
         }
     }
 }

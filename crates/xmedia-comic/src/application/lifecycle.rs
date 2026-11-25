@@ -17,9 +17,9 @@ use crate::application::ports::{
 };
 use crate::domain::chapter::Chapter;
 use crate::domain::id::SeriesId;
-use crate::domain::natural::build_chapter_sort_key;
 use crate::domain::repository::{ChapterRepository, ComicReadingRepository, SeriesRepository};
 use crate::domain::series::{Series, normalize_list};
+use xmedia_formats::comic::filename::build_chapter_sort_key;
 
 pub struct ComicDomainLifecycle {
     libraries: Arc<dyn LibraryRepository>,

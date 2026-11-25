@@ -2,6 +2,8 @@ mod mutations;
 mod queries;
 mod upload;
 
+pub(crate) use upload::validate_archive_filename;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -17,10 +19,10 @@ use crate::application::dto::{OnlineTrackedSeriesDto, SeriesSummaryDto, Taxonomy
 use crate::application::ports::{ArchiveReaderPort, ComicFileStoragePort, ThumbnailGeneratorPort};
 use crate::domain::chapter::Chapter;
 use crate::domain::id::{ChapterId, SeriesId};
-use crate::domain::natural::natural_cmp;
 use crate::domain::reading::{ChapterProgress, compute_continue_reading};
 use crate::domain::repository::{ChapterRepository, ComicReadingRepository, SeriesRepository};
 use crate::domain::series::Series;
+use xmedia_formats::comic::filename::natural_cmp;
 
 pub struct ComicCatalogService {
     pub(super) libraries: Arc<dyn LibraryRepository>,

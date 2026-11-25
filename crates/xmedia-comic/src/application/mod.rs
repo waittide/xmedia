@@ -1,6 +1,5 @@
 pub mod catalog;
 pub mod dto;
-pub mod filename_parser;
 pub mod lifecycle;
 pub mod online;
 pub mod opds;

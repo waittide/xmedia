@@ -10,8 +10,8 @@ use crate::application::dto::{
     SeriesSummaryDto, TaxonomyOverviewDto,
 };
 use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
-use crate::domain::natural::natural_cmp;
 use crate::domain::reading::{ChapterProgress, compute_continue_reading};
+use xmedia_formats::comic::filename::natural_cmp;
 
 use super::{ComicCatalogService, to_sorted_counts};
 

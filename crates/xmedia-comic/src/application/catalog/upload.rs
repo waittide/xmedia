@@ -1,11 +1,14 @@
+use std::path::Path;
+
 use jiff::Timestamp;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::user::{User, UserId, require_admin};
+use xmedia_formats::comic::ComicFormatExt;
+use xmedia_formats::comic::filename::parse_comic_chapter_filename;
 
 use crate::application::dto::{UploadArchiveInput, UploadArchivePathInput, UploadArchiveResultDto};
-use crate::application::filename_parser::parse_chapter_filename;
 use crate::application::lifecycle::{apply_comic_info_to_chapter, apply_comic_info_to_series};
 use crate::application::ports::{ArchiveInspection, StoredUploadFile};
 use crate::domain::chapter::{Chapter, ChapterSourceKind};
@@ -135,7 +138,7 @@ impl ComicCatalogService {
             return Ok(existing);
         }
 
-        let parsed = parse_chapter_filename(filename, 1);
+        let parsed = parse_comic_chapter_filename(filename, 1);
         let desired_title = series_title_override
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
@@ -173,12 +176,12 @@ impl ComicCatalogService {
     ) -> DomainResult<UploadArchiveResultDto> {
         let existing_chapters = self.chapters.list_by_series(series.id).await?;
         let fallback_num = (existing_chapters.len() + 1) as u32;
-        let parsed_with_index = parse_chapter_filename(filename, fallback_num);
+        let parsed_with_index = parse_comic_chapter_filename(filename, fallback_num);
 
         let mut chapter = Chapter::new(
             series.id,
             managed_lib.id,
-            parsed_with_index.kind,
+            parsed_with_index.kind.into(),
             parsed_with_index.number,
             parsed_with_index.volume_number,
             parsed_with_index.clean_title,
@@ -249,15 +252,15 @@ impl ComicCatalogService {
     }
 }
 
-fn validate_archive_filename(filename: &str) -> DomainResult<()> {
-    let lower_name = filename.to_lowercase();
-    if !(lower_name.ends_with(".cbz")
-        || lower_name.ends_with(".zip")
-        || lower_name.ends_with(".epub"))
-    {
-        return Err(DomainError::UnsupportedFormat(
+pub(crate) fn validate_archive_filename(filename: &str) -> DomainResult<()> {
+    match ComicFormatExt::from_path(Path::new(filename)) {
+        Some(fmt) if fmt.is_zip_based() => Ok(()),
+        Some(fmt) => Err(DomainError::UnsupportedFormat(format!(
+            ".{} comic archives require an external extractor and are not supported",
+            fmt.as_str()
+        ))),
+        None => Err(DomainError::UnsupportedFormat(
             "only .cbz, .zip, and .epub comic archives are supported".into(),
-        ));
+        )),
     }
-    Ok(())
 }

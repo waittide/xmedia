@@ -5,17 +5,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_formats::comic::filename::{
+    find_series_cover_path, natural_cmp, parse_comic_chapter_filename,
+};
+use xmedia_formats::comic::{ComicFormatExt, scan_comic_image_dir};
 
-use crate::application::filename_parser::parse_chapter_filename;
 use crate::application::ports::{
     ArchiveReaderPort, ComicScannerPort, ExistingChapterDigest, ScannedChapterEntry,
     ScannedSeriesEntry,
 };
 use crate::domain::chapter::ChapterSourceKind;
-use crate::domain::natural::natural_cmp;
-use crate::infra::archive::{
-    fast_file_fingerprint, is_supported_archive_path, is_supported_image_name,
-};
+use crate::infra::archive::fast_file_fingerprint;
 
 pub struct SmartComicScanner {
     archives: Arc<dyn ArchiveReaderPort>,
@@ -67,9 +67,9 @@ fn check_archive_unchanged(
     {
         return None;
     }
-    let parsed = parse_chapter_filename(display_name, fallback_index);
+    let parsed = parse_comic_chapter_filename(display_name, fallback_index);
     Some(ScannedChapterEntry {
-        kind: parsed.kind,
+        kind: parsed.kind.into(),
         number: parsed.number,
         volume_number: parsed.volume_number,
         title: parsed.clean_title,
@@ -166,7 +166,7 @@ fn discover_comic_layout_blocking(
                 series_cover_bytes,
                 candidates,
             });
-        } else if ft.is_file() && is_supported_archive_path(&path) {
+        } else if ft.is_file() && ComicFormatExt::from_path(&path).is_some() {
             standalone_paths.push(path);
         }
     }
@@ -237,7 +237,7 @@ impl ComicScannerPort for SmartComicScanner {
             let filename = cand.display_name.clone();
             let fallback_index = cand.fallback_index;
             if let Some(ch) = self.resolve_candidate(cand, known_chapters).await {
-                let parsed = parse_chapter_filename(&filename, fallback_index);
+                let parsed = parse_comic_chapter_filename(&filename, fallback_index);
                 let (series_title, synthetic_dir) = if ch.unchanged
                     && let Some(prev_dir) = ch
                         .preserved_series_source_dir
@@ -296,13 +296,20 @@ impl SmartComicScanner {
         }
 
         let source_path = cand.path.to_string_lossy().into_owned();
-        let parsed = parse_chapter_filename(&cand.display_name, cand.fallback_index);
+        let parsed = parse_comic_chapter_filename(&cand.display_name, cand.fallback_index);
 
-        let inspection = self
+        let inspection = match self
             .archives
             .inspect_source(cand.source_kind, &source_path)
             .await
-            .ok()?;
+        {
+            Ok(ins) => ins,
+            Err(DomainError::UnsupportedFormat(msg)) => {
+                tracing::debug!(path = %source_path, reason = %msg, "skipping unsupported comic archive during scan");
+                return None;
+            }
+            Err(_) => return None,
+        };
         if inspection.page_count == 0 {
             return None;
         }
@@ -330,7 +337,7 @@ impl SmartComicScanner {
             .unwrap_or((None, None));
 
         Some(ScannedChapterEntry {
-            kind: parsed.kind,
+            kind: parsed.kind.into(),
             number: parsed.number,
             volume_number: parsed.volume_number,
             title: parsed.clean_title,
@@ -349,38 +356,18 @@ impl SmartComicScanner {
 
 fn find_series_cover_bytes(series_dir: &Path) -> Option<Vec<u8>> {
     const MAX_SERIES_COVER_BYTES: u64 = 32 * 1024 * 1024;
-    const CANDIDATES: &[&str] = &[
-        "cover.jpg",
-        "cover.jpeg",
-        "cover.png",
-        "cover.webp",
-        "folder.jpg",
-        "folder.jpeg",
-        "folder.png",
-        "folder.webp",
-    ];
+    let candidate = find_series_cover_path(&series_dir.join("_probe"))?;
     let canon_dir = fs::canonicalize(series_dir).ok()?;
-    for name in CANDIDATES {
-        let candidate = series_dir.join(name);
-        let Ok(meta) = fs::symlink_metadata(&candidate) else {
-            continue;
-        };
-        if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > MAX_SERIES_COVER_BYTES {
-            continue;
-        }
-        let Ok(canon_file) = fs::canonicalize(&candidate) else {
-            continue;
-        };
-        if !canon_file.starts_with(&canon_dir) {
-            continue;
-        }
-        if let Ok(bytes) = fs::read(&canon_file)
-            && !bytes.is_empty()
-        {
-            return Some(bytes);
-        }
+    let meta = fs::symlink_metadata(&candidate).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > MAX_SERIES_COVER_BYTES {
+        return None;
     }
-    None
+    let canon_file = fs::canonicalize(&candidate).ok()?;
+    if !canon_file.starts_with(&canon_dir) {
+        return None;
+    }
+    let bytes = fs::read(&canon_file).ok()?;
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 fn walk_series_tree(
@@ -392,8 +379,12 @@ fn walk_series_tree(
     if depth > 4 {
         return Ok(());
     }
+    if scan_comic_image_dir(dir).is_some() {
+        image_dirs.push(dir.to_path_buf());
+        return Ok(());
+    }
+
     let entries = read_sorted_dir(dir)?;
-    let mut direct_images = 0_usize;
     let mut subdirs = Vec::new();
 
     for entry in entries {
@@ -406,30 +397,12 @@ fn walk_series_tree(
         };
         let path = entry.path();
         if ft.is_file() {
-            if is_supported_archive_path(&path) {
+            if ComicFormatExt::from_path(&path).is_some() {
                 archives.push(path);
-            } else if is_supported_image_name(&name)
-                && !matches!(
-                    name.to_ascii_lowercase().as_str(),
-                    "cover.jpg"
-                        | "cover.jpeg"
-                        | "cover.png"
-                        | "cover.webp"
-                        | "folder.jpg"
-                        | "folder.jpeg"
-                        | "folder.png"
-                        | "folder.webp"
-                )
-            {
-                direct_images += 1;
             }
         } else if ft.is_dir() {
             subdirs.push(path);
         }
-    }
-
-    if direct_images > 0 && (depth > 0 || (subdirs.is_empty() && archives.is_empty())) {
-        image_dirs.push(dir.to_path_buf());
     }
 
     for sub in subdirs {
