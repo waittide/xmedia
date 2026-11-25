@@ -5,6 +5,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { resolveStoredAppIcon } from '@/theme/appIcons'
 import { normalizeThemeMode, resolveSeedColor } from '@/theme/md3'
+import {
+  PREFS_STORAGE_KEY,
+  readStoredPreferencesRaw,
+  type VisualPreferencesSnapshot,
+} from '@/theme/preferencesStorage'
 import type {
   ComicReaderPreferences,
   LocaleCode,
@@ -14,12 +19,7 @@ import type {
   VideoPlaybackPreferences,
 } from '@/types/api'
 
-export const PREFS_STORAGE_KEY = 'xmedia.preferences'
-
-export type VisualPreferencesSnapshot = Pick<
-  UserPreferences,
-  'theme_mode' | 'seed_color' | 'app_icon' | 'locale'
->
+export { PREFS_STORAGE_KEY, readStoredPreferencesRaw, type VisualPreferencesSnapshot }
 
 export const DEFAULT_BOOK_PREFS: ReaderPreferences = {
   font_family: 'system-ui',
@@ -52,18 +52,6 @@ export const DEFAULT_VIDEO_PREFS: VideoPlaybackPreferences = {
   preferred_subtitle_lang: null,
   autoplay_next: true,
   playback_rate: 1.0,
-}
-
-export function readStoredPreferencesRaw(): Partial<UserPreferences> {
-  try {
-    const raw = localStorage.getItem(PREFS_STORAGE_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    return parsed as Partial<UserPreferences>
-  } catch {
-    return {}
-  }
 }
 
 function fallbackVisualSnapshot(): VisualPreferencesSnapshot {

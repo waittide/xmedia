@@ -21,11 +21,23 @@ import {
 import { i18n, setAppLocale } from '@/i18n'
 import { useAppClientStore } from '@/stores/appServers'
 import {
+  PREFS_STORAGE_KEY,
   readStoredPreferencesRaw,
-  usePreferencesStore,
+  writeStoredVisualPreferences,
   type VisualPreferencesSnapshot,
-} from '@/stores/preferences'
+} from '@/theme/preferencesStorage'
 import type { LocaleCode, UserPreferences } from '@/types/api'
+
+export interface ThemeCloudSyncBridge {
+  onVisualChange: () => void
+  onHydrateUser: (prefs: UserPreferences) => void
+}
+
+let cloudSyncBridge: ThemeCloudSyncBridge | null = null
+
+export function registerThemeCloudSync(bridge: ThemeCloudSyncBridge | null): void {
+  cloudSyncBridge = bridge
+}
 
 function loadInitialVisualPrefs(): VisualPreferencesSnapshot {
   const parsed = readStoredPreferencesRaw()
@@ -38,7 +50,6 @@ function loadInitialVisualPrefs(): VisualPreferencesSnapshot {
 }
 
 export const useThemeStore = defineStore('theme', () => {
-  const preferencesStore = usePreferencesStore()
   const appClientStore = useAppClientStore()
   const initial = loadInitialVisualPrefs()
 
@@ -47,14 +58,14 @@ export const useThemeStore = defineStore('theme', () => {
   const appIcon = ref<AppIconId | null>(resolveStoredAppIcon(initial.app_icon))
   const locale = ref<LocaleCode>(initial.locale)
 
-  // Register visual snapshot getter with preferences store so domain/layout changes
-  // persist & sync cleanly without touching visual watchers or DOM CSS variables.
-  preferencesStore.registerVisualProvider(() => ({
-    theme_mode: themeMode.value,
-    seed_color: seedColor.value,
-    app_icon: appIcon.value,
-    locale: locale.value,
-  }))
+  function getVisualSnapshot(): VisualPreferencesSnapshot {
+    return {
+      theme_mode: themeMode.value,
+      seed_color: seedColor.value,
+      app_icon: appIcon.value,
+      locale: locale.value,
+    }
+  }
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   const prefersDark = ref<boolean>(mediaQuery.matches)
@@ -96,9 +107,14 @@ export const useThemeStore = defineStore('theme', () => {
     applyMd3Theme(seed, dark, activeSchemePair.value)
   }
 
+  function persistAndNotifyVisualChange(): void {
+    writeStoredVisualPreferences(getVisualSnapshot())
+    cloudSyncBridge?.onVisualChange()
+  }
+
   function applyVisualChange(): void {
     applyThemeIfChanged()
-    preferencesStore.persistAndSync()
+    persistAndNotifyVisualChange()
   }
 
   function hydrateFromUser(prefs: UserPreferences): void {
@@ -107,10 +123,10 @@ export const useThemeStore = defineStore('theme', () => {
     appIcon.value = resolveStoredAppIcon(prefs.app_icon)
     locale.value = prefs.locale
 
-    preferencesStore.hydrateDomainPreferences(prefs)
     applyThemeIfChanged()
     setAppLocale(locale.value)
-    preferencesStore.persistLocal()
+    writeStoredVisualPreferences(getVisualSnapshot())
+    cloudSyncBridge?.onHydrateUser(prefs)
   }
 
   function setThemeMode(mode: ThemeMode): void {
@@ -135,18 +151,37 @@ export const useThemeStore = defineStore('theme', () => {
 
   function setAppIcon(next: AppIconId | null): void {
     appIcon.value = resolveStoredAppIcon(next)
-    preferencesStore.persistAndSync()
+    persistAndNotifyVisualChange()
   }
 
   function resetAppIcon(): void {
     appIcon.value = null
-    preferencesStore.persistAndSync()
+    persistAndNotifyVisualChange()
   }
 
   function setLocale(next: LocaleCode): void {
     locale.value = next
     setAppLocale(locale.value)
-    preferencesStore.persistAndSync()
+    persistAndNotifyVisualChange()
+  }
+
+  if (typeof window !== 'undefined') {
+    const onStorageChange = (ev: StorageEvent): void => {
+      if (ev.key !== null && ev.key !== PREFS_STORAGE_KEY) return
+      const next = loadInitialVisualPrefs()
+      themeMode.value = next.theme_mode
+      seedColor.value = next.seed_color ?? null
+      appIcon.value = resolveStoredAppIcon(next.app_icon)
+      if (next.locale && next.locale !== locale.value) {
+        locale.value = next.locale
+        setAppLocale(locale.value)
+      }
+      applyThemeIfChanged()
+    }
+    window.addEventListener('storage', onStorageChange)
+    onScopeDispose(() => {
+      window.removeEventListener('storage', onStorageChange)
+    })
   }
 
   watch(
@@ -184,6 +219,7 @@ export const useThemeStore = defineStore('theme', () => {
     locale,
     isDark,
     activeScheme,
+    getVisualSnapshot,
     hydrateFromUser,
     setThemeMode,
     setSeedColor,
