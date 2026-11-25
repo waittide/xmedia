@@ -5953,6 +5953,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
  "clap",
  "futures-core",
  "mime_guess",
@@ -5972,6 +5973,7 @@ dependencies = [
  "xmedia-core",
  "xmedia-music",
  "xmedia-video",
+ "zip",
 ]
 
 [[package]]
@@ -5983,11 +5985,11 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "form_urlencoded",
+ "futures-core",
  "hex",
  "jiff",
  "lopdf",
  "md-5",
- "quick-xml",
  "regex",
  "serde",
  "serde_json",
@@ -5999,6 +6001,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "xmedia-core",
+ "xmedia-formats",
  "xmedia-source",
  "zip",
 ]
@@ -6014,7 +6017,6 @@ dependencies = [
  "form_urlencoded",
  "image",
  "jiff",
- "quick-xml",
  "scraper",
  "serde",
  "serde_json",
@@ -6025,6 +6027,7 @@ dependencies = [
  "tracing",
  "uuid",
  "xmedia-core",
+ "xmedia-formats",
  "xmedia-source",
  "zip",
 ]
@@ -6095,7 +6098,6 @@ dependencies = [
  "form_urlencoded",
  "hex",
  "jiff",
- "lofty",
  "md-5",
  "reqwest",
  "serde",
@@ -6108,6 +6110,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "xmedia-core",
+ "xmedia-formats",
  "xmedia-source",
 ]
 
@@ -6188,7 +6191,6 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "jiff",
- "quick-xml",
  "regex",
  "reqwest",
  "serde",
@@ -6202,6 +6204,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "xmedia-core",
+ "xmedia-formats",
  "xmedia-source",
 ]
 
