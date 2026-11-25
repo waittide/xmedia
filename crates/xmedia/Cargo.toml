@@ -24,6 +24,7 @@ db-mysql = ["xmedia-core/db-mysql", "toasty/mysql"]
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+bytes.workspace = true
 clap.workspace = true
 futures-core.workspace = true
 mime_guess.workspace = true
@@ -46,3 +47,4 @@ xmedia-video = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 tower.workspace = true
+zip.workspace = true

@@ -1161,4 +1161,153 @@ mod gateway_integration_tests {
         assert_eq!(st_del_user, StatusCode::OK);
         assert_eq!(del_val["ok"], true);
     }
+
+    #[tokio::test]
+    async fn direct_rust_imports_and_ip_scoped_login_rate_limit_work_end_to_end() {
+        use axum::extract::ConnectInfo;
+        use bytes::Bytes;
+        use std::io::{Cursor, Write};
+        use std::net::SocketAddr;
+        use xmedia_core::application::dto::SetupAdminInput;
+        use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("xmedia_direct.db");
+        let app_instance = XMediaApp::connect_and_init(XMediaConfig {
+            data_dir: tmp.path().to_path_buf(),
+            database_url: format!("sqlite:{}", db_path.display()),
+            secret: "direct-import-gateway-secret-32b!".into(),
+            jwt_ttl_secs: 3600,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+
+        let session = app_instance
+            .auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: Some("Admin".into()),
+                password: "password123".into(),
+            })
+            .await
+            .unwrap();
+        let admin_user = app_instance
+            .auth
+            .authenticate_jwt(&session.token)
+            .await
+            .unwrap();
+
+        // 1. Direct book import without HTTP loopback
+        let (book_id, book_title) = app_instance
+            .import_local_book(
+                &admin_user,
+                "Direct Book Sample.txt".into(),
+                Bytes::from_static(b"Chapter 1\n\nHello direct Rust book import!\n"),
+            )
+            .await
+            .unwrap();
+        assert!(!book_id.is_empty());
+        assert_eq!(book_title, "Direct Book Sample");
+
+        // 2. Direct comic CBZ import without HTTP loopback (1x1 PNG inside CBZ)
+        let tiny_png: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T', 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let mut cbz_buf = Vec::new();
+        {
+            let mut zip = ZipWriter::new(Cursor::new(&mut cbz_buf));
+            zip.start_file("001.png", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(tiny_png).unwrap();
+            zip.finish().unwrap();
+        }
+        let (series_id, series_title) = app_instance
+            .import_local_comic(
+                &admin_user,
+                "Direct Manga Vol.01.cbz".into(),
+                Bytes::from(cbz_buf),
+            )
+            .await
+            .unwrap();
+        assert!(!series_id.is_empty());
+        assert!(!series_title.is_empty());
+
+        // 3. Direct WAV audio track import without HTTP loopback
+        let sample_rate: u32 = 8000;
+        let num_samples: u32 = 8000; // 1 second mono 16-bit PCM
+        let data_bytes = num_samples * 2;
+        let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        wav.resize(44 + data_bytes as usize, 0u8);
+
+        let (track_id, track_title) = app_instance
+            .import_local_track(&admin_user, "Direct Song.wav".into(), Bytes::from(wav))
+            .await
+            .unwrap();
+        assert!(!track_id.is_empty());
+        assert_eq!(track_title, "Direct Song");
+
+        // 4. Verify IP-scoped login rate limiting on /api/v1/auth/login:
+        // Attacker on IP A spamming failed "admin" logins gets 429, while legitimate admin on IP B still logs in with 200 OK!
+        let router = app_instance.router;
+        let attacker_addr: SocketAddr = "198.51.100.10:50000".parse().unwrap();
+        let legit_addr: SocketAddr = "198.51.100.20:50001".parse().unwrap();
+
+        let mut hit_429 = false;
+        for _ in 0..25 {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"username":"admin","password":"wrong-password"}"#,
+                ))
+                .unwrap();
+            req.extensions_mut().insert(ConnectInfo(attacker_addr));
+            let res = router.clone().oneshot(req).await.unwrap();
+            if res.status() == StatusCode::TOO_MANY_REQUESTS {
+                hit_429 = true;
+                break;
+            }
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert!(
+            hit_429,
+            "attacker IP must be rate-limited after repeated failures"
+        );
+
+        let mut legit_req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"username":"admin","password":"password123"}"#,
+            ))
+            .unwrap();
+        legit_req.extensions_mut().insert(ConnectInfo(legit_addr));
+        let legit_res = router.oneshot(legit_req).await.unwrap();
+        assert_eq!(
+            legit_res.status(),
+            StatusCode::OK,
+            "legitimate client from distinct IP must not be locked out by attacker IP"
+        );
+    }
 }

@@ -3,7 +3,7 @@ pub mod static_files;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
@@ -79,6 +79,77 @@ pub struct XMediaApp {
     pub events: Arc<BroadcastEventHub>,
     pub enabled_modules: Vec<MediaKind>,
     pub router: Router,
+    temp_dir: PathBuf,
+    #[cfg(feature = "book")]
+    book_catalog: Arc<xmedia_book::application::catalog::BookCatalogService>,
+    #[cfg(feature = "comic")]
+    comic_catalog: Arc<xmedia_comic::application::catalog::ComicCatalogService>,
+    #[cfg(feature = "music")]
+    music_ingest: Arc<xmedia_music::application::ingest::MusicIngestService>,
+}
+
+struct ScopedImportTempFile {
+    path: PathBuf,
+}
+
+impl ScopedImportTempFile {
+    async fn write_in(
+        dir: &Path,
+        filename: &str,
+        data: &[u8],
+    ) -> xmedia_core::domain::error::DomainResult<Self> {
+        use xmedia_core::domain::error::DomainError;
+
+        if data.is_empty() {
+            return Err(DomainError::Validation(
+                "imported file payload cannot be empty".into(),
+            ));
+        }
+        tokio::fs::create_dir_all(dir).await.map_err(|e| {
+            DomainError::Storage(format!("failed to prepare import temp directory: {e}"))
+        })?;
+        let clean_ext = Path::new(filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| {
+                e.trim()
+                    .trim_start_matches('.')
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+            })
+            .filter(|e| !e.is_empty());
+        let temp_name = match clean_ext {
+            Some(ext) => format!("xmedia_import_{}.{ext}", uuid::Uuid::now_v7()),
+            None => format!("xmedia_import_{}.tmp", uuid::Uuid::now_v7()),
+        };
+        let path = dir.join(temp_name);
+        let guard = Self { path: path.clone() };
+        tokio::fs::write(&path, data)
+            .await
+            .map_err(|e| DomainError::Storage(format!("failed to write import temp file: {e}")))?;
+        Ok(guard)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScopedImportTempFile {
+    fn drop(&mut self) {
+        let path = std::mem::take(&mut self.path);
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(move || {
+                let _ = std::fs::remove_file(&path);
+            });
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 impl XMediaApp {
@@ -113,7 +184,8 @@ impl XMediaApp {
         std::fs::create_dir_all(&cfg.data_dir).with_context(|| {
             format!("failed to create data directory {}", cfg.data_dir.display())
         })?;
-        if let Err(err) = xmedia_core::http::configure_temp_dir(cfg.data_dir.join("tmp")) {
+        let temp_dir = cfg.data_dir.join("tmp");
+        if let Err(err) = xmedia_core::http::configure_temp_dir(temp_dir.clone()) {
             tracing::warn!(error = %err, "failed to prepare application temp directory");
         }
         ensure_sqlite_parent_dir(&cfg.database_url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -207,6 +279,12 @@ impl XMediaApp {
         let mut root_protocols = Router::new();
         #[allow(unused_mut)]
         let mut backfill_batches: Vec<(MediaKind, Vec<uuid::Uuid>)> = Vec::new();
+        #[cfg(feature = "book")]
+        let book_catalog;
+        #[cfg(feature = "comic")]
+        let comic_catalog;
+        #[cfg(feature = "music")]
+        let music_ingest;
 
         #[cfg(feature = "book")]
         {
@@ -221,6 +299,7 @@ impl XMediaApp {
                 opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            book_catalog = book_services.catalog.clone();
             libraries
                 .ensure_managed_library(MediaKind::Book)
                 .await
@@ -257,6 +336,7 @@ impl XMediaApp {
                 opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            comic_catalog = comic_services.catalog.clone();
             libraries
                 .ensure_managed_library(MediaKind::Comic)
                 .await
@@ -295,6 +375,7 @@ impl XMediaApp {
                 opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            music_ingest = music_services.ingest.clone();
             libraries
                 .ensure_managed_library(MediaKind::Music)
                 .await
@@ -454,7 +535,105 @@ impl XMediaApp {
             events,
             enabled_modules,
             router,
+            temp_dir,
+            #[cfg(feature = "book")]
+            book_catalog,
+            #[cfg(feature = "comic")]
+            comic_catalog,
+            #[cfg(feature = "music")]
+            music_ingest,
         })
+    }
+
+    pub async fn import_local_book(
+        &self,
+        actor: &xmedia_core::domain::user::User,
+        filename: String,
+        data: bytes::Bytes,
+    ) -> xmedia_core::domain::error::DomainResult<(String, String)> {
+        #[cfg(feature = "book")]
+        {
+            let temp = ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
+            let book = self
+                .book_catalog
+                .upload_book_from_path(actor, &filename, temp.path())
+                .await?;
+            Ok((book.id.to_string(), book.metadata.title))
+        }
+        #[cfg(not(feature = "book"))]
+        {
+            let _ = (&self.temp_dir, actor, filename, data);
+            Err(xmedia_core::domain::error::DomainError::UnsupportedFormat(
+                "book module is not enabled".into(),
+            ))
+        }
+    }
+
+    pub async fn import_local_comic(
+        &self,
+        actor: &xmedia_core::domain::user::User,
+        filename: String,
+        data: bytes::Bytes,
+    ) -> xmedia_core::domain::error::DomainResult<(String, String)> {
+        #[cfg(feature = "comic")]
+        {
+            let temp = ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
+            let uploaded = self
+                .comic_catalog
+                .upload_archive_from_path(
+                    actor,
+                    xmedia_comic::application::dto::UploadArchivePathInput {
+                        filename,
+                        temp_path: temp.path().to_path_buf(),
+                        target_series_id: None,
+                        series_title_override: None,
+                    },
+                )
+                .await?;
+            Ok((uploaded.series_id.to_string(), uploaded.series_title))
+        }
+        #[cfg(not(feature = "comic"))]
+        {
+            let _ = (&self.temp_dir, actor, filename, data);
+            Err(xmedia_core::domain::error::DomainError::UnsupportedFormat(
+                "comic module is not enabled".into(),
+            ))
+        }
+    }
+
+    pub async fn import_local_track(
+        &self,
+        actor: &xmedia_core::domain::user::User,
+        filename: String,
+        data: bytes::Bytes,
+    ) -> xmedia_core::domain::error::DomainResult<(String, String)> {
+        #[cfg(feature = "music")]
+        {
+            let temp = ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
+            let batch = self
+                .music_ingest
+                .upload_files_from_paths(
+                    actor,
+                    vec![xmedia_music::application::dto::UploadFilePathItem {
+                        filename,
+                        temp_path: temp.path().to_path_buf(),
+                    }],
+                )
+                .await?;
+            let track = batch.uploaded_tracks.into_iter().next().ok_or_else(|| {
+                xmedia_core::domain::error::DomainError::Validation(
+                    "no audio track produced from imported payload".into(),
+                )
+            })?;
+            Ok((track.id.to_string(), track.title))
+        }
+        #[cfg(not(feature = "music"))]
+        {
+            let _ = (&self.temp_dir, actor, filename, data);
+            Err(xmedia_core::domain::error::DomainError::UnsupportedFormat(
+                "music module is not enabled".into(),
+            ))
+        }
     }
 }
 
