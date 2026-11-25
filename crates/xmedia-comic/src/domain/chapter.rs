@@ -2,12 +2,13 @@ use std::cmp::Ordering;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
+use xmedia_formats::comic::filename::{ComicChapterKind, build_chapter_sort_key, natural_cmp};
 
 use crate::domain::id::{ChapterId, SeriesId};
 use crate::domain::series::normalize_list;
-use xmedia_formats::comic::filename::{ComicChapterKind, build_chapter_sort_key, natural_cmp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -82,16 +83,42 @@ impl ChapterSourceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OnlineTrackedChapterRef {
-    pub source_id: uuid::Uuid,
+pub struct OnlineTrackedChapterMeta {
+    pub source_id: Uuid,
     pub comic_url: String,
     #[serde(default)]
     pub toc_url: String,
     pub chapter_url: String,
     #[serde(default)]
-    pub storage_key: Option<String>,
-    #[serde(default)]
-    pub cached: bool,
+    pub cached_archive_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChapterSource {
+    Archive { path: String },
+    ImageFolder { path: String },
+    OnlineTracked(OnlineTrackedChapterMeta),
+}
+
+impl ChapterSource {
+    pub fn from_local_kind(kind: ChapterSourceKind, path: String) -> DomainResult<Self> {
+        match kind {
+            ChapterSourceKind::ArchiveFile => Ok(Self::Archive { path }),
+            ChapterSourceKind::ImageDirectory => Ok(Self::ImageFolder { path }),
+            ChapterSourceKind::OnlineTracked => Err(DomainError::Validation(
+                "online_tracked requires OnlineTrackedChapterMeta".into(),
+            )),
+        }
+    }
+
+    pub fn kind(&self) -> ChapterSourceKind {
+        match self {
+            Self::Archive { .. } => ChapterSourceKind::ArchiveFile,
+            Self::ImageFolder { .. } => ChapterSourceKind::ImageDirectory,
+            Self::OnlineTracked(_) => ChapterSourceKind::OnlineTracked,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,8 +132,7 @@ pub struct Chapter {
     pub title: String,
     pub sort_key: String,
     pub page_count: u32,
-    pub source_kind: ChapterSourceKind,
-    pub source_path: String,
+    pub source: ChapterSource,
     pub file_size: u64,
     pub file_hash: String,
     pub cover_path: Option<String>,
@@ -139,8 +165,7 @@ impl Chapter {
         volume_number: Option<f64>,
         title: String,
         page_count: u32,
-        source_kind: ChapterSourceKind,
-        source_path: String,
+        source: ChapterSource,
         file_size: u64,
         file_hash: String,
     ) -> DomainResult<Self> {
@@ -171,8 +196,7 @@ impl Chapter {
             title: clean_title,
             sort_key,
             page_count,
-            source_kind,
-            source_path,
+            source,
             file_size,
             file_hash,
             cover_path: None,
@@ -185,54 +209,178 @@ impl Chapter {
         })
     }
 
+    pub fn new_online_tracked(
+        series_id: SeriesId,
+        library_id: LibraryId,
+        number: f64,
+        title: String,
+        meta: OnlineTrackedChapterMeta,
+    ) -> DomainResult<Self> {
+        Self::new(
+            series_id,
+            library_id,
+            ChapterKind::Chapter,
+            number,
+            None,
+            title,
+            0,
+            ChapterSource::OnlineTracked(meta),
+            0,
+            String::new(),
+        )
+    }
+
+    pub fn source_kind(&self) -> ChapterSourceKind {
+        self.source.kind()
+    }
+
     pub fn is_online_tracked(&self) -> bool {
-        self.source_kind == ChapterSourceKind::OnlineTracked
+        matches!(self.source, ChapterSource::OnlineTracked(_))
     }
 
-    pub fn online_tracking(&self) -> Option<OnlineTrackedChapterRef> {
-        if self.source_kind != ChapterSourceKind::OnlineTracked {
-            return None;
+    pub fn online_tracking(&self) -> Option<&OnlineTrackedChapterMeta> {
+        match &self.source {
+            ChapterSource::OnlineTracked(meta) => Some(meta),
+            ChapterSource::Archive { .. } | ChapterSource::ImageFolder { .. } => None,
         }
-        serde_json::from_str::<OnlineTrackedChapterRef>(&self.source_path).ok()
     }
 
-    pub fn set_online_tracking(&mut self, info: &OnlineTrackedChapterRef) -> DomainResult<()> {
-        self.source_kind = ChapterSourceKind::OnlineTracked;
-        self.source_path = serde_json::to_string(info)
-            .map_err(|e| DomainError::Validation(format!("serialize tracked chapter ref: {e}")))?;
-        Ok(())
+    pub fn local_path(&self) -> Option<&str> {
+        match &self.source {
+            ChapterSource::Archive { path } | ChapterSource::ImageFolder { path } => {
+                Some(path.as_str())
+            }
+            ChapterSource::OnlineTracked(_) => None,
+        }
     }
 
     /// Returns the managed archive path on disk if this chapter owns a local archive file.
-    pub fn managed_file_path(&self) -> Option<String> {
-        match self.source_kind {
-            ChapterSourceKind::ArchiveFile => Some(self.source_path.clone()),
-            ChapterSourceKind::ImageDirectory => None,
-            ChapterSourceKind::OnlineTracked => {
-                self.online_tracking().and_then(|info| info.storage_key)
-            }
+    pub fn managed_file_path(&self) -> Option<&str> {
+        match &self.source {
+            ChapterSource::Archive { path } => Some(path.as_str()),
+            ChapterSource::ImageFolder { .. } => None,
+            ChapterSource::OnlineTracked(meta) => meta.cached_archive_path.as_deref(),
         }
     }
 
     /// Returns `(effective_kind, fs_path)` for reading pages/archives when backed by local disk.
-    pub fn resolved_local_source(&self) -> Option<(ChapterSourceKind, String)> {
-        match self.source_kind {
-            ChapterSourceKind::ArchiveFile => {
-                Some((ChapterSourceKind::ArchiveFile, self.source_path.clone()))
+    pub fn resolved_local_source(&self) -> Option<(ChapterSourceKind, &str)> {
+        match &self.source {
+            ChapterSource::Archive { path } => {
+                Some((ChapterSourceKind::ArchiveFile, path.as_str()))
             }
-            ChapterSourceKind::ImageDirectory => {
-                Some((ChapterSourceKind::ImageDirectory, self.source_path.clone()))
+            ChapterSource::ImageFolder { path } => {
+                Some((ChapterSourceKind::ImageDirectory, path.as_str()))
             }
-            ChapterSourceKind::OnlineTracked => {
-                let info = self.online_tracking()?;
-                if info.cached
-                    && let Some(key) = info.storage_key
-                {
-                    return Some((ChapterSourceKind::ArchiveFile, key));
-                }
-                None
-            }
+            ChapterSource::OnlineTracked(meta) => meta
+                .cached_archive_path
+                .as_deref()
+                .map(|path| (ChapterSourceKind::ArchiveFile, path)),
         }
+    }
+
+    pub fn mark_cached_archive(
+        &mut self,
+        archive_path: String,
+        page_count: u32,
+        file_size: u64,
+        file_hash: String,
+        now: Timestamp,
+    ) -> DomainResult<()> {
+        let ChapterSource::OnlineTracked(ref mut meta) = self.source else {
+            return Err(DomainError::Validation(
+                "cannot mark non-tracked chapter as cached".into(),
+            ));
+        };
+        meta.cached_archive_path = Some(archive_path);
+        self.page_count = page_count;
+        self.file_size = file_size;
+        self.file_hash = file_hash;
+        self.is_missing = false;
+        self.updated_at = now;
+        Ok(())
+    }
+
+    pub fn mark_missing(&mut self, now: Timestamp) {
+        self.is_missing = true;
+        self.updated_at = now;
+    }
+
+    pub fn mark_present(&mut self, now: Timestamp) {
+        self.is_missing = false;
+        self.updated_at = now;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_scanned_metrics(
+        &mut self,
+        kind: ChapterKind,
+        number: f64,
+        volume_number: Option<f64>,
+        title: String,
+        page_count: u32,
+        file_size: u64,
+        file_hash: String,
+        now: Timestamp,
+    ) {
+        self.is_missing = false;
+        self.kind = kind;
+        self.number = number;
+        self.volume_number = volume_number;
+        self.title = title.trim().to_owned();
+        self.page_count = page_count;
+        self.file_size = file_size;
+        self.file_hash = file_hash;
+        self.refresh_sort_key();
+        self.updated_at = now;
+    }
+
+    pub fn migrate_local_source(
+        &mut self,
+        series_id: SeriesId,
+        source: ChapterSource,
+        page_count: u32,
+        file_size: u64,
+        file_hash: String,
+        now: Timestamp,
+    ) -> Option<SeriesId> {
+        let prev_series = (self.series_id != series_id).then_some(self.series_id);
+        self.series_id = series_id;
+        self.source = source;
+        self.is_missing = false;
+        self.page_count = page_count;
+        self.file_size = file_size;
+        self.file_hash = file_hash;
+        self.updated_at = now;
+        prev_series
+    }
+
+    pub fn reassign_series(&mut self, series_id: SeriesId, now: Timestamp) -> Option<SeriesId> {
+        if self.series_id == series_id {
+            None
+        } else {
+            let prev = self.series_id;
+            self.series_id = series_id;
+            self.updated_at = now;
+            Some(prev)
+        }
+    }
+
+    pub fn set_cover(&mut self, cover_path: String) -> bool {
+        if self.cover_path.as_deref() == Some(cover_path.as_str()) {
+            return false;
+        }
+        self.cover_path = Some(cover_path);
+        true
+    }
+
+    pub fn refresh_sort_key(&mut self) {
+        self.sort_key = build_chapter_sort_key(
+            self.kind.sort_rank(),
+            self.volume_number,
+            self.number,
+            &self.title,
+        );
     }
 
     pub fn apply_patch(&mut self, patch: ChapterMetadataPatch) -> DomainResult<()> {
@@ -269,12 +417,7 @@ impl Chapter {
         if let Some(pencillers) = patch.pencillers {
             self.pencillers = normalize_list(pencillers);
         }
-        self.sort_key = build_chapter_sort_key(
-            self.kind.sort_rank(),
-            self.volume_number,
-            self.number,
-            &self.title,
-        );
+        self.refresh_sort_key();
         self.updated_at = Timestamp::now();
         Ok(())
     }
@@ -304,8 +447,9 @@ mod tests {
             vol,
             title.to_string(),
             10,
-            ChapterSourceKind::ArchiveFile,
-            format!("{title}.cbz"),
+            ChapterSource::Archive {
+                path: format!("{title}.cbz"),
+            },
             100,
             "hash".into(),
         )
@@ -322,7 +466,6 @@ mod tests {
             mk_chapter(Some(0.0), 1.5, "Ch 1.5"),
         ];
 
-        // Verify antisymmetry and transitivity across all triples
         for a in &items {
             assert_eq!(a.cmp_order(a), Ordering::Equal);
             for b in &items {

@@ -1,5 +1,6 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 
@@ -79,14 +80,28 @@ impl From<ReadingDirection> for xmedia_formats::comic::ComicReadingDirection {
     }
 }
 
-pub const ONLINE_TRACKED_SERIES_DIR_PREFIX: &str = "online_tracked:";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OnlineTrackedSeriesRef {
-    pub source_id: uuid::Uuid,
+pub struct OnlineTrackedSeriesMeta {
+    pub source_id: Uuid,
     pub comic_url: String,
     #[serde(default)]
     pub toc_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SeriesSource {
+    Local { source_dir: String },
+    OnlineTracked(OnlineTrackedSeriesMeta),
+}
+
+impl SeriesSource {
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Local { .. } => "local",
+            Self::OnlineTracked(_) => "online_tracked",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,8 +123,9 @@ pub struct Series {
     pub language: Option<String>,
     pub year: Option<i32>,
     pub cover_path: Option<String>,
+    pub cover_is_custom: bool,
     pub chapter_count: u32,
-    pub source_dir: String,
+    pub source: SeriesSource,
     pub metadata_locked: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
@@ -135,7 +151,27 @@ pub struct SeriesMetadataPatch {
 }
 
 impl Series {
-    pub fn new(library_id: LibraryId, title: String, source_dir: String) -> DomainResult<Self> {
+    pub fn new_local(
+        library_id: LibraryId,
+        title: String,
+        source_dir: String,
+    ) -> DomainResult<Self> {
+        Self::with_source(library_id, title, SeriesSource::Local { source_dir })
+    }
+
+    pub fn new_online_tracked(
+        library_id: LibraryId,
+        title: String,
+        meta: OnlineTrackedSeriesMeta,
+    ) -> DomainResult<Self> {
+        Self::with_source(library_id, title, SeriesSource::OnlineTracked(meta))
+    }
+
+    fn with_source(
+        library_id: LibraryId,
+        title: String,
+        source: SeriesSource,
+    ) -> DomainResult<Self> {
         let trimmed = title.trim();
         if trimmed.is_empty() {
             return Err(DomainError::Validation(
@@ -161,25 +197,79 @@ impl Series {
             language: None,
             year: None,
             cover_path: None,
+            cover_is_custom: false,
             chapter_count: 0,
-            source_dir,
+            source,
             metadata_locked: false,
             created_at: now,
             updated_at: now,
         })
     }
 
-    pub fn encode_online_tracking(info: &OnlineTrackedSeriesRef) -> DomainResult<String> {
-        let json = serde_json::to_string(info)
-            .map_err(|e| DomainError::Validation(format!("serialize tracked series ref: {e}")))?;
-        Ok(format!("{ONLINE_TRACKED_SERIES_DIR_PREFIX}{json}"))
+    pub fn is_online_tracked(&self) -> bool {
+        matches!(self.source, SeriesSource::OnlineTracked(_))
     }
 
-    pub fn online_tracking(&self) -> Option<OnlineTrackedSeriesRef> {
-        let raw = self
-            .source_dir
-            .strip_prefix(ONLINE_TRACKED_SERIES_DIR_PREFIX)?;
-        serde_json::from_str::<OnlineTrackedSeriesRef>(raw).ok()
+    pub fn online_tracking(&self) -> Option<&OnlineTrackedSeriesMeta> {
+        match &self.source {
+            SeriesSource::OnlineTracked(meta) => Some(meta),
+            SeriesSource::Local { .. } => None,
+        }
+    }
+
+    pub fn local_source_dir(&self) -> Option<&str> {
+        match &self.source {
+            SeriesSource::Local { source_dir } => Some(source_dir.as_str()),
+            SeriesSource::OnlineTracked(_) => None,
+        }
+    }
+
+    pub fn set_custom_cover(&mut self, cover_path: String, now: Timestamp) {
+        self.cover_path = Some(cover_path);
+        self.cover_is_custom = true;
+        self.updated_at = now;
+    }
+
+    pub fn set_scanned_cover(&mut self, cover_path: String, now: Timestamp) -> bool {
+        if self.cover_is_custom || self.cover_path.as_deref() == Some(cover_path.as_str()) {
+            return false;
+        }
+        self.cover_path = Some(cover_path);
+        self.updated_at = now;
+        true
+    }
+
+    pub fn set_fallback_cover_if_empty(&mut self, cover_path: String, now: Timestamp) -> bool {
+        if self.cover_is_custom || self.cover_path.is_some() {
+            return false;
+        }
+        self.cover_path = Some(cover_path);
+        self.updated_at = now;
+        true
+    }
+
+    pub fn sync_chapter_count(&mut self, active_count: u32, now: Timestamp) -> bool {
+        if self.chapter_count == active_count {
+            return false;
+        }
+        self.chapter_count = active_count;
+        self.updated_at = now;
+        true
+    }
+
+    pub fn reconcile_cover_after_chapter_removed(
+        &mut self,
+        removed_cover: Option<&str>,
+        fallback_cover: Option<String>,
+        now: Timestamp,
+    ) {
+        if !self.cover_is_custom
+            && removed_cover.is_some()
+            && self.cover_path.as_deref() == removed_cover
+        {
+            self.cover_path = fallback_cover;
+            self.updated_at = now;
+        }
     }
 
     pub fn apply_patch(&mut self, patch: SeriesMetadataPatch) -> DomainResult<()> {
@@ -264,4 +354,30 @@ pub fn normalize_list(items: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_cover_is_preserved_across_scans_and_chapter_removals() {
+        let now = Timestamp::now();
+        let mut s = Series::new_local(LibraryId::new(), "Test".into(), "/comics/test".into())
+            .expect("valid series");
+        assert!(!s.cover_is_custom);
+        assert!(s.set_scanned_cover("scanned_1.jpg".into(), now));
+        assert_eq!(s.cover_path.as_deref(), Some("scanned_1.jpg"));
+
+        s.set_custom_cover("custom_cov.jpg".into(), now);
+        assert!(s.cover_is_custom);
+        assert!(!s.set_scanned_cover("scanned_2.jpg".into(), now));
+        assert!(!s.set_fallback_cover_if_empty("fallback.jpg".into(), now));
+        s.reconcile_cover_after_chapter_removed(
+            Some("custom_cov.jpg"),
+            Some("other.jpg".into()),
+            now,
+        );
+        assert_eq!(s.cover_path.as_deref(), Some("custom_cov.jpg"));
+    }
 }

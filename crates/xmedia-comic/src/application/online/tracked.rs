@@ -21,9 +21,9 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::application::dto::{ChapterItemDto, SeriesDetailDto};
-use crate::domain::chapter::{Chapter, ChapterKind, ChapterSourceKind, OnlineTrackedChapterRef};
+use crate::domain::chapter::{Chapter, OnlineTrackedChapterMeta};
 use crate::domain::id::{ChapterId, SeriesId};
-use crate::domain::series::{OnlineTrackedSeriesRef, ReadingDirection, Series, SeriesStatus};
+use crate::domain::series::{OnlineTrackedSeriesMeta, ReadingDirection, Series, SeriesStatus};
 use crate::source::model::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, OnlineComicChapter,
 };
@@ -222,11 +222,11 @@ impl ComicOnlineService {
         let _guard = lock.lock().await;
 
         let managed_lib = self.ensure_managed_comic_library().await?;
-        let existing_series = self.series.list_by_library(managed_lib.id).await?;
-        if let Some(found) = existing_series.into_iter().find(|s| {
-            s.online_tracking()
-                .is_some_and(|t| t.source_id == input.source_id && t.comic_url == clean_comic_url)
-        }) {
+        if let Some(found) = self
+            .series
+            .find_online_tracked(input.source_id, &clean_comic_url)
+            .await?
+        {
             self.catalog
                 .bind_series_for_user(actor.id, found.id)
                 .await?;
@@ -327,13 +327,13 @@ impl ComicOnlineService {
             }
         }
 
-        let series_ref = OnlineTrackedSeriesRef {
+        let series_meta = OnlineTrackedSeriesMeta {
             source_id: input.source_id,
             comic_url: clean_comic_url.clone(),
             toc_url: clean_toc_url.clone(),
         };
-        let encoded_dir = Series::encode_online_tracking(&series_ref)?;
-        let mut series = Series::new(managed_lib.id, title.clone(), encoded_dir)?;
+        let mut series =
+            Series::new_online_tracked(managed_lib.id, title.clone(), series_meta.clone())?;
         if let Some(ref au) = author {
             let writers: Vec<String> = au
                 .split(['/', ',', '、', ';'])
@@ -362,7 +362,7 @@ impl ComicOnlineService {
             series.reading_direction = ReadingDirection::parse(dir);
         }
 
-        // Best-effort cover download & thumbnail storage
+        let now = Timestamp::now();
         if let Some(ref cov_url) = cover_url
             && let Ok((cov_bytes, _)) = self.fetch_image_with_spec(&parsed, cov_url).await
         {
@@ -372,15 +372,15 @@ impl ComicOnlineService {
                 .generate_from_bytes(&thumb_key, &cov_bytes)
                 .await
             {
-                series.cover_path = Some(saved_key);
+                let _ = series.set_scanned_cover(saved_key, now);
             }
         }
 
         let created_count = self
-            .append_online_chapters(&series, &series_ref, &toc_items, &HashSet::new(), 0)
+            .append_online_chapters(&series, &series_meta, &toc_items, &HashSet::new(), 0)
             .await?;
-        series.chapter_count = created_count;
-        series.updated_at = Timestamp::now();
+        let _ = series.sync_chapter_count(created_count, now);
+        series.updated_at = now;
         self.series.save(&series).await?;
         self.catalog
             .bind_series_for_user(actor.id, series.id)
@@ -405,14 +405,14 @@ impl ComicOnlineService {
             .find_by_id(series_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("series not found".into()))?;
-        let Some(series_ref) = series.online_tracking() else {
+        let Some(series_ref) = series.online_tracking().cloned() else {
             return Err(DomainError::Validation("该漫画系列不是在线追更系列".into()));
         };
 
         let existing = self.chapters.list_by_series(series_id).await?;
         let existing_urls: HashSet<String> = existing
             .iter()
-            .filter_map(|c| c.online_tracking().map(|t| t.chapter_url))
+            .filter_map(|c| c.online_tracking().map(|t| t.chapter_url.clone()))
             .collect();
         let start_number = existing.len() as u32;
 
@@ -454,8 +454,9 @@ impl ComicOnlineService {
                 .into_iter()
                 .filter(|c| !c.is_missing)
                 .count() as u32;
-            series.chapter_count = total;
-            series.updated_at = Timestamp::now();
+            let now = Timestamp::now();
+            let _ = series.sync_chapter_count(total, now);
+            series.updated_at = now;
             self.series.save(&series).await?;
             self.events.publish(SystemEvent::MediaChanged {
                 media_kind: MediaKind::Comic,
@@ -468,7 +469,7 @@ impl ComicOnlineService {
     async fn append_online_chapters(
         &self,
         series: &Series,
-        series_ref: &OnlineTrackedSeriesRef,
+        series_ref: &OnlineTrackedSeriesMeta,
         toc_items: &[OnlineComicChapter],
         existing_urls: &HashSet<String>,
         start_number: u32,
@@ -484,29 +485,19 @@ impl ComicOnlineService {
                 continue;
             }
             let num = f64::from(start_number + added + 1);
-            let ch_ref = OnlineTrackedChapterRef {
+            let ch_meta = OnlineTrackedChapterMeta {
                 source_id: series_ref.source_id,
                 comic_url: series_ref.comic_url.clone(),
                 toc_url: series_ref.toc_url.clone(),
                 chapter_url: url.to_string(),
-                storage_key: None,
-                cached: false,
+                cached_archive_path: None,
             };
-            let source_path = serde_json::to_string(&ch_ref).map_err(|e| {
-                DomainError::Validation(format!("serialize tracked chapter ref failed: {e}"))
-            })?;
-            let chapter = Chapter::new(
+            let chapter = Chapter::new_online_tracked(
                 series.id,
                 series.library_id,
-                ChapterKind::Chapter,
                 num,
-                None,
                 item.title.clone(),
-                0,
-                ChapterSourceKind::OnlineTracked,
-                source_path,
-                0,
-                String::new(),
+                ch_meta,
             )?;
             self.chapters.save(&chapter).await?;
             added += 1;
@@ -530,8 +521,7 @@ impl ComicOnlineService {
             return Ok(initial);
         }
         if let Some(info) = initial.online_tracking()
-            && info.cached
-            && let Some(ref key) = info.storage_key
+            && let Some(ref key) = info.cached_archive_path
             && Path::new(key).is_file()
         {
             return Ok(initial);
@@ -549,11 +539,11 @@ impl ComicOnlineService {
         if !chapter.is_online_tracked() {
             return Ok(chapter);
         }
-        let mut info = chapter
+        let info = chapter
             .online_tracking()
+            .cloned()
             .ok_or_else(|| DomainError::Validation("追更章节元数据无效，无法拉取页面".into()))?;
-        if info.cached
-            && let Some(ref key) = info.storage_key
+        if let Some(ref key) = info.cached_archive_path
             && Path::new(key).is_file()
         {
             return Ok(chapter);
@@ -680,7 +670,7 @@ impl ComicOnlineService {
             .map_err(|e| DomainError::Storage(format!("CBZ finalize join failed: {e}")))??;
 
         // Clean up stale managed file if re-caching
-        if let Some(old_key) = info.storage_key.as_deref() {
+        if let Some(old_key) = info.cached_archive_path.as_deref() {
             let _ = self.storage.delete_managed_file(old_key).await;
         }
 
@@ -691,6 +681,7 @@ impl ComicOnlineService {
             .store_uploaded_archive_from_path(&series_folder, &filename, temp_cbz.path())
             .await?;
 
+        let now = Timestamp::now();
         // Generate chapter thumbnail (and fallback series cover) from page 1
         if let Some(ref first_bytes) = first_page_bytes {
             let ch_thumb_key = format!("chapter_{}", chapter.id);
@@ -699,24 +690,21 @@ impl ComicOnlineService {
                 .generate_from_bytes(&ch_thumb_key, first_bytes)
                 .await
             {
-                chapter.cover_path = Some(saved_key.clone());
-                if series.cover_path.is_none() {
-                    series.cover_path = Some(saved_key);
-                }
+                let _ = chapter.set_cover(saved_key.clone());
+                let _ = series.set_fallback_cover_if_empty(saved_key, now);
             }
         }
 
-        info.storage_key = Some(stored.source_path);
-        info.cached = true;
-        chapter.set_online_tracking(&info)?;
-        chapter.page_count = page_count;
-        chapter.file_size = stored.file_size;
-        chapter.file_hash = stored.file_hash;
-        chapter.is_missing = false;
-        chapter.updated_at = Timestamp::now();
+        chapter.mark_cached_archive(
+            stored.source_path,
+            page_count,
+            stored.file_size,
+            stored.file_hash,
+            now,
+        )?;
         self.chapters.save(&chapter).await?;
 
-        series.updated_at = Timestamp::now();
+        series.updated_at = now;
         self.series.save(&series).await?;
 
         Ok(chapter)
@@ -752,7 +740,7 @@ impl ComicOnlineService {
             .find_by_id(series_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("series not found".into()))?;
-        if series.online_tracking().is_none() {
+        if !series.is_online_tracked() {
             return Err(DomainError::Validation("该漫画系列不是在线追更系列".into()));
         }
 
@@ -773,9 +761,8 @@ impl ComicOnlineService {
                 continue;
             }
             if let Some(info) = ch.online_tracking()
-                && info.cached
                 && info
-                    .storage_key
+                    .cached_archive_path
                     .as_deref()
                     .is_some_and(|p| Path::new(p).is_file())
             {

@@ -21,6 +21,11 @@ pub trait SeriesRepository: Send + Sync {
         library_id: LibraryId,
         source_dir: &str,
     ) -> DomainResult<Option<Series>>;
+    async fn find_online_tracked(
+        &self,
+        source_id: Uuid,
+        comic_url: &str,
+    ) -> DomainResult<Option<Series>>;
     async fn find_series_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Series>>;
     async fn list_all(&self) -> DomainResult<Vec<Series>>;
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Series>>;

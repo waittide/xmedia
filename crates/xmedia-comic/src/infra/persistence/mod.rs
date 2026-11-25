@@ -17,6 +17,8 @@ async fn ensure_comic_indexes(db: &mut Db) -> DomainResult<()> {
     for ddl in [
         "CREATE INDEX IF NOT EXISTS idx_comic_series_cover_path ON comic_series (cover_path)",
         "CREATE INDEX IF NOT EXISTS idx_comic_chapters_cover_path ON comic_chapters (cover_path)",
+        "CREATE INDEX IF NOT EXISTS idx_comic_series_online_lookup ON comic_series (online_source_id, online_comic_url)",
+        "CREATE INDEX IF NOT EXISTS idx_comic_chapters_online_lookup ON comic_chapters (series_id, online_chapter_url)",
     ] {
         toasty::sql::statement(ddl)
             .exec(db)
@@ -159,8 +161,13 @@ mod tests {
             language: None,
             year: None,
             cover_path: Some("cov_abc.webp".into()),
+            cover_is_custom: false,
             chapter_count: 1,
+            source_kind: "local",
             source_dir: "/comics/indexed",
+            online_source_id: None,
+            online_comic_url: None,
+            online_meta: None,
             metadata_locked: false,
             created_at: now,
             updated_at: now,

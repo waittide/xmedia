@@ -132,10 +132,11 @@ impl ChapterItemDto {
             .as_ref()
             .map(|key| format!("/api/v1/comic/covers/{key}"));
         let number_label = format_chapter_number(ch.number);
+        let source_kind = ch.source_kind();
         let online_tracking = ch.online_tracking().map(|info| OnlineTrackedChapterDto {
             source_id: info.source_id,
-            chapter_url: info.chapter_url,
-            cached: info.cached && info.storage_key.is_some(),
+            chapter_url: info.chapter_url.clone(),
+            cached: info.cached_archive_path.is_some(),
         });
         Self {
             id: ch.id,
@@ -146,7 +147,7 @@ impl ChapterItemDto {
             volume_number: ch.volume_number,
             title: ch.title,
             page_count: ch.page_count,
-            source_kind: ch.source_kind,
+            source_kind,
             file_size: ch.file_size,
             cover_url,
             summary: ch.summary,

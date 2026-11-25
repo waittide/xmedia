@@ -1,7 +1,9 @@
 use jiff::Timestamp;
 use uuid::Uuid;
 
+use crate::domain::chapter::OnlineTrackedChapterMeta;
 use crate::domain::reading::SeriesReaderPref;
+use crate::domain::series::OnlineTrackedSeriesMeta;
 use crate::source::model::SourceRuntimeState;
 
 #[derive(Debug, toasty::Model)]
@@ -45,10 +47,20 @@ pub(crate) struct ComicSeriesModel {
     #[index]
     pub cover_path: Option<String>,
 
+    pub cover_is_custom: bool,
     pub chapter_count: i64,
+    pub source_kind: String,
 
     #[column(type = text)]
     pub source_dir: String,
+
+    #[index]
+    pub online_source_id: Option<Uuid>,
+
+    pub online_comic_url: Option<String>,
+
+    #[column(type = text)]
+    pub online_meta: Option<toasty::Json<OnlineTrackedSeriesMeta>>,
 
     pub metadata_locked: bool,
     pub created_at: Timestamp,
@@ -77,6 +89,15 @@ pub(crate) struct ComicChapterModel {
 
     #[column(type = text)]
     pub source_path: String,
+
+    #[index]
+    pub online_source_id: Option<Uuid>,
+
+    pub online_chapter_url: Option<String>,
+    pub cached_archive_path: Option<String>,
+
+    #[column(type = text)]
+    pub online_meta: Option<toasty::Json<OnlineTrackedChapterMeta>>,
 
     pub file_size: i64,
     pub file_hash: String,

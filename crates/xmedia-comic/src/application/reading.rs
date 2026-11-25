@@ -293,6 +293,7 @@ impl ComicReadingService {
         user_id: UserId,
         input: UpsertShelfInput,
     ) -> DomainResult<ComicShelf> {
+        let now = Timestamp::now();
         let mut shelf =
             ComicShelf::new(user_id, input.name, input.description.unwrap_or_default())?;
         if let Some(ids) = input.series_ids {
@@ -300,10 +301,11 @@ impl ComicReadingService {
                 .bindings
                 .list_bound_ids(user_id, MediaKind::Comic)
                 .await?;
-            shelf.series_ids = ids
+            let filtered = ids
                 .into_iter()
                 .filter(|sid| bound.contains(&sid.0))
                 .collect();
+            shelf.replace_series_ids(filtered, now);
         }
         self.reading.save_shelf(&shelf).await?;
         Ok(shelf)
@@ -323,25 +325,25 @@ impl ComicReadingService {
         if shelf.user_id != user_id {
             return Err(DomainError::Forbidden("access denied to shelf".into()));
         }
-        let clean_name = input.name.trim();
-        if clean_name.is_empty() {
-            return Err(DomainError::Validation("shelf name cannot be empty".into()));
-        }
-        shelf.name = clean_name.to_owned();
-        if let Some(desc) = input.description {
-            shelf.description = desc.trim().to_owned();
-        }
-        if let Some(ids) = input.series_ids {
+        let filtered_ids = if let Some(ids) = input.series_ids {
             let bound = self
                 .bindings
                 .list_bound_ids(user_id, MediaKind::Comic)
                 .await?;
-            shelf.series_ids = ids
-                .into_iter()
-                .filter(|sid| bound.contains(&sid.0))
-                .collect();
-        }
-        shelf.updated_at = Timestamp::now();
+            Some(
+                ids.into_iter()
+                    .filter(|sid| bound.contains(&sid.0))
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        shelf.apply_update(
+            input.name,
+            input.description,
+            filtered_ids,
+            Timestamp::now(),
+        )?;
         self.reading.save_shelf(&shelf).await?;
         Ok(shelf)
     }
@@ -370,14 +372,7 @@ impl ComicReadingService {
 
         for mut shelf in shelves {
             let should_contain = target_shelf_ids.contains(&shelf.id);
-            let currently_contains = shelf.series_ids.contains(&series_id);
-            if should_contain && !currently_contains {
-                shelf.series_ids.push(series_id);
-                shelf.updated_at = now;
-                self.reading.save_shelf(&shelf).await?;
-            } else if !should_contain && currently_contains {
-                shelf.series_ids.retain(|&s| s != series_id);
-                shelf.updated_at = now;
+            if shelf.set_contains_series(series_id, should_contain, now) {
                 self.reading.save_shelf(&shelf).await?;
             }
         }

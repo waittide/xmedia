@@ -633,10 +633,12 @@ fn to_opds_chapter(
     last_read_page: Option<u32>,
     last_read_at: Option<Timestamp>,
 ) -> OpdsChapterEntry {
-    let archive_mime =
-        xmedia_formats::comic::ComicFormatExt::from_path(std::path::Path::new(&ch.source_path))
-            .filter(|fmt| fmt.is_zip_based())
-            .map_or("application/vnd.comicbook+zip", |fmt| fmt.mime_type());
+    let source_kind = ch.source_kind();
+    let archive_mime = ch
+        .managed_file_path()
+        .and_then(|p| xmedia_formats::comic::ComicFormatExt::from_path(std::path::Path::new(p)))
+        .filter(|fmt| fmt.is_zip_based())
+        .map_or("application/vnd.comicbook+zip", |fmt| fmt.mime_type());
     let authors = if ch.writers.is_empty() {
         series_writers.to_vec()
     } else {
@@ -653,7 +655,7 @@ fn to_opds_chapter(
         format!("#{num_label} - {}", ch.title)
     };
 
-    let effective_page_count = if ch.source_kind == ChapterSourceKind::OnlineTracked {
+    let effective_page_count = if source_kind == ChapterSourceKind::OnlineTracked {
         ch.page_count.max(1)
     } else {
         ch.page_count
@@ -670,7 +672,7 @@ fn to_opds_chapter(
         last_read_page,
         last_read_at,
         can_download_archive: matches!(
-            ch.source_kind,
+            source_kind,
             ChapterSourceKind::ArchiveFile | ChapterSourceKind::OnlineTracked
         ),
         archive_mime,

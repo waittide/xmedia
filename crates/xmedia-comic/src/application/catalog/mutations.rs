@@ -52,13 +52,12 @@ impl ComicCatalogService {
             .await?
             .ok_or_else(|| DomainError::NotFound("series not found".into()))?;
         let now = Timestamp::now();
-        let key = format!("series_custom_{}_{}", series.id, now.as_second());
+        let key = format!("series_{}", series.id);
         let saved_key = self
             .thumbnails
             .generate_from_bytes(&key, image_bytes)
             .await?;
-        series.cover_path = Some(saved_key);
-        series.updated_at = now;
+        series.set_custom_cover(saved_key, now);
         self.series.save(&series).await?;
         Ok(series)
     }
@@ -150,7 +149,7 @@ impl ComicCatalogService {
         if lib.is_some_and(|l| l.kind.is_managed()) {
             for ch in &chapters {
                 if let Some(path) = ch.managed_file_path() {
-                    let _ = self.storage.delete_managed_file(&path).await;
+                    let _ = self.storage.delete_managed_file(path).await;
                 }
             }
         }
@@ -184,7 +183,7 @@ impl ComicCatalogService {
         if lib.is_some_and(|l| l.kind.is_managed())
             && let Some(path) = chapter.managed_file_path()
         {
-            let _ = self.storage.delete_managed_file(&path).await;
+            let _ = self.storage.delete_managed_file(path).await;
         }
         self.reading.delete_by_chapter(chapter_id).await?;
         self.chapters.delete(chapter_id).await?;
@@ -200,11 +199,15 @@ impl ComicCatalogService {
                 self.series.delete(series.id).await?;
             } else {
                 remaining.sort_by(|a, b| a.cmp_order(b));
-                series.chapter_count = remaining.iter().filter(|c| !c.is_missing).count() as u32;
-                if chapter.cover_path.is_some() && series.cover_path == chapter.cover_path {
-                    series.cover_path = remaining.iter().find_map(|c| c.cover_path.clone());
-                }
-                series.updated_at = Timestamp::now();
+                let now = Timestamp::now();
+                let active_count = remaining.iter().filter(|c| !c.is_missing).count() as u32;
+                let _ = series.sync_chapter_count(active_count, now);
+                series.reconcile_cover_after_chapter_removed(
+                    chapter.cover_path.as_deref(),
+                    remaining.iter().find_map(|c| c.cover_path.clone()),
+                    now,
+                );
+                series.updated_at = now;
                 self.series.save(&series).await?;
             }
         }
@@ -369,7 +372,7 @@ impl ComicCatalogService {
         self.archives
             .read_page(
                 effective_kind,
-                &effective_path,
+                effective_path,
                 page_number,
                 &chapter.file_hash,
             )
@@ -398,16 +401,15 @@ impl ComicCatalogService {
             ));
         };
         self.archives
-            .open_raw_archive_stream(&archive_path, spec)
+            .open_raw_archive_stream(archive_path, spec)
             .await
     }
 
     async fn ensure_cover_accessible(&self, user: &User, cover_key: &str) -> DomainResult<()> {
-        // Resolve modern content-hashed cover keys via indexed series and chapter lookups.
         let matched_series = self.series.find_series_by_cover_key(cover_key).await?;
         let mut matched_tracked_series: Vec<SeriesId> = Vec::new();
         for s in &matched_series {
-            if s.online_tracking().is_some() {
+            if s.is_online_tracked() {
                 matched_tracked_series.push(s.id);
             } else {
                 return Ok(());
@@ -421,7 +423,7 @@ impl ComicCatalogService {
                     continue;
                 }
                 if let Some(s) = self.series.find_by_id(ch.series_id).await? {
-                    if s.online_tracking().is_some() {
+                    if s.is_online_tracked() {
                         matched_tracked_series.push(s.id);
                     } else {
                         return Ok(());
@@ -441,33 +443,6 @@ impl ComicCatalogService {
                 return Ok(());
             }
             return Err(DomainError::NotFound("cover not found".into()));
-        }
-
-        // Legacy filename prefix fallback.
-        let base = cover_key.split('.').next().unwrap_or(cover_key);
-        if let Some(rest) = base.strip_prefix("series_custom_") {
-            if let Some((uuid_str, _)) = rest.split_once('_')
-                && let Ok(uid) = Uuid::parse_str(uuid_str)
-                && let Some(series) = self.series.find_by_id(SeriesId(uid)).await?
-                && series.online_tracking().is_some()
-            {
-                self.require_series_bound(user, series.id).await?;
-            }
-        } else if let Some(uuid_str) = base.strip_prefix("series_") {
-            if let Ok(uid) = Uuid::parse_str(uuid_str)
-                && let Some(series) = self.series.find_by_id(SeriesId(uid)).await?
-                && series.online_tracking().is_some()
-            {
-                self.require_series_bound(user, series.id).await?;
-            }
-        } else if let Some(uuid_str) = base
-            .strip_prefix("chapter_")
-            .or_else(|| base.strip_prefix("ch_"))
-            && let Ok(uid) = Uuid::parse_str(uuid_str)
-            && let Some(ch) = self.chapters.find_by_id(ChapterId(uid)).await?
-            && ch.is_online_tracked()
-        {
-            self.require_series_bound(user, ch.series_id).await?;
         }
         Ok(())
     }

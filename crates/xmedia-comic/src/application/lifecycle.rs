@@ -15,11 +15,10 @@ use crate::application::ports::{
     ArchiveReaderPort, ComicFileStoragePort, ComicInfoMetadata, ComicScannerPort,
     ExistingChapterDigest, ThumbnailGeneratorPort,
 };
-use crate::domain::chapter::Chapter;
+use crate::domain::chapter::{Chapter, ChapterSource};
 use crate::domain::id::SeriesId;
 use crate::domain::repository::{ChapterRepository, ComicReadingRepository, SeriesRepository};
 use crate::domain::series::{Series, normalize_list};
-use xmedia_formats::comic::filename::build_chapter_sort_key;
 
 pub struct ComicDomainLifecycle {
     libraries: Arc<dyn LibraryRepository>,
@@ -83,19 +82,25 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         let existing_series_list = self.series.list_by_library(library_id).await?;
         let series_info_by_id: HashMap<SeriesId, (String, String)> = existing_series_list
             .iter()
-            .map(|s| (s.id, (s.title.clone(), s.source_dir.clone())))
+            .filter_map(|s| {
+                s.local_source_dir()
+                    .map(|dir| (s.id, (s.title.clone(), dir.to_owned())))
+            })
             .collect();
         let existing_chapters = self.chapters.list_by_library(library_id).await?;
         let mut existing_by_path: HashMap<String, Chapter> = HashMap::new();
         let mut known_digests: HashMap<String, ExistingChapterDigest> = HashMap::new();
 
         for ch in existing_chapters {
+            let Some(local_path) = ch.local_path().map(str::to_owned) else {
+                continue;
+            };
             let (series_title, series_source_dir) = series_info_by_id
                 .get(&ch.series_id)
                 .map(|(t, d)| (Some(t.clone()), Some(d.clone())))
                 .unwrap_or((None, None));
             known_digests.insert(
-                ch.source_path.clone(),
+                local_path.clone(),
                 ExistingChapterDigest {
                     file_size: ch.file_size,
                     file_hash: ch.file_hash.clone(),
@@ -105,7 +110,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                     series_source_dir,
                 },
             );
-            existing_by_path.insert(ch.source_path.clone(), ch);
+            existing_by_path.insert(local_path, ch);
         }
 
         let scanned_series = self
@@ -127,7 +132,10 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
         let mut series_by_dir: HashMap<String, Series> = existing_series_list
             .into_iter()
-            .map(|s| (s.source_dir.clone(), s))
+            .filter_map(|s| {
+                let dir = s.local_source_dir()?.to_owned();
+                Some((dir, s))
+            })
             .collect();
 
         let mut seen_paths: HashSet<String> = HashSet::new();
@@ -144,7 +152,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             let (mut series, is_new_series) = match series_by_dir.remove(&entry.source_dir) {
                 Some(s) => (s, false),
                 None => (
-                    Series::new(library_id, entry.title.clone(), entry.source_dir.clone())?,
+                    Series::new_local(library_id, entry.title.clone(), entry.source_dir.clone())?,
                     true,
                 ),
             };
@@ -168,36 +176,36 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
             for sc in entry.chapters {
                 seen_paths.insert(sc.source_path.clone());
+                let scanned_source =
+                    ChapterSource::from_local_kind(sc.source_kind, sc.source_path.clone())?;
 
                 let (mut chapter, refresh_cover, mut chapter_dirty) =
                     if let Some(mut existing) = existing_by_path.remove(&sc.source_path) {
                         let was_missing = existing.is_missing;
                         let mut dirty = false;
                         if !sc.unchanged {
-                            existing.is_missing = false;
-                            existing.page_count = sc.page_count;
-                            existing.file_size = sc.file_size;
-                            existing.file_hash = sc.file_hash.clone();
-                            existing.title = sc.title.clone();
-                            existing.number = sc.number;
-                            existing.volume_number = sc.volume_number;
-                            existing.kind = sc.kind;
+                            existing.update_scanned_metrics(
+                                sc.kind,
+                                sc.number,
+                                sc.volume_number,
+                                sc.title.clone(),
+                                sc.page_count,
+                                sc.file_size,
+                                sc.file_hash.clone(),
+                                now,
+                            );
                             if let Some(ci) = &sc.comic_info {
                                 apply_comic_info_to_chapter(&mut existing, ci);
                             }
-                            existing.updated_at = now;
                             updated += 1;
                             dirty = true;
                         } else if was_missing {
-                            existing.is_missing = false;
-                            existing.updated_at = now;
+                            existing.mark_present(now);
                             updated += 1;
                             dirty = true;
                         }
-                        if existing.series_id != series.id {
-                            affected_series.insert(existing.series_id);
-                            existing.series_id = series.id;
-                            existing.updated_at = now;
+                        if let Some(prev_sid) = existing.reassign_series(series.id, now) {
+                            affected_series.insert(prev_sid);
                             dirty = true;
                         }
                         let need_cov = existing.cover_path.is_none() || !sc.unchanged;
@@ -215,20 +223,19 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                         if let Some(old_path) = matched_old_path
                             && let Some(mut migrated) = existing_by_path.remove(&old_path)
                         {
-                            if migrated.series_id != series.id {
-                                affected_series.insert(migrated.series_id);
-                                migrated.series_id = series.id;
+                            if let Some(prev_sid) = migrated.migrate_local_source(
+                                series.id,
+                                scanned_source,
+                                sc.page_count,
+                                sc.file_size,
+                                sc.file_hash.clone(),
+                                now,
+                            ) {
+                                affected_series.insert(prev_sid);
                             }
-                            migrated.source_kind = sc.source_kind;
-                            migrated.source_path = sc.source_path.clone();
-                            migrated.is_missing = false;
-                            migrated.page_count = sc.page_count;
-                            migrated.file_size = sc.file_size;
-                            migrated.file_hash = sc.file_hash.clone();
                             if let Some(ci) = &sc.comic_info {
                                 apply_comic_info_to_chapter(&mut migrated, ci);
                             }
-                            migrated.updated_at = now;
                             updated += 1;
                             let need_cov = migrated.cover_path.is_none();
                             (migrated, need_cov, true)
@@ -241,8 +248,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                                 sc.volume_number,
                                 sc.title.clone(),
                                 sc.page_count,
-                                sc.source_kind,
-                                sc.source_path.clone(),
+                                scanned_source,
                                 sc.file_size,
                                 sc.file_hash.clone(),
                             )?;
@@ -262,14 +268,10 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
                 if refresh_cover
                     && chapter.page_count > 0
+                    && let Some((eff_kind, eff_path)) = chapter.resolved_local_source()
                     && let Ok(first_page) = self
                         .archives
-                        .read_page(
-                            chapter.source_kind,
-                            &chapter.source_path,
-                            1,
-                            &chapter.file_hash,
-                        )
+                        .read_page(eff_kind, eff_path, 1, &chapter.file_hash)
                         .await
                 {
                     let thumb_key = format!("ch_{}", chapter.id);
@@ -277,9 +279,8 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                         .thumbnails
                         .generate_from_bytes(&thumb_key, &first_page.bytes)
                         .await
-                        && chapter.cover_path.as_deref() != Some(saved_key.as_str())
+                        && chapter.set_cover(saved_key)
                     {
-                        chapter.cover_path = Some(saved_key);
                         chapter_dirty = true;
                     }
                 }
@@ -294,29 +295,28 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
             ordered_chapters.sort_by(|a, b| a.cmp_order(b));
             let new_chapter_count = ordered_chapters.len() as u32;
-            if series.chapter_count != new_chapter_count {
-                series.chapter_count = new_chapter_count;
+            if series.sync_chapter_count(new_chapter_count, now) {
                 series_dirty = true;
             }
             if let Some(ref cov_bytes) = entry.series_cover_bytes
                 && (series.cover_path.is_none() || (!series.metadata_locked && series_dirty))
+                && !series.cover_is_custom
             {
                 let thumb_key = format!("series_{}", series.id);
                 if let Ok(saved_key) = self
                     .thumbnails
                     .generate_from_bytes(&thumb_key, cov_bytes)
                     .await
-                    && series.cover_path.as_deref() != Some(saved_key.as_str())
+                    && series.set_scanned_cover(saved_key, now)
                 {
-                    series.cover_path = Some(saved_key);
                     series_dirty = true;
                 }
             }
             if series.cover_path.is_none()
                 && let Some(fallback_cover) =
                     ordered_chapters.iter().find_map(|c| c.cover_path.clone())
+                && series.set_fallback_cover_if_empty(fallback_cover, now)
             {
-                series.cover_path = Some(fallback_cover);
                 series_dirty = true;
             }
             let current_series_meta = (
@@ -348,8 +348,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                 continue;
             }
             if !seen_paths.contains(&path) && !leftover.is_missing {
-                leftover.is_missing = true;
-                leftover.updated_at = now;
+                leftover.mark_missing(now);
                 affected_series.insert(leftover.series_id);
                 self.chapters.save(&leftover).await?;
                 missing_count += 1;
@@ -370,7 +369,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                     .into_iter()
                     .filter(|c| !c.is_missing)
                     .count() as u32;
-                s.chapter_count = active_count;
+                let _ = s.sync_chapter_count(active_count, now);
                 s.updated_at = now;
                 self.series.save(&s).await?;
             }
@@ -385,7 +384,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         let series = self.series.list_by_library(library_id).await?;
         Ok(series
             .into_iter()
-            .filter(|s| s.online_tracking().is_none())
+            .filter(|s| !s.is_online_tracked())
             .count() as u64)
     }
 
@@ -397,7 +396,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             if is_managed {
                 for ch in self.chapters.list_by_series(s.id).await? {
                     if let Some(path) = ch.managed_file_path() {
-                        let _ = self.storage.delete_managed_file(&path).await;
+                        let _ = self.storage.delete_managed_file(path).await;
                     }
                 }
             }
@@ -422,11 +421,11 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             self.bindings
                 .gc_if_orphaned(MediaKind::Comic, raw_id, || async {
                     if let Some(series) = self.series.find_by_id(sid).await?
-                        && series.online_tracking().is_some()
+                        && series.is_online_tracked()
                     {
                         for ch in self.chapters.list_by_series(sid).await? {
                             if let Some(path) = ch.managed_file_path() {
-                                let _ = self.storage.delete_managed_file(&path).await;
+                                let _ = self.storage.delete_managed_file(path).await;
                             }
                         }
                         self.reading.delete_by_series(sid).await?;
@@ -471,12 +470,7 @@ pub fn apply_comic_info_to_chapter(chapter: &mut Chapter, ci: &ComicInfoMetadata
     if !ci.pencillers.is_empty() {
         chapter.pencillers = normalize_list(ci.pencillers.clone());
     }
-    chapter.sort_key = build_chapter_sort_key(
-        chapter.kind.sort_rank(),
-        chapter.volume_number,
-        chapter.number,
-        &chapter.title,
-    );
+    chapter.refresh_sort_key();
 }
 
 pub fn apply_comic_info_to_series(series: &mut Series, ci: &ComicInfoMetadata) {

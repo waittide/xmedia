@@ -154,8 +154,8 @@ impl ComicCatalogService {
             .map(|key| format!("/api/v1/comic/covers/{key}"));
         let online_tracking = series.online_tracking().map(|info| OnlineTrackedSeriesDto {
             source_id: info.source_id,
-            comic_url: info.comic_url,
-            toc_url: info.toc_url,
+            comic_url: info.comic_url.clone(),
+            toc_url: info.toc_url.clone(),
         });
 
         SeriesSummaryDto {

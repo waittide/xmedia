@@ -194,6 +194,60 @@ impl ComicShelf {
             updated_at: now,
         })
     }
+
+    pub fn replace_series_ids(&mut self, series_ids: Vec<SeriesId>, now: Timestamp) {
+        let mut deduped = Vec::with_capacity(series_ids.len());
+        for sid in series_ids {
+            if !deduped.contains(&sid) {
+                deduped.push(sid);
+            }
+        }
+        self.series_ids = deduped;
+        self.updated_at = now;
+    }
+
+    pub fn apply_update(
+        &mut self,
+        name: String,
+        description: Option<String>,
+        series_ids: Option<Vec<SeriesId>>,
+        now: Timestamp,
+    ) -> DomainResult<()> {
+        let clean_name = name.trim();
+        if clean_name.is_empty() {
+            return Err(DomainError::Validation("shelf name cannot be empty".into()));
+        }
+        self.name = clean_name.to_owned();
+        if let Some(desc) = description {
+            self.description = desc.trim().to_owned();
+        }
+        if let Some(ids) = series_ids {
+            self.replace_series_ids(ids, now);
+        } else {
+            self.updated_at = now;
+        }
+        Ok(())
+    }
+
+    pub fn set_contains_series(
+        &mut self,
+        series_id: SeriesId,
+        should_contain: bool,
+        now: Timestamp,
+    ) -> bool {
+        let currently_contains = self.series_ids.contains(&series_id);
+        if should_contain && !currently_contains {
+            self.series_ids.push(series_id);
+            self.updated_at = now;
+            true
+        } else if !should_contain && currently_contains {
+            self.series_ids.retain(|&s| s != series_id);
+            self.updated_at = now;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

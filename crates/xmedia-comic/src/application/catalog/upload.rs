@@ -11,7 +11,7 @@ use xmedia_formats::comic::filename::parse_comic_chapter_filename;
 use crate::application::dto::{UploadArchiveInput, UploadArchivePathInput, UploadArchiveResultDto};
 use crate::application::lifecycle::{apply_comic_info_to_chapter, apply_comic_info_to_series};
 use crate::application::ports::{ArchiveInspection, StoredUploadFile};
-use crate::domain::chapter::{Chapter, ChapterSourceKind};
+use crate::domain::chapter::{Chapter, ChapterSource, ChapterSourceKind};
 use crate::domain::id::SeriesId;
 use crate::domain::series::Series;
 
@@ -153,15 +153,16 @@ impl ComicCatalogService {
             .unwrap_or_else(|| parsed.clean_title.clone());
 
         let all_series = self.series.list_by_library(managed_lib.id).await?;
-        if let Some(existing) = all_series.into_iter().find(|s| {
-            s.online_tracking().is_none() && s.title.eq_ignore_ascii_case(desired_title.trim())
-        }) {
+        if let Some(existing) = all_series
+            .into_iter()
+            .find(|s| !s.is_online_tracked() && s.title.eq_ignore_ascii_case(desired_title.trim()))
+        {
             Ok(existing)
         } else {
             let folder_slug = sanitize_folder_name(&desired_title);
             let root = self.storage.ensure_managed_root().await?;
             let source_dir = format!("{root}/{folder_slug}");
-            Series::new(managed_lib.id, desired_title, source_dir)
+            Series::new_local(managed_lib.id, desired_title, source_dir)
         }
     }
 
@@ -178,6 +179,7 @@ impl ComicCatalogService {
         let fallback_num = (existing_chapters.len() + 1) as u32;
         let parsed_with_index = parse_comic_chapter_filename(filename, fallback_num);
 
+        let stored_path = stored.source_path;
         let mut chapter = Chapter::new(
             series.id,
             managed_lib.id,
@@ -186,8 +188,9 @@ impl ComicCatalogService {
             parsed_with_index.volume_number,
             parsed_with_index.clean_title,
             inspection.page_count,
-            ChapterSourceKind::ArchiveFile,
-            stored.source_path,
+            ChapterSource::Archive {
+                path: stored_path.clone(),
+            },
             stored.file_size,
             stored.file_hash,
         )?;
@@ -199,11 +202,12 @@ impl ComicCatalogService {
             }
         }
 
+        let now = Timestamp::now();
         if let Ok(first_page) = self
             .archives
             .read_page(
-                chapter.source_kind,
-                &chapter.source_path,
+                ChapterSourceKind::ArchiveFile,
+                &stored_path,
                 1,
                 &chapter.file_hash,
             )
@@ -215,10 +219,8 @@ impl ComicCatalogService {
                 .generate_from_bytes(&thumb_key, &first_page.bytes)
                 .await
             {
-                if series.cover_path.is_none() {
-                    series.cover_path = Some(saved_key.clone());
-                }
-                chapter.cover_path = Some(saved_key);
+                let _ = series.set_fallback_cover_if_empty(saved_key.clone(), now);
+                let _ = chapter.set_cover(saved_key);
             }
         }
 
@@ -231,8 +233,8 @@ impl ComicCatalogService {
             .into_iter()
             .filter(|c| !c.is_missing)
             .count() as u32;
-        series.chapter_count = active_count;
-        series.updated_at = Timestamp::now();
+        let _ = series.sync_chapter_count(active_count, now);
+        series.updated_at = now;
         self.series.save(&series).await?;
         self.bindings
             .bind(actor_id, MediaKind::Comic, series.id.0)
