@@ -6,6 +6,7 @@ use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
+use xmedia_formats::video::{SubtitleFormatExt, VideoFormatExt, extract_video_resolution};
 
 use crate::domain::id::{ShowId, VideoId};
 
@@ -63,33 +64,21 @@ impl VideoContainer {
     }
 
     pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext
-            .trim()
-            .trim_start_matches('.')
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "mp4" => Some(Self::Mp4),
-            "mkv" => Some(Self::Mkv),
-            "webm" => Some(Self::Webm),
-            "mov" => Some(Self::Mov),
-            "avi" => Some(Self::Avi),
-            "ts" | "m2ts" | "mts" => Some(Self::Ts),
-            "flv" => Some(Self::Flv),
-            "m4v" => Some(Self::M4v),
-            _ => None,
+        match VideoFormatExt::from_extension(ext)? {
+            VideoFormatExt::Mp4 => Some(Self::Mp4),
+            VideoFormatExt::Mkv => Some(Self::Mkv),
+            VideoFormatExt::Webm => Some(Self::Webm),
+            VideoFormatExt::Mov => Some(Self::Mov),
+            VideoFormatExt::Avi => Some(Self::Avi),
+            VideoFormatExt::Ts | VideoFormatExt::M2ts | VideoFormatExt::Mts => Some(Self::Ts),
+            VideoFormatExt::Flv => Some(Self::Flv),
+            VideoFormatExt::M4v => Some(Self::M4v),
         }
     }
 }
 
 pub fn is_subtitle_extension(ext: &str) -> bool {
-    matches!(
-        ext.trim()
-            .trim_start_matches('.')
-            .to_ascii_lowercase()
-            .as_str(),
-        "srt" | "vtt" | "webvtt" | "ass" | "ssa"
-    )
+    SubtitleFormatExt::from_extension(ext).is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,20 +338,22 @@ impl VideoItem {
     }
 
     pub fn resolution_label(&self) -> Option<String> {
-        let h = self.height?;
-        Some(if h >= 2100 {
-            "4K".to_string()
-        } else if h >= 1400 {
-            "1440p".to_string()
-        } else if h >= 1000 {
-            "1080p".to_string()
-        } else if h >= 700 {
-            "720p".to_string()
-        } else if h >= 460 {
-            "480p".to_string()
-        } else {
-            format!("{h}p")
-        })
+        if let Some(h) = self.height {
+            return Some(if h >= 2100 {
+                "4K".to_string()
+            } else if h >= 1400 {
+                "1440p".to_string()
+            } else if h >= 1000 {
+                "1080p".to_string()
+            } else if h >= 700 {
+                "720p".to_string()
+            } else if h >= 460 {
+                "480p".to_string()
+            } else {
+                format!("{h}p")
+            });
+        }
+        extract_video_resolution(self.source.display_path())
     }
 
     pub fn apply_patch(&mut self, patch: VideoMetadataPatch) -> DomainResult<()> {

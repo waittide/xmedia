@@ -17,13 +17,13 @@ use crate::application::dto::{VideoUploadItem, VideoUploadPathItem, VideoUploadR
 use crate::application::ports::{
     ParsedNfoMetadata, ProbedVideoInfo, VideoMediaEnginePort, VideoScannerPort, VideoStoragePort,
 };
-use crate::domain::filename_parser::{parse_sidecar_subtitle_lang_and_label, parse_video_path};
 use crate::domain::id::{ShowId, VideoId};
 use crate::domain::repository::{VideoCatalogRepository, VideoWatchRepository};
 use crate::domain::video::{
     ShowQueryFilter, SidecarSubtitle, VideoContainer, VideoItem, VideoShow, VideoSource,
     is_subtitle_extension,
 };
+use xmedia_formats::video::{parse_sidecar_subtitle_lang_and_label, parse_video_path};
 
 #[derive(Clone)]
 pub struct VideoDomainLifecycle {
