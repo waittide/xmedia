@@ -384,7 +384,7 @@ impl BookCatalogService {
             .into_iter()
             .map(|book| {
                 let bound = bound_ids.contains(&book.id.0);
-                PoolBookSummaryDto { book, bound }
+                PoolBookSummaryDto::new(book, bound)
             })
             .collect();
 
@@ -521,6 +521,15 @@ impl BookCatalogService {
         }
         if let Some(tags) = patch.tags {
             meta.tags = tags;
+        }
+        if let Some(series) = patch.series {
+            meta.series = Some(series);
+        }
+        if let Some(series_index) = patch.series_index {
+            meta.series_index = Some(series_index);
+        }
+        if let Some(rating) = patch.rating {
+            meta.rating = Some(rating);
         }
 
         book.update_metadata(meta)?;
@@ -825,16 +834,17 @@ impl BookCatalogService {
     ) -> DomainResult<TxtChapterContent> {
         self.require_book_bound(actor, book_id).await?;
         let (library, book) = self.find_book_with_library(book_id).await?;
-        if book.format != BookFormat::Txt {
+        if !book.format.is_text_chapter_based() {
             return Err(DomainError::Validation(
-                "chapter endpoint is only supported for TXT books".into(),
+                "chapter endpoint is only supported for plain-text chapter formats (txt, mobi, azw3, fb2)".into(),
             ));
         }
         let bytes = self.storage.read_book_bytes(&library, &book).await?;
         let parser = self.parser.clone();
-        tokio::task::spawn_blocking(move || parser.read_txt_chapter(&bytes, chapter_index))
+        let format = book.format;
+        tokio::task::spawn_blocking(move || parser.read_text_chapter(format, &bytes, chapter_index))
             .await
-            .map_err(|e| DomainError::Storage(format!("read_txt_chapter task failed: {e}")))?
+            .map_err(|e| DomainError::Storage(format!("read_text_chapter task failed: {e}")))?
     }
 
     pub async fn get_epub_resource(

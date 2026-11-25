@@ -26,6 +26,9 @@ pub(crate) struct BookModel {
     pub file_size: i64,
     pub file_hash: String,
     pub cover_key: Option<String>,
+    pub series: Option<String>,
+    pub series_index: Option<f64>,
+    pub rating: Option<f64>,
 
     #[column(type = text)]
     pub metadata: toasty::Json<BookMetadata>,

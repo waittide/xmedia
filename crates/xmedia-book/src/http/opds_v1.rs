@@ -13,6 +13,7 @@ use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::xml::xml_escape;
 use xmedia_core::http::{ApiResult, OpdsAuth};
+use xmedia_formats::common::format_clean_float;
 
 use crate::domain::book::BookId;
 use crate::http::opds_common::{
@@ -139,7 +140,7 @@ fn render_acquisition_feed(prefix: &str, data: &OpdsAcquisitionData) -> Response
     let _ = writeln!(xml, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = writeln!(
         xml,
-        r#"<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">"#
+        r#"<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:calibre="http://calibre.kovidgoyal.net/2009/metadata">"#
     );
     let _ = writeln!(xml, "  <id>{}</id>", xml_escape(&data.feed_id));
     let _ = writeln!(xml, "  <title>{}</title>", xml_escape(&data.title));
@@ -222,6 +223,33 @@ fn render_acquisition_feed(prefix: &str, data: &OpdsAcquisitionData) -> Response
                 "    <dc:identifier>urn:isbn:{}</dc:identifier>",
                 xml_escape(isbn)
             );
+        }
+        if let Some(series) = &book.metadata.series {
+            let _ = writeln!(
+                xml,
+                "    <calibre:series>{}</calibre:series>",
+                xml_escape(series)
+            );
+        }
+        if let Some(series_index) = book.metadata.series_index {
+            let formatted = format_clean_float(series_index);
+            if !formatted.is_empty() {
+                let _ = writeln!(
+                    xml,
+                    "    <calibre:series_index>{}</calibre:series_index>",
+                    xml_escape(&formatted)
+                );
+            }
+        }
+        if let Some(rating) = book.metadata.rating {
+            let formatted = format_clean_float(rating);
+            if !formatted.is_empty() {
+                let _ = writeln!(
+                    xml,
+                    "    <calibre:rating>{}</calibre:rating>",
+                    xml_escape(&formatted)
+                );
+            }
         }
         for tag in &book.metadata.tags {
             let _ = writeln!(

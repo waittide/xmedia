@@ -25,6 +25,16 @@ impl ToastyBookRepository {
 
     fn to_domain(m: BookModel) -> Book {
         let format = m.parsed_format();
+        let mut metadata = m.metadata.0;
+        if metadata.series.is_none() {
+            metadata.series = m.series;
+        }
+        if metadata.series_index.is_none() {
+            metadata.series_index = m.series_index;
+        }
+        if metadata.rating.is_none() {
+            metadata.rating = m.rating;
+        }
         Book {
             id: BookId(m.id),
             library_id: LibraryId(m.library_id),
@@ -33,7 +43,7 @@ impl ToastyBookRepository {
             file_size: u64::try_from(m.file_size.max(0)).unwrap_or(0),
             file_hash: m.file_hash,
             cover_key: m.cover_key,
-            metadata: m.metadata.0,
+            metadata,
             is_missing: m.is_missing,
             created_at: m.created_at,
             updated_at: m.updated_at,
@@ -236,7 +246,12 @@ impl BookRepository for ToastyBookRepository {
                     .isbn
                     .as_ref()
                     .is_some_and(|i| i.to_lowercase().contains(kw));
-                if !(in_title || in_author || in_tag || in_desc || in_isbn) {
+                let in_series = book
+                    .metadata
+                    .series
+                    .as_ref()
+                    .is_some_and(|s| s.to_lowercase().contains(kw));
+                if !(in_title || in_author || in_tag || in_desc || in_isbn || in_series) {
                     continue;
                 }
             }
@@ -387,6 +402,9 @@ impl BookRepository for ToastyBookRepository {
                 .file_size(file_size)
                 .file_hash(book.file_hash.clone())
                 .cover_key(book.cover_key.clone())
+                .series(book.metadata.series.clone())
+                .series_index(book.metadata.series_index)
+                .rating(book.metadata.rating)
                 .metadata(toasty::Json(book.metadata.clone()))
                 .is_missing(book.is_missing)
                 .updated_at(book.updated_at)
@@ -404,6 +422,9 @@ impl BookRepository for ToastyBookRepository {
                 file_size: file_size,
                 file_hash: book.file_hash.clone(),
                 cover_key: book.cover_key.clone(),
+                series: book.metadata.series.clone(),
+                series_index: book.metadata.series_index,
+                rating: book.metadata.rating,
                 metadata: toasty::Json(book.metadata.clone()),
                 is_missing: book.is_missing,
                 created_at: book.created_at,

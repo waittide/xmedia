@@ -56,7 +56,7 @@ pub struct BookAsset {
     pub mime_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParsedBook {
     pub metadata: BookMetadata,
     pub cover: Option<CoverPayload>,
@@ -98,11 +98,20 @@ pub trait BookParserPort: Send + Sync {
         self.list_toc(format, &bytes)
     }
 
+    fn read_text_chapter(
+        &self,
+        format: BookFormat,
+        file_bytes: &[u8],
+        chapter_index: u32,
+    ) -> DomainResult<TxtChapterContent>;
+
     fn read_txt_chapter(
         &self,
         file_bytes: &[u8],
         chapter_index: u32,
-    ) -> DomainResult<TxtChapterContent>;
+    ) -> DomainResult<TxtChapterContent> {
+        self.read_text_chapter(BookFormat::Txt, file_bytes, chapter_index)
+    }
 
     fn read_epub_resource(&self, file_bytes: &[u8], resource_path: &str)
     -> DomainResult<BookAsset>;

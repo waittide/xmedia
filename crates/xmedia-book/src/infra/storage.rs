@@ -10,6 +10,10 @@ use xmedia_core::domain::library::{Library, LibraryKind};
 use xmedia_core::infra::fingerprint::{fast_bytes_fingerprint, max_mtime_secs};
 use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join, sha256_hex};
 use xmedia_core::infra::thumbnail::ThumbnailStore;
+use xmedia_formats::book::sidecar::{
+    dir_has_single_book, find_existing_sidecar_opf, find_sidecar_cover, tracked_book_sidecar_paths,
+};
+use xmedia_source::proxy::validate_safe_raster_image;
 
 use crate::application::ports::{
     BookScannerPort, BookStoragePort, CoverPayload, LoadedMountedBook, ScannedBookEntry,
@@ -212,27 +216,6 @@ impl BookStoragePort for LocalBookStorage {
     }
 }
 
-fn dir_has_single_book(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    let mut count = 0usize;
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.is_file()
-            && p.extension()
-                .and_then(|s| s.to_str())
-                .is_some_and(|e| BookFormat::from_extension(e).is_some())
-        {
-            count += 1;
-            if count > 1 {
-                return false;
-            }
-        }
-    }
-    count == 1
-}
-
 #[derive(Default, Clone)]
 pub struct LocalBookScanner;
 
@@ -287,22 +270,7 @@ impl BookScannerPort for LocalBookScanner {
                         .entry(parent_dir.clone())
                         .or_insert_with(|| dir_has_single_book(&parent_dir));
 
-                let mut tracked_sidecars = vec![
-                    path.with_extension("opf"),
-                    path.with_extension("jpg"),
-                    path.with_extension("jpeg"),
-                    path.with_extension("png"),
-                    path.with_extension("webp"),
-                ];
-                if is_single_book_dir {
-                    tracked_sidecars.extend([
-                        parent_dir.join("metadata.opf"),
-                        parent_dir.join("cover.jpg"),
-                        parent_dir.join("cover.jpeg"),
-                        parent_dir.join("cover.png"),
-                        parent_dir.join("cover.webp"),
-                    ]);
-                }
+                let tracked_sidecars = tracked_book_sidecar_paths(path, is_single_book_dir);
                 let file_mtime = max_mtime_secs(path, &tracked_sidecars);
 
                 let fallback_title = path
@@ -342,51 +310,14 @@ impl BookScannerPort for LocalBookScanner {
             let file_hash = fast_bytes_fingerprint(&data);
             let legacy_sha256 = sha256_hex(&data);
 
-            let parent_dir = full.parent().map(Path::to_path_buf);
-            let single_book_dir = parent_dir
-                .as_deref()
-                .is_some_and(|p| p != root_buf && dir_has_single_book(p));
+            let sidecar_opf = find_existing_sidecar_opf(&full, Some(&root_buf))
+                .and_then(|opf_path| std::fs::read(opf_path).ok());
 
-            let opf_path = full.with_extension("opf");
-            let sidecar_opf = if opf_path.is_file() {
-                std::fs::read(&opf_path).ok()
-            } else if single_book_dir
-                && let Some(ref p) = parent_dir
-                && p.join("metadata.opf").is_file()
-            {
-                std::fs::read(p.join("metadata.opf")).ok()
-            } else {
-                None
-            };
-
-            let mut sidecar_cover = None;
-            for ext in ["jpg", "jpeg", "png", "webp"] {
-                let cp = full.with_extension(ext);
-                if cp.is_file()
-                    && let Ok(img_bytes) = std::fs::read(&cp)
-                    && let Ok(safe_mime) =
-                        crate::application::online::validate_safe_cover_image(None, &img_bytes)
-                {
-                    sidecar_cover = Some(CoverPayload::new(Bytes::from(img_bytes), safe_mime));
-                    break;
-                }
-            }
-            if sidecar_cover.is_none()
-                && single_book_dir
-                && let Some(ref p) = parent_dir
-            {
-                for ext in ["jpg", "jpeg", "png", "webp"] {
-                    let cp = p.join(format!("cover.{ext}"));
-                    if cp.is_file()
-                        && let Ok(img_bytes) = std::fs::read(&cp)
-                        && let Ok(safe_mime) =
-                            crate::application::online::validate_safe_cover_image(None, &img_bytes)
-                    {
-                        sidecar_cover = Some(CoverPayload::new(Bytes::from(img_bytes), safe_mime));
-                        break;
-                    }
-                }
-            }
+            let sidecar_cover = find_sidecar_cover(&full, Some(&root_buf)).and_then(|cp| {
+                let img_bytes = std::fs::read(cp).ok()?;
+                let safe_mime = validate_safe_raster_image(None, &img_bytes).ok()?;
+                Some(CoverPayload::new(Bytes::from(img_bytes), safe_mime))
+            });
 
             Ok(LoadedMountedBook {
                 bytes: Bytes::from(data),

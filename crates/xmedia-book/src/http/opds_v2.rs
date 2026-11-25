@@ -82,6 +82,18 @@ struct Opds2Publication {
 }
 
 #[derive(Serialize)]
+struct Opds2BelongsTo {
+    series: Opds2SeriesInfo,
+}
+
+#[derive(Serialize)]
+struct Opds2SeriesInfo {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position: Option<f64>,
+}
+
+#[derive(Serialize)]
 struct Opds2PubMeta {
     #[serde(rename = "@type")]
     schema_type: &'static str,
@@ -95,6 +107,14 @@ struct Opds2PubMeta {
     language: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     subject: Vec<String>,
+    #[serde(rename = "belongsTo", skip_serializing_if = "Option::is_none")]
+    belongs_to: Option<Opds2BelongsTo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_index: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rating: Option<f64>,
     modified: String,
 }
 
@@ -155,6 +175,13 @@ fn to_publication(prefix: &str, book: &BookSummaryDto) -> Opds2Publication {
         Vec::new()
     };
 
+    let belongs_to = book.metadata.series.as_ref().map(|name| Opds2BelongsTo {
+        series: Opds2SeriesInfo {
+            name: name.clone(),
+            position: book.metadata.series_index,
+        },
+    });
+
     Opds2Publication {
         metadata: Opds2PubMeta {
             schema_type: "http://schema.org/Book",
@@ -164,6 +191,10 @@ fn to_publication(prefix: &str, book: &BookSummaryDto) -> Opds2Publication {
             description: book.metadata.description.clone(),
             language: book.metadata.language.clone(),
             subject: book.metadata.tags.clone(),
+            belongs_to,
+            series: book.metadata.series.clone(),
+            series_index: book.metadata.series_index,
+            rating: book.metadata.rating,
             modified: book.updated_at.to_string(),
         },
         links: vec![Opds2Link {

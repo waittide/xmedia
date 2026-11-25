@@ -8,7 +8,7 @@ use crate::domain::book::{
 };
 use crate::domain::reading::{Bookmark, ReadingLocation, ReadingProgress, Shelf, ShelfId};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookOnlineTrackingDto {
     pub source_id: Uuid,
     pub book_url: String,
@@ -19,7 +19,7 @@ pub struct BookOnlineTrackingDto {
     pub epub_dirty: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookSummaryDto {
     pub id: BookId,
     pub library_id: LibraryId,
@@ -30,6 +30,9 @@ pub struct BookSummaryDto {
     pub has_cover: bool,
     pub cover_mime: Option<String>,
     pub metadata: BookMetadata,
+    pub series: Option<String>,
+    pub series_index: Option<f64>,
+    pub rating: Option<f64>,
     pub is_missing: bool,
     pub is_favorite: bool,
     pub progress: Option<ReadingLocation>,
@@ -96,6 +99,9 @@ impl BookSummaryDto {
                 .as_deref()
                 .map(|k| infer_cover_mime(k).to_string()),
             metadata: book.metadata.clone(),
+            series: book.metadata.series.clone(),
+            series_index: book.metadata.series_index,
+            rating: book.metadata.rating,
             is_missing: book.is_missing,
             is_favorite,
             progress: progress.map(|p| p.location.clone()),
@@ -107,11 +113,32 @@ impl BookSummaryDto {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PoolBookSummaryDto {
     #[serde(flatten)]
     pub book: BookSummaryDto,
     pub bound: bool,
+    #[serde(skip)]
+    pub series: Option<String>,
+    #[serde(skip)]
+    pub series_index: Option<f64>,
+    #[serde(skip)]
+    pub rating: Option<f64>,
+}
+
+impl PoolBookSummaryDto {
+    pub fn new(book: BookSummaryDto, bound: bool) -> Self {
+        let series = book.series.clone();
+        let series_index = book.series_index;
+        let rating = book.rating;
+        Self {
+            book,
+            bound,
+            series,
+            series_index,
+            rating,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -140,7 +167,8 @@ pub struct CatalogSearchFilter {
     pub page_size: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UpdateMetadataPatch {
     pub title: Option<String>,
     pub authors: Option<Vec<String>>,
@@ -150,6 +178,9 @@ pub struct UpdateMetadataPatch {
     pub publisher: Option<String>,
     pub published_at: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub series: Option<String>,
+    pub series_index: Option<f64>,
+    pub rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

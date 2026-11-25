@@ -15,6 +15,9 @@ pub enum BookFormat {
     Epub,
     Txt,
     Pdf,
+    Mobi,
+    Azw3,
+    Fb2,
 }
 
 impl BookFormat {
@@ -28,6 +31,9 @@ impl BookFormat {
             "epub" => Some(Self::Epub),
             "txt" => Some(Self::Txt),
             "pdf" => Some(Self::Pdf),
+            "mobi" | "prc" => Some(Self::Mobi),
+            "azw3" | "azw" | "kf8" => Some(Self::Azw3),
+            "fb2" => Some(Self::Fb2),
             _ => None,
         }
     }
@@ -43,6 +49,9 @@ impl BookFormat {
             Self::Epub => "epub",
             Self::Txt => "txt",
             Self::Pdf => "pdf",
+            Self::Mobi => "mobi",
+            Self::Azw3 => "azw3",
+            Self::Fb2 => "fb2",
         }
     }
 
@@ -51,7 +60,25 @@ impl BookFormat {
             Self::Epub => "application/epub+zip",
             Self::Txt => "text/plain; charset=utf-8",
             Self::Pdf => "application/pdf",
+            Self::Mobi => "application/x-mobipocket-ebook",
+            Self::Azw3 => "application/vnd.amazon.ebook",
+            Self::Fb2 => "application/x-fictionbook+xml",
         }
+    }
+
+    pub fn badge_label(self) -> &'static str {
+        match self {
+            Self::Epub => "EPUB",
+            Self::Txt => "TXT",
+            Self::Pdf => "PDF",
+            Self::Mobi => "MOBI",
+            Self::Azw3 => "AZW3",
+            Self::Fb2 => "FB2",
+        }
+    }
+
+    pub fn is_text_chapter_based(self) -> bool {
+        matches!(self, Self::Txt | Self::Mobi | Self::Azw3 | Self::Fb2)
     }
 }
 
@@ -103,7 +130,7 @@ impl BookSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookMetadata {
     pub title: String,
     pub authors: Vec<String>,
@@ -113,6 +140,12 @@ pub struct BookMetadata {
     pub publisher: Option<String>,
     pub published_at: Option<String>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub series: Option<String>,
+    #[serde(default)]
+    pub series_index: Option<f64>,
+    #[serde(default)]
+    pub rating: Option<f64>,
     pub page_count: Option<u32>,
     pub chapter_count: Option<u32>,
 }
@@ -129,6 +162,9 @@ impl BookMetadata {
             publisher: None,
             published_at: None,
             tags: Vec::new(),
+            series: None,
+            series_index: None,
+            rating: None,
             page_count: None,
             chapter_count: None,
         })
@@ -174,11 +210,26 @@ impl BookMetadata {
         self.language = Self::normalize_optional(self.language);
         self.publisher = Self::normalize_optional(self.publisher);
         self.published_at = Self::normalize_optional(self.published_at);
+        self.series = Self::normalize_optional(self.series);
+        if let Some(idx) = self.series_index
+            && (!idx.is_finite() || idx < 0.0)
+        {
+            return Err(DomainError::Validation(
+                "series_index must be a non-negative number".into(),
+            ));
+        }
+        if let Some(rating) = self.rating
+            && (!rating.is_finite() || !(0.0..=10.0).contains(&rating))
+        {
+            return Err(DomainError::Validation(
+                "rating must be between 0.0 and 10.0".into(),
+            ));
+        }
         Ok(self)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Book {
     pub id: BookId,
     pub library_id: LibraryId,
