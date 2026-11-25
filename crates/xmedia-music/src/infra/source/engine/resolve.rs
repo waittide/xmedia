@@ -15,10 +15,10 @@ use super::template::{
     resolve_literal_http_url, template_references_quality,
 };
 use super::{MusicSourceEngine, infer_audio_format, is_http_url};
-use crate::infra::lyrics::parse_lyrics_str;
-use crate::source::model::{
+use crate::domain::online::{
     MusicSourceSpec, MusicTrackContext, OnlineMusicLyricsResult, OnlineMusicStreamResult,
 };
+use crate::infra::lyrics::parse_lyrics_str;
 
 impl MusicSourceEngine {
     pub fn resolve_stream_sync(
@@ -122,7 +122,6 @@ impl MusicSourceEngine {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
-                // Short-circuit only when all metadata/headers are static and request_url doesn't depend on quality or JS.
                 if !has_rule_headers
                     && static_metadata_only
                     && quality_matches_or_absent
@@ -237,7 +236,6 @@ impl MusicSourceEngine {
                     expires_in_secs,
                 })
             } else {
-                // Direct/template stream evaluation (no HTTP fetch on audio stream URL!).
                 let resolved_stream = if let Some(tpl) = rule
                     .stream_url
                     .as_deref()

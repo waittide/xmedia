@@ -1,49 +1,40 @@
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{
     ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
-    CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+    CONTENT_SECURITY_POLICY, CONTENT_TYPE, IF_RANGE, RANGE, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
+use xmedia_core::application::ports::ByteRangeSpec;
 use xmedia_core::domain::error::DomainError;
-use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename};
-use xmedia_source::crud::{
-    ExportSourcesBatchRequest, ImportSourcesRequest, LoginActionRequest, ReorderSourcesRequest,
-    SourceVariableResponse,
+use xmedia_core::http::{
+    ApiError, ApiResult, WebAuth, parse_http_range_spec, sanitize_download_filename,
 };
+use xmedia_source::crud::{LoginActionRequest, sources_prefixed_crud_router};
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
 use crate::application::dto::TrackDto;
 use crate::application::online::{
-    BatchMusicSourcesInput, BatchMusicSourcesReportDto, ImportMusicSourcesReportDto,
-    LoginActionResponseDto, MusicSourceSummaryDto, MusicSourceTestInput, MusicSourceTestReportDto,
+    LoginActionResponseDto, MusicSourceTestInput, MusicSourceTestReportDto,
     OnlineMusicExploreResponseDto, OnlineMusicResolvedTrackDto, OnlineMusicSearchResponseDto,
     OnlineMusicStreamResponseDto, StructuredLyricsDto, TrackOnlineMusicBatchInput,
-    TrackOnlineMusicInput, UpdateMusicSourceInput,
+    TrackOnlineMusicInput,
 };
 use crate::domain::catalog::TrackId;
+use crate::domain::online::{MusicSourceSpec, MusicTrackContext};
 use crate::http::state::MusicHttpState;
-use crate::source::model::MusicTrackContext;
 
 pub fn router() -> Router<MusicHttpState> {
     Router::new()
-        // Music source management
-        .route("/sources", get(list_sources))
-        .route("/sources/reorder", post(reorder_sources))
-        .route("/sources/batch", post(batch_sources))
-        .route("/sources/export-batch", post(export_sources_batch))
-        .route(
-            "/sources/import",
-            post(import_sources).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
-        )
-        .route("/sources/{id}", patch(update_source).delete(delete_source))
-        .route("/sources/{id}/variable", get(get_source_variable))
-        .route("/sources/{id}/export", get(export_source))
+        .merge(sources_prefixed_crud_router::<
+            MusicHttpState,
+            MusicSourceSpec,
+        >())
         .route("/sources/{id}/login-action", post(run_login_action))
         .route("/sources/{id}/test", post(test_source))
         // Online search / explore / track-info / stream / lyrics / proxies
@@ -238,113 +229,6 @@ fn encode_attachment_disposition(filename: &str) -> Option<HeaderValue> {
         "attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_name}"
     ))
     .ok()
-}
-
-async fn list_sources(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<Vec<MusicSourceSummaryDto>>> {
-    let list = state.services.online.list_sources(&user).await?;
-    Ok(Json(list))
-}
-
-async fn import_sources(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<ImportSourcesRequest>,
-) -> ApiResult<Json<ImportMusicSourcesReportDto>> {
-    let report = state
-        .services
-        .online
-        .import_sources(&user, &req.raw_json)
-        .await?;
-    Ok(Json(report))
-}
-
-async fn reorder_sources(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<ReorderSourcesRequest>,
-) -> ApiResult<Json<Vec<MusicSourceSummaryDto>>> {
-    let list = state
-        .services
-        .online
-        .reorder_sources(&user, req.ordered_ids)
-        .await?;
-    Ok(Json(list))
-}
-
-async fn batch_sources(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<BatchMusicSourcesInput>,
-) -> ApiResult<Json<BatchMusicSourcesReportDto>> {
-    let report = state.services.online.batch_sources(&user, req).await?;
-    Ok(Json(report))
-}
-
-async fn get_source_variable(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Json<SourceVariableResponse>> {
-    let variable = state.services.online.get_source_variable(&user, id).await?;
-    Ok(Json(SourceVariableResponse { variable }))
-}
-
-async fn export_sources_batch(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(req): Json<ExportSourcesBatchRequest>,
-) -> ApiResult<Response> {
-    let raw = state
-        .services
-        .online
-        .export_sources_batch_json(&user, req.ids)
-        .await?;
-    let mut resp = Response::new(Body::from(raw));
-    resp.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-    resp.headers_mut()
-        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    Ok(resp)
-}
-
-async fn update_source(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<UpdateMusicSourceInput>,
-) -> ApiResult<Json<MusicSourceSummaryDto>> {
-    let updated = state.services.online.update_source(&user, id, req).await?;
-    Ok(Json(updated))
-}
-
-async fn delete_source(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<StatusCode> {
-    state.services.online.delete_source(&user, id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn export_source(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let raw = state.services.online.export_source_json(&user, id).await?;
-    let mut resp = Response::new(Body::from(raw));
-    resp.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-    resp.headers_mut()
-        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    Ok(resp)
 }
 
 async fn run_login_action(
@@ -558,14 +442,41 @@ async fn online_audio_proxy(
     Query(q): Query<AudioProxyQuery>,
     req_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let source_id = q
+        .source_id
+        .ok_or_else(|| ApiError(DomainError::Validation("缺少 source_id 参数".into())))?;
+
+    let range_spec = parse_http_range_spec(&req_headers);
+    if range_spec == ByteRangeSpec::Malformed {
+        return Err(DomainError::Validation("无效的 Range 请求头".into()).into());
+    }
+    let range_header = if range_spec != ByteRangeSpec::Full {
+        req_headers
+            .get(RANGE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+    } else {
+        None
+    };
+    let if_range_header = range_header.and_then(|_| {
+        req_headers
+            .get(IF_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+    });
+
     let proxy_resp = state
         .services
         .online
-        .stream_audio_proxy(&user, &q.url, q.source_id, &req_headers)
+        .stream_audio_proxy(&user, &q.url, source_id, range_header, if_range_header)
         .await?;
 
     let mut resp = Response::new(Body::from_stream(proxy_resp.stream));
-    *resp.status_mut() = proxy_resp.status;
+    *resp.status_mut() = if proxy_resp.is_partial {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
 
     if let Ok(hv) = HeaderValue::from_str(&proxy_resp.content_type) {
         resp.headers_mut().insert(CONTENT_TYPE, hv);
@@ -583,10 +494,9 @@ async fn online_audio_proxy(
             resp.headers_mut().insert(CONTENT_DISPOSITION, disp);
         }
     }
-    if let Some(len) = proxy_resp.content_length
-        && let Ok(hv) = HeaderValue::from_str(&len)
-    {
-        resp.headers_mut().insert(CONTENT_LENGTH, hv);
+    if let Some(len) = proxy_resp.content_length {
+        resp.headers_mut()
+            .insert(CONTENT_LENGTH, HeaderValue::from(len));
     }
     if let Some(cr) = proxy_resp.content_range
         && let Ok(hv) = HeaderValue::from_str(&cr)

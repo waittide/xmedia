@@ -6,7 +6,7 @@ use xmedia_source::crud::{
 };
 
 use crate::domain::catalog::StructuredLyrics;
-use crate::source::model::{ExecutionDiagnostics, MusicSourceTestMode};
+use crate::domain::online::{ExecutionDiagnostics, MusicSourceTestMode};
 
 pub type MusicSourceSummaryDto = SourceSummaryDto;
 pub type ImportMusicSourcesReportDto = ImportSourcesReportDto<MusicSourceSummaryDto>;

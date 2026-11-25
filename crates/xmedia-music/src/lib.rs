@@ -2,7 +2,6 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
-pub mod source;
 
 #[cfg(test)]
 mod tests;
@@ -23,22 +22,24 @@ use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::persistence::repositories::{
     ToastyOnlineLibraryItemRepository, ToastyUserMediaBindingRepository,
 };
+use xmedia_source::crud::{SourceCrudService, SourceRepository};
 use xmedia_source::http::HttpClientConfig;
 
 use application::MusicServices;
 use application::catalog::MusicCatalogService;
 use application::collection::MusicCollectionService;
 use application::ingest::MusicIngestService;
-use application::online::{MusicOnlineService, MusicOnlineSourceDirectory, MusicTrackingDeps};
+use application::online::{MusicOnlineService, MusicTrackingDeps};
 use application::streaming::MusicStreamingService;
+use domain::online::MusicSourceSpec;
 use infra::audio_probe::LoftyAudioProbe;
 use infra::lyrics::HybridLyricsResolver;
 use infra::persistence::repositories::{
     ToastyMusicCatalogRepository, ToastyMusicCollectionRepository, ToastyMusicSourceRepository,
 };
+use infra::source::{HttpMusicMediaProxy, MusicSourceEngine};
 use infra::storage::{LocalMusicScanner, LocalMusicStorage};
 use infra::transcoder::FfmpegAudioTranscoder;
-use source::MusicSourceEngine;
 
 pub use infra::persistence::{ensure_music_schema, register_music_models};
 
@@ -101,7 +102,8 @@ pub fn init_music_module_with_bindings(
     let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(db.clone()));
     let collections_repo = Arc::new(ToastyMusicCollectionRepository::new(db.clone()));
     let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
-    let sources_repo = Arc::new(ToastyMusicSourceRepository::new(db));
+    let sources_repo: Arc<dyn SourceRepository> = Arc::new(ToastyMusicSourceRepository::new(db));
+    let sources_crud = Arc::new(SourceCrudService::<MusicSourceSpec>::new(sources_repo));
 
     let storage = Arc::new(LocalMusicStorage::new(data_dir)?);
     let scanner = Arc::new(LocalMusicScanner);
@@ -143,16 +145,17 @@ pub fn init_music_module_with_bindings(
         transcoder,
     ));
 
-    let engine = MusicSourceEngine::new(
+    let engine = Arc::new(MusicSourceEngine::new(
         HttpClientConfig {
             allow_private_ips,
             ..Default::default()
         },
         Duration::from_secs(45),
-    );
+    ));
+    let media_proxy = Arc::new(HttpMusicMediaProxy::new(allow_private_ips));
     let online = Arc::new(
-        MusicOnlineService::with_engine(sources_repo.clone(), engine, allow_private_ips)
-            .with_tracking(MusicTrackingDeps {
+        MusicOnlineService::with_ports(sources_crud.clone(), engine, media_proxy).with_tracking(
+            MusicTrackingDeps {
                 libraries: libraries_repo,
                 catalog_repo,
                 catalog_service: catalog.clone(),
@@ -160,12 +163,13 @@ pub fn init_music_module_with_bindings(
                 storage,
                 probe,
                 events,
-            }),
+            },
+        ),
     );
     let online_items = Arc::new(OnlineLibraryService::new(
         MediaKind::Music,
         online_items_repo,
-        Arc::new(MusicOnlineSourceDirectory::new(sources_repo)),
+        sources_crud,
     ));
 
     Ok(MusicServices::new(

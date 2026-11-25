@@ -4,8 +4,10 @@ use axum::extract::FromRef;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
+use xmedia_source::crud::SourceCrudService;
 
 use crate::application::MusicServices;
+use crate::domain::online::MusicSourceSpec;
 
 #[derive(Clone)]
 pub struct MusicHttpState {
@@ -37,5 +39,11 @@ impl FromRef<MusicHttpState> for Arc<AuthService> {
 impl FromRef<MusicHttpState> for Arc<OnlineLibraryService> {
     fn from_ref(state: &MusicHttpState) -> Self {
         state.services.online_items.clone()
+    }
+}
+
+impl FromRef<MusicHttpState> for Arc<SourceCrudService<MusicSourceSpec>> {
+    fn from_ref(state: &MusicHttpState) -> Self {
+        state.services.online.sources_crud().clone()
     }
 }

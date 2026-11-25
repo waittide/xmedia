@@ -32,14 +32,14 @@ use xmedia_source::model::SourceRuntimeState;
 use xmedia_source::proxy::IMAGE_PROXY_CSP;
 
 use crate::domain::catalog::StructuredLyrics;
+use crate::domain::online::{
+    MusicSourceSpec, MusicTrackContext, infer_audio_format, normalize_artist, parse_duration_secs,
+    url_encode_component,
+};
 use crate::http::rest_router;
 use crate::http::state::MusicHttpState;
 use crate::infra::lyrics::parse_lyrics_str;
-use crate::source::MusicSourceEngine;
-use crate::source::engine::{
-    infer_audio_format, normalize_artist, parse_duration_secs, url_encode_component,
-};
-use crate::source::model::{MusicSourceSpec, MusicTrackContext};
+use crate::infra::source::MusicSourceEngine;
 use crate::{
     ensure_music_schema, init_music_module, init_music_module_with_allow_private_ips,
     register_music_models,
@@ -1557,7 +1557,7 @@ async fn ssrf_hardened_default_rejects_loopback_and_metadata_urls() {
 async fn engine_blocks_template_js_injection_and_fixes_short_circuit_headers_ia_login_cover() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::source::model::{MusicCoverRule, MusicSearchRule, MusicStreamRule};
+    use crate::domain::online::{MusicCoverRule, MusicSearchRule, MusicStreamRule};
 
     let lookup_hits = Arc::new(AtomicUsize::new(0));
     let lookup_hits_srv = lookup_hits.clone();
@@ -1901,7 +1901,7 @@ async fn engine_blocks_template_js_injection_and_fixes_short_circuit_headers_ia_
 async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::source::model::{MusicStreamRule, MusicTrackDetailRule};
+    use crate::domain::online::{MusicStreamRule, MusicTrackDetailRule};
 
     #[derive(Deserialize)]
     struct QueryCapture {
@@ -2588,8 +2588,8 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
 
 #[tokio::test]
 async fn regression_explore_categories_preserve_js_pipelines() {
-    use crate::source::MusicSearchRule;
-    use crate::source::engine::parse_explore_categories;
+    use crate::domain::online::MusicSearchRule;
+    use crate::infra::source::engine::parse_explore_categories;
 
     #[derive(Deserialize)]
     struct ExploreHitQuery {
@@ -4004,15 +4004,19 @@ async fn music_online_browse_enforces_timeout_on_stalled_upstream() {
         .await
         .unwrap();
 
-    let sources_repo = Arc::new(ToastyMusicSourceRepository::new(db));
-    let engine = MusicSourceEngine::new(
+    let sources_repo: Arc<dyn xmedia_source::crud::SourceRepository> =
+        Arc::new(ToastyMusicSourceRepository::new(db));
+    let sources_crud =
+        Arc::new(xmedia_source::crud::SourceCrudService::<MusicSourceSpec>::new(sources_repo));
+    let engine = Arc::new(MusicSourceEngine::new(
         HttpClientConfig {
             allow_private_ips: true,
             ..Default::default()
         },
         Duration::from_secs(5),
-    );
-    let svc = MusicOnlineService::with_engine(sources_repo, engine, true)
+    ));
+    let media_proxy = Arc::new(crate::infra::source::HttpMusicMediaProxy::new(true));
+    let svc = MusicOnlineService::with_ports(sources_crud.clone(), engine, media_proxy)
         .with_timeouts(Duration::from_millis(120), Duration::from_millis(160));
 
     let raw_src = serde_json::json!({
@@ -4039,7 +4043,7 @@ async fn music_online_browse_enforces_timeout_on_stalled_upstream() {
             "lyric": "$.lrc"
         }
     });
-    let imported = svc
+    let imported = sources_crud
         .import_sources(&admin, &raw_src.to_string())
         .await
         .unwrap();

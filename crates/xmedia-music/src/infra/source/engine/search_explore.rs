@@ -8,16 +8,16 @@ use xmedia_source::model::{
 };
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
 
+use super::super::session::MusicSourceSession;
 use super::template::{
     MusicTemplateVars, eval_rule_or_literal, eval_template_expression, fetch_api, non_empty_opt,
     resolve_literal_http_url, substitute_static_explore_placeholders,
 };
 use super::{MusicSourceEngine, infer_audio_format, normalize_artist, parse_duration_secs};
-use crate::source::model::{
+use crate::domain::online::{
     MusicSearchRule, MusicSourceSpec, MusicTrackContext, OnlineMusicExploreCategory,
     OnlineMusicExploreResult, OnlineMusicTrackItem,
 };
-use crate::source::session::MusicSourceSession;
 
 fn normalize_explore_category_url(raw_url: &str, base_url: &str) -> String {
     let trimmed = raw_url.trim();

@@ -15,7 +15,6 @@ use crate::domain::collection::{
     AudioBookmark, PlayQueue, Playlist, PlaylistId, RatingEntry, ScrobbleEntry, StarTargetKind,
     StarredEntry, TrackPlayStat,
 };
-use crate::domain::online::{MusicSourceRecord, SourceRuntimeState};
 
 #[async_trait]
 pub trait MusicCatalogRepository: Send + Sync {
@@ -234,44 +233,4 @@ pub trait MusicCollectionRepository: Send + Sync {
         user_id: UserId,
         track_id: TrackId,
     ) -> DomainResult<()>;
-}
-
-#[async_trait]
-pub trait MusicSourceRepository: Send + Sync {
-    async fn list_all(&self) -> DomainResult<Vec<MusicSourceRecord>>;
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<MusicSourceRecord>>;
-    async fn save(&self, source: &MusicSourceRecord) -> DomainResult<()>;
-    async fn update_metadata_if_exists(
-        &self,
-        id: Uuid,
-        patch: crate::domain::online::MusicSourceMetadataUpdate,
-    ) -> DomainResult<Option<MusicSourceRecord>>;
-    async fn update_runtime_state(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        updated_at: Timestamp,
-    ) -> DomainResult<()>;
-    async fn update_test_result(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        last_test_ok: bool,
-        last_test_msg: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn update_weight_if_exists(
-        &self,
-        id: Uuid,
-        weight: i64,
-        updated_at: Timestamp,
-    ) -> DomainResult<Option<MusicSourceRecord>>;
-    async fn update_batch_fields_if_exists(
-        &self,
-        id: Uuid,
-        enabled: Option<bool>,
-        group_name: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn delete(&self, id: Uuid) -> DomainResult<()>;
 }

@@ -1,4 +1,8 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -10,6 +14,11 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::Library;
 
 use crate::domain::catalog::{AudioFormat, ReplayGain, StructuredLyrics, Track, TrackId};
+use crate::domain::online::{
+    MusicSourceSpec, MusicTrackContext, OnlineMusicExploreResult, OnlineMusicLyricsResult,
+    OnlineMusicStreamResult, OnlineMusicTrackItem, SourceCallError, SourceCallOutput,
+    SourceRuntimeState,
+};
 
 #[derive(Debug, Clone)]
 pub struct ProbedAudioMetadata {
@@ -224,4 +233,142 @@ pub trait MusicScannerPort: Send + Sync {
         absolute_cover_path: &str,
     ) -> DomainResult<Option<BinaryPayload>>;
     async fn compute_file_fingerprint(&self, absolute_path: &str) -> DomainResult<String>;
+}
+
+pub trait MusicSourceEnginePort: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
+    fn search_sync_with_control(
+        &self,
+        source: &MusicSourceSpec,
+        initial_state: SourceRuntimeState,
+        keyword: &str,
+        page: u32,
+        limit: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineMusicTrackItem>>, SourceCallError>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn explore_sync_with_control(
+        &self,
+        source: &MusicSourceSpec,
+        initial_state: SourceRuntimeState,
+        explore_url_override: Option<&str>,
+        page: u32,
+        limit: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineMusicExploreResult>, SourceCallError>;
+
+    fn fetch_track_detail_sync_with_control(
+        &self,
+        source: &MusicSourceSpec,
+        initial_state: SourceRuntimeState,
+        ctx: &MusicTrackContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineMusicTrackItem>, SourceCallError>;
+
+    fn resolve_stream_sync_with_control(
+        &self,
+        source: &MusicSourceSpec,
+        initial_state: SourceRuntimeState,
+        ctx: &MusicTrackContext,
+        quality: Option<&str>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineMusicStreamResult>, SourceCallError>;
+
+    fn resolve_cover_sync_with_control(
+        &self,
+        source: &MusicSourceSpec,
+        initial_state: SourceRuntimeState,
+        ctx: &MusicTrackContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Option<String>>, SourceCallError>;
+
+    fn resolve_lyrics_sync_with_control(
+        &self,
+        source: &MusicSourceSpec,
+        initial_state: SourceRuntimeState,
+        ctx: &MusicTrackContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Option<OnlineMusicLyricsResult>>, SourceCallError>;
+
+    fn run_login_action_sync(
+        &self,
+        source: &MusicSourceSpec,
+        initial_state: SourceRuntimeState,
+        login_info: HashMap<String, String>,
+        action_js: Option<&str>,
+    ) -> Result<SourceCallOutput<String>, SourceCallError>;
+}
+
+pub struct TempAudioFile {
+    path: PathBuf,
+}
+
+impl TempAudioFile {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempAudioFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub struct UpstreamAudioProxyRequest<'a> {
+    pub target_url: &'a str,
+    pub headers: &'a HashMap<String, String>,
+    pub range_header: Option<&'a str>,
+    pub if_range_header: Option<&'a str>,
+    pub max_bytes: u64,
+}
+
+pub struct AudioProxyResponse {
+    pub is_partial: bool,
+    pub content_type: String,
+    pub content_length: Option<u64>,
+    pub content_range: Option<String>,
+    pub accept_ranges: Option<String>,
+    pub stream: ByteChunkStream,
+}
+
+pub struct DownloadedTempAudio {
+    pub temp_file: TempAudioFile,
+    pub content_type: Option<String>,
+    pub total_bytes: u64,
+}
+
+#[async_trait]
+pub trait MusicMediaProxyPort: Send + Sync {
+    fn has_effective_proxy_headers(&self, spec: &MusicSourceSpec) -> bool;
+
+    async fn fetch_cover_image(
+        &self,
+        url: &str,
+        headers: Option<&HashMap<String, String>>,
+    ) -> DomainResult<(Vec<u8>, &'static str)>;
+
+    async fn open_audio_proxy_stream(
+        &self,
+        req: UpstreamAudioProxyRequest<'_>,
+    ) -> DomainResult<AudioProxyResponse>;
+
+    async fn download_audio_to_temp_file(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        ext_hint: &str,
+        max_bytes: u64,
+    ) -> DomainResult<DownloadedTempAudio>;
 }

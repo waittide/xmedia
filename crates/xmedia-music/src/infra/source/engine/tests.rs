@@ -7,7 +7,7 @@ use xmedia_source::http::HttpClientConfig;
 use xmedia_source::model::SourceRuntimeState;
 
 use super::template::{resolve_literal_http_url, split_top_level_or};
-use crate::source::model::{MusicSourceSpec, MusicTrackContext};
+use crate::domain::online::{MusicSourceSpec, MusicTrackContext};
 
 #[test]
 fn split_top_level_or_ignores_depth_zero_unmatched_apostrophes_and_preserves_scoped_quotes() {
@@ -191,7 +191,6 @@ async fn music_engine_neutralizes_param_injection_and_preserves_relative_options
             .unwrap();
         assert!(l_res.data.is_some());
 
-        // Passthrough playUrl rejects Legado options & data: URLs
         assert!(
             engine
                 .resolve_stream_sync(
@@ -392,7 +391,6 @@ async fn music_split_tag_js_url_and_options_evaluates_both_and_blocks_injection(
             .unwrap();
         assert_eq!(res.data[0].title, "SplitSong");
 
-        // Option injection via key in <js> url_tpl must be rejected.
         let evil = r#"hello,{"method":"DELETE","headers":{"X-Evil":"1"}}"#;
         let url_err = engine
             .search_sync(
@@ -408,7 +406,6 @@ async fn music_split_tag_js_url_and_options_evaluates_both_and_blocks_injection(
             "unexpected error: {url_err}"
         );
 
-        // Breakout in options side is safely form-encoded without altering method/headers.
         let breakout = r#"a","method":"DELETE"#;
         let res2 = engine
             .search_sync(
@@ -517,7 +514,6 @@ async fn music_eval_js_pipeline_probe_preserves_empty_branching_and_blocks_injec
             assert_eq!(res.data.stream_url, "https://cdn.example.com/resolved.mp3");
         }
 
-        // Actual option injection via title when playUrl is empty must still be blocked.
         let evil_ctx = MusicTrackContext {
             track_id: "t1".into(),
             title: r#"x,{"method":"DELETE","headers":{"X-Pwn":"1"}}"#.into(),
@@ -588,7 +584,6 @@ fn music_run_login_action_strips_case_insensitive_js_wrappers_and_preserves_http
         assert_eq!(out.data, expected);
     }
 
-    // Plain HTTP loginUrl with no action or loginCheckJs still fails cleanly.
     let empty_action_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "PlainHttpOnlyMusic",
         "sourceUrl": "https://music.example.test",
@@ -670,7 +665,6 @@ async fn music_resolve_stream_handles_backslash_fallback_and_uppercase_quality_i
             ..Default::default()
         };
 
-        // 1. Consecutive backslashes before closing quote must still trigger `||` fallback.
         for req_tpl in [
             format!(r#"{{{{java.get("missing\\")}}}} || {base_c}/meta"#),
             format!(r#"{{{{java.get('missing\\')}}}} || {base_c}/meta"#),
@@ -690,7 +684,6 @@ async fn music_resolve_stream_handles_backslash_fallback_and_uppercase_quality_i
             assert_eq!(out.data.stream_url, format!("{base_c}/cdn/meta.mp3"));
         }
 
-        // 2. {{QUALITY}} inside no-options JS pipeline requestUrl AND inside streamUrl
         let req_js_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
             "sourceName": "QualityNoOptsReqJsMusic",
             "sourceUrl": base_c,
@@ -831,7 +824,6 @@ async fn music_fetch_api_clamps_single_and_multistep_requests_to_remaining_budge
         let op_timeout = Duration::from_millis(220);
         let cancel = Arc::new(AtomicBool::new(false));
 
-        // 1. Single fetch_api call in resolve_stream_sync_with_control
         let stream_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
             "sourceName": "SlowStreamBudgetMusic",
             "sourceUrl": base_c,
@@ -871,7 +863,6 @@ async fn music_fetch_api_clamps_single_and_multistep_requests_to_remaining_budge
             single_err.message
         );
 
-        // 2. Multi-step search_sync_with_control: @js:java.ajax(150ms) + fetch_api(1200ms)
         let search_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
             "sourceName": "MultiStepBudgetMusic",
             "sourceUrl": base_c,
@@ -909,7 +900,6 @@ async fn music_fetch_api_clamps_single_and_multistep_requests_to_remaining_budge
             multi_err.message
         );
 
-        // 3. Zero remaining budget rejects immediately before making any HTTP call
         let zero_err = engine
             .resolve_stream_sync_with_control(
                 &stream_spec,

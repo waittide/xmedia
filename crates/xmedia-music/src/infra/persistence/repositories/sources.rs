@@ -3,12 +3,13 @@ use jiff::Timestamp;
 use toasty::Db;
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
+use xmedia_source::crud::{SourceMetadataUpdate, SourceRecord, SourceRepository};
 use xmedia_source::model::SourceRuntimeState;
 
 use super::db_err;
-use crate::domain::online::{MusicSourceMetadataUpdate, MusicSourceRecord};
-use crate::domain::repository::MusicSourceRepository;
+use crate::domain::online::MusicSourceSpec;
 use crate::infra::persistence::models::MusicSourceRecordModel;
+use xmedia_source::crud::SourceSpecAdapter;
 
 #[derive(Clone)]
 pub struct ToastyMusicSourceRepository {
@@ -20,8 +21,8 @@ impl ToastyMusicSourceRepository {
         Self { db }
     }
 
-    fn to_domain(m: MusicSourceRecordModel) -> MusicSourceRecord {
-        MusicSourceRecord {
+    fn to_domain(m: MusicSourceRecordModel) -> SourceRecord {
+        SourceRecord {
             id: m.id,
             name: m.name,
             source_url: m.source_url,
@@ -40,8 +41,8 @@ impl ToastyMusicSourceRepository {
 }
 
 #[async_trait]
-impl MusicSourceRepository for ToastyMusicSourceRepository {
-    async fn list_all(&self) -> DomainResult<Vec<MusicSourceRecord>> {
+impl SourceRepository for ToastyMusicSourceRepository {
+    async fn list_all(&self) -> DomainResult<Vec<SourceRecord>> {
         let mut db = self.db.clone();
         let rows = MusicSourceRecordModel::all()
             .exec(&mut db)
@@ -50,7 +51,7 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<MusicSourceRecord>> {
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let row = MusicSourceRecordModel::filter_by_id(id)
             .first()
@@ -60,7 +61,7 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
         Ok(row.map(Self::to_domain))
     }
 
-    async fn save(&self, source: &MusicSourceRecord) -> DomainResult<()> {
+    async fn save(&self, source: &SourceRecord) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = MusicSourceRecordModel::filter_by_id(source.id)
             .first()
@@ -109,8 +110,8 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
     async fn update_metadata_if_exists(
         &self,
         id: Uuid,
-        patch: MusicSourceMetadataUpdate,
-    ) -> DomainResult<Option<MusicSourceRecord>> {
+        patch: SourceMetadataUpdate,
+    ) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let Some(mut rec) = MusicSourceRecordModel::filter_by_id(id)
             .first()
@@ -194,29 +195,26 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
     async fn update_test_result(
         &self,
         id: Uuid,
-        runtime_state: SourceRuntimeState,
-        last_test_ok: bool,
-        last_test_msg: Option<String>,
+        ok: bool,
+        message: String,
         updated_at: Timestamp,
-    ) -> DomainResult<bool> {
+    ) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let Some(mut rec) = MusicSourceRecordModel::filter_by_id(id)
+        if let Some(mut rec) = MusicSourceRecordModel::filter_by_id(id)
             .first()
             .exec(&mut db)
             .await
             .map_err(db_err)?
-        else {
-            return Ok(false);
-        };
-        rec.update()
-            .runtime_state(toasty::Json(runtime_state))
-            .last_test_ok(Some(last_test_ok))
-            .last_test_msg(last_test_msg)
-            .updated_at(updated_at)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(true)
+        {
+            rec.update()
+                .last_test_ok(Some(ok))
+                .last_test_msg(Some(message))
+                .updated_at(updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(())
     }
 
     async fn update_weight_if_exists(
@@ -224,7 +222,7 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
         id: Uuid,
         weight: i64,
         updated_at: Timestamp,
-    ) -> DomainResult<Option<MusicSourceRecord>> {
+    ) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let Some(mut rec) = MusicSourceRecordModel::filter_by_id(id)
             .first()
@@ -234,8 +232,13 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
         else {
             return Ok(None);
         };
-        let next_raw =
-            MusicSourceRecord::sync_raw_json_fields(&rec.raw_json, None, Some(weight), None);
+        let next_raw = SourceRecord::sync_raw_json_fields(
+            &rec.raw_json,
+            None,
+            Some(weight),
+            None,
+            MusicSourceSpec::JSON_GROUP_KEY,
+        );
         rec.update()
             .weight(weight)
             .raw_json(next_raw.clone())
@@ -271,11 +274,12 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
             .as_deref()
             .map(|g| g.trim().to_string())
             .unwrap_or_else(|| rec.group_name.clone());
-        let next_raw = MusicSourceRecord::sync_raw_json_fields(
+        let next_raw = SourceRecord::sync_raw_json_fields(
             &rec.raw_json,
             enabled,
             None,
             group_name.as_deref(),
+            MusicSourceSpec::JSON_GROUP_KEY,
         );
         rec.update()
             .enabled(next_enabled)

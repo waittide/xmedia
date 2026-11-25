@@ -8,7 +8,7 @@ use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::model::{ExecutionDiagnostics, SourceMetadata, SourceRuntimeState};
 use xmedia_source::rule::RuleValue;
 
-use crate::source::model::{MusicSourceSpec, MusicTrackContext};
+use crate::domain::online::{MusicSourceSpec, MusicTrackContext};
 
 pub(super) const MUSIC_JS_BOOTSTRAP: &str = r#"
 globalThis.track = {

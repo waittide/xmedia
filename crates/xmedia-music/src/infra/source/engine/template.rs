@@ -8,8 +8,8 @@ use xmedia_source::http::{
 };
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
 
-use crate::source::model::{MusicSourceSpec, MusicTrackContext};
-use crate::source::session::MusicSourceSession;
+use super::super::session::MusicSourceSession;
+use crate::domain::online::{MusicSourceSpec, MusicTrackContext};
 
 #[derive(Debug, Default)]
 pub(super) struct MusicTemplateVars<'a> {
@@ -238,7 +238,6 @@ fn eval_js_pipeline_guarded(
             Err(e) => Err(e),
         };
 
-        // Restore caller vars/context unconditionally before checking probe result.
         let _ = session.set_search_vars(vars.key, vars.page, vars.limit);
         if let Some(orig) = vars.raw_ctx {
             let _ = session.set_track_context(orig);

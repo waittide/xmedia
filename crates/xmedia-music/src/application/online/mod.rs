@@ -1,9 +1,8 @@
 mod browse;
 mod debug;
 mod dto;
-mod items;
 mod proxy;
-mod sources;
+mod resolve;
 mod tracked;
 
 use std::collections::HashMap;
@@ -12,23 +11,28 @@ use std::time::Duration;
 
 use uuid::Uuid;
 use xmedia_core::application::ports::RealtimeEventPort;
+use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::user::User;
 pub(super) use xmedia_source::concurrency::{
     AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
 };
+use xmedia_source::crud::SourceCrudService;
 use xmedia_source::model::ConcurrentRateSpec;
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
+pub use crate::application::ports::AudioProxyResponse;
 pub use dto::*;
-pub use items::MusicOnlineSourceDirectory;
-pub use proxy::AudioProxyResponse;
+pub use proxy::MAX_AUDIO_PROXY_BYTES;
 
 use crate::application::catalog::MusicCatalogService;
 use crate::application::ingest::MusicIngestService;
-use crate::application::ports::{AudioMetadataProbePort, MusicStoragePort};
+use crate::application::ports::{
+    AudioMetadataProbePort, MusicMediaProxyPort, MusicSourceEnginePort, MusicStoragePort,
+};
 use crate::domain::catalog::TrackId;
-use crate::domain::repository::{MusicCatalogRepository, MusicSourceRepository};
-use crate::source::MusicSourceEngine;
+use crate::domain::online::MusicSourceSpec;
+use crate::domain::repository::MusicCatalogRepository;
 
 pub(super) const SEARCH_MAX_CONCURRENCY: usize = 16;
 pub(super) const COVER_RESOLVE_MAX_CONCURRENCY: usize = 6;
@@ -48,47 +52,45 @@ pub struct MusicTrackingDeps {
     pub events: Arc<dyn RealtimeEventPort>,
 }
 
+pub(super) type CoverUrlCacheKey = (Uuid, u64, String);
+
 pub struct MusicOnlineService {
-    pub(super) sources: Arc<dyn MusicSourceRepository>,
-    pub(super) engine: MusicSourceEngine,
-    pub(super) source_state_locks: AsyncLockMap<Uuid>,
+    pub(super) sources: Arc<SourceCrudService<MusicSourceSpec>>,
+    pub(super) engine: Arc<dyn MusicSourceEnginePort>,
+    pub(super) media_proxy: Arc<dyn MusicMediaProxyPort>,
     pub(super) track_locks: AsyncLockMap<(Uuid, String)>,
     pub(super) track_cache_locks: AsyncLockMap<TrackId>,
     pub(super) rate_limiters: RateLimiterMap,
     pub(super) cover_resolve_sem: Arc<tokio::sync::Semaphore>,
-    pub(super) cover_url_cache: Arc<Mutex<HashMap<(Uuid, String), String>>>,
-    pub(super) seed_import_lock: tokio::sync::Mutex<()>,
+    pub(super) cover_url_cache: Arc<Mutex<HashMap<CoverUrlCacheKey, String>>>,
     pub(super) tracking: Option<MusicTrackingDeps>,
-    pub(super) allow_private_ips: bool,
     pub(super) op_timeout: Duration,
     pub(super) track_info_timeout: Duration,
 }
 
 impl MusicOnlineService {
-    pub fn new(sources: Arc<dyn MusicSourceRepository>) -> Self {
-        Self::with_engine(sources, MusicSourceEngine::default(), false)
-    }
-
-    pub fn with_engine(
-        sources: Arc<dyn MusicSourceRepository>,
-        engine: MusicSourceEngine,
-        allow_private_ips: bool,
+    pub fn with_ports(
+        sources: Arc<SourceCrudService<MusicSourceSpec>>,
+        engine: Arc<dyn MusicSourceEnginePort>,
+        media_proxy: Arc<dyn MusicMediaProxyPort>,
     ) -> Self {
         Self {
             sources,
             engine,
-            source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            media_proxy,
             track_locks: Arc::new(Mutex::new(HashMap::new())),
             track_cache_locks: Arc::new(Mutex::new(HashMap::new())),
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             cover_resolve_sem: Arc::new(tokio::sync::Semaphore::new(COVER_RESOLVE_MAX_CONCURRENCY)),
             cover_url_cache: Arc::new(Mutex::new(HashMap::new())),
-            seed_import_lock: tokio::sync::Mutex::new(()),
             tracking: None,
-            allow_private_ips,
             op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
             track_info_timeout: TRACK_INFO_OP_TIMEOUT,
         }
+    }
+
+    pub fn sources_crud(&self) -> &Arc<SourceCrudService<MusicSourceSpec>> {
+        &self.sources
     }
 
     pub fn with_tracking(mut self, deps: MusicTrackingDeps) -> Self {
@@ -107,6 +109,27 @@ impl MusicOnlineService {
         self
     }
 
+    pub async fn run_login_action(
+        &self,
+        actor: &User,
+        id: Uuid,
+        login_info: HashMap<String, String>,
+        action: Option<String>,
+    ) -> DomainResult<LoginActionResponseDto> {
+        let engine = self.engine.clone();
+        self.sources
+            .run_login_action_with(
+                actor,
+                id,
+                login_info,
+                action,
+                move |spec, state, merged, act| {
+                    engine.run_login_action_sync(spec, state, merged, act)
+                },
+            )
+            .await
+    }
+
     pub(super) async fn acquire_rate_slot(
         &self,
         source_id: Uuid,
@@ -114,13 +137,5 @@ impl MusicOnlineService {
         timeout: Duration,
     ) -> Result<(), String> {
         acquire_source_rate_slot(&self.rate_limiters, source_id, spec, timeout).await
-    }
-
-    pub(super) fn invalidate_cover_cache_for_source(&self, source_id: Uuid) {
-        let mut guard = self
-            .cover_url_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        guard.retain(|(sid, _), _| *sid != source_id);
     }
 }
