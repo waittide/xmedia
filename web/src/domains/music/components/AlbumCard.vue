@@ -76,20 +76,37 @@ async function onStar(ev: MouseEvent): Promise<void> {
         :fallback-icon="LuDisc3"
         fallback-icon-class="h-10 w-10 text-on-surface-variant/50"
       />
+
+      <div
+        class="pointer-events-none absolute right-2 bottom-2 z-20 opacity-0 transition-opacity duration-150 ease-standard group-focus-within:opacity-100 group-hover:opacity-100"
+      >
+        <MdIconButton
+          size="sm"
+          variant="filled"
+          :loading="playingLoading"
+          :disabled="playingLoading"
+          :title="t('common.playAll')"
+          :aria-label="t('common.playAll')"
+          class="pointer-events-auto shadow-elevation-1"
+          @click="quickPlayAlbum"
+        >
+          <LuPlay class="ml-0.5 h-4 w-4 fill-current" aria-hidden="true" />
+        </MdIconButton>
+      </div>
     </div>
 
-    <div class="mt-2 flex items-start justify-between gap-1.5">
-      <div class="min-w-0 flex-1">
-        <RouterLink
-          :to="albumTo"
-          class="block outline-none after:absolute after:inset-0 after:rounded-corner-md focus-visible:after:outline-3 focus-visible:after:outline-offset-2 focus-visible:after:outline-secondary"
-        >
-          <h3 class="text-title-small truncate text-on-surface" :title="album.title">
-            {{ album.title }}
-          </h3>
-        </RouterLink>
+    <div class="mt-2 min-w-0">
+      <RouterLink
+        :to="albumTo"
+        class="block outline-none after:absolute after:inset-0 after:rounded-corner-md focus-visible:after:outline-3 focus-visible:after:outline-offset-2 focus-visible:after:outline-secondary"
+      >
+        <h3 class="text-title-small truncate text-on-surface" :title="album.title">
+          {{ album.title }}
+        </h3>
+      </RouterLink>
 
-        <div class="text-body-small mt-0.5 flex items-center gap-1.5 text-on-surface-variant">
+      <div class="text-body-small mt-0.5 flex items-center justify-between gap-1 text-on-surface-variant">
+        <div class="flex min-w-0 flex-1 items-center gap-1.5">
           <RouterLink
             :to="artistTo"
             class="relative z-10 min-w-0 truncate hover:text-primary hover:underline"
@@ -98,31 +115,19 @@ async function onStar(ev: MouseEvent): Promise<void> {
           </RouterLink>
           <span v-if="album.year" class="shrink-0 tabular-nums">· {{ album.year }}</span>
         </div>
-      </div>
 
-      <div class="relative z-20 flex shrink-0 items-center gap-0.5">
         <MdIconButton
           size="sm"
           variant="standard"
           :selected="Boolean(album.starred_at)"
           :aria-label="album.starred_at ? t('common.unfavorite') : t('common.favorite')"
+          class="relative z-20 -mr-1.5 shrink-0"
           @click="onStar"
         >
           <LuHeart
             class="h-4 w-4"
-            :class="album.starred_at ? 'fill-current text-tertiary' : ''"
+            :class="album.starred_at ? 'fill-error text-error' : ''"
           />
-        </MdIconButton>
-        <MdIconButton
-          size="sm"
-          variant="tonal"
-          :loading="playingLoading"
-          :disabled="playingLoading"
-          :title="t('common.playAll')"
-          :aria-label="t('common.playAll')"
-          @click="quickPlayAlbum"
-        >
-          <LuPlay class="ml-0.5 h-4 w-4 fill-current" aria-hidden="true" />
         </MdIconButton>
       </div>
     </div>

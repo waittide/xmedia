@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { LuArrowDown, LuArrowUp, LuDisc3, LuDownload, LuTrash2, LuVolume2 } from 'vue-icons-plus/lu'
-import { MdIconButton } from '@/components/ui'
+import {
+  LuArrowDown,
+  LuArrowUp,
+  LuDisc3,
+  LuDownload,
+  LuMoreVertical,
+  LuTrash2,
+  LuVolume2,
+} from 'vue-icons-plus/lu'
+import { MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { buildCoverUrl } from '../api'
@@ -188,44 +196,88 @@ async function handleDownloadItem(item: PlayerQueueItem): Promise<void> {
       </button>
 
       <div class="flex shrink-0 items-center gap-0.5">
-        <div
-          v-if="playerStore.queue.length > 1"
-          class="flex items-center gap-0.5 sm:hidden sm:group-focus-within:flex sm:group-hover:flex"
-        >
-          <MdIconButton
-            size="sm"
-            :icon="LuArrowUp"
-            :disabled="idx === 0"
-            :aria-label="t('player.moveUp')"
-            :tooltip="t('player.moveUp')"
-            @click="playerStore.moveQueueItem(idx, idx - 1)"
-          />
-          <MdIconButton
-            size="sm"
-            :icon="LuArrowDown"
-            :disabled="idx === playerStore.queue.length - 1"
-            :aria-label="t('player.moveDown')"
-            :tooltip="t('player.moveDown')"
-            @click="playerStore.moveQueueItem(idx, idx + 1)"
-          />
+        <div class="sm:hidden">
+          <MdMenu placement="bottom-end" :min-width="192" :aria-label="t('common.moreActions')">
+            <template #trigger="{ toggle, triggerAttrs }">
+              <MdIconButton
+                v-bind="triggerAttrs"
+                size="sm"
+                variant="standard"
+                :icon="LuMoreVertical"
+                :aria-label="t('common.moreActions')"
+                @click="toggle"
+              />
+            </template>
+
+            <MdMenuItem
+              v-if="playerStore.queue.length > 1"
+              :icon="LuArrowUp"
+              :label="t('player.moveUp')"
+              :disabled="idx === 0"
+              @select="playerStore.moveQueueItem(idx, idx - 1)"
+            />
+            <MdMenuItem
+              v-if="playerStore.queue.length > 1"
+              :icon="LuArrowDown"
+              :label="t('player.moveDown')"
+              :disabled="idx === playerStore.queue.length - 1"
+              @select="playerStore.moveQueueItem(idx, idx + 1)"
+            />
+            <MdMenuItem
+              :icon="LuDownload"
+              :label="t('common.download')"
+              :disabled="Boolean(downloadingKeys[item.key])"
+              @select="handleDownloadItem(item)"
+            />
+            <MdMenuItem
+              :icon="LuTrash2"
+              :label="t('common.delete')"
+              destructive
+              @select="playerStore.removeQueueAt(idx)"
+            />
+          </MdMenu>
         </div>
 
-        <MdIconButton
-          size="sm"
-          :icon="LuDownload"
-          :loading="Boolean(downloadingKeys[item.key])"
-          :aria-label="t('common.download')"
-          :tooltip="t('common.download')"
-          @click="handleDownloadItem(item)"
-        />
+        <div class="hidden items-center gap-0.5 sm:flex">
+          <div
+            v-if="playerStore.queue.length > 1"
+            class="hidden items-center gap-0.5 group-focus-within:flex group-hover:flex"
+          >
+            <MdIconButton
+              size="sm"
+              :icon="LuArrowUp"
+              :disabled="idx === 0"
+              :aria-label="t('player.moveUp')"
+              :tooltip="t('player.moveUp')"
+              @click="playerStore.moveQueueItem(idx, idx - 1)"
+            />
+            <MdIconButton
+              size="sm"
+              :icon="LuArrowDown"
+              :disabled="idx === playerStore.queue.length - 1"
+              :aria-label="t('player.moveDown')"
+              :tooltip="t('player.moveDown')"
+              @click="playerStore.moveQueueItem(idx, idx + 1)"
+            />
+          </div>
 
-        <MdIconButton
-          size="sm"
-          :icon="LuTrash2"
-          :aria-label="t('common.delete')"
-          :tooltip="t('common.delete')"
-          @click="playerStore.removeQueueAt(idx)"
-        />
+          <MdIconButton
+            size="sm"
+            :icon="LuDownload"
+            :loading="Boolean(downloadingKeys[item.key])"
+            :aria-label="t('common.download')"
+            :tooltip="t('common.download')"
+            @click="handleDownloadItem(item)"
+          />
+
+          <MdIconButton
+            size="sm"
+            :icon="LuTrash2"
+            :aria-label="t('common.delete')"
+            :tooltip="t('common.delete')"
+            @click="playerStore.removeQueueAt(idx)"
+          />
+        </div>
       </div>
     </div>
   </div>

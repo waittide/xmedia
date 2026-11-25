@@ -457,7 +457,7 @@ async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
                 >
                   <LuHeart
                     class="h-4 w-4"
-                    :class="entry.track.starred_at ? 'fill-current text-tertiary' : ''"
+                    :class="entry.track.starred_at ? 'fill-error text-error' : ''"
                   />
                 </MdIconButton>
 

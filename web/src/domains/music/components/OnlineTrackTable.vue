@@ -229,7 +229,7 @@ async function handleTrackAllToLibrary(): Promise<void> {
           <th class="hidden w-16 px-3 py-3 text-right sm:table-cell">
             {{ t('catalog.colDuration') }}
           </th>
-          <th class="w-40 px-2 py-3 text-right sm:w-48 sm:px-3" />
+          <th class="w-12 px-1.5 py-3 text-right sm:w-32 sm:px-3" />
         </tr>
       </thead>
       <tbody class="divide-y divide-outline-variant/35">
@@ -351,51 +351,43 @@ async function handleTrackAllToLibrary(): Promise<void> {
             {{ tr.duration_secs != null && tr.duration_secs > 0 ? formatDuration(tr.duration_secs) : '—' }}
           </td>
 
-          <td class="w-40 px-2 py-2.5 text-right sm:w-48 sm:px-3" @click.stop>
-            <div class="inline-flex items-center justify-end gap-1">
-              <MdIconButton
-                size="sm"
-                variant="standard"
-                :selected="Boolean(trackedKeys[trackKey(tr)])"
-                :loading="Boolean(trackingBusy[trackKey(tr)])"
-                :aria-label="
-                  trackedKeys[trackKey(tr)] ? t('online.trackedInLibrary') : t('online.trackToLibrary')
-                "
-                :tooltip="
-                  trackedKeys[trackKey(tr)] ? t('online.trackedInLibrary') : t('online.trackToLibrary')
-                "
-                @click="handleTrackToLibrary(tr)"
-              >
-                <LuCheck v-if="trackedKeys[trackKey(tr)]" class="h-4 w-4 text-primary" />
-                <LuLibrary v-else class="h-4 w-4" />
-              </MdIconButton>
-
-              <MdIconButton
-                size="sm"
-                variant="standard"
-                :selected="playerStore.isOnlineTrackInQueue(tr)"
-                :aria-label="
-                  playerStore.isOnlineTrackInQueue(tr) ? t('online.enqueued') : t('online.enqueue')
-                "
-                :tooltip="
-                  playerStore.isOnlineTrackInQueue(tr) ? t('online.enqueued') : t('online.enqueue')
-                "
-                @click="handleEnqueueTrack(tr)"
-              >
-                <LuCheck v-if="playerStore.isOnlineTrackInQueue(tr)" class="h-4 w-4" />
-                <LuListPlus v-else class="h-4 w-4" />
-              </MdIconButton>
+          <td class="w-12 px-1.5 py-2.5 text-right sm:w-32 sm:px-3" @click.stop>
+            <div class="inline-flex items-center justify-end gap-0.5">
+              <span class="hidden sm:inline-flex">
+                <MdIconButton
+                  size="sm"
+                  variant="standard"
+                  :selected="Boolean(trackedKeys[trackKey(tr)])"
+                  :loading="Boolean(trackingBusy[trackKey(tr)])"
+                  :aria-label="
+                    trackedKeys[trackKey(tr)] ? t('online.trackedInLibrary') : t('online.trackToLibrary')
+                  "
+                  :tooltip="
+                    trackedKeys[trackKey(tr)] ? t('online.trackedInLibrary') : t('online.trackToLibrary')
+                  "
+                  @click="handleTrackToLibrary(tr)"
+                >
+                  <LuCheck v-if="trackedKeys[trackKey(tr)]" class="h-4 w-4 text-primary" />
+                  <LuLibrary v-else class="h-4 w-4" />
+                </MdIconButton>
+              </span>
 
               <span class="hidden sm:inline-flex">
                 <MdIconButton
                   size="sm"
                   variant="standard"
-                  :icon="LuDownload"
-                  :loading="Boolean(downloadingKeys[trackKey(tr)])"
-                  :aria-label="t('common.download')"
-                  :tooltip="t('common.download')"
-                  @click="handleDownloadTrack(tr)"
-                />
+                  :selected="playerStore.isOnlineTrackInQueue(tr)"
+                  :aria-label="
+                    playerStore.isOnlineTrackInQueue(tr) ? t('online.enqueued') : t('online.enqueue')
+                  "
+                  :tooltip="
+                    playerStore.isOnlineTrackInQueue(tr) ? t('online.enqueued') : t('online.enqueue')
+                  "
+                  @click="handleEnqueueTrack(tr)"
+                >
+                  <LuCheck v-if="playerStore.isOnlineTrackInQueue(tr)" class="h-4 w-4" />
+                  <LuListPlus v-else class="h-4 w-4" />
+                </MdIconButton>
               </span>
 
               <MdMenu placement="bottom-end" :min-width="208" :aria-label="t('common.moreActions')">
@@ -410,16 +402,30 @@ async function handleTrackAllToLibrary(): Promise<void> {
                   />
                 </template>
 
+                <div class="sm:hidden">
+                  <MdMenuItem
+                    :icon="trackedKeys[trackKey(tr)] ? LuCheck : LuLibrary"
+                    :label="
+                      trackedKeys[trackKey(tr)]
+                        ? t('online.trackedInLibrary')
+                        : t('online.trackToLibrary')
+                    "
+                    :disabled="Boolean(trackingBusy[trackKey(tr)])"
+                    @select="handleTrackToLibrary(tr)"
+                  />
+                  <MdMenuItem
+                    :icon="playerStore.isOnlineTrackInQueue(tr) ? LuCheck : LuListPlus"
+                    :label="
+                      playerStore.isOnlineTrackInQueue(tr)
+                        ? t('online.enqueued')
+                        : t('online.enqueue')
+                    "
+                    :disabled="playerStore.isOnlineTrackInQueue(tr)"
+                    @select="handleEnqueueTrack(tr)"
+                  />
+                </div>
                 <MdMenuItem
-                  :icon="LuLibrary"
-                  :label="
-                    trackedKeys[trackKey(tr)] ? t('online.trackedInLibrary') : t('online.trackToLibrary')
-                  "
-                  :disabled="Boolean(trackingBusy[trackKey(tr)])"
-                  @select="handleTrackToLibrary(tr)"
-                />
-                <MdMenuItem
-                  :icon="LuListPlus"
+                  :icon="LuPlay"
                   :label="t('online.playNext')"
                   @select="handlePlayNext(tr)"
                 />

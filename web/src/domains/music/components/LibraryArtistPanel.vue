@@ -163,7 +163,7 @@ watch(() => props.artistId, loadArtist)
             >
               <LuHeart
                 class="h-5 w-5"
-                :class="detail.artist.starred_at ? 'fill-current text-tertiary' : ''"
+                :class="detail.artist.starred_at ? 'fill-error text-error' : ''"
               />
             </MdIconButton>
 

@@ -95,7 +95,7 @@ function openBookDetail(bookId: string): void {
             >
               <LuHeart
                 class="h-4 w-4"
-                :class="book.is_favorite ? 'fill-current text-tertiary' : ''"
+                :class="book.is_favorite ? 'fill-error text-error' : ''"
               />
             </MdIconButton>
           </td>

@@ -495,7 +495,7 @@ watch(
               :key="`${selectedGroupName}-${ep.index}-${ep.play_url}`"
               type="button"
               :disabled="!ep.play_url"
-              class="md-state text-label-large flex min-h-12 cursor-pointer items-center justify-center truncate rounded-corner-md border border-outline-variant bg-surface-container-low px-3 text-on-surface transition-colors duration-150 ease-standard hover:bg-surface-container disabled:cursor-not-allowed disabled:opacity-38"
+              class="md-state text-label-large flex min-h-12 cursor-pointer items-center justify-center truncate rounded-corner-md bg-surface-container-low px-3 text-on-surface transition-colors duration-150 ease-standard hover:bg-surface-container-high disabled:cursor-not-allowed disabled:opacity-38"
               @click="openEpisode(ep)"
             >
               <span class="truncate">{{ ep.name }}</span>

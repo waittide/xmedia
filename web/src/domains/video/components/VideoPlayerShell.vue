@@ -699,11 +699,11 @@ defineExpose({
               :key="ep.id"
               type="button"
               :disabled="ep.disabled"
-              class="md-state flex w-full cursor-pointer items-center justify-between gap-3 rounded-corner-md border px-3.5 py-2.5 text-left transition-colors duration-150 ease-standard disabled:cursor-not-allowed disabled:opacity-38"
+              class="md-state flex w-full cursor-pointer items-center justify-between gap-3 rounded-corner-md px-3.5 py-2.5 text-left transition-colors duration-150 ease-standard disabled:cursor-not-allowed disabled:opacity-38"
               :class="
                 ep.active
-                  ? 'border-primary/40 bg-primary-container text-on-primary-container'
-                  : 'border-outline-variant/60 bg-surface-container-low text-on-surface hover:bg-surface-container'
+                  ? 'bg-primary-container text-on-primary-container'
+                  : 'bg-surface-container-low text-on-surface hover:bg-surface-container-high'
               "
               @click="handlePickEpisode(ep.id)"
             >

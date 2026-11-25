@@ -79,7 +79,7 @@ async function onStar(ev: MouseEvent): Promise<void> {
       >
         <LuHeart
           class="h-4 w-4"
-          :class="artist.starred_at ? 'fill-current text-tertiary' : ''"
+          :class="artist.starred_at ? 'fill-error text-error' : ''"
         />
       </MdIconButton>
     </div>
