@@ -665,13 +665,13 @@ a,
     border-radius: var(--md-sys-shape-corner-md);
   }
 
-  /* MD3 Outlined Text Field (harmonized 12px shape & calm border) */
+  /* MD3 Outlined Text Field (4dp corner-xs shape, single primary focus border, iOS-safe mobile font size) */
   .md-input {
     padding-inline: 0.875rem;
-    background-color: var(--md-sys-color-surface-container-lowest);
+    background-color: transparent;
     color: var(--md-sys-color-on-surface);
-    border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: var(--md-sys-shape-corner-md);
+    border: 1px solid var(--md-sys-color-outline);
+    border-radius: var(--md-sys-shape-corner-xs);
     outline: none;
     caret-color: var(--md-sys-color-primary);
     transition:
@@ -680,22 +680,25 @@ a,
       box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
   }
 
+  @media (max-width: 599.98px) {
+    .md-input {
+      font-size: 1rem;
+    }
+  }
+
   .md-input::placeholder {
     color: var(--md-sys-color-on-surface-variant);
   }
 
   .md-input:hover:not(:disabled):not(:focus) {
-    border-color: var(--md-sys-color-outline);
+    border-color: var(--md-sys-color-on-surface);
   }
 
-  .md-input:focus {
+  .md-input:focus,
+  .md-input:focus-visible {
+    outline: none;
     border-color: var(--md-sys-color-primary);
     box-shadow: inset 0 0 0 1px var(--md-sys-color-primary);
-  }
-
-  .md-input:focus-visible {
-    outline: 2px solid var(--md-sys-color-secondary);
-    outline-offset: 2px;
   }
 
   .md-input:disabled {
