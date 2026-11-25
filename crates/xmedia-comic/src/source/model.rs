@@ -5,10 +5,11 @@ use xmedia_source::http::is_forbidden_custom_header;
 
 pub use xmedia_source::model::{
     BrowserRedirectHint, ConcurrentRateSpec, ExecutionDiagnostics, LoginUiItem, LoginUiStyle,
-    SourceCallError, SourceCallOutput, SourceMetadata, SourceRuntimeState, de_bool_true,
-    de_i64_zero, de_opt_string, de_string_or_default, default_true, parse_concurrent_rate,
-    parse_login_ui_json,
+    SourceCallError, SourceCallOutput, SourceMetadata, de_bool_true, de_i64_zero, de_opt_string,
+    de_string_or_default, default_true, parse_concurrent_rate, parse_login_ui_json,
 };
+
+pub use crate::domain::online::SourceRuntimeState;
 
 use crate::domain::series::ReadingDirection;
 

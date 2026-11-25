@@ -1,15 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 
 use super::ToastyMusicCatalogRepository;
-use crate::domain::catalog::{
-    Album, AlbumId, AlbumListQuery, AlbumListType, Artist, ArtistId, ArtistQuery, ArtistRoleFilter,
-    PagedResult, Track,
-};
+use crate::domain::catalog::{Album, AlbumId, Artist, ArtistId, Track};
 use crate::infra::persistence::models::{MusicAlbumModel, MusicArtistModel, MusicTrackModel};
-use crate::infra::persistence::repositories::{db_err, shuffle_in_place};
+use crate::infra::persistence::repositories::db_err;
 
 impl ToastyMusicCatalogRepository {
     pub(super) async fn find_album_by_id_impl(&self, id: AlbumId) -> DomainResult<Option<Album>> {
@@ -69,158 +66,6 @@ impl ToastyMusicCatalogRepository {
             .await
             .map_err(db_err)?;
         Ok(rows.into_iter().map(Self::album_to_domain).collect())
-    }
-
-    pub(super) async fn list_albums_impl(
-        &self,
-        query: &AlbumListQuery,
-        starred_album_ids: Option<&[AlbumId]>,
-        ordered_album_ids: Option<&[AlbumId]>,
-    ) -> DomainResult<PagedResult<Album>> {
-        let mut db = self.db.clone();
-        let mut builder = MusicAlbumModel::all();
-        if let Some(lib_id) = query.library_id {
-            builder = builder.filter(MusicAlbumModel::fields().library_id().eq(lib_id.0));
-        }
-        let rows = builder.exec(&mut db).await.map_err(db_err)?;
-
-        let kw_lower = query
-            .search
-            .as_ref()
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty());
-        let genre_lower = query
-            .genre
-            .as_ref()
-            .map(|g| g.trim().to_lowercase())
-            .filter(|g| !g.is_empty());
-
-        let (year_min, year_max) = match (query.from_year, query.to_year) {
-            (Some(f), Some(t)) => (Some(f.min(t)), Some(f.max(t))),
-            (f, t) => (f, t),
-        };
-
-        let mut pool: Vec<Album> = rows
-            .into_iter()
-            .map(Self::album_to_domain)
-            .filter(|a| a.track_count > 0)
-            .filter(|a| {
-                if let Some(ref g) = genre_lower
-                    && !a
-                        .genre
-                        .as_ref()
-                        .is_some_and(|ag| ag.trim().to_lowercase() == *g)
-                {
-                    return false;
-                }
-                if let Some(min_y) = year_min
-                    && a.year.is_none_or(|y| y < min_y)
-                {
-                    return false;
-                }
-                if let Some(max_y) = year_max
-                    && a.year.is_none_or(|y| y > max_y)
-                {
-                    return false;
-                }
-                if let Some(ref kw) = kw_lower {
-                    let hit = a.title.to_lowercase().contains(kw)
-                        || a.album_artist_name.to_lowercase().contains(kw);
-                    if !hit {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
-
-        if let Some(star_ids) = starred_album_ids {
-            let lookup: HashMap<AlbumId, Album> = pool.into_iter().map(|a| (a.id, a)).collect();
-            pool = star_ids
-                .iter()
-                .filter_map(|id| lookup.get(id).cloned())
-                .collect();
-        } else if let Some(ord_ids) = ordered_album_ids {
-            let lookup: HashMap<AlbumId, Album> = pool.into_iter().map(|a| (a.id, a)).collect();
-            pool = ord_ids
-                .iter()
-                .filter_map(|id| lookup.get(id).cloned())
-                .collect();
-        } else {
-            match query.list_type {
-                AlbumListType::Newest => {
-                    pool.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-                }
-                AlbumListType::AlphabeticalByName | AlbumListType::ByGenre => {
-                    pool.sort_by_key(|a| a.title.to_lowercase());
-                }
-                AlbumListType::AlphabeticalByArtist => {
-                    pool.sort_by(|a, b| {
-                        a.album_artist_name
-                            .to_lowercase()
-                            .cmp(&b.album_artist_name.to_lowercase())
-                            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-                    });
-                }
-                AlbumListType::ByYear => {
-                    pool.sort_by(|a, b| {
-                        let rev = query
-                            .from_year
-                            .zip(query.to_year)
-                            .is_some_and(|(f, t)| f > t);
-                        let ord = a
-                            .year
-                            .cmp(&b.year)
-                            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-                        if rev { ord.reverse() } else { ord }
-                    });
-                }
-                AlbumListType::Random => {
-                    shuffle_in_place(&mut pool);
-                }
-                _ => {
-                    pool.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-                }
-            }
-        }
-
-        let total = pool.len() as u64;
-        let size = query.size.max(1);
-        let items = pool
-            .into_iter()
-            .skip(query.offset as usize)
-            .take(size as usize)
-            .collect();
-        let page = (query.offset / size) + 1;
-
-        Ok(PagedResult {
-            items,
-            total,
-            page,
-            page_size: size,
-        })
-    }
-
-    pub(super) async fn list_albums_by_artist_impl(
-        &self,
-        artist_id: ArtistId,
-    ) -> DomainResult<Vec<Album>> {
-        let mut db = self.db.clone();
-        let rows = MusicAlbumModel::filter_by_album_artist_id(artist_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        let mut albums: Vec<Album> = rows
-            .into_iter()
-            .map(Self::album_to_domain)
-            .filter(|a| a.track_count > 0)
-            .collect();
-        albums.sort_by(|a, b| {
-            b.year
-                .cmp(&a.year)
-                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-        });
-        Ok(albums)
     }
 
     pub(super) async fn save_album_impl(&self, album: &Album) -> DomainResult<()> {
@@ -320,80 +165,6 @@ impl ToastyMusicCatalogRepository {
             out.extend(rows.into_iter().map(Self::artist_to_domain));
         }
         Ok(out)
-    }
-
-    pub(super) async fn list_artists_impl(
-        &self,
-        query: &ArtistQuery,
-    ) -> DomainResult<PagedResult<Artist>> {
-        let mut db = self.db.clone();
-        let allowed_artist_ids: Option<HashSet<Uuid>> = if let Some(lib_id) = query.library_id {
-            let lib_tracks = MusicTrackModel::filter_by_library_id(lib_id.0)
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
-            let mut set = HashSet::new();
-            for tr in lib_tracks {
-                if !tr.is_missing {
-                    set.insert(tr.artist_id);
-                    set.insert(tr.album_artist_id);
-                }
-            }
-            Some(set)
-        } else {
-            None
-        };
-
-        let rows = MusicArtistModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        let kw_lower = query
-            .search
-            .as_ref()
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty());
-
-        let mut artists: Vec<Artist> = rows
-            .into_iter()
-            .map(Self::artist_to_domain)
-            .filter(|ar| ar.track_count > 0 || ar.album_count > 0)
-            .filter(|ar| {
-                allowed_artist_ids
-                    .as_ref()
-                    .is_none_or(|ids| ids.contains(&ar.id.0))
-            })
-            .filter(|ar| match query.role_filter {
-                ArtistRoleFilter::All => true,
-                ArtistRoleFilter::AlbumArtist => ar.is_album_artist,
-                ArtistRoleFilter::TrackArtist => ar.is_track_artist,
-            })
-            .filter(|ar| {
-                if let Some(ref kw) = kw_lower {
-                    ar.name.to_lowercase().contains(kw)
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        artists.sort_by_key(|a| a.name.to_lowercase());
-
-        let total = artists.len() as u64;
-        let size = query.size.max(1);
-        let items = artists
-            .into_iter()
-            .skip(query.offset as usize)
-            .take(size as usize)
-            .collect();
-        let page = (query.offset / size) + 1;
-
-        Ok(PagedResult {
-            items,
-            total,
-            page,
-            page_size: size,
-        })
     }
 
     pub(super) async fn save_artist_impl(&self, artist: &Artist) -> DomainResult<()> {

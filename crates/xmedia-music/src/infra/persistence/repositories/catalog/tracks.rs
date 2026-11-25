@@ -9,7 +9,7 @@ use crate::domain::catalog::{
     AlbumId, ArtistId, PagedResult, SortOrder, Track, TrackId, TrackQuery, TrackSortField,
 };
 use crate::infra::persistence::models::{MusicTrackModel, MusicTrackTagModel};
-use crate::infra::persistence::repositories::{db_err, shuffle_in_place};
+use crate::infra::persistence::repositories::db_err;
 
 impl ToastyMusicCatalogRepository {
     pub(super) async fn find_track_by_id_impl(&self, id: TrackId) -> DomainResult<Option<Track>> {
@@ -69,28 +69,6 @@ impl ToastyMusicCatalogRepository {
             .await
             .map_err(db_err)?;
         Ok(rows.into_iter().map(Self::track_to_domain).collect())
-    }
-
-    pub(super) async fn count_tracks_by_library_impl(
-        &self,
-        library_id: LibraryId,
-    ) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = MusicTrackModel::filter_by_library_id(library_id.0)
-            .filter(MusicTrackModel::fields().is_missing().eq(false))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.len() as u64)
-    }
-
-    pub(super) async fn count_all_active_tracks_impl(&self) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = MusicTrackModel::filter_by_is_missing(false)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.len() as u64)
     }
 
     pub(super) async fn list_all_active_track_ids_impl(&self) -> DomainResult<Vec<TrackId>> {
@@ -288,88 +266,6 @@ impl ToastyMusicCatalogRepository {
         let mut tracks: Vec<Track> = dedup.into_values().collect();
         tracks.sort_by_key(|a| a.title.to_lowercase());
         Ok(tracks)
-    }
-
-    pub(super) async fn list_random_tracks_impl(
-        &self,
-        size: u32,
-        library_id: Option<LibraryId>,
-        genre: Option<&str>,
-        from_year: Option<i32>,
-        to_year: Option<i32>,
-    ) -> DomainResult<Vec<Track>> {
-        let mut db = self.db.clone();
-        let mut builder =
-            MusicTrackModel::all().filter(MusicTrackModel::fields().is_missing().eq(false));
-        if let Some(lib_id) = library_id {
-            builder = builder.filter(MusicTrackModel::fields().library_id().eq(lib_id.0));
-        }
-        let rows = builder.exec(&mut db).await.map_err(db_err)?;
-        let genre_lower = genre
-            .map(|g| g.trim().to_lowercase())
-            .filter(|g| !g.is_empty());
-
-        let mut pool: Vec<Track> = rows
-            .into_iter()
-            .map(Self::track_to_domain)
-            .filter(|t| {
-                if let Some(ref g) = genre_lower
-                    && !t
-                        .genre
-                        .as_ref()
-                        .is_some_and(|tg| tg.trim().to_lowercase() == *g)
-                {
-                    return false;
-                }
-                if let Some(fy) = from_year
-                    && t.year.is_none_or(|y| y < fy)
-                {
-                    return false;
-                }
-                if let Some(ty) = to_year
-                    && t.year.is_none_or(|y| y > ty)
-                {
-                    return false;
-                }
-                true
-            })
-            .collect();
-
-        shuffle_in_place(&mut pool);
-        pool.truncate(size as usize);
-        Ok(pool)
-    }
-
-    pub(super) async fn list_tracks_by_genre_impl(
-        &self,
-        genre: &str,
-        offset: u32,
-        size: u32,
-        library_id: Option<LibraryId>,
-    ) -> DomainResult<Vec<Track>> {
-        let mut db = self.db.clone();
-        let mut builder =
-            MusicTrackModel::all().filter(MusicTrackModel::fields().is_missing().eq(false));
-        if let Some(lib_id) = library_id {
-            builder = builder.filter(MusicTrackModel::fields().library_id().eq(lib_id.0));
-        }
-        let rows = builder.exec(&mut db).await.map_err(db_err)?;
-        let g_lower = genre.trim().to_lowercase();
-        let mut tracks: Vec<Track> = rows
-            .into_iter()
-            .map(Self::track_to_domain)
-            .filter(|t| {
-                t.genre
-                    .as_ref()
-                    .is_some_and(|tg| tg.trim().to_lowercase() == g_lower)
-            })
-            .collect();
-        tracks.sort_by_key(|a| a.title.to_lowercase());
-        Ok(tracks
-            .into_iter()
-            .skip(offset as usize)
-            .take(size as usize)
-            .collect())
     }
 
     pub(super) async fn save_track_impl(&self, track: &Track) -> DomainResult<()> {

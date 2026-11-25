@@ -6,10 +6,9 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
-use crate::domain::online::{VideoSourceMetadataUpdate, VideoSourceRecord};
+use crate::domain::online::{SourceRuntimeState, VideoSourceMetadataUpdate, VideoSourceRecord};
 use crate::domain::video::{ShowQueryFilter, VideoItem, VideoQueryFilter, VideoShow};
 use crate::domain::watch::{VideoFavoriteEntry, VideoFavoriteKind, VideoShelf, WatchProgress};
-use crate::source::model::SourceRuntimeState;
 
 #[async_trait]
 pub trait VideoCatalogRepository: Send + Sync {
@@ -19,8 +18,6 @@ pub trait VideoCatalogRepository: Send + Sync {
     async fn list_videos(&self, filter: &VideoQueryFilter) -> DomainResult<Vec<VideoItem>>;
     async fn list_videos_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<VideoItem>>;
     async fn list_episodes_by_show(&self, show_id: ShowId) -> DomainResult<Vec<VideoItem>>;
-    async fn count_active_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
-    async fn count_all_active_videos(&self) -> DomainResult<u64>;
     async fn save_video(&self, video: &VideoItem) -> DomainResult<()>;
     async fn delete_video(&self, id: VideoId) -> DomainResult<()>;
     async fn delete_videos_by_library(&self, library_id: LibraryId) -> DomainResult<()>;

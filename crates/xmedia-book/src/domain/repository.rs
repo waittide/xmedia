@@ -6,9 +6,10 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::book::{Book, BookId, BookQuery, FacetCount, PagedResult};
-use crate::domain::online::{BookSourceMetadataUpdate, BookSourceRecord, OnlineShelfBook};
+use crate::domain::online::{
+    BookSourceMetadataUpdate, BookSourceRecord, OnlineShelfBook, SourceRuntimeState,
+};
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
-use crate::source::model::SourceRuntimeState;
 
 #[async_trait]
 pub trait BookRepository: Send + Sync {
@@ -17,7 +18,6 @@ pub trait BookRepository: Send + Sync {
     async fn list_all_ids(&self) -> DomainResult<Vec<BookId>>;
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Book>>;
     async fn search(&self, query: &BookQuery) -> DomainResult<PagedResult<Book>>;
-    async fn count_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
     async fn list_authors(&self) -> DomainResult<Vec<FacetCount>>;
     async fn list_tags(&self) -> DomainResult<Vec<FacetCount>>;
     async fn home_catalog_snapshot(

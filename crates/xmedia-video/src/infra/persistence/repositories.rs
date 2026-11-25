@@ -245,21 +245,6 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(items)
     }
 
-    async fn count_active_by_library(&self, library_id: LibraryId) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = VideoItemModel::filter_by_library_id(library_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().filter(|r| !r.is_missing).count() as u64)
-    }
-
-    async fn count_all_active_videos(&self) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = VideoItemModel::all().exec(&mut db).await.map_err(db_err)?;
-        Ok(rows.into_iter().filter(|r| !r.is_missing).count() as u64)
-    }
-
     async fn save_video(&self, v: &VideoItem) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = VideoItemModel::filter_by_id(v.id.0)

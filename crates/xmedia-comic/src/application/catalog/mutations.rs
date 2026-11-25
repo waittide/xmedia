@@ -376,29 +376,6 @@ impl ComicCatalogService {
             .await
     }
 
-    pub async fn download_chapter_archive(
-        &self,
-        user: &User,
-        chapter_id: ChapterId,
-    ) -> DomainResult<(Vec<u8>, String, String)> {
-        let chapter = self
-            .chapters
-            .find_by_id(chapter_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
-        self.require_series_bound(user, chapter.series_id).await?;
-        if chapter.is_missing {
-            return Err(DomainError::NotFound("chapter source is missing".into()));
-        }
-        let Some((ChapterSourceKind::ArchiveFile, archive_path)) = chapter.resolved_local_source()
-        else {
-            return Err(DomainError::Validation(
-                "direct download is only available for archive-backed chapters".into(),
-            ));
-        };
-        self.archives.read_raw_archive(&archive_path).await
-    }
-
     pub async fn open_chapter_archive_stream(
         &self,
         user: &User,

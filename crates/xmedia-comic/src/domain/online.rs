@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 use uuid::Uuid;
 
-use crate::source::model::SourceRuntimeState;
+pub use xmedia_source::model::SourceRuntimeState;
 
 #[derive(Debug, Clone)]
 pub struct ComicSourceRecord {

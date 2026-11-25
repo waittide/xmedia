@@ -125,15 +125,6 @@ impl SeriesRepository for ToastySeriesRepository {
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
-    async fn count_by_library(&self, library_id: LibraryId) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = ComicSeriesModel::filter_by_library_id(library_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.len() as u64)
-    }
-
     async fn save(&self, s: &Series) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = ComicSeriesModel::filter_by_id(s.id.0)

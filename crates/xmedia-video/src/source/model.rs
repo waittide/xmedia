@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 pub use xmedia_source::model::{
     ConcurrentRateSpec, ExecutionDiagnostics, LoginUiItem, SourceCallError, SourceCallOutput,
-    SourceMetadata, SourceRuntimeState, de_bool_true, de_i64_zero, de_opt_string,
-    de_string_or_default, default_true, parse_concurrent_rate, parse_login_ui_json,
+    SourceMetadata, de_bool_true, de_i64_zero, de_opt_string, de_string_or_default, default_true,
+    parse_concurrent_rate, parse_login_ui_json,
 };
+
+pub use crate::domain::online::SourceRuntimeState;
 
 pub fn de_string_vec_lenient<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where

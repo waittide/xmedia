@@ -7,12 +7,11 @@ use xmedia_core::domain::user::UserId;
 
 use crate::domain::chapter::Chapter;
 use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
-use crate::domain::online::{ComicSourceMetadataUpdate, ComicSourceRecord};
+use crate::domain::online::{ComicSourceMetadataUpdate, ComicSourceRecord, SourceRuntimeState};
 use crate::domain::reading::{
     ChapterProgress, ComicBookmark, ComicShelf, FavoriteSeries, SeriesReaderPref,
 };
 use crate::domain::series::Series;
-use crate::source::model::SourceRuntimeState;
 
 #[async_trait]
 pub trait SeriesRepository: Send + Sync {
@@ -25,7 +24,6 @@ pub trait SeriesRepository: Send + Sync {
     async fn find_series_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Series>>;
     async fn list_all(&self) -> DomainResult<Vec<Series>>;
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Series>>;
-    async fn count_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
     async fn save(&self, series: &Series) -> DomainResult<()>;
     async fn delete(&self, id: SeriesId) -> DomainResult<()>;
 }

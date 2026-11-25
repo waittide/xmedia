@@ -498,10 +498,3 @@ impl Default for SearchQuery {
         }
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchResult {
-    pub artists: Vec<Artist>,
-    pub albums: Vec<Album>,
-    pub tracks: Vec<Track>,
-}

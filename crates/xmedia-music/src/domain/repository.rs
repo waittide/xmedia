@@ -6,15 +6,13 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::catalog::{
-    Album, AlbumId, AlbumListQuery, Artist, ArtistId, ArtistQuery, GenreStat, MusicTagStat,
-    PagedResult, SearchQuery, SearchResult, Track, TrackId, TrackQuery,
+    Album, AlbumId, Artist, ArtistId, MusicTagStat, PagedResult, Track, TrackId, TrackQuery,
 };
 use crate::domain::collection::{
     AudioBookmark, PlayQueue, Playlist, PlaylistId, RatingEntry, ScrobbleEntry, StarTargetKind,
     StarredEntry, TrackPlayStat,
 };
-use crate::domain::online::MusicSourceRecord;
-use xmedia_source::model::SourceRuntimeState;
+use crate::domain::online::{MusicSourceRecord, SourceRuntimeState};
 
 #[async_trait]
 pub trait MusicCatalogRepository: Send + Sync {
@@ -22,27 +20,10 @@ pub trait MusicCatalogRepository: Send + Sync {
     async fn find_tracks_by_ids(&self, ids: &[TrackId]) -> DomainResult<Vec<Track>>;
     async fn find_tracks_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Track>>;
     async fn list_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Track>>;
-    async fn count_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
-    async fn count_all_active_tracks(&self) -> DomainResult<u64>;
     async fn list_all_active_track_ids(&self) -> DomainResult<Vec<TrackId>>;
     async fn query_tracks(&self, query: &TrackQuery) -> DomainResult<PagedResult<Track>>;
     async fn list_tracks_by_album(&self, album_id: AlbumId) -> DomainResult<Vec<Track>>;
     async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>>;
-    async fn list_random_tracks(
-        &self,
-        size: u32,
-        library_id: Option<LibraryId>,
-        genre: Option<&str>,
-        from_year: Option<i32>,
-        to_year: Option<i32>,
-    ) -> DomainResult<Vec<Track>>;
-    async fn list_tracks_by_genre(
-        &self,
-        genre: &str,
-        offset: u32,
-        size: u32,
-        library_id: Option<LibraryId>,
-    ) -> DomainResult<Vec<Track>>;
     async fn save_track(&self, track: &Track) -> DomainResult<()>;
     async fn delete_track(&self, id: TrackId) -> DomainResult<()>;
     async fn delete_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<()>;
@@ -51,22 +32,13 @@ pub trait MusicCatalogRepository: Send + Sync {
     async fn find_album_by_key(&self, album_key: &str) -> DomainResult<Option<Album>>;
     async fn find_albums_by_ids(&self, ids: &[AlbumId]) -> DomainResult<Vec<Album>>;
     async fn find_albums_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Album>>;
-    async fn list_albums(
-        &self,
-        query: &AlbumListQuery,
-        starred_album_ids: Option<&[AlbumId]>,
-        ordered_album_ids: Option<&[AlbumId]>,
-    ) -> DomainResult<PagedResult<Album>>;
-    async fn list_albums_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Album>>;
     async fn save_album(&self, album: &Album) -> DomainResult<()>;
 
     async fn find_artist_by_id(&self, id: ArtistId) -> DomainResult<Option<Artist>>;
     async fn find_artist_by_name(&self, name: &str) -> DomainResult<Option<Artist>>;
     async fn find_artists_by_ids(&self, ids: &[ArtistId]) -> DomainResult<Vec<Artist>>;
-    async fn list_artists(&self, query: &ArtistQuery) -> DomainResult<PagedResult<Artist>>;
     async fn save_artist(&self, artist: &Artist) -> DomainResult<()>;
 
-    async fn list_genres(&self) -> DomainResult<Vec<GenreStat>>;
     async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>>;
     async fn count_active_tags(
         &self,
@@ -83,7 +55,6 @@ pub trait MusicCatalogRepository: Send + Sync {
         track_id: TrackId,
         tags: Vec<String>,
     ) -> DomainResult<Vec<String>>;
-    async fn search_catalog(&self, query: &SearchQuery) -> DomainResult<SearchResult>;
     async fn recompute_catalog_aggregates(&self) -> DomainResult<()>;
 }
 

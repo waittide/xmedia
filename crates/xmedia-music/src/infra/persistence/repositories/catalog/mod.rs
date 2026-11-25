@@ -10,8 +10,8 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::catalog::{
-    Album, AlbumId, AlbumListQuery, Artist, ArtistId, ArtistQuery, AudioFormat, GenreStat,
-    MusicTagStat, PagedResult, SearchQuery, SearchResult, Track, TrackId, TrackQuery,
+    Album, AlbumId, Artist, ArtistId, AudioFormat, MusicTagStat, PagedResult, Track, TrackId,
+    TrackQuery,
 };
 use crate::domain::repository::MusicCatalogRepository;
 use crate::infra::persistence::models::{MusicAlbumModel, MusicArtistModel, MusicTrackModel};
@@ -115,14 +115,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         self.list_tracks_by_library_impl(library_id).await
     }
 
-    async fn count_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<u64> {
-        self.count_tracks_by_library_impl(library_id).await
-    }
-
-    async fn count_all_active_tracks(&self) -> DomainResult<u64> {
-        self.count_all_active_tracks_impl().await
-    }
-
     async fn list_all_active_track_ids(&self) -> DomainResult<Vec<TrackId>> {
         self.list_all_active_track_ids_impl().await
     }
@@ -137,29 +129,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
 
     async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>> {
         self.list_tracks_by_artist_impl(artist_id).await
-    }
-
-    async fn list_random_tracks(
-        &self,
-        size: u32,
-        library_id: Option<LibraryId>,
-        genre: Option<&str>,
-        from_year: Option<i32>,
-        to_year: Option<i32>,
-    ) -> DomainResult<Vec<Track>> {
-        self.list_random_tracks_impl(size, library_id, genre, from_year, to_year)
-            .await
-    }
-
-    async fn list_tracks_by_genre(
-        &self,
-        genre: &str,
-        offset: u32,
-        size: u32,
-        library_id: Option<LibraryId>,
-    ) -> DomainResult<Vec<Track>> {
-        self.list_tracks_by_genre_impl(genre, offset, size, library_id)
-            .await
     }
 
     async fn save_track(&self, track: &Track) -> DomainResult<()> {
@@ -190,20 +159,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         self.find_albums_by_cover_key_impl(cover_key).await
     }
 
-    async fn list_albums(
-        &self,
-        query: &AlbumListQuery,
-        starred_album_ids: Option<&[AlbumId]>,
-        ordered_album_ids: Option<&[AlbumId]>,
-    ) -> DomainResult<PagedResult<Album>> {
-        self.list_albums_impl(query, starred_album_ids, ordered_album_ids)
-            .await
-    }
-
-    async fn list_albums_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Album>> {
-        self.list_albums_by_artist_impl(artist_id).await
-    }
-
     async fn save_album(&self, album: &Album) -> DomainResult<()> {
         self.save_album_impl(album).await
     }
@@ -220,16 +175,8 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         self.find_artists_by_ids_impl(ids).await
     }
 
-    async fn list_artists(&self, query: &ArtistQuery) -> DomainResult<PagedResult<Artist>> {
-        self.list_artists_impl(query).await
-    }
-
     async fn save_artist(&self, artist: &Artist) -> DomainResult<()> {
         self.save_artist_impl(artist).await
-    }
-
-    async fn list_genres(&self) -> DomainResult<Vec<GenreStat>> {
-        self.list_genres_impl().await
     }
 
     async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>> {
@@ -253,10 +200,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         tags: Vec<String>,
     ) -> DomainResult<Vec<String>> {
         self.set_track_tags_impl(track_id, tags).await
-    }
-
-    async fn search_catalog(&self, query: &SearchQuery) -> DomainResult<SearchResult> {
-        self.search_catalog_impl(query).await
     }
 
     async fn recompute_catalog_aggregates(&self) -> DomainResult<()> {

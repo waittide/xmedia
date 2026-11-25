@@ -279,16 +279,6 @@ impl BookRepository for ToastyBookRepository {
         })
     }
 
-    async fn count_by_library(&self, library_id: LibraryId) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = BookModel::filter_by_library_id(library_id.0)
-            .filter(BookModel::fields().is_missing().eq(false))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.len() as u64)
-    }
-
     async fn list_authors(&self) -> DomainResult<Vec<FacetCount>> {
         let mut db = self.db.clone();
         let rows = BookModel::filter_by_is_missing(false)

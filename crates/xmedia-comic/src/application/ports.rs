@@ -114,8 +114,6 @@ pub trait ArchiveReaderPort: Send + Sync {
         file_hash_hint: &str,
     ) -> DomainResult<PageContent>;
 
-    async fn read_raw_archive(&self, source_path: &str) -> DomainResult<(Vec<u8>, String, String)>;
-
     async fn open_raw_archive_stream(
         &self,
         source_path: &str,

@@ -27,7 +27,10 @@ use xmedia_core::{ensure_core_schema, register_core_models};
 
 use super::{make_wav, setup_test_env};
 use crate::application::dto::UploadFileItem;
-use crate::domain::catalog::{Album, AlbumId, AlbumListQuery, AlbumListType, ArtistId};
+use crate::domain::catalog::{
+    Album, AlbumId, AlbumListQuery, AlbumListType, ArtistId, AudioFormat, ReplayGain, Track,
+    TrackId, TrackSource,
+};
 use crate::domain::repository::MusicCatalogRepository;
 use crate::http::state::MusicHttpState;
 use crate::http::{rest_router, subsonic_router};
@@ -384,18 +387,19 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
 
 #[tokio::test]
 async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("by_year.db");
-    let db_url = format!("sqlite:{}", db_path.display());
+    let env = setup_test_env("by_year.db").await;
+    let session = env
+        .auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: None,
+            password: "password123".into(),
+        })
+        .await
+        .unwrap();
+    let admin = env.auth_svc.authenticate_jwt(&session.token).await.unwrap();
 
-    let mut models = ModelSet::new();
-    register_core_models(&mut models);
-    register_music_models(&mut models);
-    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
-    ensure_core_schema(&mut db, &db_url).await.unwrap();
-    ensure_music_schema(&mut db, &db_url).await.unwrap();
-
-    let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(db));
+    let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(env.db.clone()));
     let lib_id = LibraryId::new();
     let artist_id = ArtistId::new();
     let now = jiff::Timestamp::now();
@@ -423,37 +427,81 @@ async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() 
             updated_at: now,
         };
         catalog_repo.save_album(&album).await.unwrap();
+
+        let track = Track {
+            id: TrackId::new(),
+            library_id: lib_id,
+            album_id: album.id,
+            artist_id,
+            album_artist_id: artist_id,
+            title: format!("{title} Track"),
+            artist_name: "Artist".into(),
+            album_artist_name: "Artist".into(),
+            album_title: title.into(),
+            track_number: Some(1),
+            disc_number: Some(1),
+            year: Some(year),
+            genre: None,
+            duration_secs: 180,
+            bit_rate_kbps: None,
+            sample_rate_hz: None,
+            bit_depth: None,
+            channels: None,
+            format: AudioFormat::Mp3,
+            file_size: 1024,
+            file_hash: format!("hash-{year}"),
+            replay_gain: ReplayGain::default(),
+            has_embedded_lyrics: false,
+            has_sidecar_lyrics: false,
+            is_compilation: false,
+            cover_key: None,
+            source: TrackSource::Managed {
+                storage_key: format!("{year}.mp3"),
+                sidecar_lrc_key: None,
+            },
+            is_missing: false,
+            created_at: now,
+            updated_at: now,
+        };
+        catalog_repo.save_track(&track).await.unwrap();
+        env.music_services
+            .catalog
+            .bind_track_for_user(admin.id, track.id)
+            .await
+            .unwrap();
     }
 
     // Subsonic spec: fromYear > toYear returns albums in [toYear, fromYear] in descending year order
-    let desc = catalog_repo
+    let desc = env
+        .music_services
+        .catalog
         .list_albums(
-            &AlbumListQuery {
+            admin.id,
+            AlbumListQuery {
                 list_type: AlbumListType::ByYear,
                 from_year: Some(2024),
                 to_year: Some(2010),
                 size: 10,
                 ..Default::default()
             },
-            None,
-            None,
         )
         .await
         .unwrap();
     let desc_years: Vec<Option<i32>> = desc.items.iter().map(|a| a.year).collect();
     assert_eq!(desc_years, vec![Some(2023), Some(2015)]);
 
-    let asc = catalog_repo
+    let asc = env
+        .music_services
+        .catalog
         .list_albums(
-            &AlbumListQuery {
+            admin.id,
+            AlbumListQuery {
                 list_type: AlbumListType::ByYear,
                 from_year: Some(2010),
                 to_year: Some(2024),
                 size: 10,
                 ..Default::default()
             },
-            None,
-            None,
         )
         .await
         .unwrap();

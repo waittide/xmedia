@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Seek};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::RwLock;
 use std::time::UNIX_EPOCH;
 
@@ -272,30 +272,6 @@ impl ArchiveReaderPort for PureRustArchiveReader {
         })
         .await
         .map_err(|e| DomainError::Storage(format!("read_page join error: {e}")))?
-    }
-
-    async fn read_raw_archive(&self, source_path: &str) -> DomainResult<(Vec<u8>, String, String)> {
-        let path_buf = PathBuf::from(source_path);
-        tokio::task::spawn_blocking(move || {
-            let bytes = fs::read(&path_buf).map_err(|e| {
-                DomainError::Storage(format!(
-                    "failed to read archive '{}': {e}",
-                    path_buf.display()
-                ))
-            })?;
-            let filename = path_buf
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "chapter.cbz".into());
-            let mime = if filename.to_ascii_lowercase().ends_with(".epub") {
-                "application/epub+zip".to_owned()
-            } else {
-                "application/vnd.comicbook+zip".to_owned()
-            };
-            Ok((bytes, filename, mime))
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("read_raw_archive join error: {e}")))?
     }
 
     async fn open_raw_archive_stream(
