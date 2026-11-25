@@ -257,7 +257,7 @@ function handleSearchClear(): void {
     <div v-if="hasToolbarRow" class="flex flex-wrap items-center gap-2">
       <MdIconButton
         v-if="showSearch && !isMobileSearchExpanded"
-        class="sm:hidden"
+        class="shrink-0 sm:hidden"
         size="sm"
         :icon="LuSearch"
         :aria-label="resolvedSearchPlaceholder"
@@ -297,7 +297,7 @@ function handleSearchClear(): void {
 
       <div
         v-if="showScopeBar || $slots['toolbar-chips'] || hasFilterSheet"
-        class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 sm:gap-2"
+        class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 py-0.5 sm:gap-2"
       >
         <div v-if="showScopeBar" class="inline-flex shrink-0 sm:hidden">
           <SourceScopeBar
@@ -311,6 +311,7 @@ function handleSearchClear(): void {
         </div>
         <MdChip
           v-if="hasFilterSheet"
+          class="shrink-0"
           variant="filter"
           :icon="LuSlidersHorizontal"
           :label="resolvedFilterLabel"
@@ -321,7 +322,10 @@ function handleSearchClear(): void {
         <slot name="toolbar-chips" />
       </div>
 
-      <div v-if="$slots['toolbar-trailing']" class="ml-auto flex shrink-0 items-center gap-1.5">
+      <div
+        v-if="$slots['toolbar-trailing']"
+        class="flex w-full items-center gap-1.5 sm:ml-auto sm:w-auto sm:shrink-0 sm:justify-end [&>:first-child]:mr-auto sm:[&>:first-child]:mr-0"
+      >
         <slot name="toolbar-trailing" />
       </div>
     </div>
