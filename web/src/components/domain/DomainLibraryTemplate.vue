@@ -230,16 +230,16 @@ function handleSearchClear(): void {
       </div>
 
       <div class="no-scrollbar flex max-w-full items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:gap-2">
-        <SourceScopeBar
-          v-if="showScopeBar"
-          class="hidden sm:inline-flex"
-          :model-value="scope"
-          :domain="domain"
-          :sync-url="syncScopeUrl"
-          :show-remote="showRemoteScope"
-          size="sm"
-          @update:model-value="handleScopeUpdate"
-        />
+        <div v-if="showScopeBar" class="hidden sm:inline-flex">
+          <SourceScopeBar
+            :model-value="scope"
+            :domain="domain"
+            :sync-url="syncScopeUrl"
+            :show-remote="showRemoteScope"
+            size="sm"
+            @update:model-value="handleScopeUpdate"
+          />
+        </div>
         <slot name="header-trailing" />
       </div>
     </header>
@@ -299,16 +299,16 @@ function handleSearchClear(): void {
         v-if="showScopeBar || $slots['toolbar-chips'] || hasFilterSheet"
         class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 sm:gap-2"
       >
-        <SourceScopeBar
-          v-if="showScopeBar"
-          mode="chip-menu"
-          class="sm:hidden"
-          :model-value="scope"
-          :domain="domain"
-          :sync-url="syncScopeUrl"
-          :show-remote="showRemoteScope"
-          @update:model-value="handleScopeUpdate"
-        />
+        <div v-if="showScopeBar" class="inline-flex shrink-0 sm:hidden">
+          <SourceScopeBar
+            mode="chip-menu"
+            :model-value="scope"
+            :domain="domain"
+            :sync-url="syncScopeUrl"
+            :show-remote="showRemoteScope"
+            @update:model-value="handleScopeUpdate"
+          />
+        </div>
         <MdChip
           v-if="hasFilterSheet"
           variant="filter"

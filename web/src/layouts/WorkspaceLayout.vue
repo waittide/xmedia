@@ -338,37 +338,40 @@ onBeforeUnmount(() => {
           </h1>
 
           <!-- Mobile (<600px) Sub-Navigation Switcher when shell tab bar is collapsed/suppressed -->
-          <MdMenu
+          <div
             v-if="activeSecondaryTab && (isMobileLibrarySubroute || mobileSecondaryCollapsed)"
             class="sm:hidden"
-            placement="bottom-start"
-            :min-width="180"
-            :aria-label="t('nav.navigation')"
           >
-            <template #trigger="{ toggle, triggerAttrs }">
-              <button
-                type="button"
-                v-bind="triggerAttrs"
-                class="md-state md-touch-target text-label-large inline-flex h-8 cursor-pointer items-center gap-1 rounded-corner-full bg-secondary-container px-3 text-on-secondary-container"
-                @click="toggle"
-              >
-                <span class="truncate">{{ activeSecondaryTab.label }}</span>
-                <LuChevronDown class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              </button>
-            </template>
-
-            <MdMenuItem
-              v-for="tab in secondaryTabs"
-              :key="`menu-${tab.key}`"
-              :icon="tab.icon"
-              :label="tab.label"
-              :to="tab.to"
+            <MdMenu
+              placement="bottom-start"
+              :min-width="180"
+              :aria-label="t('nav.navigation')"
             >
-              <template v-if="tab.active" #trailing>
-                <LuCheck class="h-4 w-4 text-primary" aria-hidden="true" />
+              <template #trigger="{ toggle, triggerAttrs }">
+                <button
+                  type="button"
+                  v-bind="triggerAttrs"
+                  class="md-state md-touch-target text-label-large inline-flex h-8 cursor-pointer items-center gap-1 rounded-corner-full bg-secondary-container px-3 text-on-secondary-container"
+                  @click="toggle"
+                >
+                  <span class="truncate">{{ activeSecondaryTab.label }}</span>
+                  <LuChevronDown class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                </button>
               </template>
-            </MdMenuItem>
-          </MdMenu>
+
+              <MdMenuItem
+                v-for="tab in secondaryTabs"
+                :key="`menu-${tab.key}`"
+                :icon="tab.icon"
+                :label="tab.label"
+                :to="tab.to"
+              >
+                <template v-if="tab.active" #trailing>
+                  <LuCheck class="h-4 w-4 text-primary" aria-hidden="true" />
+                </template>
+              </MdMenuItem>
+            </MdMenu>
+          </div>
         </div>
 
         <!-- Desktop Single Search Entry (opens unified SearchView) -->
