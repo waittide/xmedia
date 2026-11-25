@@ -4,7 +4,7 @@ pub mod repositories;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::error::DomainResult;
 use xmedia_core::infra::persistence::push_model_set;
 
 use models::{
@@ -21,41 +21,13 @@ pub fn register_book_models(set: &mut ModelSet) {
     <BookSourceRecordModel as Model>::register(set);
 }
 
-async fn ensure_book_columns(db: &mut Db) -> DomainResult<()> {
-    for (col, ddl) in [
-        ("series", "ALTER TABLE book_books ADD COLUMN series TEXT"),
-        (
-            "series_index",
-            "ALTER TABLE book_books ADD COLUMN series_index REAL",
-        ),
-        ("rating", "ALTER TABLE book_books ADD COLUMN rating REAL"),
-    ] {
-        let probe = format!("SELECT {col} FROM book_books LIMIT 1");
-        if toasty::sql::query(&probe).exec(db).await.is_err() {
-            toasty::sql::statement(ddl).exec(db).await.map_err(|e| {
-                DomainError::Persistence(format!("failed migrating book_books.{col}: {e}"))
-            })?;
-        }
-    }
-    Ok(())
-}
-
 pub async fn ensure_book_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
-    let table_exists = toasty::sql::query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'book_books'",
-    )
-    .exec(db)
-    .await
-    .is_ok_and(|rows| !rows.is_empty());
-
-    if !table_exists {
+    if BookModel::all().limit(1).exec(db).await.is_err() {
         info!("initializing book database schema via toasty");
         let mut set = ModelSet::new();
         register_book_models(&mut set);
         return push_model_set(database_url, "book database", set).await;
     }
-
-    ensure_book_columns(db).await?;
 
     let mut missing = ModelSet::new();
     let mut labels = Vec::new();

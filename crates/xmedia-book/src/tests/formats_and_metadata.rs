@@ -628,69 +628,6 @@ async fn series_and_rating_roundtrip_across_rest_pool_opds_v1_opds_v2_and_schema
     assert_eq!(pub_meta["series"], "Foundation Saga");
     assert_eq!(pub_meta["series_index"], 1.5);
     assert_eq!(pub_meta["rating"], 9.2);
-
-    // Verify ensure_book_schema migrates legacy `book_books` table lacking series/series_index/rating
-    let mig_tmp = TempDir::new().unwrap();
-    let mig_db_path = mig_tmp.path().join("legacy_books.db");
-    let mig_url = format!("sqlite:{}", mig_db_path.display());
-    let mut models = ModelSet::new();
-    register_core_models(&mut models);
-    register_book_models(&mut models);
-    let mut mig_db = Db::builder()
-        .models(models)
-        .connect(&mig_url)
-        .await
-        .unwrap();
-    ensure_core_schema(&mut mig_db, &mig_url).await.unwrap();
-    toasty::sql::statement(
-        "CREATE TABLE book_books (
-            id TEXT PRIMARY KEY NOT NULL,
-            library_id TEXT NOT NULL,
-            format TEXT NOT NULL,
-            title TEXT NOT NULL,
-            title_lower TEXT NOT NULL,
-            source TEXT NOT NULL,
-            file_size INTEGER NOT NULL,
-            file_hash TEXT NOT NULL,
-            cover_key TEXT,
-            metadata TEXT NOT NULL,
-            is_missing BOOLEAN NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )",
-    )
-    .exec(&mut mig_db)
-    .await
-    .unwrap();
-    ensure_book_schema(&mut mig_db, &mig_url).await.unwrap();
-
-    let repo = crate::infra::persistence::repositories::ToastyBookRepository::new(mig_db);
-    let mut meta = crate::domain::book::BookMetadata::new("Migrated Book").unwrap();
-    meta.series = Some("Migrated Series".into());
-    meta.series_index = Some(3.0);
-    meta.rating = Some(8.5);
-    let book = crate::domain::book::Book::new(
-        xmedia_core::domain::library::LibraryId::new(),
-        crate::domain::book::BookFormat::Epub,
-        crate::domain::book::BookSource::ManagedUpload {
-            storage_key: "m.epub".into(),
-        },
-        128,
-        "hash",
-        None,
-        meta,
-    )
-    .unwrap();
-    crate::domain::repository::BookRepository::save(&repo, &book)
-        .await
-        .unwrap();
-    let loaded = crate::domain::repository::BookRepository::find_by_id(&repo, book.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded.metadata.series.as_deref(), Some("Migrated Series"));
-    assert_eq!(loaded.metadata.series_index, Some(3.0));
-    assert_eq!(loaded.metadata.rating, Some(8.5));
 }
 
 #[tokio::test]

@@ -1107,8 +1107,8 @@ mod gateway_integration_tests {
         assert_eq!(me_after["preferences"]["video"]["default_quality"], "p720");
         assert_eq!(me_after["preferences"]["video"]["autoplay_next"], false);
 
-        // 4. Online items are mounted on comic/music/video and strictly isolated per domain
-        for domain in ["comic", "music", "video"] {
+        // 4. Online items are mounted on book/comic/music/video and strictly isolated per domain
+        for domain in ["book", "comic", "music", "video"] {
             let (st_put, put_val) = send_req(
                 &router,
                 "PUT",
@@ -1133,7 +1133,7 @@ mod gateway_integration_tests {
             assert_eq!(put_val["availability"], "unverified");
         }
 
-        for domain in ["comic", "music", "video"] {
+        for domain in ["book", "comic", "music", "video"] {
             let (st_list, list_val) = send_req(
                 &router,
                 "GET",
