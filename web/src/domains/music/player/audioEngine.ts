@@ -14,7 +14,6 @@ export interface PlayerAudioEngineCallbacks {
   onPause: () => void
   onEnded: () => void
   onError: (audio: HTMLAudioElement) => void
-  onExternalAudioFocusClaimed: () => void
 }
 
 export function createPlayerAudioEngine(callbacks: PlayerAudioEngineCallbacks) {
@@ -123,11 +122,6 @@ export function createPlayerAudioEngine(callbacks: PlayerAudioEngineCallbacks) {
 
   const handleAudioPlay = (): void => {
     callbacks.onPlay()
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('xmedia:claim-audio-focus', { detail: { source: 'music' } }),
-      )
-    }
   }
 
   const handleAudioPause = (): void => {
@@ -142,19 +136,6 @@ export function createPlayerAudioEngine(callbacks: PlayerAudioEngineCallbacks) {
     callbacks.onError(audio)
   }
 
-  const handleClaimAudioFocus = (event: Event): void => {
-    if (
-      event instanceof CustomEvent &&
-      typeof event.detail === 'object' &&
-      event.detail !== null &&
-      'source' in event.detail &&
-      event.detail.source === 'music'
-    ) {
-      return
-    }
-    callbacks.onExternalAudioFocusClaimed()
-  }
-
   audio.addEventListener('timeupdate', handleAudioTimeUpdate)
   audio.addEventListener('durationchange', handleAudioDurationChange)
   audio.addEventListener('play', handleAudioPlay)
@@ -162,14 +143,7 @@ export function createPlayerAudioEngine(callbacks: PlayerAudioEngineCallbacks) {
   audio.addEventListener('ended', handleAudioEnded)
   audio.addEventListener('error', handleAudioError)
 
-  if (typeof window !== 'undefined') {
-    window.addEventListener('xmedia:claim-audio-focus', handleClaimAudioFocus)
-  }
-
   function dispose(): void {
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('xmedia:claim-audio-focus', handleClaimAudioFocus)
-    }
     clearPendingSeek()
     audio.removeEventListener('timeupdate', handleAudioTimeUpdate)
     audio.removeEventListener('durationchange', handleAudioDurationChange)

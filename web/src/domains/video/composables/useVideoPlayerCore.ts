@@ -1,6 +1,7 @@
 import { ref, watch, type Ref } from 'vue'
 import type Hls from 'hls.js'
 import type { SelectOption } from '@/components/ui'
+import { claimMediaFocus, registerMediaFocus, releaseMediaFocus } from '@/composables/useMediaFocus'
 import { usePreferencesStore } from '@/stores/preferences'
 import { resolveOnlineVideoStreamUrl } from '../onlineApi'
 
@@ -45,10 +46,7 @@ export function persistVideoAudioPrefs(vol: number, isMuted: boolean): void {
 }
 
 export function claimVideoAudioFocus(): void {
-  if (typeof window === 'undefined') return
-  window.dispatchEvent(
-    new CustomEvent('xmedia:claim-audio-focus', { detail: { source: 'video' } }),
-  )
+  claimMediaFocus('video')
 }
 
 function setMediaSessionAction(
@@ -424,6 +422,13 @@ export function useVideoPlaybackCore(options: UseVideoPlaybackCoreOptions) {
 
   const mediaController = createVideoMediaController(videoEl)
 
+  registerMediaFocus('video', () => {
+    const el = videoEl.value
+    if (el && !el.paused) {
+      el.pause()
+    }
+  })
+
   function syncAudioGainToElement(): void {
     const el = videoEl.value
     if (!el) return
@@ -450,6 +455,7 @@ export function useVideoPlaybackCore(options: UseVideoPlaybackCoreOptions) {
   )
 
   function stopAndClearVideoElement(): void {
+    releaseMediaFocus('video')
     mediaController.stopAndClear()
   }
 
@@ -594,6 +600,7 @@ export function useVideoPlaybackCore(options: UseVideoPlaybackCoreOptions) {
     },
     onPause: () => {
       isPlaying.value = false
+      releaseMediaFocus('video')
       setVideoMediaSessionState('paused')
       options.onAfterPause?.()
     },
@@ -610,6 +617,7 @@ export function useVideoPlaybackCore(options: UseVideoPlaybackCoreOptions) {
     onEnded: () => {
       isPlaying.value = false
       isBuffering.value = false
+      releaseMediaFocus('video')
       setVideoMediaSessionState('paused')
       options.onEnded?.()
     },

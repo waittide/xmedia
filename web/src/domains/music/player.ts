@@ -1,6 +1,7 @@
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { SubsonicSongDto } from '@/api/appHost'
+import { claimMediaFocus, registerMediaFocus, releaseMediaFocus } from '@/composables/useMediaFocus'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { api, buildStreamUrl, canPlayFormatNatively } from './api'
@@ -177,9 +178,11 @@ export const usePlayerStore = defineStore('player', () => {
     onPlay: () => {
       isPlaying.value = true
       playbackError.value = null
+      claimMediaFocus('music')
     },
     onPause: () => {
       isPlaying.value = false
+      releaseMediaFocus('music')
       cloudSync.scheduleQueueSync()
     },
     onEnded: () => {
@@ -188,20 +191,23 @@ export const usePlayerStore = defineStore('player', () => {
         void loadAndPlayCurrent(0, true)
         return
       }
+      releaseMediaFocus('music')
       playNext()
     },
     onError: (el) => {
       if (!el.src || !currentItem.value) return
       isPlaying.value = false
+      releaseMediaFocus('music')
       const msg = el.error?.message || tMusic('player.playbackError')
       playbackError.value = msg
       if (currentItem.value.kind !== 'online') {
         useSnackbarStore().show({ message: msg, tone: 'error' })
       }
     },
-    onExternalAudioFocusClaimed: () => {
-      pause()
-    },
+  })
+
+  const unregisterMediaFocus = registerMediaFocus('music', () => {
+    pause()
   })
 
   const { audio, attachAudioElement, detachAudioElement } = audioEngine
@@ -927,6 +933,7 @@ export const usePlayerStore = defineStore('player', () => {
     cloudSync.resetCloudSync()
     queue.value = []
     isPlaying.value = false
+    releaseMediaFocus('music')
     streamOffsetSecs.value = 0
     currentStreamIsTranscoded.value = false
     activeEffectiveProfile.value = 'raw'
@@ -940,6 +947,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   onScopeDispose(() => {
+    unregisterMediaFocus()
     cloudSync.dispose()
     abortTrackResolve()
     lyricsCtrl.abortLyricsFetch()

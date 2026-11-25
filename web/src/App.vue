@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useActivityTracker } from '@/composables/useActivityTracker'
-import { useMediaFocus } from '@/composables/useMediaFocus'
 import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
 import { useThemeStore } from '@/stores/theme'
@@ -15,24 +14,6 @@ useActivityTracker()
 const authStore = useAuthStore()
 const eventsStore = useEventsStore()
 const playerStore = usePlayerStore()
-const mediaFocus = useMediaFocus()
-
-mediaFocus.register('music', () => {
-  if (playerStore.isPlaying) {
-    playerStore.pause()
-  }
-})
-
-watch(
-  () => playerStore.isPlaying,
-  (playing) => {
-    if (playing) {
-      mediaFocus.claim('music')
-    } else {
-      mediaFocus.release('music')
-    }
-  },
-)
 
 watch(
   () => authStore.user?.id,
