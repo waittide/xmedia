@@ -1,4 +1,5 @@
 mod albums_artists;
+mod bound_albums_artists;
 mod bound_catalog;
 mod sql;
 mod tags_search;

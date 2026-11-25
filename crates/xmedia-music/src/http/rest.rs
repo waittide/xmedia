@@ -1,9 +1,10 @@
+mod collections;
+
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::application::bindings::{BindMediaItemsResultDto, UnbindMediaItemResultDto};
@@ -16,10 +17,9 @@ use xmedia_core::http::{
 };
 
 use crate::application::dto::{
-    AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BindMusicItemsInput, BookmarkDto,
-    GlobalScanStatusDto, HomeOverviewDto, NowPlayingDto, PlayQueueDto, PlaylistDetailDto,
-    PlaylistSummaryDto, PoolTrackDto, SearchResultDto, StarredBundleDto, TrackDto,
-    UpdatePlaylistInput, UploadBatchResultDto, UploadFilePathItem,
+    AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BindMusicItemsInput, GlobalScanStatusDto,
+    HomeOverviewDto, PoolTrackDto, SearchResultDto, TrackDto, UploadBatchResultDto,
+    UploadFilePathItem,
 };
 use crate::application::ports::FfmpegStatusDto;
 use crate::domain::catalog::{
@@ -27,10 +27,15 @@ use crate::domain::catalog::{
     GenreStat, MusicTagStat, PagedResult, SearchQuery, SortOrder, StructuredLyrics, TrackId,
     TrackQuery, TrackSortField,
 };
-use crate::domain::collection::PlaylistId;
 use crate::http::into_audio_http_response;
 use crate::http::state::MusicHttpState;
 use crate::http::subsonic::envelope::SUBSONIC_API_VERSION;
+
+use collections::{
+    create_playlist, delete_bookmark, delete_playlist, get_play_queue, get_playlist, get_starred,
+    list_bookmarks, list_now_playing, list_playlists, save_play_queue, scrobble_track, set_rating,
+    star_items, unstar_items, update_playlist, upsert_bookmark,
+};
 
 pub fn router() -> Router<MusicHttpState> {
     Router::new()
@@ -84,8 +89,8 @@ pub fn router() -> Router<MusicHttpState> {
 }
 
 #[derive(Serialize)]
-struct OkResponse {
-    ok: bool,
+pub(super) struct OkResponse {
+    pub(super) ok: bool,
 }
 
 #[derive(Serialize)]
@@ -112,10 +117,6 @@ struct MusicStatusResponse {
     scan: GlobalScanStatusDto,
     subsonic_api_version: &'static str,
     open_subsonic: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[derive(Deserialize, Default)]
@@ -187,55 +188,6 @@ struct SearchParams {
     q: Option<String>,
     library_id: Option<Uuid>,
     limit: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct CreatePlaylistBody {
-    name: String,
-    comment: Option<String>,
-    #[serde(default)]
-    is_public: bool,
-    #[serde(default)]
-    track_ids: Vec<TrackId>,
-}
-
-#[derive(Deserialize, Default)]
-struct StarBody {
-    #[serde(default)]
-    ids: Vec<String>,
-    #[serde(default)]
-    album_ids: Vec<AlbumId>,
-    #[serde(default)]
-    artist_ids: Vec<ArtistId>,
-}
-
-#[derive(Deserialize)]
-struct RatingBody {
-    id: String,
-    rating: u8,
-}
-
-#[derive(Deserialize)]
-struct ScrobbleBody {
-    track_id: TrackId,
-    #[serde(default = "default_true")]
-    submission: bool,
-    played_at_ms: Option<i64>,
-}
-
-#[derive(Deserialize)]
-struct SaveQueueBody {
-    #[serde(default)]
-    track_ids: Vec<TrackId>,
-    current_track_id: Option<TrackId>,
-    #[serde(default)]
-    position_ms: u64,
-}
-
-#[derive(Deserialize)]
-struct BookmarkBody {
-    position_ms: u64,
-    comment: Option<String>,
 }
 
 async fn music_status(
@@ -667,216 +619,4 @@ async fn search_catalog(
         song_offset: 0,
     };
     Ok(Json(state.services.catalog.search(user.id, q).await?))
-}
-
-async fn list_playlists(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<Vec<PlaylistSummaryDto>>> {
-    Ok(Json(
-        state.services.collection.list_playlists(user.id).await?,
-    ))
-}
-
-async fn create_playlist(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(body): Json<CreatePlaylistBody>,
-) -> ApiResult<(StatusCode, Json<PlaylistDetailDto>)> {
-    let created = state
-        .services
-        .collection
-        .create_playlist(
-            &user,
-            &body.name,
-            body.comment,
-            body.is_public,
-            body.track_ids,
-        )
-        .await?;
-    Ok((StatusCode::CREATED, Json(created)))
-}
-
-async fn get_playlist(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Json<PlaylistDetailDto>> {
-    Ok(Json(
-        state
-            .services
-            .collection
-            .get_playlist(&user, PlaylistId(id))
-            .await?,
-    ))
-}
-
-async fn update_playlist(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(body): Json<UpdatePlaylistInput>,
-) -> ApiResult<Json<PlaylistDetailDto>> {
-    Ok(Json(
-        state
-            .services
-            .collection
-            .update_playlist(&user, PlaylistId(id), body)
-            .await?,
-    ))
-}
-
-async fn delete_playlist(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Json<OkResponse>> {
-    state
-        .services
-        .collection
-        .delete_playlist(&user, PlaylistId(id))
-        .await?;
-    Ok(Json(OkResponse { ok: true }))
-}
-
-async fn get_starred(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<StarredBundleDto>> {
-    Ok(Json(
-        state.services.collection.get_starred(user.id, None).await?,
-    ))
-}
-
-async fn star_items(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(body): Json<StarBody>,
-) -> ApiResult<Json<OkResponse>> {
-    state
-        .services
-        .collection
-        .star_items(user.id, &body.ids, &body.album_ids, &body.artist_ids)
-        .await?;
-    Ok(Json(OkResponse { ok: true }))
-}
-
-async fn unstar_items(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(body): Json<StarBody>,
-) -> ApiResult<Json<OkResponse>> {
-    state
-        .services
-        .collection
-        .unstar_items(user.id, &body.ids, &body.album_ids, &body.artist_ids)
-        .await?;
-    Ok(Json(OkResponse { ok: true }))
-}
-
-async fn set_rating(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(body): Json<RatingBody>,
-) -> ApiResult<Json<OkResponse>> {
-    state
-        .services
-        .collection
-        .set_rating(user.id, &body.id, body.rating)
-        .await?;
-    Ok(Json(OkResponse { ok: true }))
-}
-
-async fn scrobble_track(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(body): Json<ScrobbleBody>,
-) -> ApiResult<Json<OkResponse>> {
-    let ts = body
-        .played_at_ms
-        .and_then(|ms| Timestamp::from_millisecond(ms).ok());
-    state
-        .services
-        .collection
-        .scrobble(
-            &user,
-            vec![(body.track_id, ts)],
-            body.submission,
-            "xmedia-web",
-        )
-        .await?;
-    Ok(Json(OkResponse { ok: true }))
-}
-
-async fn list_now_playing(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<Vec<NowPlayingDto>>> {
-    Ok(Json(
-        state.services.collection.list_now_playing(user.id).await?,
-    ))
-}
-
-async fn get_play_queue(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<Option<PlayQueueDto>>> {
-    Ok(Json(
-        state.services.collection.get_play_queue(user.id).await?,
-    ))
-}
-
-async fn save_play_queue(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Json(body): Json<SaveQueueBody>,
-) -> ApiResult<Json<OkResponse>> {
-    state
-        .services
-        .collection
-        .save_play_queue(
-            user.id,
-            body.track_ids,
-            body.current_track_id,
-            body.position_ms,
-            "xmedia-web",
-        )
-        .await?;
-    Ok(Json(OkResponse { ok: true }))
-}
-
-async fn list_bookmarks(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-) -> ApiResult<Json<Vec<BookmarkDto>>> {
-    Ok(Json(
-        state.services.collection.list_bookmarks(user.id).await?,
-    ))
-}
-
-async fn upsert_bookmark(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(track_id): Path<Uuid>,
-    Json(body): Json<BookmarkBody>,
-) -> ApiResult<Response> {
-    let dto = state
-        .services
-        .collection
-        .upsert_bookmark(user.id, TrackId(track_id), body.position_ms, body.comment)
-        .await?;
-    Ok((StatusCode::OK, Json(dto)).into_response())
-}
-
-async fn delete_bookmark(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(track_id): Path<Uuid>,
-) -> ApiResult<Json<OkResponse>> {
-    state
-        .services
-        .collection
-        .delete_bookmark(user.id, TrackId(track_id))
-        .await?;
-    Ok(Json(OkResponse { ok: true }))
 }
