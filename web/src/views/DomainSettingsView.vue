@@ -189,7 +189,7 @@ watch(
 
     <!-- Single-row MD3 Filter Chips for Domain Setting Sections -->
     <div
-      role="tablist"
+      role="group"
       :aria-label="t('settings.navLabel')"
       class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
     >

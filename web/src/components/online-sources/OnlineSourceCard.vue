@@ -42,9 +42,9 @@ function formatSourceHost(rawUrl: string): string {
 }
 
 function statusDotClass(src: OnlineSourceSummaryDto): string {
-  if (src.last_test_ok === true) return 'bg-[var(--md-sys-color-success)]'
-  if (src.last_test_ok === false) return 'bg-[var(--md-sys-color-error)]'
-  return 'bg-[var(--md-sys-color-outline)]/55'
+  if (src.last_test_ok === true) return 'bg-success'
+  if (src.last_test_ok === false) return 'bg-error'
+  return 'bg-outline/55'
 }
 
 function statusDotTitle(src: OnlineSourceSummaryDto): string {
@@ -61,10 +61,7 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
 <template>
   <div
     :draggable="canReorder"
-    :role="selectionMode ? 'checkbox' : undefined"
-    :aria-checked="selectionMode ? selected : undefined"
-    :tabindex="selectionMode ? 0 : undefined"
-    class="relative flex flex-col gap-2.5 rounded-corner-lg px-4 py-3.5 transition-colors duration-150 ease-standard sm:flex-row sm:items-center sm:justify-between sm:gap-3 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
+    class="relative flex flex-col gap-2.5 rounded-corner-lg px-4 py-3.5 transition-colors duration-150 ease-standard sm:flex-row sm:items-center sm:justify-between sm:gap-3"
     :class="[
       selectionMode
         ? selected
@@ -75,8 +72,6 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
       dragging ? 'opacity-40 ring-1 ring-primary/50' : '',
     ]"
     @click="selectionMode ? emit('toggle-select', $event.shiftKey) : undefined"
-    @keydown.enter.self="selectionMode ? emit('toggle-select', $event.shiftKey) : undefined"
-    @keydown.space.self.prevent="selectionMode ? emit('toggle-select', $event.shiftKey) : undefined"
     @dragstart="emit('drag-start', $event)"
     @dragover="emit('drag-over', $event)"
     @dragleave="emit('drag-leave', $event)"
@@ -94,7 +89,7 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
 
     <div class="flex min-w-0 flex-1 items-center gap-2.5">
       <div v-if="selectionMode" class="flex shrink-0 items-center">
-        <AppCheckbox :model-value="selected" />
+        <AppCheckbox :model-value="selected" :aria-label="source.name" />
       </div>
       <div
         v-else-if="totalCount > 1"
@@ -156,11 +151,11 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
 
     <div v-if="selectionMode" class="flex shrink-0 justify-end">
       <span
-        class="rounded-full px-2.5 py-0.5 text-[11px] font-medium"
+        class="text-label-small rounded-corner-full px-2.5 py-0.5"
         :class="
           source.enabled
-            ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-            : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
+            ? 'bg-success-container text-on-success-container'
+            : 'bg-surface-container-highest text-on-surface-variant'
         "
       >
         {{
@@ -180,6 +175,13 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
             ? t('onlineSources.card.disableAction', { domain: domainLabel })
             : t('onlineSources.card.enableAction', { domain: domainLabel })
         "
+        :aria-label="
+          `${source.name} · ${
+            source.enabled
+              ? t('onlineSources.card.disableAction', { domain: domainLabel })
+              : t('onlineSources.card.enableAction', { domain: domainLabel })
+          }`
+        "
         @update:model-value="(val) => emit('toggle-enabled', val)"
       />
 
@@ -187,10 +189,10 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
         type="button"
         class="md-icon-btn md-icon-btn-sm md-state"
         :title="t('onlineSources.card.editAction', { domain: domainLabel })"
-        :aria-label="t('onlineSources.card.editAction', { domain: domainLabel })"
+        :aria-label="`${source.name} · ${t('onlineSources.card.editAction', { domain: domainLabel })}`"
         @click="emit('edit')"
       >
-        <LuPencil class="h-4 w-4" />
+        <LuPencil class="h-4 w-4" aria-hidden="true" />
       </button>
 
       <button
@@ -199,10 +201,10 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
         :aria-expanded="menuOpen"
         aria-haspopup="menu"
         :title="t('onlineSources.card.moreAction')"
-        :aria-label="t('onlineSources.card.moreAction')"
+        :aria-label="`${source.name} · ${t('onlineSources.card.moreAction')}`"
         @click.stop="emit('toggle-menu', $event)"
       >
-        <LuMoreVertical class="h-4 w-4" />
+        <LuMoreVertical class="h-4 w-4" aria-hidden="true" />
       </button>
     </div>
   </div>

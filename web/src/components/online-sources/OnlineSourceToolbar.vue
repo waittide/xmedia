@@ -85,12 +85,14 @@ function triggerFileImport(): void {
           :value="searchQuery"
           type="text"
           :placeholder="t('onlineSources.toolbar.searchPlaceholder', { domain: domainLabel })"
+          :aria-label="t('onlineSources.toolbar.searchPlaceholder', { domain: domainLabel })"
           class="sm:text-body-small h-9 w-full rounded-corner-full bg-surface-container-high pr-9 pl-9 text-base text-on-surface placeholder:text-on-surface-variant caret-primary outline-none transition-shadow duration-150 ease-standard focus:ring-2 focus:ring-primary"
           @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
         />
         <button
           v-if="searchQuery"
           type="button"
+          :aria-label="t('common.clear') || t('common.cancel')"
           class="md-state md-touch-target absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-corner-full text-on-surface-variant hover:text-on-surface"
           @click="emit('update:searchQuery', '')"
         >
@@ -124,6 +126,7 @@ function triggerFileImport(): void {
           ref="fileInputRef"
           type="file"
           accept=".json,application/json"
+          :aria-label="t('onlineSources.toolbar.importJsonFileOption')"
           class="hidden"
           @change="emit('file-selected', $event)"
         />
@@ -172,9 +175,15 @@ function triggerFileImport(): void {
     </div>
 
     <!-- Filter Chips (Status + Groups; hidden during selectionMode so bulk Enable/Disable buttons do not collide) -->
-    <div v-if="totalCount > 0 && !selectionMode" class="flex flex-wrap items-center gap-1.5">
+    <div
+      v-if="totalCount > 0 && !selectionMode"
+      role="group"
+      :aria-label="t('onlineSources.toolbar.searchPlaceholder', { domain: domainLabel })"
+      class="flex flex-wrap items-center gap-1.5"
+    >
       <button
         type="button"
+        :aria-pressed="statusFilter === 'all' && groupFilter === '__all__'"
         class="md-chip md-state"
         :class="
           statusFilter === 'all' && groupFilter === '__all__'
@@ -190,6 +199,7 @@ function triggerFileImport(): void {
       </button>
       <button
         type="button"
+        :aria-pressed="statusFilter === 'enabled'"
         class="md-chip md-state"
         :class="
           statusFilter === 'enabled'
@@ -202,6 +212,7 @@ function triggerFileImport(): void {
       </button>
       <button
         type="button"
+        :aria-pressed="statusFilter === 'disabled'"
         class="md-chip md-state"
         :class="
           statusFilter === 'disabled'
@@ -217,6 +228,7 @@ function triggerFileImport(): void {
         v-for="grp in availableGroups"
         :key="grp"
         type="button"
+        :aria-pressed="groupFilter === grp"
         class="md-chip md-state"
         :class="
           groupFilter === grp
@@ -334,6 +346,7 @@ function triggerFileImport(): void {
         :value="importJsonText"
         rows="7"
         :placeholder="t('onlineSources.toolbar.importPlaceholder', { domain: domainLabel })"
+        :aria-label="t('onlineSources.toolbar.importPlaceholder', { domain: domainLabel })"
         class="sm:text-body-small w-full rounded-corner-xs bg-surface-container-highest px-3.5 py-2.5 font-mono text-base text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:ring-2 focus:ring-primary"
         @input="emit('update:importJsonText', ($event.target as HTMLTextAreaElement).value)"
       />

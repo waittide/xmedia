@@ -439,7 +439,11 @@ onBeforeUnmount(() => {
   <div class="space-y-4">
     <!-- Controls Strip: Library filter chips + Admin target user + Batch claim -->
     <div class="flex flex-wrap items-center justify-between gap-2.5">
-      <div class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5">
+      <div
+        role="group"
+        :aria-label="t('pool.allLibraries')"
+        class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5"
+      >
         <MdChip
           variant="filter"
           :icon="LuDatabase"
@@ -472,6 +476,7 @@ onBeforeUnmount(() => {
             variant="compact"
             size="sm"
             :placeholder="t('pool.assignTargetLabel')"
+            :aria-label="t('pool.assignTargetLabel')"
           />
         </div>
 
@@ -575,6 +580,7 @@ onBeforeUnmount(() => {
                 :icon="LuX"
                 :loading="busyIds.has(book.id)"
                 :title="t('pool.unbindBtn')"
+                :aria-label="t('pool.unbindBtn')"
                 @click="handleUnbindSingle(book.id)"
               />
             </template>
@@ -654,6 +660,7 @@ onBeforeUnmount(() => {
                 :icon="LuX"
                 :loading="busyIds.has(series.id)"
                 :title="t('pool.unbindBtn')"
+                :aria-label="t('pool.unbindBtn')"
                 @click="handleUnbindSingle(series.id)"
               />
             </template>
@@ -822,6 +829,7 @@ onBeforeUnmount(() => {
                     :icon="LuX"
                     :loading="busyIds.has(show.id)"
                     :title="t('pool.unbindBtn')"
+                :aria-label="t('pool.unbindBtn')"
                     @click="handleUnbindSingle(show.id)"
                   />
                 </template>
@@ -900,6 +908,7 @@ onBeforeUnmount(() => {
                     :icon="LuX"
                     :loading="busyIds.has(movie.id)"
                     :title="t('pool.unbindBtn')"
+                :aria-label="t('pool.unbindBtn')"
                     @click="handleUnbindSingle(movie.id)"
                   />
                 </template>

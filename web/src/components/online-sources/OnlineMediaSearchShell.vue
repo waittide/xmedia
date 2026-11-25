@@ -376,6 +376,8 @@ function handleKeywordClear(): void {
     <!-- Collapsible Source Filter Chips -->
     <div
       v-else-if="enabledSources.length > 0"
+      role="group"
+      :aria-label="allSourcesLabel"
       class="flex flex-wrap items-center gap-1.5"
     >
       <MdChip
@@ -408,14 +410,12 @@ function handleKeywordClear(): void {
     <!-- Collapsible Explore Categories Bar (T1-F13-03: shown when q is empty) -->
     <div
       v-if="showBrowseView && browseCategories.length > 0"
-      role="tablist"
+      role="group"
       :aria-label="categoriesAriaLabel"
       class="flex flex-wrap items-center gap-1.5"
     >
       <MdChip
         variant="filter"
-        role="tab"
-        :aria-selected="activeCategoryId === null"
         :icon="LuCompass"
         :label="allCategoriesLabel"
         :selected="activeCategoryId === null"
@@ -426,8 +426,6 @@ function handleKeywordClear(): void {
         v-for="cat in visibleCategories"
         :key="cat.id"
         variant="filter"
-        role="tab"
-        :aria-selected="activeCategoryId === cat.id"
         :label="cat.name"
         :selected="activeCategoryId === cat.id"
         hide-check
