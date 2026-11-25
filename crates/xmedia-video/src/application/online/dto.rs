@@ -4,7 +4,8 @@ use xmedia_core::application::ports::ByteChunkStream;
 
 use crate::application::dto::{ShowDetailDto, VideoSummaryDto};
 use crate::domain::id::VideoId;
-use crate::source::model::{
+pub use crate::domain::online::VideoSourceTestMode;
+use crate::domain::online::{
     ExecutionDiagnostics, OnlineVideoCategory, OnlineVideoDetail, OnlineVideoPlayResult,
     OnlineVideoSubtitle, OnlineVideoSummary,
 };
@@ -19,19 +20,6 @@ pub type BatchVideoSourcesReportDto = xmedia_source::crud::BatchSourcesReportDto
 pub type LoginActionResponseDto =
     xmedia_source::crud::LoginActionResponseDto<VideoSourceSummaryDto>;
 pub type VideoSourceTestStepDto = xmedia_source::crud::SourceTestStepDto;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoSourceTestMode {
-    #[default]
-    Full,
-    Categories,
-    Search,
-    #[serde(alias = "explore")]
-    Browse,
-    Detail,
-    Play,
-}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]

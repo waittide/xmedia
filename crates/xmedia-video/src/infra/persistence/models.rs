@@ -3,8 +3,8 @@ use uuid::Uuid;
 use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 
 use crate::domain::id::VideoId;
+use crate::domain::online::SourceRuntimeState;
 use crate::domain::video::VideoSource;
-use crate::source::model::SourceRuntimeState;
 
 #[derive(Debug, toasty::Model)]
 #[table = "video_shows"]

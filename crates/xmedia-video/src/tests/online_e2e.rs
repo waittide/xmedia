@@ -3527,6 +3527,7 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
         .unwrap();
 
     let sources_repo = Arc::new(ToastyVideoSourceRepository::new(db));
+    let source_crud = Arc::new(xmedia_source::crud::SourceCrudService::new(sources_repo));
     let engine = VideoSourceEngine::new(
         HttpClientConfig {
             allow_private_ips: true,
@@ -3534,7 +3535,7 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
         },
         Duration::from_secs(5),
     );
-    let svc = VideoOnlineService::with_engine(sources_repo, engine, true)
+    let svc = VideoOnlineService::with_engine(source_crud, engine, true)
         .with_timeouts(Duration::from_millis(120), Duration::from_millis(160));
 
     let raw_src = serde_json::json!({

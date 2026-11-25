@@ -13,13 +13,13 @@ use xmedia_source::http::{
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline, strip_js_wrapper};
 
-use crate::source::applecms;
-use crate::source::model::{
+use crate::domain::online::{
     ExecutionDiagnostics, OnlineVideoCategory, OnlineVideoDetail, OnlineVideoEpisode,
     OnlineVideoPlayGroup, OnlineVideoPlayResult, OnlineVideoSubtitle, OnlineVideoSummary,
-    SourceCallError, SourceCallOutput, SourceMetadata, SourceRuntimeState, VideoJsContext,
-    VideoSourceFormat, VideoSourceSpec,
+    SourceCallError, SourceCallOutput, SourceMetadata, SourceRuntimeState, VideoBrowseOutput,
+    VideoJsContext, VideoSourceFormat, VideoSourceSpec,
 };
+use crate::source::applecms;
 
 #[derive(Debug, Clone)]
 pub struct VideoSourceEngine {
@@ -34,14 +34,6 @@ impl Default for VideoSourceEngine {
             js_timeout: Duration::from_secs(45),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct VideoBrowseOutput {
-    pub items: Vec<OnlineVideoSummary>,
-    pub total: Option<u64>,
-    pub page: u32,
-    pub page_count: Option<u32>,
 }
 
 const VIDEO_JS_BOOTSTRAP: &str = r#"

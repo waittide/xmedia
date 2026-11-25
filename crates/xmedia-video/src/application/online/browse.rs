@@ -223,7 +223,7 @@ impl VideoOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut sources = self.sources.list_all().await?;
+        let mut sources = self.source_crud.repository().list_all().await?;
         let is_admin = actor.role.is_admin();
 
         let explicit_single_or_filtered = source_ids.as_ref().is_some_and(|v| !v.is_empty());

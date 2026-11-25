@@ -1,8 +1,6 @@
 mod browse;
 mod debug;
 mod dto;
-mod items;
-mod sources;
 mod tracked;
 
 use std::collections::HashMap;
@@ -11,23 +9,26 @@ use std::time::Duration;
 
 use uuid::Uuid;
 use xmedia_core::application::ports::RealtimeEventPort;
+use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::user::User;
 pub(super) use xmedia_source::concurrency::{
     AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
 };
+use xmedia_source::crud::{SourceCrudService, SourceRecord, SourceRepository};
 use xmedia_source::http::HttpClientConfig;
-use xmedia_source::model::ConcurrentRateSpec;
+use xmedia_source::model::{ConcurrentRateSpec, SourceCallError};
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
 use crate::application::catalog::VideoCatalogService;
 use crate::application::lifecycle::VideoDomainLifecycle;
 use crate::application::ports::{VideoMediaEnginePort, VideoStoragePort};
 use crate::domain::id::VideoId;
-use crate::domain::repository::{VideoCatalogRepository, VideoSourceRepository};
+use crate::domain::online::{ExecutionDiagnostics, SourceRuntimeState, VideoSourceSpec};
+use crate::domain::repository::VideoCatalogRepository;
 use crate::source::VideoSourceEngine;
 
 pub use dto::*;
-pub use items::VideoOnlineSourceDirectory;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -46,14 +47,12 @@ pub struct VideoTrackingDeps {
 }
 
 pub struct VideoOnlineService {
-    sources: Arc<dyn VideoSourceRepository>,
+    source_crud: Arc<SourceCrudService<VideoSourceSpec>>,
     engine: VideoSourceEngine,
     http_config: HttpClientConfig,
-    source_state_locks: AsyncLockMap<Uuid>,
     track_locks: AsyncLockMap<(Uuid, String)>,
     video_cache_locks: AsyncLockMap<VideoId>,
     rate_limiters: RateLimiterMap,
-    seed_import_lock: tokio::sync::Mutex<()>,
     tracking: Option<VideoTrackingDeps>,
     allow_private_ips: bool,
     op_timeout: Duration,
@@ -61,30 +60,36 @@ pub struct VideoOnlineService {
 }
 
 impl VideoOnlineService {
-    pub fn new(sources: Arc<dyn VideoSourceRepository>) -> Self {
-        Self::with_engine(sources, VideoSourceEngine::default(), false)
+    pub fn new(sources: Arc<dyn SourceRepository>) -> Self {
+        Self::with_engine(
+            Arc::new(SourceCrudService::new(sources)),
+            VideoSourceEngine::default(),
+            false,
+        )
     }
 
     pub fn with_engine(
-        sources: Arc<dyn VideoSourceRepository>,
+        source_crud: Arc<SourceCrudService<VideoSourceSpec>>,
         engine: VideoSourceEngine,
         allow_private_ips: bool,
     ) -> Self {
         let http_config = engine.http_config().clone();
         Self {
-            sources,
+            source_crud,
             engine,
             http_config,
-            source_state_locks: Arc::new(Mutex::new(HashMap::new())),
             track_locks: Arc::new(Mutex::new(HashMap::new())),
             video_cache_locks: Arc::new(Mutex::new(HashMap::new())),
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
-            seed_import_lock: tokio::sync::Mutex::new(()),
             tracking: None,
             allow_private_ips,
             op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
             detail_timeout: DETAIL_OP_TIMEOUT,
         }
+    }
+
+    pub fn source_crud(&self) -> &Arc<SourceCrudService<VideoSourceSpec>> {
+        &self.source_crud
     }
 
     pub fn with_tracking(mut self, deps: VideoTrackingDeps) -> Self {
@@ -97,6 +102,61 @@ impl VideoOnlineService {
         self.op_timeout = op_timeout;
         self.detail_timeout = detail_timeout;
         self
+    }
+
+    pub(super) async fn load_source(&self, id: Uuid) -> DomainResult<SourceRecord> {
+        self.source_crud.load_source(id).await
+    }
+
+    pub(super) async fn load_source_for_actor(
+        &self,
+        actor: &User,
+        id: Uuid,
+    ) -> DomainResult<SourceRecord> {
+        self.source_crud.load_source_for_actor(actor, id).await
+    }
+
+    pub(super) async fn persist_runtime_state_with_base(
+        &self,
+        id: Uuid,
+        base_state: &SourceRuntimeState,
+        new_state: SourceRuntimeState,
+        allow_login_info_override: bool,
+    ) -> DomainResult<()> {
+        self.source_crud
+            .persist_runtime_state_with_base(id, base_state, new_state, allow_login_info_override)
+            .await
+    }
+
+    pub async fn import_sources(
+        &self,
+        actor: &User,
+        raw_json: &str,
+    ) -> DomainResult<ImportVideoSourcesReportDto> {
+        self.source_crud.import_sources(actor, raw_json).await
+    }
+
+    pub async fn run_login_action(
+        &self,
+        actor: &User,
+        id: Uuid,
+        login_info: HashMap<String, String>,
+        action: Option<String>,
+    ) -> DomainResult<LoginActionResponseDto> {
+        let engine = self.engine.clone();
+        self.source_crud
+            .run_login_action_with(
+                actor,
+                id,
+                login_info,
+                action,
+                move |spec, prev_state, merged_login, act| {
+                    engine
+                        .run_login_action_sync(spec, prev_state, merged_login, act)
+                        .map_err(|msg| SourceCallError::new(msg, ExecutionDiagnostics::default()))
+                },
+            )
+            .await
     }
 
     pub(super) async fn acquire_rate_slot(

@@ -4,8 +4,10 @@ use axum::extract::FromRef;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
+use xmedia_source::crud::SourceCrudService;
 
 use crate::application::VideoServices;
+use crate::domain::online::VideoSourceSpec;
 
 #[derive(Clone)]
 pub struct VideoHttpState {
@@ -37,5 +39,11 @@ impl FromRef<VideoHttpState> for Arc<AuthService> {
 impl FromRef<VideoHttpState> for Arc<OnlineLibraryService> {
     fn from_ref(state: &VideoHttpState) -> Self {
         state.services.online_items.clone()
+    }
+}
+
+impl FromRef<VideoHttpState> for Arc<SourceCrudService<VideoSourceSpec>> {
+    fn from_ref(state: &VideoHttpState) -> Self {
+        state.services.online.source_crud().clone()
     }
 }

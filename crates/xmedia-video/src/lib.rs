@@ -23,14 +23,16 @@ use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::persistence::repositories::{
     ToastyOnlineLibraryItemRepository, ToastyUserMediaBindingRepository,
 };
+use xmedia_source::crud::SourceCrudService;
 use xmedia_source::http::HttpClientConfig;
 
 use application::VideoServices;
 use application::catalog::VideoCatalogService;
 use application::lifecycle::VideoDomainLifecycle;
-use application::online::{VideoOnlineService, VideoOnlineSourceDirectory, VideoTrackingDeps};
+use application::online::{VideoOnlineService, VideoTrackingDeps};
 use application::streaming::VideoStreamingService;
 use application::watch::VideoWatchService;
+use domain::online::VideoSourceSpec;
 use infra::media_engine::FfmpegVideoEngine;
 use infra::persistence::repositories::{
     ToastyVideoCatalogRepository, ToastyVideoSourceRepository, ToastyVideoWatchRepository,
@@ -135,6 +137,7 @@ pub fn init_video_module_with_bindings(
     ));
     library_service.register_lifecycle(ingest.clone());
 
+    let source_crud = Arc::new(SourceCrudService::<VideoSourceSpec>::new(source_repo));
     let source_engine = VideoSourceEngine::new(
         HttpClientConfig {
             allow_private_ips,
@@ -143,7 +146,7 @@ pub fn init_video_module_with_bindings(
         Duration::from_secs(45),
     );
     let online = Arc::new(
-        VideoOnlineService::with_engine(source_repo.clone(), source_engine, allow_private_ips)
+        VideoOnlineService::with_engine(source_crud.clone(), source_engine, allow_private_ips)
             .with_tracking(VideoTrackingDeps {
                 libraries: libraries_repo,
                 catalog_repo,
@@ -157,7 +160,7 @@ pub fn init_video_module_with_bindings(
     let online_items = Arc::new(OnlineLibraryService::new(
         MediaKind::Video,
         online_items_repo,
-        Arc::new(VideoOnlineSourceDirectory::new(source_repo)),
+        source_crud,
     ));
 
     Ok(VideoServices::new(

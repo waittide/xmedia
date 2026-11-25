@@ -1,12 +1,10 @@
 use async_trait::async_trait;
-use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
-use crate::domain::online::{SourceRuntimeState, VideoSourceMetadataUpdate, VideoSourceRecord};
 use crate::domain::video::{ShowQueryFilter, VideoItem, VideoQueryFilter, VideoShow};
 use crate::domain::watch::{VideoFavoriteEntry, VideoFavoriteKind, VideoShelf, WatchProgress};
 
@@ -87,44 +85,4 @@ pub trait VideoWatchRepository: Send + Sync {
         video_ids: &[VideoId],
         show_id: Option<ShowId>,
     ) -> DomainResult<()>;
-}
-
-#[async_trait]
-pub trait VideoSourceRepository: Send + Sync {
-    async fn list_all(&self) -> DomainResult<Vec<VideoSourceRecord>>;
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<VideoSourceRecord>>;
-    async fn save(&self, source: &VideoSourceRecord) -> DomainResult<()>;
-    async fn update_metadata_if_exists(
-        &self,
-        id: Uuid,
-        patch: VideoSourceMetadataUpdate,
-    ) -> DomainResult<Option<VideoSourceRecord>>;
-    async fn update_runtime_state(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        updated_at: Timestamp,
-    ) -> DomainResult<()>;
-    async fn update_test_result(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        last_test_ok: bool,
-        last_test_msg: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn update_weight_if_exists(
-        &self,
-        id: Uuid,
-        weight: i64,
-        updated_at: Timestamp,
-    ) -> DomainResult<Option<VideoSourceRecord>>;
-    async fn update_batch_fields_if_exists(
-        &self,
-        id: Uuid,
-        enabled: Option<bool>,
-        group_name: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn delete(&self, id: Uuid) -> DomainResult<()>;
 }
