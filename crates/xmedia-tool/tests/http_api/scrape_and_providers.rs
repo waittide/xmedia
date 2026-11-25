@@ -313,6 +313,36 @@ async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
         root.join("Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub")
             .is_file()
     );
+    let history = app.workbench.list_metadata_history(Some(root_id)).await;
+    let book_batch = history
+        .iter()
+        .find(|b| b.media_kind == MediaKind::Book)
+        .expect("book metadata history batch recorded");
+    assert_eq!(
+        book_batch.records[0].rel_path,
+        "Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub"
+    );
+    let undo_rep = app
+        .workbench
+        .undo_metadata_batch(book_batch.batch_id)
+        .await
+        .unwrap();
+    assert_eq!(undo_rep.restored_count, 1);
+    assert!(undo_rep.failed_paths.is_empty());
+    let restored_book = app
+        .workbench
+        .inspect_file(
+            root_id,
+            "Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub",
+            Some(MediaKind::Book),
+        )
+        .await
+        .unwrap();
+    if let MediaMetadataPayload::Book(b) = restored_book.metadata {
+        assert_eq!(b.title, "Draft Title");
+    } else {
+        panic!("expected restored book metadata");
+    }
 
     let primary = ScrapedMetadata {
         provider_id: "tmdb".into(),

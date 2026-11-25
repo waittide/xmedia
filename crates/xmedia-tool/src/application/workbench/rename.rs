@@ -51,6 +51,7 @@ impl MediaWorkbenchService {
         let mut restored_count = 0usize;
         let mut skipped_conflicts = Vec::new();
         let mut remaining_moves = Vec::new();
+        let mut restored_path_pairs = Vec::new();
 
         for mv in batch.moves.iter().rev() {
             let Ok(cur) = resolve_existing_in_root(&root, &mv.to_rel_path) else {
@@ -78,6 +79,7 @@ impl MediaWorkbenchService {
                 continue;
             }
             restored_count += 1;
+            restored_path_pairs.push((mv.to_rel_path.clone(), mv.from_rel_path.clone()));
 
             for (comp_from, comp_to) in mv.companion_moves.iter().rev() {
                 if let Ok(comp_cur) = resolve_existing_in_root(&root, comp_to)
@@ -101,6 +103,8 @@ impl MediaWorkbenchService {
         remaining_moves.reverse();
 
         if restored_count > 0 {
+            self.update_metadata_history_paths(RootId(batch.root_id), &restored_path_pairs)
+                .await;
             let mut guard = self.rename_history.write().await;
             if remaining_moves.is_empty() {
                 guard.retain(|b| b.batch_id != batch_id);
@@ -724,6 +728,12 @@ impl MediaWorkbenchService {
         }
 
         if !recorded_moves.is_empty() {
+            let path_pairs: Vec<(String, String)> = recorded_moves
+                .iter()
+                .map(|m| (m.from_rel_path.clone(), m.to_rel_path.clone()))
+                .collect();
+            self.update_metadata_history_paths(root_id, &path_pairs)
+                .await;
             let now_unix = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)

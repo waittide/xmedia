@@ -245,8 +245,14 @@ pub fn process_music_lyrics(
         atomic_mutate_copy(path, |staging| {
             let mut tf = open_tagged(staging)?;
             let tag = ensure_mutable_primary_tag(&mut tf);
+            tag.remove_key(ItemKey::Lyrics);
             tag.remove_key(ItemKey::UnsyncLyrics);
-            tag.insert_text(ItemKey::Lyrics, final_lyrics.clone());
+            let lrc_key = if tag.tag_type() == lofty::tag::TagType::Id3v2 {
+                ItemKey::UnsyncLyrics
+            } else {
+                ItemKey::Lyrics
+            };
+            tag.insert_text(lrc_key, final_lyrics.clone());
             tf.save_to_path(staging, WriteOptions::default())
                 .map_err(|e| DomainError::Storage(format!("save embedded lyrics failed: {e}")))?;
             Ok(())
@@ -825,5 +831,51 @@ FILE "YeHuiMei.flac" WAVE
         .unwrap();
         let err_abs = split_cue_album(&abs_cue, "ffmpeg").unwrap_err();
         assert!(matches!(err_abs, DomainError::Validation(_)));
+    }
+
+    #[test]
+    fn process_music_lyrics_persists_id3v2_unsync_lyrics_in_wav() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav_path = tmp.path().join("song.wav");
+        let mut wav = Vec::with_capacity(48);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&40u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8000u32.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&4u32.to_le_bytes());
+        wav.extend_from_slice(&[0u8; 4]);
+        std::fs::write(&wav_path, &wav).unwrap();
+
+        let report = process_music_lyrics(
+            &wav_path,
+            &MusicLyricsToolInput {
+                offset_ms: 0,
+                strip_credit_noise: false,
+                zh_direction: None,
+                sync_mode: "both".to_string(),
+                custom_text: Some("[00:05.00]晴天测试歌词".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(report.updated_embedded);
+        assert!(report.updated_sidecar);
+
+        let reread = open_tagged(&wav_path).unwrap();
+        let embedded = reread
+            .tags()
+            .iter()
+            .find_map(|t| {
+                t.get_string(ItemKey::Lyrics)
+                    .or_else(|| t.get_string(ItemKey::UnsyncLyrics))
+            })
+            .unwrap();
+        assert_eq!(embedded, "[00:05.00]晴天测试歌词");
     }
 }

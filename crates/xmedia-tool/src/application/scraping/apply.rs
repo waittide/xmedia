@@ -478,10 +478,12 @@ impl ScrapingOrchestratorService {
         };
 
         // 1. Merge scraped metadata onto base local video metadata (preserving filename SxxExx if scraper omitted it)
+        let src_rel_slash = src_sandbox.rel_slash_string();
         let src_abs_for_read = src_sandbox.abs_path.clone();
         let mut meta = tokio::task::spawn_blocking(move || read_base_video_meta(&src_abs_for_read))
             .await
             .map_err(|e| DomainError::Storage(format!("video base inspect failed: {e}")))?;
+        let pre_scrape_meta = meta.clone();
         let existing_poster = meta.has_poster;
         let existing_fanart = meta.has_fanart;
         let existing_thumb = meta.has_thumb;
@@ -828,6 +830,20 @@ impl ScrapingOrchestratorService {
         .await
         .map_err(|e| DomainError::Storage(format!("video Jellyfin archive task failed: {e}")))??;
         drop(root_guard);
+
+        if target_rel_path != src_rel_slash {
+            self.workbench
+                .update_metadata_history_paths(root_id, &[(src_rel_slash, target_rel_path.clone())])
+                .await;
+        }
+        self.workbench
+            .record_external_metadata_snapshot(
+                root_id,
+                MediaKind::Video,
+                &target_rel_path,
+                MediaMetadataPayload::Video(pre_scrape_meta),
+            )
+            .await;
 
         if raw_settings.xmedia_webhook.notify_on_scrape {
             let webhook_cfg = raw_settings.xmedia_webhook;

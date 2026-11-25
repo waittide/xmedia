@@ -11,10 +11,62 @@ use crate::application::batch_metadata::{
     MetadataSnapshotRecord, UndoMetadataReportDto, build_batch_patch_for_payload,
     payload_to_restore_patch,
 };
-use crate::domain::media::{MediaFileDetail, MediaMetadataPatch};
+use crate::domain::media::{MediaFileDetail, MediaMetadataPatch, MediaMetadataPayload};
 use crate::domain::workspace::RootId;
 
 impl MediaWorkbenchService {
+    pub(crate) async fn update_metadata_history_paths(
+        &self,
+        root_id: RootId,
+        moves: &[(String, String)],
+    ) {
+        if moves.is_empty() {
+            return;
+        }
+        let mut guard = self.metadata_history.write().await;
+        for batch in guard.iter_mut().filter(|b| b.root_id == root_id.0) {
+            for rec in &mut batch.records {
+                if let Some((_, to_rel)) =
+                    moves.iter().find(|(from_rel, _)| from_rel == &rec.rel_path)
+                {
+                    rec.rel_path = to_rel.clone();
+                    if let Some(fname) = std::path::Path::new(to_rel)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                    {
+                        rec.file_name = fname.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn record_external_metadata_snapshot(
+        &self,
+        root_id: RootId,
+        media_kind: MediaKind,
+        rel_path: &str,
+        previous: MediaMetadataPayload,
+    ) {
+        let file_name = std::path::Path::new(rel_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(rel_path)
+            .to_string();
+        let label = format!("编辑/刮削写入 · {file_name}");
+        self.push_batch_metadata_snapshots(
+            root_id,
+            media_kind,
+            label,
+            vec![MetadataSnapshotRecord {
+                rel_path: rel_path.to_string(),
+                file_name,
+                previous,
+            }],
+        )
+        .await;
+    }
+
     async fn push_metadata_history(&self, batch: MetadataHistoryBatchDto) {
         let mut guard = self.metadata_history.write().await;
         guard.push(batch);
