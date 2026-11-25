@@ -800,9 +800,18 @@ impl BookCatalogService {
     pub async fn get_toc(&self, actor: &User, book_id: BookId) -> DomainResult<Vec<TocItem>> {
         self.require_book_bound(actor, book_id).await?;
         let (library, book) = self.find_book_with_library(book_id).await?;
-        let bytes = self.storage.read_book_bytes(&library, &book).await?;
         let parser = self.parser.clone();
         let format = book.format;
+        if format == BookFormat::Epub
+            && let Some(fs_path) = self.storage.resolve_book_fs_path(&library, &book)?
+        {
+            return tokio::task::spawn_blocking(move || {
+                parser.list_toc_from_path(format, &fs_path)
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("list_toc task failed: {e}")))?;
+        }
+        let bytes = self.storage.read_book_bytes(&library, &book).await?;
         tokio::task::spawn_blocking(move || parser.list_toc(format, &bytes))
             .await
             .map_err(|e| DomainError::Storage(format!("list_toc task failed: {e}")))?
@@ -841,9 +850,16 @@ impl BookCatalogService {
                 "resource endpoint is only supported for EPUB books".into(),
             ));
         }
-        let bytes = self.storage.read_book_bytes(&library, &book).await?;
         let parser = self.parser.clone();
         let res_path = resource_path.to_string();
+        if let Some(fs_path) = self.storage.resolve_book_fs_path(&library, &book)? {
+            return tokio::task::spawn_blocking(move || {
+                parser.read_epub_resource_from_path(&fs_path, &res_path)
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("read_epub_resource task failed: {e}")))?;
+        }
+        let bytes = self.storage.read_book_bytes(&library, &book).await?;
         tokio::task::spawn_blocking(move || parser.read_epub_resource(&bytes, &res_path))
             .await
             .map_err(|e| DomainError::Storage(format!("read_epub_resource task failed: {e}")))?

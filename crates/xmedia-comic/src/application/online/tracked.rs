@@ -1,12 +1,11 @@
 use std::collections::HashSet;
-use std::io::{Cursor, Write};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 use uuid::Uuid;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -595,72 +594,89 @@ impl ComicOnlineService {
             .take(MAX_TRACKED_PAGES_PER_CHAPTER)
             .collect();
 
-        // Download all page images with bounded concurrency
-        let sem = Arc::new(Semaphore::new(PAGE_DOWNLOAD_CONCURRENCY));
-        let mut tasks = Vec::with_capacity(limited_urls.len());
+        // Stream chapter images in bounded batches directly into a disk-backed temp CBZ archive
+        let total_pages = limited_urls.len();
+        let page_count = total_pages as u32;
         let mut base_headers = parsed_spec.merged_image_headers();
         base_headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         let base_headers = Arc::new(base_headers);
         let source_url_arc = Arc::new(parsed_spec.source_url.clone());
         let allow_private_ips = self.allow_private_ips;
 
-        for (idx, img_url) in limited_urls.into_iter().enumerate() {
-            let sem_c = Arc::clone(&sem);
-            let headers_c = Arc::clone(&base_headers);
-            let src_url_c = Arc::clone(&source_url_arc);
-            tasks.push(tokio::spawn(async move {
-                let Ok(_permit) = sem_c.acquire_owned().await else {
-                    return Err(DomainError::Storage(
-                        "page download scheduler closed".into(),
-                    ));
-                };
-                let mut page_headers = (*headers_c).clone();
-                crate::source::model::strip_cross_origin_sensitive_headers(
-                    &mut page_headers,
-                    &src_url_c,
-                    &img_url,
-                );
-                let cfg = HttpClientConfig {
-                    timeout_secs: DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
-                    allow_private_ips,
-                    proxy_url: None,
-                };
-                let (bytes, mime) = fetch_validated_image_bytes_with_config(
-                    &img_url,
-                    Some(&page_headers),
-                    COMIC_IMAGE_PROXY_MAX_BYTES,
-                    &cfg,
-                )
-                .await?;
-                Ok((idx, bytes, mime.to_string()))
-            }));
-        }
-
-        let mut downloaded: Vec<(usize, Vec<u8>, String)> = Vec::with_capacity(tasks.len());
-        for handle in tasks {
-            let res = handle.await.map_err(|e| {
-                DomainError::Storage(format!("chapter page download join error: {e}"))
-            })??;
-            downloaded.push(res);
-        }
-        downloaded.sort_by_key(|(idx, _, _)| *idx);
-
-        let page_count = downloaded.len() as u32;
-        let first_page_bytes = downloaded.first().map(|(_, b, _)| b.clone());
         let series_title_for_xml = series.title.clone();
         let chapter_title_for_xml = chapter.title.clone();
         let chapter_num = chapter.number;
-
-        let cbz_bytes = tokio::task::spawn_blocking(move || {
-            build_comic_cbz(
+        let (temp_cbz, mut zip_writer) = tokio::task::spawn_blocking(move || {
+            let (guard, file) = TempCbzGuard::create_exclusive()?;
+            let zip = init_disk_comic_cbz(
+                file,
                 &series_title_for_xml,
                 &chapter_title_for_xml,
                 chapter_num,
-                &downloaded,
-            )
+                total_pages,
+            )?;
+            Ok::<_, DomainError>((guard, zip))
         })
         .await
-        .map_err(|e| DomainError::Storage(format!("CBZ packaging join failed: {e}")))??;
+        .map_err(|e| DomainError::Storage(format!("CBZ temp init join failed: {e}")))??;
+
+        let mut first_page_bytes: Option<Vec<u8>> = None;
+        for (chunk_idx, url_batch) in limited_urls.chunks(PAGE_DOWNLOAD_CONCURRENCY).enumerate() {
+            let base_idx = chunk_idx * PAGE_DOWNLOAD_CONCURRENCY;
+            let mut tasks = Vec::with_capacity(url_batch.len());
+            for (offset, img_url) in url_batch.iter().cloned().enumerate() {
+                let idx = base_idx + offset;
+                let headers_c = Arc::clone(&base_headers);
+                let src_url_c = Arc::clone(&source_url_arc);
+                tasks.push(tokio::spawn(async move {
+                    let mut page_headers = (*headers_c).clone();
+                    crate::source::model::strip_cross_origin_sensitive_headers(
+                        &mut page_headers,
+                        &src_url_c,
+                        &img_url,
+                    );
+                    let cfg = HttpClientConfig {
+                        timeout_secs: DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
+                        allow_private_ips,
+                        proxy_url: None,
+                    };
+                    let (bytes, mime) = fetch_validated_image_bytes_with_config(
+                        &img_url,
+                        Some(&page_headers),
+                        COMIC_IMAGE_PROXY_MAX_BYTES,
+                        &cfg,
+                    )
+                    .await?;
+                    Ok::<_, DomainError>((idx, bytes, mime.to_string()))
+                }));
+            }
+
+            let mut batch_pages: Vec<(usize, Vec<u8>, String)> = Vec::with_capacity(tasks.len());
+            for handle in tasks {
+                let res = handle.await.map_err(|e| {
+                    DomainError::Storage(format!("chapter page download join error: {e}"))
+                })??;
+                batch_pages.push(res);
+            }
+            batch_pages.sort_by_key(|(idx, _, _)| *idx);
+            if first_page_bytes.is_none()
+                && let Some((_, bytes, _)) = batch_pages.first()
+            {
+                first_page_bytes = Some(bytes.clone());
+            }
+
+            let current_zip = zip_writer;
+            zip_writer =
+                tokio::task::spawn_blocking(move || append_pages_to_cbz(current_zip, &batch_pages))
+                    .await
+                    .map_err(|e| {
+                        DomainError::Storage(format!("CBZ batch write join failed: {e}"))
+                    })??;
+        }
+
+        tokio::task::spawn_blocking(move || finish_disk_comic_cbz(zip_writer))
+            .await
+            .map_err(|e| DomainError::Storage(format!("CBZ finalize join failed: {e}")))??;
 
         // Clean up stale managed file if re-caching
         if let Some(old_key) = info.storage_key.as_deref() {
@@ -671,7 +687,7 @@ impl ComicOnlineService {
         let filename = format!("ch_{}.cbz", chapter.id);
         let stored = self
             .storage
-            .store_uploaded_archive(&series_folder, &filename, &cbz_bytes)
+            .store_uploaded_archive_from_path(&series_folder, &filename, temp_cbz.path())
             .await?;
 
         // Generate chapter thumbnail (and fallback series cover) from page 1
@@ -812,42 +828,143 @@ fn ext_for_image_mime(mime: &str) -> &'static str {
     }
 }
 
-fn build_comic_cbz(
+struct TempCbzGuard {
+    path: PathBuf,
+}
+
+impl TempCbzGuard {
+    fn create_exclusive() -> DomainResult<(Self, std::fs::File)> {
+        for _ in 0..8 {
+            let path = std::env::temp_dir().join(format!("xmedia-comic-{}.cbz", Uuid::now_v7()));
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            match opts.open(&path) {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(DomainError::Storage(format!(
+                        "创建临时 CBZ 缓存文件失败: {e}"
+                    )));
+                }
+            }
+        }
+        Err(DomainError::Storage(
+            "创建独占临时 CBZ 缓存文件失败: 重试次数耗尽".into(),
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempCbzGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn init_disk_comic_cbz(
+    file: std::fs::File,
     series_title: &str,
     chapter_title: &str,
     chapter_number: f64,
+    total_pages: usize,
+) -> DomainResult<ZipWriter<std::fs::File>> {
+    let mut zip = ZipWriter::new(file);
+    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let info_xml = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<ComicInfo>\n  <Series>{}</Series>\n  <Title>{}</Title>\n  <Number>{}</Number>\n  <PageCount>{}</PageCount>\n</ComicInfo>\n",
+        xml_escape(series_title),
+        xml_escape(chapter_title),
+        chapter_number,
+        total_pages,
+    );
+    zip.start_file("ComicInfo.xml", opts)
+        .map_err(|e| DomainError::Storage(format!("CBZ write ComicInfo.xml failed: {e}")))?;
+    zip.write_all(info_xml.as_bytes())
+        .map_err(|e| DomainError::Storage(format!("CBZ write ComicInfo.xml failed: {e}")))?;
+    Ok(zip)
+}
+
+fn append_pages_to_cbz(
+    mut zip: ZipWriter<std::fs::File>,
     pages: &[(usize, Vec<u8>, String)],
-) -> DomainResult<Vec<u8>> {
-    let mut cursor = Cursor::new(Vec::new());
-    {
-        let mut zip = ZipWriter::new(&mut cursor);
-        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+) -> DomainResult<ZipWriter<std::fs::File>> {
+    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    for (idx, bytes, mime) in pages {
+        let ext = ext_for_image_mime(mime);
+        let name = format!("{:04}.{ext}", idx + 1);
+        zip.start_file(&name, opts)
+            .map_err(|e| DomainError::Storage(format!("CBZ start page '{name}' failed: {e}")))?;
+        zip.write_all(bytes)
+            .map_err(|e| DomainError::Storage(format!("CBZ write page '{name}' failed: {e}")))?;
+    }
+    Ok(zip)
+}
 
-        let info_xml = format!(
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<ComicInfo>\n  <Series>{}</Series>\n  <Title>{}</Title>\n  <Number>{}</Number>\n  <PageCount>{}</PageCount>\n</ComicInfo>\n",
-            xml_escape(series_title),
-            xml_escape(chapter_title),
-            chapter_number,
-            pages.len(),
-        );
-        zip.start_file("ComicInfo.xml", opts)
-            .map_err(|e| DomainError::Storage(format!("CBZ write ComicInfo.xml failed: {e}")))?;
-        zip.write_all(info_xml.as_bytes())
-            .map_err(|e| DomainError::Storage(format!("CBZ write ComicInfo.xml failed: {e}")))?;
+fn finish_disk_comic_cbz(zip: ZipWriter<std::fs::File>) -> DomainResult<()> {
+    let mut file = zip
+        .finish()
+        .map_err(|e| DomainError::Storage(format!("CBZ finalize failed: {e}")))?;
+    file.flush()
+        .map_err(|e| DomainError::Storage(format!("CBZ flush failed: {e}")))?;
+    Ok(())
+}
 
-        for (idx, bytes, mime) in pages {
-            let ext = ext_for_image_mime(mime);
-            let name = format!("{:04}.{ext}", idx + 1);
-            zip.start_file(&name, opts).map_err(|e| {
-                DomainError::Storage(format!("CBZ start page '{name}' failed: {e}"))
-            })?;
-            zip.write_all(bytes).map_err(|e| {
-                DomainError::Storage(format!("CBZ write page '{name}' failed: {e}"))
-            })?;
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    use super::*;
+
+    #[test]
+    fn disk_backed_cbz_writer_streams_batches_with_exclusive_permissions() {
+        let (guard, file) = TempCbzGuard::create_exclusive().unwrap();
+        let path = guard.path().to_path_buf();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
         }
 
-        zip.finish()
-            .map_err(|e| DomainError::Storage(format!("CBZ finalize failed: {e}")))?;
+        let zip = init_disk_comic_cbz(file, "A & B", "Ch <1>", 1.5, 3).unwrap();
+        let zip = append_pages_to_cbz(
+            zip,
+            &[
+                (0, b"png-1".to_vec(), "image/png".to_string()),
+                (1, b"webp-2".to_vec(), "image/webp".to_string()),
+            ],
+        )
+        .unwrap();
+        let zip =
+            append_pages_to_cbz(zip, &[(2, b"jpg-3".to_vec(), "image/jpeg".to_string())]).unwrap();
+        finish_disk_comic_cbz(zip).unwrap();
+
+        let read_file = std::fs::File::open(&path).unwrap();
+        let mut archive = ZipArchive::new(read_file).unwrap();
+        assert_eq!(archive.len(), 4);
+        let mut xml = String::new();
+        archive
+            .by_name("ComicInfo.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(xml.contains("<Series>A &amp; B</Series>"));
+        assert!(xml.contains("<PageCount>3</PageCount>"));
+        assert!(archive.by_name("0001.png").is_ok());
+        assert!(archive.by_name("0002.webp").is_ok());
+        assert!(archive.by_name("0003.jpg").is_ok());
+
+        drop(guard);
+        assert!(!path.exists());
     }
-    Ok(cursor.into_inner())
 }

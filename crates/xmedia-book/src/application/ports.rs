@@ -84,6 +84,20 @@ pub trait BookParserPort: Send + Sync {
 
     fn list_toc(&self, format: BookFormat, file_bytes: &[u8]) -> DomainResult<Vec<TocItem>>;
 
+    fn list_toc_from_path(
+        &self,
+        format: BookFormat,
+        path: &std::path::Path,
+    ) -> DomainResult<Vec<TocItem>> {
+        let bytes = std::fs::read(path).map_err(|e| {
+            xmedia_core::domain::error::DomainError::Storage(format!(
+                "failed to read book {}: {e}",
+                path.display()
+            ))
+        })?;
+        self.list_toc(format, &bytes)
+    }
+
     fn read_txt_chapter(
         &self,
         file_bytes: &[u8],
@@ -92,6 +106,20 @@ pub trait BookParserPort: Send + Sync {
 
     fn read_epub_resource(&self, file_bytes: &[u8], resource_path: &str)
     -> DomainResult<BookAsset>;
+
+    fn read_epub_resource_from_path(
+        &self,
+        path: &std::path::Path,
+        resource_path: &str,
+    ) -> DomainResult<BookAsset> {
+        let bytes = std::fs::read(path).map_err(|e| {
+            xmedia_core::domain::error::DomainError::Storage(format!(
+                "failed to read book {}: {e}",
+                path.display()
+            ))
+        })?;
+        self.read_epub_resource(&bytes, resource_path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +145,14 @@ pub trait BookStoragePort: Send + Sync {
     async fn delete_cover(&self, cover_key: &str) -> DomainResult<()>;
 
     async fn read_book_bytes(&self, library: &Library, book: &Book) -> DomainResult<Bytes>;
+
+    fn resolve_book_fs_path(
+        &self,
+        _library: &Library,
+        _book: &Book,
+    ) -> DomainResult<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
 
     async fn open_book_stream(
         &self,

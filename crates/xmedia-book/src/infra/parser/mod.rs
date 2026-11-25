@@ -60,6 +60,25 @@ impl BookParserPort for CompositeBookParser {
         }
     }
 
+    fn list_toc_from_path(
+        &self,
+        format: BookFormat,
+        path: &std::path::Path,
+    ) -> DomainResult<Vec<TocItem>> {
+        match format {
+            BookFormat::Epub => epub::list_epub_toc_from_path(path),
+            BookFormat::Txt | BookFormat::Pdf => {
+                let bytes = std::fs::read(path).map_err(|e| {
+                    xmedia_core::domain::error::DomainError::Storage(format!(
+                        "failed to read book {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                self.list_toc(format, &bytes)
+            }
+        }
+    }
+
     fn read_txt_chapter(
         &self,
         file_bytes: &[u8],
@@ -74,5 +93,13 @@ impl BookParserPort for CompositeBookParser {
         resource_path: &str,
     ) -> DomainResult<BookAsset> {
         epub::read_epub_resource(file_bytes, resource_path)
+    }
+
+    fn read_epub_resource_from_path(
+        &self,
+        path: &std::path::Path,
+        resource_path: &str,
+    ) -> DomainResult<BookAsset> {
+        epub::read_epub_resource_from_path(path, resource_path)
     }
 }

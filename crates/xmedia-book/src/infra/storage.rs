@@ -193,6 +193,14 @@ impl BookStoragePort for LocalBookStorage {
         Ok(Bytes::from(data))
     }
 
+    fn resolve_book_fs_path(
+        &self,
+        library: &Library,
+        book: &Book,
+    ) -> DomainResult<Option<PathBuf>> {
+        self.resolve_book_path(library, book).map(Some)
+    }
+
     async fn open_book_stream(
         &self,
         library: &Library,

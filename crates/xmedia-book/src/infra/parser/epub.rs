@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
@@ -127,8 +128,8 @@ fn read_bounded_zip_file<R: Read>(
     ZipEntryRead::Ok(buf)
 }
 
-fn read_zip_entry_bounded(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+fn read_zip_entry_bounded<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     name: &str,
     max_bytes: u64,
 ) -> ZipEntryRead {
@@ -159,8 +160,8 @@ fn read_zip_entry_bounded(
     read_bounded_zip_file(&mut file, size, max_bytes)
 }
 
-fn read_zip_entry(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+fn read_zip_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     name: &str,
     max_bytes: u64,
 ) -> Option<Vec<u8>> {
@@ -673,8 +674,8 @@ fn extract_cover(
     Some(CoverPayload::new(Bytes::from(bytes), safe_mime))
 }
 
-fn extract_toc(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+fn extract_toc<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     opf_dir: &Path,
     opf: &OpfData,
 ) -> Vec<TocItem> {
@@ -791,9 +792,8 @@ pub fn parse_epub(file_bytes: &[u8], fallback_title: &str) -> DomainResult<Parse
     })
 }
 
-pub fn list_epub_toc(file_bytes: &[u8]) -> DomainResult<Vec<TocItem>> {
-    let cursor = Cursor::new(file_bytes);
-    let mut archive = ZipArchive::new(cursor)
+fn list_epub_toc_from_reader<R: Read + Seek>(reader: R) -> DomainResult<Vec<TocItem>> {
+    let mut archive = ZipArchive::new(reader)
         .map_err(|e| DomainError::Validation(format!("invalid EPUB archive: {e}")))?;
     let container_bytes = read_zip_entry(
         &mut archive,
@@ -812,13 +812,26 @@ pub fn list_epub_toc(file_bytes: &[u8]) -> DomainResult<Vec<TocItem>> {
     Ok(extract_toc(&mut archive, opf_dir, &opf))
 }
 
-pub fn read_epub_resource(file_bytes: &[u8], resource_path: &str) -> DomainResult<BookAsset> {
+pub fn list_epub_toc(file_bytes: &[u8]) -> DomainResult<Vec<TocItem>> {
+    list_epub_toc_from_reader(Cursor::new(file_bytes))
+}
+
+pub fn list_epub_toc_from_path(path: &Path) -> DomainResult<Vec<TocItem>> {
+    let file = File::open(path).map_err(|e| {
+        DomainError::Storage(format!("failed to open book {}: {e}", path.display()))
+    })?;
+    list_epub_toc_from_reader(BufReader::new(file))
+}
+
+fn read_epub_resource_from_reader<R: Read + Seek>(
+    reader: R,
+    resource_path: &str,
+) -> DomainResult<BookAsset> {
     let normalized = normalize_zip_path(Path::new(""), resource_path.trim_start_matches('/'));
     if normalized.is_empty() {
         return Err(DomainError::Validation("empty EPUB resource path".into()));
     }
-    let cursor = Cursor::new(file_bytes);
-    let mut archive = ZipArchive::new(cursor)
+    let mut archive = ZipArchive::new(reader)
         .map_err(|e| DomainError::Validation(format!("invalid EPUB archive: {e}")))?;
     let bytes = match read_zip_entry_bounded(&mut archive, &normalized, MAX_EPUB_RESOURCE_BYTES) {
         ZipEntryRead::Ok(bytes) => bytes,
@@ -838,6 +851,17 @@ pub fn read_epub_resource(file_bytes: &[u8], resource_path: &str) -> DomainResul
         bytes: Bytes::from(bytes),
         mime_type,
     })
+}
+
+pub fn read_epub_resource(file_bytes: &[u8], resource_path: &str) -> DomainResult<BookAsset> {
+    read_epub_resource_from_reader(Cursor::new(file_bytes), resource_path)
+}
+
+pub fn read_epub_resource_from_path(path: &Path, resource_path: &str) -> DomainResult<BookAsset> {
+    let file = File::open(path).map_err(|e| {
+        DomainError::Storage(format!("failed to open book {}: {e}", path.display()))
+    })?;
+    read_epub_resource_from_reader(BufReader::new(file), resource_path)
 }
 
 #[cfg(test)]
@@ -903,5 +927,82 @@ mod tests {
             read_zip_entry_bounded(&mut archive, "bomb.txt", 128 * 1024),
             ZipEntryRead::Ok(ref b) if b.len() == 64 * 1024
         ));
+    }
+
+    #[test]
+    fn random_access_epub_resource_and_toc_read_without_scanning_entire_archive() {
+        use std::io::SeekFrom;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingReader<R> {
+            inner: R,
+            bytes_read: Arc<AtomicUsize>,
+        }
+
+        impl<R: Read> Read for CountingReader<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.bytes_read.fetch_add(n, Ordering::Relaxed);
+                Ok(n)
+            }
+        }
+
+        impl<R: Seek> Seek for CountingReader<R> {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.inner.seek(pos)
+            }
+        }
+
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zw = ZipWriter::new(&mut cursor);
+            let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            zw.start_file("META-INF/container.xml", stored).unwrap();
+            zw.write_all(
+                br#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+            )
+            .unwrap();
+            zw.start_file("OEBPS/content.opf", stored).unwrap();
+            zw.write_all(
+                br#"<?xml version="1.0"?><package version="3.0" xmlns="http://www.idpf.org/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Big EPUB</dc:title></metadata><manifest><item id="css" href="styles/main.css" media-type="text/css"/><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>"#,
+            )
+            .unwrap();
+            // Store a 2 MiB image payload that must NOT be read when fetching CSS or TOC
+            zw.start_file("OEBPS/images/huge.bin", stored).unwrap();
+            zw.write_all(&vec![0x7Au8; 2 * 1024 * 1024]).unwrap();
+            zw.start_file("OEBPS/styles/main.css", stored).unwrap();
+            zw.write_all(b"body { line-height: 1.6; }").unwrap();
+            zw.start_file("OEBPS/ch1.xhtml", stored).unwrap();
+            zw.write_all(b"<html/>").unwrap();
+            zw.finish().unwrap();
+        }
+        let epub_bytes = cursor.into_inner();
+        assert!(epub_bytes.len() > 2 * 1024 * 1024);
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let asset = read_epub_resource_from_reader(
+            CountingReader {
+                inner: Cursor::new(epub_bytes.as_slice()),
+                bytes_read: Arc::clone(&counter),
+            },
+            "/OEBPS/styles/main.css",
+        )
+        .unwrap();
+        assert_eq!(asset.bytes.as_ref(), b"body { line-height: 1.6; }");
+        assert!(asset.mime_type.starts_with("text/css"));
+        assert!(
+            counter.load(Ordering::Relaxed) < 16 * 1024,
+            "random-access ZIP read must not scan the 2 MiB payload"
+        );
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let epub_path = tmp.path().join("big.epub");
+        std::fs::write(&epub_path, &epub_bytes).unwrap();
+        let from_disk = read_epub_resource_from_path(&epub_path, "OEBPS/styles/main.css").unwrap();
+        assert_eq!(from_disk.bytes.as_ref(), b"body { line-height: 1.6; }");
+        let toc = list_epub_toc_from_path(&epub_path).unwrap();
+        assert_eq!(toc.len(), 1);
+        assert_eq!(toc[0].href, "OEBPS/ch1.xhtml");
     }
 }
