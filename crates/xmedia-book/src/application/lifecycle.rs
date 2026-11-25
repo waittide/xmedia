@@ -11,6 +11,7 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::UserId;
 
 use crate::application::catalog::BookCatalogService;
+use crate::application::online::BookOnlineService;
 use crate::application::ports::{BookParserPort, BookScannerPort, BookStoragePort};
 use crate::domain::book::{Book, BookId, BookSource};
 use crate::domain::repository::{BookReadingRepository, BookRepository, OnlineShelfRepository};
@@ -22,6 +23,7 @@ pub struct BookDomainLifecycle {
     online_shelves: Arc<dyn OnlineShelfRepository>,
     bindings: Arc<MediaBindingService>,
     catalog: Arc<BookCatalogService>,
+    online: Arc<BookOnlineService>,
     scanner: Arc<dyn BookScannerPort>,
     parser: Arc<dyn BookParserPort>,
     storage: Arc<dyn BookStoragePort>,
@@ -37,6 +39,7 @@ impl BookDomainLifecycle {
         online_shelves: Arc<dyn OnlineShelfRepository>,
         bindings: Arc<MediaBindingService>,
         catalog: Arc<BookCatalogService>,
+        online: Arc<BookOnlineService>,
         scanner: Arc<dyn BookScannerPort>,
         parser: Arc<dyn BookParserPort>,
         storage: Arc<dyn BookStoragePort>,
@@ -49,6 +52,7 @@ impl BookDomainLifecycle {
             online_shelves,
             bindings,
             catalog,
+            online,
             scanner,
             parser,
             storage,
@@ -350,6 +354,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
             if let Some(cover_key) = &book.cover_key {
                 let _ = self.storage.delete_cover(cover_key).await;
             }
+            self.online.cleanup_book_state(book.id);
             book_ids.push(book.id);
         }
         self.readings.delete_by_books(&book_ids).await?;
@@ -369,7 +374,9 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                     if let Some(book) = self.books.find_by_id(BookId(raw_id)).await?
                         && book.source.is_online_tracked()
                     {
+                        let orphan_id = book.id;
                         self.catalog.delete_book_without_bindings(book).await?;
+                        self.online.cleanup_book_state(orphan_id);
                         return Ok(true);
                     }
                     Ok(false)

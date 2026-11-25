@@ -9,7 +9,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryKind};
 use xmedia_core::infra::fingerprint::{fast_bytes_fingerprint, max_mtime_secs};
 use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join, sha256_hex};
-use xmedia_core::infra::thumbnail::{ThumbnailStore, sniff_image_mime};
+use xmedia_core::infra::thumbnail::ThumbnailStore;
 
 use crate::application::ports::{
     BookScannerPort, BookStoragePort, CoverPayload, LoadedMountedBook, ScannedBookEntry,
@@ -134,7 +134,7 @@ impl BookStoragePort for LocalBookStorage {
     }
 
     async fn save_cover(&self, _book_id: BookId, cover: &CoverPayload) -> DomainResult<String> {
-        if cover.mime_type.eq_ignore_ascii_case("image/svg+xml") {
+        if cover.trusted_generated_svg && cover.mime_type.eq_ignore_ascii_case("image/svg+xml") {
             return self
                 .thumbnails
                 .store_trusted_svg_bytes_async(cover.bytes.to_vec())
@@ -151,10 +151,10 @@ impl BookStoragePort for LocalBookStorage {
             .load_cover_async(cover_key.to_string(), None)
             .await
         {
-            Ok(payload) => Ok(CoverPayload {
-                bytes: Bytes::from(payload.bytes),
-                mime_type: payload.mime_type,
-            }),
+            Ok(payload) => Ok(CoverPayload::new(
+                Bytes::from(payload.bytes),
+                payload.mime_type,
+            )),
             Err(DomainError::NotFound(_)) => {
                 // Backwards-compatible fallback for pre-existing per-book covers directly under `book/covers/`
                 let path = sanitize_join(&self.covers_dir, cover_key)?;
@@ -164,10 +164,10 @@ impl BookStoragePort for LocalBookStorage {
                 let data = tokio::fs::read(&path)
                     .await
                     .map_err(|e| DomainError::Storage(format!("failed to read book cover: {e}")))?;
-                Ok(CoverPayload {
-                    bytes: Bytes::from(data),
-                    mime_type: Self::cover_mime_for_key(cover_key).to_string(),
-                })
+                Ok(CoverPayload::new(
+                    Bytes::from(data),
+                    Self::cover_mime_for_key(cover_key),
+                ))
             }
             Err(err) => Err(err),
         }
@@ -356,13 +356,10 @@ impl BookScannerPort for LocalBookScanner {
                 let cp = full.with_extension(ext);
                 if cp.is_file()
                     && let Ok(img_bytes) = std::fs::read(&cp)
-                    && !img_bytes.is_empty()
+                    && let Ok(safe_mime) =
+                        crate::application::online::validate_safe_cover_image(None, &img_bytes)
                 {
-                    let mime_type = sniff_image_mime(&img_bytes).to_string();
-                    sidecar_cover = Some(CoverPayload {
-                        bytes: Bytes::from(img_bytes),
-                        mime_type,
-                    });
+                    sidecar_cover = Some(CoverPayload::new(Bytes::from(img_bytes), safe_mime));
                     break;
                 }
             }
@@ -374,13 +371,10 @@ impl BookScannerPort for LocalBookScanner {
                     let cp = p.join(format!("cover.{ext}"));
                     if cp.is_file()
                         && let Ok(img_bytes) = std::fs::read(&cp)
-                        && !img_bytes.is_empty()
+                        && let Ok(safe_mime) =
+                            crate::application::online::validate_safe_cover_image(None, &img_bytes)
                     {
-                        let mime_type = sniff_image_mime(&img_bytes).to_string();
-                        sidecar_cover = Some(CoverPayload {
-                            bytes: Bytes::from(img_bytes),
-                            mime_type,
-                        });
+                        sidecar_cover = Some(CoverPayload::new(Bytes::from(img_bytes), safe_mime));
                         break;
                     }
                 }

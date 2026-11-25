@@ -112,10 +112,7 @@ impl BookOnlineService {
             self.fetch_cover_proxy(cover_url)
                 .await
                 .ok()
-                .map(|(bytes, mime_type)| CoverPayload {
-                    bytes: Bytes::from(bytes),
-                    mime_type,
-                })
+                .map(|(bytes, mime_type)| CoverPayload::new(Bytes::from(bytes), mime_type))
         } else {
             None
         };
@@ -706,13 +703,7 @@ impl BookOnlineService {
         {
             if let Ok((bytes, mime_type)) = self.fetch_cover_proxy(cover_url).await {
                 self.catalog
-                    .save_cover_raw(
-                        book_id,
-                        &CoverPayload {
-                            bytes: Bytes::from(bytes),
-                            mime_type,
-                        },
-                    )
+                    .save_cover_raw(book_id, &CoverPayload::new(Bytes::from(bytes), mime_type))
                     .await
                     .ok()
             } else {

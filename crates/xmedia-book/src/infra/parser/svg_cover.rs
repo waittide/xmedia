@@ -50,8 +50,5 @@ pub fn generate_placeholder_svg_cover(
 </svg>"##
     );
 
-    CoverPayload {
-        bytes: Bytes::from(svg.into_bytes()),
-        mime_type: "image/svg+xml".to_string(),
-    }
+    CoverPayload::trusted_generated_svg(Bytes::from(svg.into_bytes()))
 }

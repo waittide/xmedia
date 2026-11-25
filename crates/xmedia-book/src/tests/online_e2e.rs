@@ -711,7 +711,11 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         .unwrap();
     assert_eq!(default_admin_res.status(), StatusCode::OK);
 
-    // 5. BookDomainLifecycle::on_library_deleted must clean up BOTH OnlineTracked EPUB & online_tracked dir
+    // 5. BookDomainLifecycle::on_library_deleted must clean up OnlineTracked EPUB, online_tracked dir, AND in-memory online state
+    assert!(
+        book_services.online.has_in_memory_book_state(tracked.id),
+        "expected online state locks populated after sync-epub"
+    );
     let book_lifecycle = lifecycles
         .read()
         .unwrap()
@@ -722,6 +726,10 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         .on_library_deleted(tracked.library_id)
         .await
         .unwrap();
+    assert!(
+        !book_services.online.has_in_memory_book_state(tracked.id),
+        "on_library_deleted must call online.cleanup_book_state"
+    );
     assert!(
         !epub_path.exists(),
         "on_library_deleted must remove OnlineTracked EPUB file"

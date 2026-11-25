@@ -299,6 +299,11 @@ pub(crate) async fn query_feed_by_library(
     params: &OpdsQueryParams,
 ) -> ApiResult<OpdsAcquisitionData> {
     let lib = state.libraries.get_library(LibraryId(id)).await?;
+    if lib.media_kind != MediaKind::Book {
+        return Err(
+            xmedia_core::domain::error::DomainError::NotFound("library not found".into()).into(),
+        );
+    }
     let page = state
         .services
         .catalog
@@ -312,6 +317,11 @@ pub(crate) async fn query_feed_by_library(
             },
         )
         .await?;
+    if page.total == 0 {
+        return Err(
+            xmedia_core::domain::error::DomainError::NotFound("library not found".into()).into(),
+        );
+    }
     Ok(OpdsAcquisitionData {
         feed_id: format!("urn:xmedia:book:library:{id}"),
         title: lib.name,

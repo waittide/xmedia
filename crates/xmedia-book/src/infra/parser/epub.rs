@@ -670,10 +670,7 @@ fn extract_cover(
         guess_epub_mime(&zip_path).to_string()
     };
     let safe_mime = validate_safe_cover_image(Some(&declared_mime), &bytes).ok()?;
-    Some(CoverPayload {
-        bytes: Bytes::from(bytes),
-        mime_type: safe_mime,
-    })
+    Some(CoverPayload::new(Bytes::from(bytes), safe_mime))
 }
 
 fn extract_toc(

@@ -230,6 +230,42 @@ async fn book_upload_scan_range_and_opds_roundtrip() {
             .unwrap();
     assert_eq!(opds2_json["metadata"]["numberOfItems"], 2);
 
+    // Unbound member probing OPDS library feeds directly must receive 404 Not Found
+    auth.create_user(
+        &admin_user,
+        xmedia_core::application::dto::CreateUserInput {
+            username: "outsider".into(),
+            display_name: None,
+            password: "password123".into(),
+            role: xmedia_core::domain::user::UserRole::Member,
+        },
+    )
+    .await
+    .unwrap();
+    let outsider_basic = BASE64_STANDARD.encode("outsider:password123");
+    let book_libs = library_svc
+        .list_libraries(Some(MediaKind::Book))
+        .await
+        .unwrap();
+    let managed_book_lib_id = book_libs[0].id;
+    for path in [
+        format!("/opds/book/v1.2/libraries/{managed_book_lib_id}"),
+        format!("/opds/book/v2/libraries/{managed_book_lib_id}"),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&path)
+                    .header("authorization", format!("Basic {outsider_basic}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "failed on {path}");
+    }
+
     // 5. Verify local mount scan with sidecar .opf + cover & rename preservation
     let mount_dir = tmp.path().join("mounted_books");
     std::fs::create_dir_all(&mount_dir).unwrap();
@@ -440,10 +476,7 @@ async fn local_book_storage_deduplicates_covers_and_reads_legacy_files() {
         0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
         0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ];
-    let payload = CoverPayload {
-        bytes: bytes::Bytes::from_static(png),
-        mime_type: "image/png".to_string(),
-    };
+    let payload = CoverPayload::new(bytes::Bytes::from_static(png), "image/png");
 
     let k1 = storage.save_cover(BookId::new(), &payload).await.unwrap();
     let k2 = storage.save_cover(BookId::new(), &payload).await.unwrap();
@@ -452,6 +485,41 @@ async fn local_book_storage_deduplicates_covers_and_reads_legacy_files() {
         "identical cover bytes should deduplicate via ThumbnailStore"
     );
     assert!(k1.ends_with(".png"));
+
+    // Untrusted caller/sidecar SVG (even script-free) must never reach store_trusted_svg_bytes_async
+    let untrusted_svg = CoverPayload::new(
+        bytes::Bytes::from_static(
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>",
+        ),
+        "image/svg+xml",
+    );
+    assert!(
+        storage
+            .save_cover(BookId::new(), &untrusted_svg)
+            .await
+            .is_err()
+    );
+
+    // LocalBookScanner::read_entry must ignore sidecar SVG disguised as cover.jpg
+    let scan_dir = tmp.path().join("svg_sidecar_book");
+    std::fs::create_dir_all(&scan_dir).unwrap();
+    std::fs::write(scan_dir.join("novel.txt"), b"Chapter 1\nHello world.\n").unwrap();
+    std::fs::write(
+        scan_dir.join("cover.jpg"),
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"10\" height=\"10\"/></svg>",
+    )
+    .unwrap();
+    let loaded_entry = crate::application::ports::BookScannerPort::read_entry(
+        &crate::infra::storage::LocalBookScanner,
+        scan_dir.to_str().unwrap(),
+        "novel.txt",
+    )
+    .await
+    .unwrap();
+    assert!(
+        loaded_entry.sidecar_cover.is_none(),
+        "sidecar SVG disguised as .jpg must be rejected during scan"
+    );
 
     let loaded = storage.read_cover(&k1).await.unwrap();
     assert_eq!(loaded.bytes.as_ref(), png);

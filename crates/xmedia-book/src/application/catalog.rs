@@ -588,13 +588,7 @@ impl BookCatalogService {
         let old_key = book.cover_key.clone();
         let new_key = self
             .storage
-            .save_cover(
-                book.id,
-                &CoverPayload {
-                    bytes,
-                    mime_type: safe_mime,
-                },
-            )
+            .save_cover(book.id, &CoverPayload::new(bytes, safe_mime))
             .await?;
         book.set_cover(Some(new_key.clone()));
         self.books.save(&book).await?;

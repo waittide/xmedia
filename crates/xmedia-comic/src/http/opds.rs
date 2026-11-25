@@ -365,7 +365,7 @@ async fn v12_opensearch(
     State(state): State<ComicHttpState>,
     OpdsAuth(_user): OpdsAuth,
 ) -> Response {
-    let p = state.opds_prefix.as_ref();
+    let p = xml_escape(state.opds_prefix.as_ref());
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
@@ -405,15 +405,16 @@ fn render_atom_feed(prefix: &str, feed: &OpdsFeed) -> Response {
     xml.push_str(&format!("\n  <title>{}</title>", xml_escape(&feed.title)));
     xml.push_str(&format!("\n  <updated>{updated}</updated>"));
     xml.push_str("\n  <author><name>xmedia</name></author>");
+    let escaped_prefix = xml_escape(prefix);
     xml.push_str(&format!(
         "\n  <link rel=\"self\" href=\"{}\" type=\"{feed_mime}\"/>",
         xml_escape(&feed.self_path)
     ));
     xml.push_str(&format!(
-        "\n  <link rel=\"start\" href=\"{prefix}/v1.2\" type=\"application/atom+xml;profile=opds-catalog;kind=navigation\"/>"
+        "\n  <link rel=\"start\" href=\"{escaped_prefix}/v1.2\" type=\"application/atom+xml;profile=opds-catalog;kind=navigation\"/>"
     ));
     xml.push_str(&format!(
-        "\n  <link rel=\"search\" href=\"{prefix}/v1.2/opensearch.xml\" type=\"application/opensearchdescription+xml\"/>"
+        "\n  <link rel=\"search\" href=\"{escaped_prefix}/v1.2/opensearch.xml\" type=\"application/opensearchdescription+xml\"/>"
     ));
 
     match &feed.payload {
@@ -526,10 +527,12 @@ fn append_acq_entry_xml(xml: &mut String, prefix: &str, entry: &OpdsChapterEntry
             xml_escape(cover)
         ));
     }
+    let escaped_prefix = xml_escape(prefix);
     if entry.can_download_archive {
         xml.push_str(&format!(
-            "\n    <link rel=\"http://opds-spec.org/acquisition\" href=\"{prefix}/v1.2/chapters/{}/download\" type=\"{}\"/>",
-            entry.id, entry.archive_mime
+            "\n    <link rel=\"http://opds-spec.org/acquisition\" href=\"{escaped_prefix}/v1.2/chapters/{}/download\" type=\"{}\"/>",
+            entry.id,
+            xml_escape(entry.archive_mime)
         ));
     }
 
@@ -542,7 +545,7 @@ fn append_acq_entry_xml(xml: &mut String, prefix: &str, entry: &OpdsChapterEntry
         pse_attrs.push_str(&format!(" pse:lastReadDate=\"{last_ts}\""));
     }
     xml.push_str(&format!(
-        "\n    <link rel=\"http://vaemendis.net/opds-pse/stream\" href=\"{prefix}/v1.2/chapters/{}/pse/{{pageNumber}}\" type=\"image/jpeg\" {pse_attrs}/>",
+        "\n    <link rel=\"http://vaemendis.net/opds-pse/stream\" href=\"{escaped_prefix}/v1.2/chapters/{}/pse/{{pageNumber}}\" type=\"image/jpeg\" {pse_attrs}/>",
         entry.id
     ));
 
@@ -749,7 +752,7 @@ mod tests {
             }]),
         };
 
-        let atom_res = OpdsVersion::V12.render("/opds/comic", &feed);
+        let atom_res = OpdsVersion::V12.render("/opds/comic\"&<>", &feed);
         assert_eq!(
             atom_res.headers().get(header::CONTENT_TYPE).unwrap(),
             "application/atom+xml;profile=opds-catalog;kind=acquisition; charset=utf-8"
@@ -764,7 +767,14 @@ mod tests {
         assert!(xml.contains("Witch &amp; Hat - #1 - &lt;Start&gt;"));
         assert!(xml.contains("<author><name>Author &lt;A&gt;</name></author>"));
         assert!(xml.contains("pse:count=\"24\" pse:lastRead=\"6\""));
-        assert!(xml.contains(&format!("/opds/comic/v1.2/chapters/{chapter_id}/download")));
+        assert!(xml.contains("href=\"/opds/comic&quot;&amp;&lt;&gt;/v1.2\""));
+        assert!(xml.contains("href=\"/opds/comic&quot;&amp;&lt;&gt;/v1.2/opensearch.xml\""));
+        assert!(xml.contains(&format!(
+            "/opds/comic&quot;&amp;&lt;&gt;/v1.2/chapters/{chapter_id}/download"
+        )));
+        assert!(xml.contains(&format!(
+            "/opds/comic&quot;&amp;&lt;&gt;/v1.2/chapters/{chapter_id}/pse/{{pageNumber}}"
+        )));
 
         let json_res = OpdsVersion::V20.render("/opds/comic", &feed);
         let body: serde_json::Value =

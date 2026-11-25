@@ -182,4 +182,24 @@ impl BookOnlineService {
             .remove(&book_id);
         self.tracked_store.remove_book_lock(book_id);
     }
+
+    #[cfg(test)]
+    pub(crate) fn has_in_memory_book_state(&self, book_id: BookId) -> bool {
+        let has_state = self
+            .book_state_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&book_id);
+        let has_sync = self
+            .epub_sync_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&book_id);
+        let has_gen = self
+            .pending_sync_gens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&book_id);
+        has_state || has_sync || has_gen
+    }
 }

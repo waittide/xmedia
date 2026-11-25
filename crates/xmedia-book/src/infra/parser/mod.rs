@@ -39,7 +39,14 @@ impl BookParserPort for CompositeBookParser {
         if let Some(opf) = sidecar_opf {
             epub::overlay_opf_sidecar(opf, &mut parsed);
         }
-        if let Some(cov) = sidecar_cover {
+        if let Some(cov) = sidecar_cover
+            && (cov.trusted_generated_svg
+                || crate::application::online::validate_safe_cover_image(
+                    Some(&cov.mime_type),
+                    &cov.bytes,
+                )
+                .is_ok())
+        {
             parsed.cover = Some(cov);
         }
         Ok(parsed)

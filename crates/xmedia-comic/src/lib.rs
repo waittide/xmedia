@@ -857,8 +857,8 @@ mod tests {
             .await
             .unwrap();
 
-        let state = ComicHttpState::new(auth, library_svc, comic_services);
-        let app = Router::new().nest("/opds/comic", opds_router(state));
+        let state = ComicHttpState::new(auth.clone(), library_svc.clone(), comic_services.clone());
+        let app = Router::new().nest("/opds/comic", opds_router(state.clone()));
         let basic = BASE64_STANDARD.encode("bob:secretpassword");
 
         // OPDS v1.2 & v2 & v2.0 root routes
@@ -942,5 +942,63 @@ mod tests {
                 .unwrap();
         assert_eq!(v2_json["metadata"]["title"], "Atelier & Magic");
         assert_eq!(v2_json["publications"].as_array().unwrap().len(), 1);
+
+        // Verify v12_opensearch escapes custom opds_prefix XML characters
+        let escaped_app = Router::new().nest(
+            "/opds/comic",
+            opds_router(state.with_opds_prefix("/opds/c&d\"<x>")),
+        );
+        let os_res = escaped_app
+            .oneshot(
+                Request::builder()
+                    .uri("/opds/comic/v1.2/opensearch.xml")
+                    .header(header::AUTHORIZATION, format!("Basic {basic}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(os_res.status(), StatusCode::OK);
+        let os_xml = String::from_utf8(
+            to_bytes(os_res.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            os_xml
+                .contains("template=\"/opds/c&amp;d&quot;&lt;x&gt;/v1.2/series?q={searchTerms}\"")
+        );
+
+        // Verify unbound member gets 404 when probing a library feed directly
+        auth.create_user(
+            &admin,
+            xmedia_core::application::dto::CreateUserInput {
+                username: "eve".into(),
+                display_name: None,
+                password: "secretpassword".into(),
+                role: xmedia_core::domain::user::UserRole::Member,
+            },
+        )
+        .await
+        .unwrap();
+        let eve_basic = BASE64_STANDARD.encode("eve:secretpassword");
+        let libs = library_svc
+            .list_libraries(Some(MediaKind::Comic))
+            .await
+            .unwrap();
+        let lib_id = libs[0].id;
+        let unbound_lib_res = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/opds/comic/v1.2/libraries/{lib_id}"))
+                    .header(header::AUTHORIZATION, format!("Basic {eve_basic}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unbound_lib_res.status(), StatusCode::NOT_FOUND);
     }
 }

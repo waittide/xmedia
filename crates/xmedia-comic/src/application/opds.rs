@@ -312,6 +312,7 @@ impl ComicOpdsService {
             .libraries
             .find_by_id(library_id)
             .await?
+            .filter(|l| l.media_kind == MediaKind::Comic)
             .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
         let list = catalog
             .list_series(
@@ -324,6 +325,9 @@ impl ComicOpdsService {
                 },
             )
             .await?;
+        if list.is_empty() {
+            return Err(DomainError::NotFound("library not found".into()));
+        }
 
         let items = list
             .into_iter()

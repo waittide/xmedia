@@ -11,6 +11,25 @@ use crate::domain::book::{Book, BookFormat, BookId, BookMetadata};
 pub struct CoverPayload {
     pub bytes: Bytes,
     pub mime_type: String,
+    pub(crate) trusted_generated_svg: bool,
+}
+
+impl CoverPayload {
+    pub fn new(bytes: impl Into<Bytes>, mime_type: impl Into<String>) -> Self {
+        Self {
+            bytes: bytes.into(),
+            mime_type: mime_type.into(),
+            trusted_generated_svg: false,
+        }
+    }
+
+    pub(crate) fn trusted_generated_svg(bytes: impl Into<Bytes>) -> Self {
+        Self {
+            bytes: bytes.into(),
+            mime_type: "image/svg+xml".to_string(),
+            trusted_generated_svg: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

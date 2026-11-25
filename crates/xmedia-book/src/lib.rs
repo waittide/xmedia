@@ -98,20 +98,11 @@ pub fn init_book_module_with_bindings(
         storage.clone(),
     ));
 
-    let lifecycle = Arc::new(BookDomainLifecycle::new(
-        libraries_repo,
-        books.clone(),
+    let reading = Arc::new(BookReadingService::new(
         readings.clone(),
-        online_shelves.clone(),
+        books.clone(),
         bindings.clone(),
-        catalog.clone(),
-        scanner,
-        parser,
-        storage,
-        events,
     ));
-    library_service.register_lifecycle(lifecycle);
-    let reading = Arc::new(BookReadingService::new(readings, books, bindings));
     let engine = source::BookSourceEngine::new(
         source::http::HttpClientConfig {
             allow_private_ips,
@@ -121,12 +112,27 @@ pub fn init_book_module_with_bindings(
     );
     let online = Arc::new(BookOnlineService::with_engine(
         sources,
-        online_shelves,
+        online_shelves.clone(),
         data_dir,
         catalog.clone(),
         engine,
         allow_private_ips,
     )?);
+
+    let lifecycle = Arc::new(BookDomainLifecycle::new(
+        libraries_repo,
+        books,
+        readings,
+        online_shelves,
+        bindings,
+        catalog.clone(),
+        online.clone(),
+        scanner,
+        parser,
+        storage,
+        events,
+    ));
+    library_service.register_lifecycle(lifecycle);
 
     Ok(BookServices::new(catalog, reading, online))
 }
