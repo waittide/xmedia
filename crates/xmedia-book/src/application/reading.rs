@@ -289,7 +289,7 @@ impl BookReadingService {
         Ok(shelves
             .into_iter()
             .map(|mut s| {
-                s.book_ids.retain(|id| bound_ids.contains(&id.0));
+                s.retain_bound_books(&bound_ids);
                 ShelfDto::from(&s)
             })
             .collect())

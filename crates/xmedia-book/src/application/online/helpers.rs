@@ -1,20 +1,16 @@
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
-use md5::{Digest, Md5};
 use tokio::sync::Notify;
-use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 pub(super) use xmedia_source::concurrency::{
     AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
 };
 
-use crate::source::model::{ConcurrentRateSpec, OnlineChapterContent};
-use crate::source::packager::PackChapterInput;
-use crate::source::tracked_store::write_atomic;
+use crate::domain::online::{ConcurrentRateSpec, PackChapterInput};
 
 use super::dto::{DownloadJobStatus, OnlineDownloadJobDto};
 use super::{DEFAULT_DOWNLOAD_CONCURRENCY, DEFAULT_DOWNLOAD_MIN_INTERVAL_MS};
@@ -60,7 +56,7 @@ pub(super) fn compute_chapters_per_sec(processed: usize, elapsed_ms: u64) -> f64
     (rate * 100.0).round() / 100.0
 }
 
-pub(super) struct DownloadRateLimiter {
+pub(crate) struct DownloadRateLimiter {
     window_requests: usize,
     window: Duration,
     min_interval: Duration,
@@ -68,7 +64,7 @@ pub(super) struct DownloadRateLimiter {
 }
 
 impl DownloadRateLimiter {
-    pub(super) fn from_spec(spec: Option<ConcurrentRateSpec>) -> (usize, Self) {
+    pub(crate) fn from_spec(spec: Option<ConcurrentRateSpec>) -> (usize, Self) {
         match spec {
             Some(s) => (
                 s.max_concurrency,
@@ -94,7 +90,7 @@ impl DownloadRateLimiter {
     }
 
     /// Blocks until a request slot is available, or returns `false` immediately upon cancellation.
-    pub(super) fn wait_for_slot(
+    pub(crate) fn wait_for_slot(
         &self,
         cancel_flag: &AtomicBool,
         cancel_cond: &(Mutex<bool>, Condvar),
@@ -167,57 +163,6 @@ pub(crate) fn validate_safe_cover_image(
     bytes: &[u8],
 ) -> DomainResult<String> {
     xmedia_source::proxy::validate_safe_raster_image(header_ct, bytes).map(str::to_string)
-}
-
-fn chapter_cache_path_at(cache_dir: &Path, source_id: Uuid, chapter_url: &str) -> PathBuf {
-    let mut h = Md5::new();
-    h.update(chapter_url.as_bytes());
-    let key = hex::encode(h.finalize());
-    cache_dir
-        .join(source_id.to_string())
-        .join(format!("{key}.json"))
-}
-
-pub(super) fn read_cached_chapter_at(
-    cache_dir: &Path,
-    source_id: Uuid,
-    chapter_url: &str,
-) -> Option<OnlineChapterContent> {
-    let path = chapter_cache_path_at(cache_dir, source_id, chapter_url);
-    let meta = std::fs::metadata(&path).ok()?;
-    // Expire cached chapters after 14 days
-    if let Ok(modified) = meta.modified()
-        && let Ok(age) = SystemTime::now().duration_since(modified)
-        && age > Duration::from_secs(14 * 24 * 3600)
-    {
-        let _ = std::fs::remove_file(&path);
-        return None;
-    }
-    let raw = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str::<OnlineChapterContent>(&raw).ok()
-}
-
-pub(super) fn write_cached_chapter_at(
-    cache_dir: &Path,
-    source_id: Uuid,
-    chapter_url: &str,
-    content: &OnlineChapterContent,
-) {
-    if content.content.trim().is_empty() {
-        return;
-    }
-    let path = chapter_cache_path_at(cache_dir, source_id, chapter_url);
-    if let Some(parent) = path.parent()
-        && let Err(err) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(path = %parent.display(), error = %err, "failed to create chapter cache dir");
-        return;
-    }
-    if let Ok(json) = serde_json::to_vec(content)
-        && let Err(err) = write_atomic(&path, &json)
-    {
-        tracing::warn!(path = %path.display(), error = %err, "failed to atomically write cached chapter");
-    }
 }
 
 fn is_windows_reserved_stem(stem: &str) -> bool {

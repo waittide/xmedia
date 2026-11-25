@@ -599,6 +599,13 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
         ) -> DomainResult<ByteRangeStream> {
             self.inner.open_book_stream(library, book, spec).await
         }
+        async fn open_path_stream(
+            &self,
+            path: &std::path::Path,
+            spec: ByteRangeSpec,
+        ) -> DomainResult<ByteRangeStream> {
+            self.inner.open_path_stream(path, spec).await
+        }
     }
 
     let tmp = TempDir::new().unwrap();

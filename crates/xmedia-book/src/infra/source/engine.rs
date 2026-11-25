@@ -6,19 +6,20 @@ use std::time::Duration;
 use regex::Regex;
 
 use super::session::{ReusableSourceContext, ReusableWorkerSession};
-use crate::source::http::{
+use crate::application::ports::{BookBatchContextPort, BookSourceEnginePort};
+use crate::domain::online::{
+    BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
+    OnlineChapterContent, OnlineChapterItem, SearchBookResult, SourceRuntimeState,
+};
+pub use crate::domain::online::{SourceCallError, SourceCallOutput};
+use crate::infra::source::http::{
     HttpClientConfig, LegadoHttpClient, eval_json_options_template, has_suspicious_option_chars,
     resolve_relative_url, resolve_relative_url_preserving_options,
     split_legado_url_and_raw_options, split_legado_url_template_and_options,
     substitute_legado_options_vars, substitute_legado_url_template_vars, substitute_url_part_vars,
     verify_js_pipeline_url_options,
 };
-use crate::source::model::{
-    BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
-    OnlineChapterContent, OnlineChapterItem, SearchBookResult, SourceRuntimeState,
-};
-pub use crate::source::model::{SourceCallError, SourceCallOutput};
-use crate::source::rule::{RuleValue, cached_regex, split_js_pipeline, strip_js_wrapper};
+use crate::infra::source::rule::{RuleValue, cached_regex, split_js_pipeline, strip_js_wrapper};
 
 static RE_COMMENT_IMG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -271,7 +272,6 @@ impl BookSourceEngine {
         ))
     }
 
-    /// Searches books from one Legado book source.
     pub fn search_sync(
         &self,
         source: &LegadoBookSource,
@@ -377,7 +377,6 @@ impl BookSourceEngine {
         }
     }
 
-    /// Fetches book detail info (`ruleBookInfo`) and resolves `toc_url`.
     pub fn fetch_book_info_sync(
         &self,
         source: &LegadoBookSource,
@@ -518,7 +517,6 @@ impl BookSourceEngine {
         }
     }
 
-    /// Fetches chapter list (`ruleToc`, supporting optional multi-page `nextTocUrl`).
     pub fn fetch_toc_sync(
         &self,
         source: &LegadoBookSource,
@@ -562,7 +560,6 @@ impl BookSourceEngine {
         }
     }
 
-    /// Fetches a single chapter's content (`ruleContent`, supporting `nextContentUrl` pagination).
     pub fn fetch_chapter_content_sync(
         &self,
         source: &LegadoBookSource,
@@ -610,25 +607,36 @@ impl BookSourceEngine {
         }
     }
 
-    /// Runs a `loginUi` button action (`loginUrl` + `action` JS) and persists updated variables/cookies.
-    /// Merges submitted `login_info` into existing `state.login_info` rather than wiping omitted keys.
     pub fn run_login_action_sync(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        login_info: HashMap<String, String>,
+        action_js: Option<&str>,
+    ) -> Result<SourceCallOutput<String>, String> {
+        self.run_login_action_sync_with_diagnostics(source, state, login_info, action_js)
+            .map_err(Into::into)
+    }
+
+    pub fn run_login_action_sync_with_diagnostics(
         &self,
         source: &LegadoBookSource,
         mut state: SourceRuntimeState,
         login_info: HashMap<String, String>,
         action_js: Option<&str>,
-    ) -> Result<SourceCallOutput<String>, String> {
+    ) -> Result<SourceCallOutput<String>, SourceCallError> {
         for (k, v) in login_info {
             state.login_info.insert(k, v);
         }
         let merged_login = state.login_info.clone();
-        let mut session = self.build_lazy_session(
-            source,
-            state,
-            self.js_timeout,
-            Arc::new(AtomicBool::new(false)),
-        )?;
+        let mut session = self
+            .build_lazy_session(
+                source,
+                state,
+                self.js_timeout,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
         let raw_login = source.login_url.as_deref().unwrap_or("").trim();
         let is_plain_http_login_url = raw_login
             .get(..7)
@@ -650,15 +658,116 @@ impl BookSourceEngine {
             Some(act) => Some(act),
             None => login_check_stripped,
         };
-        let out = session
+        match session
             .inner
-            .eval_login_script(login_url_js, effective_action, &merged_login)?;
-        let (final_state, diagnostics) = session.finalize_state();
-        Ok(SourceCallOutput {
-            data: out,
-            state: final_state,
-            diagnostics,
-        })
+            .eval_login_script(login_url_js, effective_action, &merged_login)
+        {
+            Ok(out) => {
+                let (final_state, diagnostics) = session.finalize_state();
+                Ok(SourceCallOutput {
+                    data: out,
+                    state: final_state,
+                    diagnostics,
+                })
+            }
+            Err(err) => Err(SourceCallError::new(err, session.snapshot_diagnostics())),
+        }
+    }
+}
+
+impl BookSourceEnginePort for BookSourceEngine {
+    fn prepare_batch_context(
+        &self,
+        source: Arc<LegadoBookSource>,
+        initial_state: SourceRuntimeState,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<Arc<dyn BookBatchContextPort>, String> {
+        let ctx = self.prepare_reusable_context_with_cancel(source, initial_state, cancel_flag)?;
+        Ok(Arc::new(ctx))
+    }
+
+    fn search_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        keyword: &str,
+        page: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<SearchBookResult>>, SourceCallError> {
+        Self::search_sync_with_control(self, source, state, keyword, page, op_timeout, cancel_flag)
+    }
+
+    fn fetch_book_info_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        book_url: &str,
+        fallback_hint: Option<&BookJsContext>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineBookDetail>, SourceCallError> {
+        Self::fetch_book_info_sync_with_control(
+            self,
+            source,
+            state,
+            book_url,
+            fallback_hint,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn fetch_toc_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        toc_url: &str,
+        book_ctx: &BookJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineChapterItem>>, SourceCallError> {
+        Self::fetch_toc_sync_with_control(
+            self,
+            source,
+            state,
+            toc_url,
+            book_ctx,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn fetch_chapter_content_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        chapter_url: &str,
+        book_ctx: &BookJsContext,
+        chapter_ctx: &ChapterJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineChapterContent>, SourceCallError> {
+        Self::fetch_chapter_content_sync_with_control(
+            self,
+            source,
+            state,
+            chapter_url,
+            book_ctx,
+            chapter_ctx,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    fn run_login_action_sync(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        login_info: HashMap<String, String>,
+        action_js: Option<&str>,
+    ) -> Result<SourceCallOutput<String>, SourceCallError> {
+        self.run_login_action_sync_with_diagnostics(source, state, login_info, action_js)
     }
 }
 
@@ -680,22 +789,16 @@ pub(super) fn apply_content_replace_regex(content: &str, replace_rule: &str) -> 
     out
 }
 
-/// Converts Legado chapter HTML (including client-specific paragraph-comment SVG img tags)
-/// into clean plain-text paragraphs suitable for reading and EPUB 3.0 packaging.
 pub fn clean_chapter_html_to_text(raw: &str) -> String {
     if raw.trim().is_empty() {
         return String::new();
     }
 
-    // Strip Legado client interactive comment/review SVG `<img>` tags & `<div rs-native>` wrappers
     let s = RE_COMMENT_IMG.replace_all(raw, "");
     let s = RE_SCRIPT_STYLE.replace_all(&s, "");
-    // Convert block boundaries into newlines
     let s = RE_HTML_BREAKS.replace_all(&s, "\n");
-    // Strip remaining HTML tags
     let s = RE_HTML_TAGS.replace_all(&s, "");
 
-    // Decode common HTML entities
     let decoded = s
         .replace("&nbsp;", " ")
         .replace("&#160;", " ")

@@ -1,27 +1,39 @@
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use jiff::Timestamp;
 use toasty::Db;
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
+use xmedia_source::crud::{SourceMetadataUpdate, SourceRecord, SourceRepository};
 
 use super::db_err;
-use crate::domain::online::{BookSourceMetadataUpdate, BookSourceRecord};
-use crate::domain::repository::BookSourceRepository;
+use crate::domain::online::SourceRuntimeState;
 use crate::infra::persistence::models::BookSourceRecordModel;
-use crate::source::model::SourceRuntimeState;
 
 #[derive(Clone)]
 pub struct ToastyBookSourceRepository {
     db: Db,
+    cache_dir: Option<PathBuf>,
 }
 
 impl ToastyBookSourceRepository {
     pub fn new(db: Db) -> Self {
-        Self { db }
+        Self {
+            db,
+            cache_dir: None,
+        }
     }
 
-    fn to_domain(m: BookSourceRecordModel) -> BookSourceRecord {
-        BookSourceRecord {
+    pub fn with_cache_dir(db: Db, cache_dir: PathBuf) -> Self {
+        Self {
+            db,
+            cache_dir: Some(cache_dir),
+        }
+    }
+
+    fn to_domain(m: BookSourceRecordModel) -> SourceRecord {
+        SourceRecord {
             id: m.id,
             name: m.name,
             source_url: m.source_url,
@@ -40,8 +52,8 @@ impl ToastyBookSourceRepository {
 }
 
 #[async_trait]
-impl BookSourceRepository for ToastyBookSourceRepository {
-    async fn list_all(&self) -> DomainResult<Vec<BookSourceRecord>> {
+impl SourceRepository for ToastyBookSourceRepository {
+    async fn list_all(&self) -> DomainResult<Vec<SourceRecord>> {
         let mut db = self.db.clone();
         let rows = BookSourceRecordModel::all()
             .exec(&mut db)
@@ -50,7 +62,7 @@ impl BookSourceRepository for ToastyBookSourceRepository {
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<BookSourceRecord>> {
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let row = BookSourceRecordModel::filter_by_id(id)
             .first()
@@ -60,44 +72,44 @@ impl BookSourceRepository for ToastyBookSourceRepository {
         Ok(row.map(Self::to_domain))
     }
 
-    async fn save(&self, source: &BookSourceRecord) -> DomainResult<()> {
+    async fn save(&self, record: &SourceRecord) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let existing = BookSourceRecordModel::filter_by_id(source.id)
+        let existing = BookSourceRecordModel::filter_by_id(record.id)
             .first()
             .exec(&mut db)
             .await
             .map_err(db_err)?;
         if let Some(mut rec) = existing {
             rec.update()
-                .name(source.name.clone())
-                .source_url(source.source_url.clone())
-                .group_name(source.group_name.clone())
-                .enabled(source.enabled)
-                .weight(source.weight)
-                .source_type(source.source_type)
-                .raw_json(source.raw_json.clone())
-                .runtime_state(toasty::Json(source.runtime_state.clone()))
-                .last_test_ok(source.last_test_ok)
-                .last_test_msg(source.last_test_msg.clone())
-                .updated_at(source.updated_at)
+                .name(record.name.clone())
+                .source_url(record.source_url.clone())
+                .group_name(record.group_name.clone())
+                .enabled(record.enabled)
+                .weight(record.weight)
+                .source_type(record.source_type)
+                .raw_json(record.raw_json.clone())
+                .runtime_state(toasty::Json(record.runtime_state.clone()))
+                .last_test_ok(record.last_test_ok)
+                .last_test_msg(record.last_test_msg.clone())
+                .updated_at(record.updated_at)
                 .exec(&mut db)
                 .await
                 .map_err(db_err)?;
         } else {
             toasty::create!(BookSourceRecordModel {
-                id: source.id,
-                name: source.name.clone(),
-                source_url: source.source_url.clone(),
-                group_name: source.group_name.clone(),
-                enabled: source.enabled,
-                weight: source.weight,
-                source_type: source.source_type,
-                raw_json: source.raw_json.clone(),
-                runtime_state: toasty::Json(source.runtime_state.clone()),
-                last_test_ok: source.last_test_ok,
-                last_test_msg: source.last_test_msg.clone(),
-                created_at: source.created_at,
-                updated_at: source.updated_at,
+                id: record.id,
+                name: record.name.clone(),
+                source_url: record.source_url.clone(),
+                group_name: record.group_name.clone(),
+                enabled: record.enabled,
+                weight: record.weight,
+                source_type: record.source_type,
+                raw_json: record.raw_json.clone(),
+                runtime_state: toasty::Json(record.runtime_state.clone()),
+                last_test_ok: record.last_test_ok,
+                last_test_msg: record.last_test_msg.clone(),
+                created_at: record.created_at,
+                updated_at: record.updated_at,
             })
             .exec(&mut db)
             .await
@@ -109,8 +121,8 @@ impl BookSourceRepository for ToastyBookSourceRepository {
     async fn update_metadata_if_exists(
         &self,
         id: Uuid,
-        patch: BookSourceMetadataUpdate,
-    ) -> DomainResult<Option<BookSourceRecord>> {
+        patch: SourceMetadataUpdate,
+    ) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
             .first()
@@ -194,29 +206,26 @@ impl BookSourceRepository for ToastyBookSourceRepository {
     async fn update_test_result(
         &self,
         id: Uuid,
-        runtime_state: SourceRuntimeState,
-        last_test_ok: bool,
-        last_test_msg: Option<String>,
+        ok: bool,
+        message: String,
         updated_at: Timestamp,
-    ) -> DomainResult<bool> {
+    ) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
+        if let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
             .first()
             .exec(&mut db)
             .await
             .map_err(db_err)?
-        else {
-            return Ok(false);
-        };
-        rec.update()
-            .runtime_state(toasty::Json(runtime_state))
-            .last_test_ok(Some(last_test_ok))
-            .last_test_msg(last_test_msg)
-            .updated_at(updated_at)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(true)
+        {
+            rec.update()
+                .last_test_ok(Some(ok))
+                .last_test_msg(Some(message))
+                .updated_at(updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(())
     }
 
     async fn update_weight_if_exists(
@@ -224,7 +233,7 @@ impl BookSourceRepository for ToastyBookSourceRepository {
         id: Uuid,
         weight: i64,
         updated_at: Timestamp,
-    ) -> DomainResult<Option<BookSourceRecord>> {
+    ) -> DomainResult<Option<SourceRecord>> {
         let mut db = self.db.clone();
         let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
             .first()
@@ -234,8 +243,13 @@ impl BookSourceRepository for ToastyBookSourceRepository {
         else {
             return Ok(None);
         };
-        let next_raw =
-            BookSourceRecord::sync_raw_json_fields(&rec.raw_json, None, Some(weight), None);
+        let next_raw = SourceRecord::sync_raw_json_fields(
+            &rec.raw_json,
+            None,
+            Some(weight),
+            None,
+            "bookSourceGroup",
+        );
         rec.update()
             .weight(weight)
             .raw_json(next_raw.clone())
@@ -271,11 +285,12 @@ impl BookSourceRepository for ToastyBookSourceRepository {
             .as_deref()
             .map(|g| g.trim().to_string())
             .unwrap_or_else(|| rec.group_name.clone());
-        let next_raw = BookSourceRecord::sync_raw_json_fields(
+        let next_raw = SourceRecord::sync_raw_json_fields(
             &rec.raw_json,
             enabled,
             None,
             group_name.as_deref(),
+            "bookSourceGroup",
         );
         rec.update()
             .enabled(next_enabled)
@@ -295,6 +310,14 @@ impl BookSourceRepository for ToastyBookSourceRepository {
             .exec(&mut db)
             .await
             .map_err(db_err)?;
+        if let Some(ref cache_dir) = self.cache_dir {
+            let src_cache = cache_dir.join(id.to_string());
+            if let Err(err) = tokio::fs::remove_dir_all(&src_cache).await
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(source_id = %id, error = %err, "failed to remove source cache dir");
+            }
+        }
         Ok(())
     }
 }

@@ -1,5 +1,4 @@
 mod engine;
-pub mod model;
 pub mod packager;
 mod session;
 pub mod tracked_store;

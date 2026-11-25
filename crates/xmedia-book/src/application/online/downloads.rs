@@ -6,29 +6,48 @@ use bytes::Bytes;
 use jiff::Timestamp;
 use tokio::sync::{Notify, mpsc};
 use uuid::Uuid;
-use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
+use xmedia_core::application::ports::{ByteChunkStream, ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, UserId, require_admin};
-use xmedia_core::infra::stream::open_file_range_stream_spec;
 
 use crate::domain::book::{BookId, BookSource};
-use crate::source::model::{BookJsContext, ChapterJsContext, LegadoBookSource, OnlineChapterItem};
-use crate::source::packager::{
-    PackBookMetadata, PackChapterInput, package_chapters_to_epub, package_chapters_to_txt,
+use crate::domain::online::{
+    BookJsContext, ChapterJsContext, LegadoBookSource, OnlineChapterItem, PackBookMetadata,
+    PackChapterInput, TrackedChapterFile,
 };
-use crate::source::tracked_store::TrackedChapterFile;
 
 use super::dto::{
     DownloadJobStatus, OnlineDownloadFormat, OnlineDownloadJobDto, StartDownloadInput,
 };
 use super::helpers::{
     ChapterProgressEvent, DownloadRateLimiter, StoredDownloadJob, compute_chapters_per_sec,
-    read_cached_chapter_at, sanitize_file_stem, write_cached_chapter_at,
+    sanitize_file_stem,
 };
 use super::{
     BookOnlineService, DOWNLOAD_STATE_PERSIST_BATCH, FINISHED_DOWNLOAD_TTL_SECS,
     MAX_ACTIVE_DOWNLOADS_PER_USER,
 };
+
+const MAX_READ_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024;
+
+async fn collect_byte_stream_bounded(
+    mut stream: ByteChunkStream,
+    max_bytes: usize,
+) -> DomainResult<Vec<u8>> {
+    let mut buf = Vec::new();
+    while let Some(chunk_res) =
+        std::future::poll_fn(|cx| futures_core::Stream::poll_next(stream.as_mut(), cx)).await
+    {
+        let chunk = chunk_res?;
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(DomainError::Validation(format!(
+                "下载产物超出内存读取上限 ({max_bytes} bytes)"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
 
 impl BookOnlineService {
     pub async fn start_download(
@@ -39,7 +58,10 @@ impl BookOnlineService {
         if input.import_to_library || input.book_id.is_some() {
             require_admin(actor)?;
         }
-        let src = self.load_source_for_actor(actor, input.source_id).await?;
+        let src = self
+            .sources
+            .load_source_for_actor(actor, input.source_id)
+            .await?;
         input.book_url = Self::validate_caller_source_url(&input.book_url, &src.raw_json)?;
         input.toc_url = Self::validate_caller_source_url(&input.toc_url, &src.raw_json)?;
         if let Some(ref cover_url) = input.cover_url
@@ -74,7 +96,6 @@ impl BookOnlineService {
             }
         }
 
-        // Evict stale finished jobs and enforce per-user active download quota
         let now = Timestamp::now();
         let mut stale_dirs = Vec::new();
         {
@@ -210,8 +231,11 @@ impl BookOnlineService {
             slot.dto.updated_at = Timestamp::now();
         }
 
-        // Load & parse book source ONCE for the entire download job
-        let src_rec = match self.load_source_for_actor(&actor, input.source_id).await {
+        let src_rec = match self
+            .sources
+            .load_source_for_actor(&actor, input.source_id)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 self.fail_job(job_id, started_at, format!("加载书源失败: {e}"))
@@ -228,7 +252,7 @@ impl BookOnlineService {
             }
         };
         let mut last_persisted_state = src_rec.runtime_state.clone();
-        let reusable_ctx = match self.engine.prepare_reusable_context_with_cancel(
+        let reusable_ctx = match self.engine.prepare_batch_context(
             Arc::clone(&parsed_source),
             src_rec.runtime_state,
             cancel_flag.clone(),
@@ -251,7 +275,6 @@ impl BookOnlineService {
             ..Default::default()
         };
 
-        // Pin cancel_notify BEFORE checking cancel_flag so we never miss a wakeup.
         let toc_cancelled = cancel_notify.notified();
         tokio::pin!(toc_cancelled);
         if cancel_flag.load(Ordering::Acquire) {
@@ -260,7 +283,7 @@ impl BookOnlineService {
         }
 
         let toc_task = {
-            let ctx = reusable_ctx.clone();
+            let ctx = Arc::clone(&reusable_ctx);
             let toc_url = input.toc_url.clone();
             let bctx = book_ctx.clone();
             tokio::task::spawn_blocking(move || ctx.fetch_toc_sync(&toc_url, &bctx))
@@ -309,7 +332,6 @@ impl BookOnlineService {
             .max(start);
         let selected: Vec<OnlineChapterItem> = all_chapters[start..end].to_vec();
 
-        // Only admin imports may write to shared `OnlineTracked` cache, and source/toc must match.
         let target_tracked_book_id: Option<BookId> =
             if input.import_to_library && actor.role.is_admin() {
                 if let Some(bid) = input.book_id {
@@ -353,7 +375,7 @@ impl BookOnlineService {
                 .await
                 .is_ok_and(|b| matches!(&b.source, BookSource::OnlineTracked { source_id, .. } if *source_id == input.source_id));
             if source_matches {
-                let store = self.tracked_store.clone();
+                let store = Arc::clone(&self.tracked_store);
                 let toc_for_manifest = all_chapters.clone();
                 if let Err(err) = tokio::task::spawn_blocking(move || {
                     store.update_manifest_from_toc(bid, &toc_for_manifest, true)
@@ -391,11 +413,11 @@ impl BookOnlineService {
         for _ in 0..worker_count {
             let selected_w = Arc::clone(&selected_arc);
             let cursor_w = Arc::clone(&cursor);
-            let ctx_w = reusable_ctx.clone();
+            let ctx_w = Arc::clone(&reusable_ctx);
             let limiter_w = Arc::clone(&rate_limiter);
             let cancel_flag_w = Arc::clone(&cancel_flag);
             let cancel_cond_w = Arc::clone(&cancel_cond);
-            let cache_dir_w = self.cache_dir.clone();
+            let store_w = Arc::clone(&self.tracked_store);
             let source_id = input.source_id;
             let book_ctx_w = book_ctx.clone();
             let tx_w = tx.clone();
@@ -412,8 +434,7 @@ impl BookOnlineService {
                     }
                     let ch = &selected_w[idx];
 
-                    // Fast path: cached chapters are read directly without consuming rate-limit quota
-                    if let Some(cached) = read_cached_chapter_at(&cache_dir_w, source_id, &ch.url)
+                    if let Some(cached) = store_w.read_cached_online_chapter(source_id, &ch.url)
                         && !cached.content.trim().is_empty()
                     {
                         let packed = PackChapterInput {
@@ -456,7 +477,7 @@ impl BookOnlineService {
                     let (packed, failed) =
                         match session.fetch_chapter_content(&ch.url, &cur_book_ctx, &ch_ctx) {
                             Ok(content) if !content.content.trim().is_empty() => {
-                                write_cached_chapter_at(&cache_dir_w, source_id, &ch.url, &content);
+                                store_w.write_cached_online_chapter(source_id, &ch.url, &content);
                                 let title = if content.title.trim().is_empty() {
                                     ch.title.clone()
                                 } else {
@@ -503,7 +524,6 @@ impl BookOnlineService {
         let mut tracked_chapters_written = 0u32;
         let mut was_cancelled = false;
 
-        // Pin cancel_notify BEFORE checking cancel_flag so a signal between check and select is never lost.
         let loop_cancelled = cancel_notify.notified();
         tokio::pin!(loop_cancelled);
 
@@ -535,7 +555,7 @@ impl BookOnlineService {
                                     .get(ev.idx)
                                     .map(|c| c.url.clone())
                                     .unwrap_or_default();
-                                let store = self.tracked_store.clone();
+                                let store = Arc::clone(&self.tracked_store);
                                 let chapter_file = TrackedChapterFile {
                                     index: global_idx,
                                     title: ev.packed.title.clone(),
@@ -582,6 +602,7 @@ impl BookOnlineService {
                         let snap = reusable_ctx.snapshot_state();
                         if snap != last_persisted_state
                             && self
+                                .sources
                                 .persist_runtime_state_with_base(
                                     input.source_id,
                                     &last_persisted_state,
@@ -598,15 +619,14 @@ impl BookOnlineService {
             }
         }
 
-        // Always join all worker threads before cleaning up directories or persisting final state
         for h in worker_handles {
             let _ = h.await;
         }
 
-        // Persist any final runtime_state changes once at end of chapter fetching
         let final_snap = reusable_ctx.snapshot_state();
         if final_snap != last_persisted_state
             && let Err(err) = self
+                .sources
                 .persist_runtime_state_with_base(
                     input.source_id,
                     &last_persisted_state,
@@ -625,15 +645,12 @@ impl BookOnlineService {
                 let state_lock = self.book_state_lock_for(bid);
                 let _state_guard = state_lock.lock().await;
                 if let Ok(mut latest_book) = self.catalog.find_book_raw(bid).await
-                    && let BookSource::OnlineTracked {
-                        source_id,
-                        epub_dirty,
-                        ..
-                    } = &mut latest_book.source
-                    && *source_id == input.source_id
+                    && matches!(
+                        &latest_book.source,
+                        BookSource::OnlineTracked { source_id, .. } if *source_id == input.source_id
+                    )
                 {
-                    *epub_dirty = true;
-                    latest_book.updated_at = Timestamp::now();
+                    latest_book.mark_tracked_epub_dirty();
                     let _ = self.catalog.save_book_raw(&latest_book).await;
                 }
             }
@@ -665,8 +682,6 @@ impl BookOnlineService {
         let mut output_path = None;
         let file_size: u64;
 
-        // If downloading EPUB for an existing unified online-tracked book, atomically update
-        // its standard EPUB 3.0 in-place instead of creating a duplicate book entry.
         if input.import_to_library
             && input.format == OnlineDownloadFormat::Epub
             && let Some(bid) = target_tracked_book_id
@@ -695,7 +710,6 @@ impl BookOnlineService {
                 }
             }
         } else {
-            // Optional cover download for EPUB
             let cover_bytes = if input.format == OnlineDownloadFormat::Epub
                 && let Some(ref cover_url) = input.cover_url
                 && !cover_url.trim().is_empty()
@@ -725,13 +739,10 @@ impl BookOnlineService {
                 cover_bytes,
             };
             let fmt = input.format;
+            let packager = Arc::clone(&self.packager);
             let packaged = tokio::task::spawn_blocking(move || match fmt {
-                OnlineDownloadFormat::Epub => {
-                    package_chapters_to_epub(&pack_meta, &packed_chapters)
-                }
-                OnlineDownloadFormat::Txt => {
-                    Ok(package_chapters_to_txt(&pack_meta, &packed_chapters))
-                }
+                OnlineDownloadFormat::Epub => packager.package_epub(&pack_meta, &packed_chapters),
+                OnlineDownloadFormat::Txt => Ok(packager.package_txt(&pack_meta, &packed_chapters)),
             })
             .await
             .map_err(|e| format!("封装线程失败: {e}"))
@@ -817,7 +828,6 @@ impl BookOnlineService {
                 compute_chapters_per_sec(slot.dto.processed_chapters, final_elapsed);
             slot.dto.updated_at = Timestamp::now();
         } else {
-            // Job was deleted while finishing; clean up disk artifact if any
             drop(guard);
             let job_dir = self.download_dir.join(job_id.to_string());
             let _ = tokio::fs::remove_dir_all(&job_dir).await;
@@ -976,7 +986,10 @@ impl BookOnlineService {
         };
 
         if let Some(p) = path {
-            let stream = open_file_range_stream_spec(&p, ByteRangeSpec::Full).await?;
+            let stream = self
+                .catalog
+                .open_path_stream(&p, ByteRangeSpec::Full)
+                .await?;
             return Ok((file_name, mime, stream));
         }
         if let Some(book_id) = imported_book_id {
@@ -995,9 +1008,7 @@ impl BookOnlineService {
         job_id: Uuid,
     ) -> DomainResult<(String, &'static str, Vec<u8>)> {
         let (file_name, mime, stream) = self.open_download_file_stream(user_id, job_id).await?;
-        let bytes = axum::body::to_bytes(axum::body::Body::from_stream(stream.stream), usize::MAX)
-            .await
-            .map_err(|e| DomainError::Storage(format!("读取下载文件流失败: {e}")))?;
-        Ok((file_name, mime, bytes.to_vec()))
+        let bytes = collect_byte_stream_bounded(stream.stream, MAX_READ_DOWNLOAD_BYTES).await?;
+        Ok((file_name, mime, bytes))
     }
 }

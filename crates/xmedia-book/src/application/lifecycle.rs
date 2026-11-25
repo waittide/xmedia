@@ -255,10 +255,8 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                             if let Some(old_rel) = matched_old_key
                                 && let Some(mut migrated) = existing_by_path.remove(&old_rel)
                             {
-                                migrated.source = BookSource::MountedFile {
-                                    relative_path: entry.relative_path,
-                                    file_mtime: entry.file_mtime,
-                                };
+                                migrated
+                                    .relocate_mounted_file(entry.relative_path, entry.file_mtime);
                                 if let Some(cover) = &parsed.cover
                                     && let Ok(cover_key) =
                                         self.storage.save_cover(migrated.id, cover).await

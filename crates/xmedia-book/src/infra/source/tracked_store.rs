@@ -3,49 +3,36 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, SystemTime};
 
-use serde::{Deserialize, Serialize};
+use md5::{Digest, Md5};
 use uuid::Uuid;
 
+use crate::application::ports::TrackedBookStorePort;
 use crate::domain::book::BookId;
-use crate::source::model::OnlineChapterItem;
-use crate::source::packager::PackChapterInput;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackedChapterMeta {
-    pub index: usize,
-    pub title: String,
-    pub url: String,
-    #[serde(default)]
-    pub cached: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TrackedManifest {
-    pub chapters: Vec<TrackedChapterMeta>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackedChapterFile {
-    pub index: usize,
-    pub title: String,
-    pub url: String,
-    pub content: String,
-}
+use crate::domain::online::{
+    OnlineChapterContent, OnlineChapterItem, PackChapterInput, TrackedChapterFile,
+    TrackedChapterMeta, TrackedManifest,
+};
 
 #[derive(Debug, Clone)]
 pub struct TrackedBookStore {
     root_dir: PathBuf,
+    cache_dir: PathBuf,
     book_locks: Arc<Mutex<HashMap<BookId, Weak<Mutex<()>>>>>,
 }
 
 impl TrackedBookStore {
     pub fn new(data_dir: &Path) -> Result<Self, String> {
         let root_dir = data_dir.join("book").join("online_tracked");
+        let cache_dir = data_dir.join("online_book_cache");
         fs::create_dir_all(&root_dir)
             .map_err(|e| format!("创建在线书籍章节目录 '{}' 失败: {e}", root_dir.display()))?;
+        fs::create_dir_all(&cache_dir)
+            .map_err(|e| format!("创建在线书源缓存目录 '{}' 失败: {e}", cache_dir.display()))?;
         Ok(Self {
             root_dir,
+            cache_dir,
             book_locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -82,6 +69,15 @@ impl TrackedBookStore {
 
     fn chapter_path(&self, book_id: BookId, index: usize) -> PathBuf {
         self.chapters_dir(book_id).join(format!("{index:06}.json"))
+    }
+
+    fn online_chapter_cache_path(&self, source_id: Uuid, chapter_url: &str) -> PathBuf {
+        let mut h = Md5::new();
+        h.update(chapter_url.as_bytes());
+        let key = hex::encode(h.finalize());
+        self.cache_dir
+            .join(source_id.to_string())
+            .join(format!("{key}.json"))
     }
 
     fn load_manifest_unlocked(&self, book_id: BookId) -> TrackedManifest {
@@ -128,8 +124,6 @@ impl TrackedBookStore {
         self.save_manifest_unlocked(book_id, manifest)
     }
 
-    /// Merges a freshly fetched TOC with previously cached chapters, marking a slot `cached: true`
-    /// only when a cached chapter file exists at that index with matching URL and non-empty body.
     pub fn update_manifest_from_toc(
         &self,
         book_id: BookId,
@@ -163,7 +157,6 @@ impl TrackedBookStore {
             })
             .collect();
 
-        // Prune orphaned or URL-invalidated chapter cache files to avoid stale cross-source data.
         for old_idx in existing_cached_indices {
             if !valid_cached_indices.contains(&old_idx) {
                 let _ = fs::remove_file(self.chapter_path(book_id, old_idx));
@@ -181,7 +174,6 @@ impl TrackedBookStore {
         serde_json::from_slice(&bytes).ok()
     }
 
-    /// Loads a cached chapter only if its stored URL matches `expected_url` (when non-empty).
     pub fn load_chapter_matching_url(
         &self,
         book_id: BookId,
@@ -282,13 +274,10 @@ impl TrackedBookStore {
             return (out, cached, total);
         }
 
-        // If a manifest file exists on disk but failed to parse or is empty, do not silently pack
-        // arbitrary raw chapter files that may belong to an old source.
         if manifest_exists {
             return (Vec::new(), 0, 0);
         }
 
-        // Fallback if chapter files exist without any manifest
         let mut indices: Vec<usize> = self.existing_chapter_indices(book_id).into_iter().collect();
         indices.sort_unstable();
         for idx in indices {
@@ -327,6 +316,119 @@ impl TrackedBookStore {
         }
         drop(_guard);
         self.remove_book_lock(book_id);
+    }
+
+    pub fn read_cached_online_chapter(
+        &self,
+        source_id: Uuid,
+        chapter_url: &str,
+    ) -> Option<OnlineChapterContent> {
+        let path = self.online_chapter_cache_path(source_id, chapter_url);
+        let meta = fs::metadata(&path).ok()?;
+        if let Ok(modified) = meta.modified()
+            && let Ok(age) = SystemTime::now().duration_since(modified)
+            && age > Duration::from_secs(14 * 24 * 3600)
+        {
+            let _ = fs::remove_file(&path);
+            return None;
+        }
+        let raw = fs::read_to_string(&path).ok()?;
+        serde_json::from_str::<OnlineChapterContent>(&raw).ok()
+    }
+
+    pub fn write_cached_online_chapter(
+        &self,
+        source_id: Uuid,
+        chapter_url: &str,
+        content: &OnlineChapterContent,
+    ) {
+        if content.content.trim().is_empty() {
+            return;
+        }
+        let path = self.online_chapter_cache_path(source_id, chapter_url);
+        if let Some(parent) = path.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            tracing::warn!(path = %parent.display(), error = %err, "failed to create chapter cache dir");
+            return;
+        }
+        if let Ok(json) = serde_json::to_vec(content)
+            && let Err(err) = write_atomic(&path, &json)
+        {
+            tracing::warn!(path = %path.display(), error = %err, "failed to atomically write cached chapter");
+        }
+    }
+}
+
+impl TrackedBookStorePort for TrackedBookStore {
+    fn remove_book_lock(&self, book_id: BookId) {
+        Self::remove_book_lock(self, book_id);
+    }
+
+    fn load_manifest(&self, book_id: BookId) -> TrackedManifest {
+        Self::load_manifest(self, book_id)
+    }
+
+    fn save_manifest(&self, book_id: BookId, manifest: &TrackedManifest) -> Result<(), String> {
+        Self::save_manifest(self, book_id, manifest)
+    }
+
+    fn update_manifest_from_toc(
+        &self,
+        book_id: BookId,
+        toc: &[OnlineChapterItem],
+        preserve_existing_cache: bool,
+    ) -> Result<TrackedManifest, String> {
+        Self::update_manifest_from_toc(self, book_id, toc, preserve_existing_cache)
+    }
+
+    fn load_chapter(&self, book_id: BookId, index: usize) -> Option<TrackedChapterFile> {
+        Self::load_chapter(self, book_id, index)
+    }
+
+    fn load_chapter_matching_url(
+        &self,
+        book_id: BookId,
+        index: usize,
+        expected_url: &str,
+    ) -> Option<TrackedChapterFile> {
+        Self::load_chapter_matching_url(self, book_id, index, expected_url)
+    }
+
+    fn save_chapter(&self, book_id: BookId, chapter: &TrackedChapterFile) -> Result<u32, String> {
+        Self::save_chapter(self, book_id, chapter)
+    }
+
+    fn collect_cached_chapters_for_epub(
+        &self,
+        book_id: BookId,
+    ) -> (Vec<PackChapterInput>, u32, u32) {
+        Self::collect_cached_chapters_for_epub(self, book_id)
+    }
+
+    fn clear_chapters(&self, book_id: BookId) {
+        Self::clear_chapters(self, book_id);
+    }
+
+    fn delete_book_dir(&self, book_id: BookId) {
+        Self::delete_book_dir(self, book_id);
+    }
+
+    fn read_cached_online_chapter(
+        &self,
+        source_id: Uuid,
+        chapter_url: &str,
+    ) -> Option<OnlineChapterContent> {
+        Self::read_cached_online_chapter(self, source_id, chapter_url)
+    }
+
+    fn write_cached_online_chapter(
+        &self,
+        source_id: Uuid,
+        chapter_url: &str,
+        content: &OnlineChapterContent,
+    ) {
+        Self::write_cached_online_chapter(self, source_id, chapter_url, content);
     }
 }
 
@@ -376,126 +478,4 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("原子替换文件 '{}' 失败: {e}", path.display()))?;
     guard.disarm();
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use tempfile::TempDir;
-
-    use super::*;
-
-    #[test]
-    fn concurrent_save_chapter_preserves_all_manifest_cached_flags() {
-        let tmp = TempDir::new().unwrap();
-        let store = TrackedBookStore::new(tmp.path()).unwrap();
-        let book_id = BookId::new();
-        let toc: Vec<OnlineChapterItem> = (0..12)
-            .map(|i| OnlineChapterItem {
-                index: i,
-                title: format!("第{}章", i + 1),
-                url: format!("https://example.com/ch/{i}"),
-                update_time: None,
-                is_volume: false,
-            })
-            .collect();
-        store
-            .update_manifest_from_toc(book_id, &toc, false)
-            .unwrap();
-
-        std::thread::scope(|s| {
-            for i in 0..12 {
-                let st = store.clone();
-                s.spawn(move || {
-                    st.save_chapter(
-                        book_id,
-                        &TrackedChapterFile {
-                            index: i,
-                            title: format!("第{}章", i + 1),
-                            url: format!("https://example.com/ch/{i}"),
-                            content: format!("正文 {i}"),
-                        },
-                    )
-                    .unwrap();
-                });
-            }
-        });
-
-        let manifest = store.load_manifest(book_id);
-        let cached_count = manifest.chapters.iter().filter(|c| c.cached).count();
-        assert_eq!(
-            cached_count, 12,
-            "concurrent chapter saves must not lose cached flags"
-        );
-    }
-
-    #[test]
-    fn update_manifest_invalidates_cache_flag_when_chapter_url_changes() {
-        let tmp = TempDir::new().unwrap();
-        let store = TrackedBookStore::new(tmp.path()).unwrap();
-        let book_id = BookId::new();
-        let toc1 = vec![
-            OnlineChapterItem {
-                index: 0,
-                title: "第一章".into(),
-                url: "https://src-a.test/1".into(),
-                update_time: None,
-                is_volume: false,
-            },
-            OnlineChapterItem {
-                index: 1,
-                title: "第二章".into(),
-                url: "https://src-a.test/2".into(),
-                update_time: None,
-                is_volume: false,
-            },
-        ];
-        store
-            .update_manifest_from_toc(book_id, &toc1, false)
-            .unwrap();
-        store
-            .save_chapter(
-                book_id,
-                &TrackedChapterFile {
-                    index: 0,
-                    title: "第一章".into(),
-                    url: "https://src-a.test/1".into(),
-                    content: "旧源第一章".into(),
-                },
-            )
-            .unwrap();
-
-        // Prepended prologue shifts URLs -> index 0 now has a different URL
-        let toc2 = vec![
-            OnlineChapterItem {
-                index: 0,
-                title: "楔子".into(),
-                url: "https://src-a.test/0".into(),
-                update_time: None,
-                is_volume: false,
-            },
-            OnlineChapterItem {
-                index: 1,
-                title: "第一章".into(),
-                url: "https://src-a.test/1".into(),
-                update_time: None,
-                is_volume: false,
-            },
-        ];
-        let manifest = store
-            .update_manifest_from_toc(book_id, &toc2, true)
-            .unwrap();
-        assert!(
-            !manifest.chapters[0].cached,
-            "mismatched URL at index 0 must not be marked cached"
-        );
-        assert!(
-            store
-                .load_chapter_matching_url(book_id, 0, "https://src-a.test/0")
-                .is_none()
-        );
-        let (packed, cached, total) = store.collect_cached_chapters_for_epub(book_id);
-        assert_eq!(total, 2);
-        assert_eq!(cached, 0);
-        assert!(packed.is_empty());
-    }
 }

@@ -27,11 +27,11 @@ use crate::application::online::{
     TrackOnlineBookInput, UpdateBookSourceInput,
 };
 use crate::domain::book::BookId;
+use crate::domain::online::{BookJsContext, ChapterJsContext};
 use crate::http::rest_router;
 use crate::http::state::BookHttpState;
-use crate::source::BookSourceEngine;
-use crate::source::http::HttpClientConfig;
-use crate::source::model::{BookJsContext, ChapterJsContext};
+use crate::infra::source::BookSourceEngine;
+use crate::infra::source::http::HttpClientConfig;
 use crate::{ensure_book_schema, init_book_module, register_book_models};
 
 #[tokio::test]
@@ -118,19 +118,21 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
     let book_services =
         init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
 
-    let sources_repo =
-        Arc::new(crate::infra::persistence::repositories::ToastyBookSourceRepository::new(db));
     let online_svc = Arc::new(
-        BookOnlineService::with_engine(
-            sources_repo.clone(),
+        BookOnlineService::new(
+            book_services.sources.clone(),
             tmp.path(),
             book_services.catalog.clone(),
-            BookSourceEngine::new(
+            Arc::new(BookSourceEngine::new(
                 HttpClientConfig {
                     allow_private_ips: true,
                     ..Default::default()
                 },
                 Duration::from_secs(10),
+            )),
+            Arc::new(crate::infra::source::packager::BookFormatPackager),
+            Arc::new(
+                crate::infra::source::tracked_store::TrackedBookStore::new(tmp.path()).unwrap(),
             ),
             true,
         )
@@ -163,6 +165,7 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
     .to_string();
 
     let imported = online_svc
+        .sources()
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
@@ -384,7 +387,7 @@ async fn deleting_user_cleans_up_online_items_entries() {
     })
     .to_string();
     let imported = book_services
-        .online
+        .sources
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
@@ -504,14 +507,14 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
     })
     .to_string();
     let imported = book_services
-        .online
+        .sources
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
     let source_id = imported.sources[0].id;
     let long_var = "k=".to_string() + &"z".repeat(400);
     let _ = book_services
-        .online
+        .sources
         .update_source(
             &admin,
             source_id,
@@ -984,13 +987,10 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
 
     // Assert zero lost variable, login_info, cookies, cache, weight, or group_name via HTTP & repository
     let sid_uuid = uuid::Uuid::parse_str(&sid).unwrap();
-    let rec = crate::domain::repository::BookSourceRepository::find_by_id(
-        sources_repo.as_ref(),
-        sid_uuid,
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let rec = xmedia_source::crud::SourceRepository::find_by_id(sources_repo.as_ref(), sid_uuid)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(rec.weight, 77);
     assert_eq!(rec.group_name, "精选");
     assert_eq!(rec.runtime_state.variable, "FINAL_VAR");
@@ -1709,8 +1709,6 @@ async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use xmedia_core::domain::error::DomainError;
 
-    use crate::infra::persistence::repositories::ToastyBookSourceRepository;
-
     let after_hits = Arc::new(AtomicUsize::new(0));
     let after_hits_c = after_hits.clone();
 
@@ -1803,19 +1801,20 @@ async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
         .await
         .unwrap();
 
-    let sources_repo = Arc::new(ToastyBookSourceRepository::new(db));
-    let engine = BookSourceEngine::new(
+    let engine = Arc::new(BookSourceEngine::new(
         HttpClientConfig {
             allow_private_ips: true,
             ..Default::default()
         },
         Duration::from_secs(5),
-    );
-    let svc = BookOnlineService::with_engine(
-        sources_repo,
+    ));
+    let svc = BookOnlineService::new(
+        book_services.sources.clone(),
         tmp.path(),
         book_services.catalog.clone(),
         engine,
+        Arc::new(crate::infra::source::packager::BookFormatPackager),
+        Arc::new(crate::infra::source::tracked_store::TrackedBookStore::new(tmp.path()).unwrap()),
         true,
     )
     .unwrap()
@@ -1842,6 +1841,7 @@ async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
         }
     }]);
     let imported = svc
+        .sources()
         .import_sources(&admin, &raw_src.to_string())
         .await
         .unwrap();

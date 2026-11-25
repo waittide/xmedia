@@ -10,13 +10,14 @@ use std::sync::Arc;
 use xmedia_core::application::online_items::OnlineLibraryService;
 
 use catalog::BookCatalogService;
-use online::BookOnlineService;
+use online::{BookOnlineService, BookOnlineSourceDirectory};
 use reading::BookReadingService;
 
 #[derive(Clone)]
 pub struct BookServices {
     pub catalog: Arc<BookCatalogService>,
     pub reading: Arc<BookReadingService>,
+    pub sources: Arc<BookOnlineSourceDirectory>,
     pub online: Arc<BookOnlineService>,
     pub online_items: Arc<OnlineLibraryService>,
 }
@@ -25,12 +26,14 @@ impl BookServices {
     pub fn new(
         catalog: Arc<BookCatalogService>,
         reading: Arc<BookReadingService>,
+        sources: Arc<BookOnlineSourceDirectory>,
         online: Arc<BookOnlineService>,
         online_items: Arc<OnlineLibraryService>,
     ) -> Self {
         Self {
             catalog,
             reading,
+            sources,
             online,
             online_items,
         }

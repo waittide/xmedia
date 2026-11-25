@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::book::BookId;
-use crate::source::model::{
+pub use crate::domain::online::SourceTestMode;
+use crate::domain::online::{
     ExecutionDiagnostics, OnlineBookDetail, OnlineChapterContent, OnlineChapterItem,
-    SearchBookResult,
+    SearchBookResult, TrackedChapterMeta,
 };
-use crate::source::tracked_store::TrackedChapterMeta;
 
 pub type BookSourceSummaryDto = xmedia_source::crud::SourceSummaryDto;
 pub type ImportBookSourcesReportDto =
@@ -18,17 +18,6 @@ pub type BatchBookSourcesInput = xmedia_source::crud::BatchSourcesInput;
 pub type BatchBookSourcesReportDto = xmedia_source::crud::BatchSourcesReportDto;
 pub type LoginActionResponseDto = xmedia_source::crud::LoginActionResponseDto<BookSourceSummaryDto>;
 pub type SourceDebugStepDto = xmedia_source::crud::SourceTestStepDto;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceTestMode {
-    #[default]
-    Full,
-    Search,
-    BookInfo,
-    Toc,
-    Content,
-}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]

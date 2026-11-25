@@ -1,5 +1,6 @@
 mod catalog_and_storage;
 mod online_e2e;
+mod online_unit;
 
 use std::io::{Cursor, Write};
 

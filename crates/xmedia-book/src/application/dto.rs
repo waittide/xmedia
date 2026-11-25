@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::library::LibraryId;
 
+pub use crate::domain::book::UpdateMetadataPatch;
 use crate::domain::book::{
     Book, BookFormat, BookId, BookMetadata, BookSortField, BookSource, SortOrder, TagMatchMode,
 };
@@ -165,22 +166,6 @@ pub struct CatalogSearchFilter {
     pub sort_order: Option<SortOrder>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct UpdateMetadataPatch {
-    pub title: Option<String>,
-    pub authors: Option<Vec<String>>,
-    pub description: Option<String>,
-    pub isbn: Option<String>,
-    pub language: Option<String>,
-    pub publisher: Option<String>,
-    pub published_at: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub series: Option<String>,
-    pub series_index: Option<f64>,
-    pub rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

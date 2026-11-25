@@ -214,6 +214,14 @@ impl BookStoragePort for LocalBookStorage {
         let path = self.resolve_book_path(library, book)?;
         open_file_range_stream_spec(&path, spec).await
     }
+
+    async fn open_path_stream(
+        &self,
+        path: &Path,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<ByteRangeStream> {
+        open_file_range_stream_spec(path, spec).await
+    }
 }
 
 #[derive(Default, Clone)]

@@ -1,12 +1,9 @@
 use async_trait::async_trait;
-use jiff::Timestamp;
-use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::book::{Book, BookId, BookQuery, FacetCount, PagedResult};
-use crate::domain::online::{BookSourceMetadataUpdate, BookSourceRecord, SourceRuntimeState};
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
 
 #[async_trait]
@@ -71,49 +68,4 @@ pub trait BookReadingRepository: Send + Sync {
     }
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
     async fn delete_by_user_and_book(&self, user_id: UserId, book_id: BookId) -> DomainResult<()>;
-}
-
-#[async_trait]
-pub trait BookSourceRepository: Send + Sync {
-    async fn list_all(&self) -> DomainResult<Vec<BookSourceRecord>>;
-    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<BookSourceRecord>>;
-    async fn save(&self, source: &BookSourceRecord) -> DomainResult<()>;
-    /// Updates mutable metadata columns (and optionally `runtime_state.variable`) without
-    /// overwriting `login_info`, `cookies`, `cache`, or test status columns.
-    async fn update_metadata_if_exists(
-        &self,
-        id: Uuid,
-        patch: BookSourceMetadataUpdate,
-    ) -> DomainResult<Option<BookSourceRecord>>;
-    async fn update_runtime_state(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        updated_at: Timestamp,
-    ) -> DomainResult<()>;
-    /// Updates test status & runtime state only if the source still exists.
-    async fn update_test_result(
-        &self,
-        id: Uuid,
-        runtime_state: SourceRuntimeState,
-        last_test_ok: bool,
-        last_test_msg: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    /// Updates `weight` (and syncs `raw_json`) only if the source still exists, returning the latest record.
-    async fn update_weight_if_exists(
-        &self,
-        id: Uuid,
-        weight: i64,
-        updated_at: Timestamp,
-    ) -> DomainResult<Option<BookSourceRecord>>;
-    /// Updates `enabled` / `group_name` (and syncs `raw_json`) on the latest row if it still exists.
-    async fn update_batch_fields_if_exists(
-        &self,
-        id: Uuid,
-        enabled: Option<bool>,
-        group_name: Option<String>,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn delete(&self, id: Uuid) -> DomainResult<()>;
 }

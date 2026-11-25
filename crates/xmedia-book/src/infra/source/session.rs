@@ -4,13 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::engine::{apply_content_replace_regex, clean_chapter_html_to_text};
-use crate::source::http::{HttpFetchResult, LegadoHttpClient, resolve_relative_url};
-use crate::source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
-use crate::source::model::{
+use crate::application::ports::{BookBatchContextPort, BookBatchWorkerPort};
+use crate::domain::online::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineChapterContent,
     OnlineChapterItem, SourceMetadata, SourceRuntimeState,
 };
-use crate::source::rule::RuleValue;
+use crate::infra::source::http::{HttpFetchResult, LegadoHttpClient, resolve_relative_url};
+use crate::infra::source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
+use crate::infra::source::rule::RuleValue;
 
 pub(super) const BOOK_JS_BOOTSTRAP: &str = r#"
 globalThis.book = {
@@ -120,6 +121,24 @@ impl ReusableSourceContext {
     ) -> Result<Vec<OnlineChapterItem>, String> {
         let mut worker = self.create_worker_session();
         worker.fetch_toc(toc_url, book_ctx)
+    }
+}
+
+impl BookBatchContextPort for ReusableSourceContext {
+    fn snapshot_state(&self) -> SourceRuntimeState {
+        Self::snapshot_state(self)
+    }
+
+    fn create_worker_session(&self) -> Box<dyn BookBatchWorkerPort> {
+        Box::new(Self::create_worker_session(self))
+    }
+
+    fn fetch_toc_sync(
+        &self,
+        toc_url: &str,
+        book_ctx: &BookJsContext,
+    ) -> Result<Vec<OnlineChapterItem>, String> {
+        Self::fetch_toc_sync(self, toc_url, book_ctx)
     }
 }
 
@@ -372,5 +391,20 @@ impl ReusableWorkerSession {
             content: clean_text,
             raw_html,
         })
+    }
+}
+
+impl BookBatchWorkerPort for ReusableWorkerSession {
+    fn reset_chapter_budget(&mut self) {
+        Self::reset_chapter_budget(self);
+    }
+
+    fn fetch_chapter_content(
+        &mut self,
+        chapter_url: &str,
+        book_ctx: &BookJsContext,
+        chapter_ctx: &ChapterJsContext,
+    ) -> Result<OnlineChapterContent, String> {
+        Self::fetch_chapter_content(self, chapter_url, book_ctx, chapter_ctx)
     }
 }

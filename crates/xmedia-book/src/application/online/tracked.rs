@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
@@ -9,9 +8,9 @@ use xmedia_core::domain::user::{User, require_admin};
 use crate::application::dto::BookSummaryDto;
 use crate::application::ports::CoverPayload;
 use crate::domain::book::{Book, BookFormat, BookId, BookMetadata, BookSource};
-use crate::source::model::{BookJsContext, ChapterJsContext, OnlineChapterItem};
-use crate::source::packager::{PackBookMetadata, package_chapters_to_epub};
-use crate::source::tracked_store::TrackedChapterFile;
+use crate::domain::online::{
+    BookJsContext, ChapterJsContext, OnlineChapterItem, PackBookMetadata, TrackedChapterFile,
+};
 
 use super::dto::{
     SwitchTrackedSourceInput, TrackOnlineBookInput, TrackedChapterResponseDto,
@@ -68,15 +67,15 @@ impl BookOnlineService {
         .unwrap_or_default()
     }
 
-    /// Tracks an online book as a first-class unified `Book` in the managed library:
-    /// creates (or returns existing) `BookModel` with `BookSource::OnlineTracked`,
-    /// stores its cover, fetches initial TOC best-effort, and writes a valid initial EPUB 3.0.
     pub async fn track_online_book(
         self: &Arc<Self>,
         actor: &User,
         mut input: TrackOnlineBookInput,
     ) -> DomainResult<BookSummaryDto> {
-        let src = self.load_source_for_actor(actor, input.source_id).await?;
+        let src = self
+            .sources
+            .load_source_for_actor(actor, input.source_id)
+            .await?;
         input.book_url = Self::validate_caller_source_url(&input.book_url, &src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
             input.toc_url = Self::validate_caller_source_url(&input.toc_url, &src.raw_json)?;
@@ -87,7 +86,6 @@ impl BookOnlineService {
             input.cover_url = Some(Self::validate_caller_http_url(cover_url, &src.raw_json)?);
         }
 
-        // Serialize concurrent track requests for the same (source_id, book_url) to prevent duplicate Books.
         let tlock = self.track_lock_for(input.source_id, &input.book_url);
         let _track_guard = tlock.lock().await;
 
@@ -105,7 +103,6 @@ impl BookOnlineService {
         let managed_lib = self.catalog.ensure_managed_library().await?;
         let book_id = BookId::new();
 
-        // Best-effort cover download
         let cover_payload = if let Some(ref cover_url) = input.cover_url
             && !cover_url.trim().is_empty()
         {
@@ -117,7 +114,6 @@ impl BookOnlineService {
             None
         };
 
-        // Best-effort initial TOC fetch so manifest & chapter count are populated right away
         let mut toc_url = input.toc_url.trim().to_string();
         let mut last_chapter = input.last_chapter.clone();
         let mut total_chapters = 0u32;
@@ -174,7 +170,7 @@ impl BookOnlineService {
                     last_chapter = Some(last.title.clone());
                 }
                 total_chapters = clean_chapters.len() as u32;
-                let store = self.tracked_store.clone();
+                let store = Arc::clone(&self.tracked_store);
                 if let Err(err) = tokio::task::spawn_blocking(move || {
                     store.update_manifest_from_toc(book_id, &clean_chapters, false)
                 })
@@ -187,7 +183,6 @@ impl BookOnlineService {
             }
         }
 
-        // Synthesize initial valid standard EPUB 3.0 archive (skeleton with cover + metadata)
         let pack_meta = PackBookMetadata {
             identifier: Some(book_id.0),
             title: input.name.clone(),
@@ -197,8 +192,9 @@ impl BookOnlineService {
                 .as_ref()
                 .map(|c| (c.bytes.to_vec(), c.mime_type.clone())),
         };
+        let packager = Arc::clone(&self.packager);
         let epub_bytes =
-            tokio::task::spawn_blocking(move || package_chapters_to_epub(&pack_meta, &[]))
+            tokio::task::spawn_blocking(move || packager.package_epub(&pack_meta, &[]))
                 .await
                 .map_err(|e| DomainError::Storage(format!("生成初始 EPUB3 失败: {e}")))?
                 .map_err(DomainError::Storage)?;
@@ -216,13 +212,10 @@ impl BookOnlineService {
         metadata.tags =
             BookMetadata::normalize_list(Self::parse_tags_from_kind(input.kind.as_deref()));
         metadata.language = Some("zh-CN".to_string());
-        metadata.chapter_count = if total_chapters > 0 {
-            Some(total_chapters)
-        } else {
-            None
-        };
+        metadata.chapter_count = (total_chapters > 0).then_some(total_chapters);
 
-        let mut book = Book::new(
+        let book = Book::with_id(
+            book_id,
             managed_lib.id,
             BookFormat::Epub,
             BookSource::OnlineTracked {
@@ -240,15 +233,12 @@ impl BookOnlineService {
             cover_key,
             metadata,
         )?;
-        book.id = book_id;
 
         self.catalog.save_book_raw(&book).await?;
         self.catalog.bind_book_for_user(actor.id, book_id).await?;
         self.catalog.get_book(Some(actor), book_id).await
     }
 
-    /// Returns the TOC for an online-tracked book (with per-chapter cache status).
-    /// Fetches fresh TOC from the source when `force_refresh` is true or manifest is empty.
     pub async fn get_tracked_toc(
         self: &Arc<Self>,
         actor: &User,
@@ -289,14 +279,14 @@ impl BookOnlineService {
             }
         };
 
-        let src_rec_opt = self.load_source(source_id).await.ok();
+        let src_rec_opt = self.sources.load_source(source_id).await.ok();
         let source_name = src_rec_opt
             .as_ref()
             .map(|s| s.name.clone())
             .unwrap_or_else(|| "已删除书源".to_string());
 
         let existing_manifest = {
-            let store = self.tracked_store.clone();
+            let store = Arc::clone(&self.tracked_store);
             tokio::task::spawn_blocking(move || store.load_manifest(book_id))
                 .await
                 .map_err(|e| DomainError::Storage(format!("读取目录清单失败: {e}")))?
@@ -365,7 +355,6 @@ impl BookOnlineService {
             .filter(|c| !c.is_volume && !c.url.trim().is_empty())
             .collect();
 
-        // Serialize manifest + DB update under per-book state lock and re-read latest Book.
         let state_lock = self.book_state_lock_for(book_id);
         let _state_guard = state_lock.lock().await;
         let mut latest_book = self.catalog.find_book_raw(book_id).await?;
@@ -379,7 +368,7 @@ impl BookOnlineService {
             ));
         }
 
-        let store = self.tracked_store.clone();
+        let store = Arc::clone(&self.tracked_store);
         let manifest = tokio::task::spawn_blocking(move || {
             store.update_manifest_from_toc(book_id, &clean_chapters, true)
         })
@@ -390,25 +379,12 @@ impl BookOnlineService {
         let new_total = manifest.chapters.len() as u32;
         let new_cached = manifest.chapters.iter().filter(|c| c.cached).count() as u32;
         let new_last = manifest.chapters.last().map(|c| c.title.clone());
-        let mut latest_dirty = epub_dirty;
-
-        if let BookSource::OnlineTracked {
-            toc_url: ref mut t_url,
-            last_chapter: ref mut l_ch,
-            cached_chapters: ref mut c_cnt,
-            total_chapters: ref mut t_cnt,
-            epub_dirty: ref dirty,
-            ..
-        } = latest_book.source
-        {
-            *t_url = effective_toc_url;
-            *l_ch = new_last.clone();
-            *c_cnt = new_cached;
-            *t_cnt = new_total;
-            latest_dirty = *dirty;
-        }
-        latest_book.metadata.chapter_count = if new_total > 0 { Some(new_total) } else { None };
-        latest_book.updated_at = Timestamp::now();
+        let latest_dirty = latest_book.record_tracked_toc_refresh(
+            effective_toc_url,
+            new_last.clone(),
+            new_cached,
+            new_total,
+        );
         self.catalog.save_book_raw(&latest_book).await?;
 
         Ok(TrackedTocResponseDto {
@@ -423,10 +399,6 @@ impl BookOnlineService {
         })
     }
 
-    /// Reads a single chapter of an online-tracked book:
-    /// serves immediately from local chapter cache if present (with matching URL), otherwise
-    /// fetches from the Legado source, saves O(1) chapter file atomically, marks `epub_dirty`,
-    /// and schedules EPUB 3.0 sync.
     pub async fn get_tracked_chapter(
         self: &Arc<Self>,
         actor: &User,
@@ -460,7 +432,7 @@ impl BookOnlineService {
             };
 
         let mut manifest = {
-            let store = self.tracked_store.clone();
+            let store = Arc::clone(&self.tracked_store);
             tokio::task::spawn_blocking(move || store.load_manifest(book_id))
                 .await
                 .map_err(|e| DomainError::Storage(format!("读取目录清单失败: {e}")))?
@@ -468,7 +440,7 @@ impl BookOnlineService {
 
         if !force_refresh && let Some(meta) = manifest.chapters.get(chapter_index) {
             let expected_url = meta.url.clone();
-            let store = self.tracked_store.clone();
+            let store = Arc::clone(&self.tracked_store);
             let cached_opt = tokio::task::spawn_blocking(move || {
                 store.load_chapter_matching_url(book_id, chapter_index, &expected_url)
             })
@@ -521,7 +493,7 @@ impl BookOnlineService {
             index: chapter_index,
         };
 
-        let src_rec = self.load_source(source_id).await?;
+        let src_rec = self.sources.load_source(source_id).await?;
         if !src_rec.enabled && !actor.role.is_admin() {
             return Err(DomainError::Forbidden(
                 "书源已禁用，仅管理员可拉取未缓存章节".into(),
@@ -553,7 +525,6 @@ impl BookOnlineService {
             content: fetched.content.content.clone(),
         };
 
-        // Coordinate manifest write + generation bump + latest Book DB update under `book_state_lock`.
         let (new_cached, new_total, sync_gen, should_flush_now) = {
             let state_lock = self.book_state_lock_for(book_id);
             let _state_guard = state_lock.lock().await;
@@ -569,7 +540,7 @@ impl BookOnlineService {
                 ));
             }
 
-            let store = self.tracked_store.clone();
+            let store = Arc::clone(&self.tracked_store);
             let cf = chapter_file;
             let new_cached = tokio::task::spawn_blocking(move || store.save_chapter(book_id, &cf))
                 .await
@@ -579,18 +550,7 @@ impl BookOnlineService {
 
             let (sync_gen, should_flush_now) = self.bump_sync_gen(book_id, 1);
 
-            if let BookSource::OnlineTracked {
-                cached_chapters: ref mut c_cnt,
-                total_chapters: ref mut t_cnt,
-                epub_dirty: ref mut dirty,
-                ..
-            } = latest_book.source
-            {
-                *c_cnt = new_cached;
-                *t_cnt = new_total.max(*t_cnt);
-                *dirty = true;
-            }
-            latest_book.updated_at = Timestamp::now();
+            latest_book.record_tracked_chapter_cached(new_cached, new_total);
             self.catalog.save_book_raw(&latest_book).await?;
 
             (new_cached, new_total, sync_gen, should_flush_now)
@@ -611,9 +571,6 @@ impl BookOnlineService {
         })
     }
 
-    /// Switches the upstream book source for a unified online-tracked book while preserving
-    /// its `BookId`, shelves, favorites, tags, and reading progress.
-    /// Fetches the new source's TOC (and optional cover) BEFORE committing DB changes or clearing old cache.
     pub async fn switch_tracked_source(
         self: &Arc<Self>,
         actor: &User,
@@ -621,7 +578,7 @@ impl BookOnlineService {
         mut input: SwitchTrackedSourceInput,
     ) -> DomainResult<TrackedTocResponseDto> {
         require_admin(actor)?;
-        let new_src = self.load_source(input.source_id).await?;
+        let new_src = self.sources.load_source(input.source_id).await?;
         input.book_url = Self::validate_caller_source_url(&input.book_url, &new_src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
             input.toc_url = Self::validate_caller_source_url(&input.toc_url, &new_src.raw_json)?;
@@ -640,7 +597,6 @@ impl BookOnlineService {
             return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
         }
 
-        // 1. Pre-fetch new TOC (and book_info if toc_url is empty) BEFORE touching DB or old cache
         let effective_toc_url = if input.toc_url.trim().is_empty() {
             let info = self
                 .fetch_book_info_internal(
@@ -697,7 +653,6 @@ impl BookOnlineService {
             ));
         }
 
-        // Best-effort download & save new cover if `input.cover_url` was provided
         let new_cover_key = if let Some(ref cover_url) = input.cover_url
             && !cover_url.trim().is_empty()
         {
@@ -713,7 +668,6 @@ impl BookOnlineService {
             None
         };
 
-        // 2. Commit cache update + DB update atomically under `book_state_lock`
         let (manifest, new_cached, new_total, new_last, sync_gen) = {
             let state_lock = self.book_state_lock_for(book_id);
             let _state_guard = state_lock.lock().await;
@@ -723,7 +677,7 @@ impl BookOnlineService {
                 return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
             }
 
-            let store = self.tracked_store.clone();
+            let store = Arc::clone(&self.tracked_store);
             let clear_cache = input.clear_cache;
             let manifest = tokio::task::spawn_blocking(move || {
                 if clear_cache {
@@ -743,37 +697,17 @@ impl BookOnlineService {
                 .map(|c| c.title.clone())
                 .or(input.last_chapter);
 
-            if let BookSource::OnlineTracked {
-                source_id,
-                book_url,
-                toc_url,
-                last_chapter,
-                cached_chapters,
-                total_chapters,
-                epub_dirty,
-                ..
-            } = &mut latest_book.source
-            {
-                *source_id = input.source_id;
-                *book_url = input.book_url;
-                *toc_url = effective_toc_url;
-                *last_chapter = new_last.clone();
-                *cached_chapters = new_cached;
-                *total_chapters = new_total;
-                *epub_dirty = true;
-            }
-            if let Some(intro) = input.intro
-                && !intro.trim().is_empty()
-            {
-                latest_book.metadata.description = Some(intro.trim().to_string());
-            }
-            if let Some(ck) = new_cover_key {
-                latest_book.set_cover(Some(ck));
-            }
-            latest_book.metadata.chapter_count = if new_total > 0 { Some(new_total) } else { None };
-            latest_book.updated_at = Timestamp::now();
+            latest_book.switch_online_tracking(
+                input.source_id,
+                input.book_url,
+                effective_toc_url,
+                new_last.clone(),
+                new_cached,
+                new_total,
+                input.intro,
+                new_cover_key,
+            );
 
-            // Bump generation so any in-flight `sync_tracked_epub` will NOT clear `epub_dirty`
             let (sync_gen, _) = self.bump_sync_gen(book_id, 1);
             self.catalog.save_book_raw(&latest_book).await?;
 
@@ -794,7 +728,6 @@ impl BookOnlineService {
         })
     }
 
-    /// Spawns a debounced background standard EPUB 3.0 rebuild task for `sync_gen`.
     fn spawn_debounced_epub_sync(
         self: &Arc<Self>,
         book_id: BookId,
@@ -815,7 +748,6 @@ impl BookOnlineService {
         });
     }
 
-    /// Ensures the standard EPUB 3.0 archive on disk reflects all cached chapters if `epub_dirty`.
     pub async fn ensure_tracked_epub_synced(self: &Arc<Self>, book_id: BookId) -> DomainResult<()> {
         let book = self.catalog.find_book_raw(book_id).await?;
         let is_dirty = matches!(
@@ -832,10 +764,6 @@ impl BookOnlineService {
         Ok(())
     }
 
-    /// Atomically synthesizes the standard EPUB 3.0 file for an online-tracked book from its
-    /// locally cached chapters + cover + metadata, updating `BookModel` in-place.
-    /// Uses generation tracking (`start_gen` vs `current_gen`) and re-reads the latest `Book`
-    /// under `book_state_lock` so concurrent chapter fetches or source switches are never lost.
     pub async fn sync_tracked_epub(
         self: &Arc<Self>,
         book_id: BookId,
@@ -867,7 +795,7 @@ impl BookOnlineService {
             )
         };
 
-        let store = self.tracked_store.clone();
+        let store = Arc::clone(&self.tracked_store);
         let (chapters, cached_count, total_count) =
             tokio::task::spawn_blocking(move || store.collect_cached_chapters_for_epub(book_id))
                 .await
@@ -885,8 +813,9 @@ impl BookOnlineService {
             description,
             cover_bytes,
         };
+        let packager = Arc::clone(&self.packager);
         let epub_bytes =
-            tokio::task::spawn_blocking(move || package_chapters_to_epub(&pack_meta, &chapters))
+            tokio::task::spawn_blocking(move || packager.package_epub(&pack_meta, &chapters))
                 .await
                 .map_err(|e| DomainError::Storage(format!("合成 EPUB3 线程失败: {e}")))?
                 .map_err(DomainError::Storage)?;
@@ -903,7 +832,6 @@ impl BookOnlineService {
             let mut latest_book = match self.catalog.find_book_raw(book_id).await {
                 Ok(b) => b,
                 Err(err) => {
-                    // Clean up the newly written EPUB if the book was deleted concurrently.
                     let _ = self
                         .catalog
                         .delete_managed_book_file(&stored.storage_key)
@@ -914,45 +842,23 @@ impl BookOnlineService {
             let current_gen = self.current_sync_gen(book_id);
             let is_clean = current_gen == start_gen;
 
-            latest_book.file_size = stored.file_size;
-            latest_book.file_hash = stored.file_hash;
-            if let BookSource::OnlineTracked {
-                storage_key,
-                cached_chapters,
-                total_chapters,
-                epub_dirty,
-                ..
-            } = &mut latest_book.source
-            {
-                *storage_key = stored.storage_key;
-                if is_clean {
-                    *cached_chapters = cached_count;
-                    if total_count > 0 {
-                        *total_chapters = total_count;
-                    }
-                    *epub_dirty = false;
-                } else {
-                    *epub_dirty = true;
-                }
-            }
-            if is_clean {
-                latest_book.metadata.chapter_count = if total_count > 0 {
-                    Some(total_count)
-                } else if cached_count > 0 {
-                    Some(cached_count)
-                } else {
-                    latest_book.metadata.chapter_count
-                };
-                if let Some(entry) = self
+            latest_book.commit_synced_tracked_epub(
+                stored.storage_key,
+                stored.file_size,
+                stored.file_hash,
+                cached_count,
+                total_count,
+                is_clean,
+            );
+            if is_clean
+                && let Some(entry) = self
                     .pending_sync_gens
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .get_mut(&book_id)
-                {
-                    entry.1 = 0;
-                }
+            {
+                entry.1 = 0;
             }
-            latest_book.updated_at = Timestamp::now();
             self.catalog.save_book_raw(&latest_book).await?;
 
             if is_clean { None } else { Some(current_gen) }

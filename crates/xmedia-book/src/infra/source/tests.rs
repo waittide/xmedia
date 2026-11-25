@@ -1,19 +1,232 @@
 use std::collections::HashMap;
+use std::io::{Cursor, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::routing::{get, post};
+use tempfile::TempDir;
+use zip::ZipArchive;
 
+use super::packager::{PackBookMetadata, package_chapters_to_epub};
+use super::tracked_store::TrackedBookStore;
 use super::*;
-use crate::source::http::{
+use crate::domain::book::BookId;
+use crate::domain::online::{
+    BookJsContext, ChapterJsContext, ConcurrentRateSpec, LegadoBookSource, LegadoSearchRule,
+    OnlineChapterItem, SourceRuntimeState, TrackedChapterFile,
+};
+use crate::infra::source::http::{
     HttpClientConfig, parse_legado_url, try_resolve_data_url, validate_target_url,
 };
-use crate::source::js_runtime::{
+use crate::infra::source::js_runtime::{
     MAX_JS_HTTP_REQUESTS, MAX_PERSISTENT_CACHE_BYTES, MAX_VARIABLE_BYTES,
 };
-use crate::source::model::{BookJsContext, ChapterJsContext, LegadoBookSource, SourceRuntimeState};
+
+#[test]
+fn parse_concurrent_rate_supports_ratio_and_interval_formats() {
+    let ratio: LegadoBookSource = serde_json::from_str(
+        r#"{"bookSourceName":"A","bookSourceUrl":"https://a.test","concurrentRate":"10/1000"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        ratio.parse_concurrent_rate(),
+        Some(ConcurrentRateSpec {
+            max_concurrency: 10,
+            window_requests: 10,
+            window_ms: 1000,
+        })
+    );
+
+    let interval: LegadoBookSource = serde_json::from_str(
+        r#"{"bookSourceName":"B","bookSourceUrl":"https://b.test","concurrentRate":200}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        interval.parse_concurrent_rate(),
+        Some(ConcurrentRateSpec {
+            max_concurrency: 1,
+            window_requests: 1,
+            window_ms: 200,
+        })
+    );
+
+    let disabled: LegadoBookSource = serde_json::from_str(
+        r#"{"bookSourceName":"C","bookSourceUrl":"https://c.test","concurrentRate":"0"}"#,
+    )
+    .unwrap();
+    assert_eq!(disabled.parse_concurrent_rate(), None);
+
+    let capped: LegadoBookSource = serde_json::from_str(
+        r#"{"bookSourceName":"D","bookSourceUrl":"https://d.test","concurrentRate":"50/1000"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        capped.parse_concurrent_rate(),
+        Some(ConcurrentRateSpec {
+            max_concurrency: 16,
+            window_requests: 50,
+            window_ms: 1000,
+        })
+    );
+}
+
+#[test]
+fn epub_packager_maps_raster_cover_extensions_and_skips_svg() {
+    let svg_meta = PackBookMetadata {
+        identifier: None,
+        title: "Test".into(),
+        author: "Auth".into(),
+        description: None,
+        cover_bytes: Some((b"<svg/>".to_vec(), "image/svg+xml".into())),
+    };
+    let epub_no_svg = package_chapters_to_epub(&svg_meta, &[]).unwrap();
+    let mut archive = ZipArchive::new(Cursor::new(epub_no_svg)).unwrap();
+    let mut opf = String::new();
+    archive
+        .by_name("OEBPS/content.opf")
+        .unwrap()
+        .read_to_string(&mut opf)
+        .unwrap();
+    assert!(!opf.contains("cover-image"));
+    assert!(!opf.contains("image/svg+xml"));
+
+    let avif_meta = PackBookMetadata {
+        identifier: None,
+        title: "AVIF".into(),
+        author: "Auth".into(),
+        description: None,
+        cover_bytes: Some((
+            b"\x00\x00\x00\x1cftypavif".to_vec(),
+            "image/avif; charset=binary".into(),
+        )),
+    };
+    let epub_avif = package_chapters_to_epub(&avif_meta, &[]).unwrap();
+    let mut archive2 = ZipArchive::new(Cursor::new(epub_avif)).unwrap();
+    assert!(archive2.by_name("OEBPS/cover.avif").is_ok());
+    let mut opf2 = String::new();
+    archive2
+        .by_name("OEBPS/content.opf")
+        .unwrap()
+        .read_to_string(&mut opf2)
+        .unwrap();
+    assert!(opf2.contains(r#"href="cover.avif" media-type="image/avif""#));
+}
+
+#[test]
+fn concurrent_save_chapter_preserves_all_manifest_cached_flags() {
+    let tmp = TempDir::new().unwrap();
+    let store = TrackedBookStore::new(tmp.path()).unwrap();
+    let book_id = BookId::new();
+    let toc: Vec<OnlineChapterItem> = (0..12)
+        .map(|i| OnlineChapterItem {
+            index: i,
+            title: format!("第{}章", i + 1),
+            url: format!("https://example.com/ch/{i}"),
+            update_time: None,
+            is_volume: false,
+        })
+        .collect();
+    store
+        .update_manifest_from_toc(book_id, &toc, false)
+        .unwrap();
+
+    std::thread::scope(|s| {
+        for i in 0..12 {
+            let st = store.clone();
+            s.spawn(move || {
+                st.save_chapter(
+                    book_id,
+                    &TrackedChapterFile {
+                        index: i,
+                        title: format!("第{}章", i + 1),
+                        url: format!("https://example.com/ch/{i}"),
+                        content: format!("正文 {i}"),
+                    },
+                )
+                .unwrap();
+            });
+        }
+    });
+
+    let manifest = store.load_manifest(book_id);
+    let cached_count = manifest.chapters.iter().filter(|c| c.cached).count();
+    assert_eq!(
+        cached_count, 12,
+        "concurrent chapter saves must not lose cached flags"
+    );
+}
+
+#[test]
+fn update_manifest_invalidates_cache_flag_when_chapter_url_changes() {
+    let tmp = TempDir::new().unwrap();
+    let store = TrackedBookStore::new(tmp.path()).unwrap();
+    let book_id = BookId::new();
+    let toc1 = vec![
+        OnlineChapterItem {
+            index: 0,
+            title: "第一章".into(),
+            url: "https://src-a.test/1".into(),
+            update_time: None,
+            is_volume: false,
+        },
+        OnlineChapterItem {
+            index: 1,
+            title: "第二章".into(),
+            url: "https://src-a.test/2".into(),
+            update_time: None,
+            is_volume: false,
+        },
+    ];
+    store
+        .update_manifest_from_toc(book_id, &toc1, false)
+        .unwrap();
+    store
+        .save_chapter(
+            book_id,
+            &TrackedChapterFile {
+                index: 0,
+                title: "第一章".into(),
+                url: "https://src-a.test/1".into(),
+                content: "旧源第一章".into(),
+            },
+        )
+        .unwrap();
+
+    let toc2 = vec![
+        OnlineChapterItem {
+            index: 0,
+            title: "楔子".into(),
+            url: "https://src-a.test/0".into(),
+            update_time: None,
+            is_volume: false,
+        },
+        OnlineChapterItem {
+            index: 1,
+            title: "第一章".into(),
+            url: "https://src-a.test/1".into(),
+            update_time: None,
+            is_volume: false,
+        },
+    ];
+    let manifest = store
+        .update_manifest_from_toc(book_id, &toc2, true)
+        .unwrap();
+    assert!(
+        !manifest.chapters[0].cached,
+        "mismatched URL at index 0 must not be marked cached"
+    );
+    assert!(
+        store
+            .load_chapter_matching_url(book_id, 0, "https://src-a.test/0")
+            .is_none()
+    );
+    let (packed, cached, total) = store.collect_cached_chapters_for_epub(book_id);
+    assert_eq!(total, 2);
+    assert_eq!(cached, 0);
+    assert!(packed.is_empty());
+}
 
 #[test]
 fn data_url_with_type_option_encodes_bytes_as_hex_matching_legado() {
@@ -33,7 +246,6 @@ fn ssrf_guard_blocks_loopback_and_private_ips() {
     assert!(validate_target_url("http://10.0.0.1/secret", false).is_err());
     assert!(validate_target_url("http://192.168.1.1/", false).is_err());
     assert!(validate_target_url("file:///etc/passwd", false).is_err());
-    // Public IP literal allowed
     assert!(validate_target_url("https://1.1.1.1/", false).is_ok());
 }
 
@@ -726,7 +938,7 @@ fn search_url_template_encodes_keyword_and_blocks_legado_options_json_injection(
             "/search?q={{key}}&p={{page}},{\"method\":\"POST\",\"body\":\"kw={{key}}&p={{page}}\"}"
                 .into(),
         ),
-        rule_search: Some(crate::source::model::LegadoSearchRule {
+        rule_search: Some(LegadoSearchRule {
             book_list: Some("$.items[*]".into()),
             name: Some("$.name".into()),
             ..Default::default()
@@ -817,7 +1029,7 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
         ..Default::default()
     };
     let engine = BookSourceEngine::new(cfg, Duration::from_secs(2));
-    let base_rule = crate::source::model::LegadoSearchRule {
+    let base_rule = LegadoSearchRule {
         book_list: Some("$.items[*]".into()),
         name: Some("$.name".into()),
         ..Default::default()
@@ -825,7 +1037,6 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
 
     let dup_key_payload = "x\",\"method\":\"DELETE\",\"charset\":\"";
 
-    // 1. JS-enabled LegadoUrlOptions + {{key}} + trailing key + mixed JS URL part
     let src_js_opts = LegadoBookSource {
         book_source_name: "JsOptsBook".into(),
         book_source_url: format!("http://{addr}"),
@@ -846,7 +1057,6 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
         )
         .unwrap();
 
-    // 2. Unquoted {{...}} placeholders inside JS-enabled LegadoUrlOptions (previously set expected_sig = None!)
     let src_unquoted_opts = LegadoBookSource {
         book_source_name: "UnquotedOptsBook".into(),
         book_source_url: format!("http://{addr}"),
@@ -867,7 +1077,6 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
         )
         .unwrap();
 
-    // 3. Mixed {{key}} + JS {{...}} without options percent-encodes {{key}}
     let src_mixed_url = LegadoBookSource {
         book_source_name: "MixedUrlBook".into(),
         book_source_url: format!("http://{addr}"),
@@ -884,7 +1093,6 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
         )
         .unwrap();
 
-    // 4. Case-insensitive @JS: pipeline still permitted to build options
     let src_ci_js = LegadoBookSource {
         book_source_name: "CiJsBook".into(),
         book_source_url: format!("http://{addr}"),
@@ -896,7 +1104,6 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
         .search_sync(&src_ci_js, SourceRuntimeState::default(), "q", 1)
         .unwrap();
 
-    // 5. Options smuggling via {{...}} when no @js:/<js> is present must be rejected
     let src_smuggle_mustache = LegadoBookSource {
         book_source_name: "SmuggleMustacheBook".into(),
         book_source_url: format!("http://{addr}"),
@@ -939,7 +1146,6 @@ async fn book_js_pipeline_search_url_blocks_option_injection_and_mutation_while_
     use axum::http::StatusCode;
     use axum::response::Response;
     use axum::routing::any;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let pwned_hits = Arc::new(AtomicUsize::new(0));
     let pwned_hits_c = pwned_hits.clone();
@@ -979,7 +1185,7 @@ async fn book_js_pipeline_search_url_blocks_option_injection_and_mutation_while_
         },
         Duration::from_secs(5),
     );
-    let base_rule = crate::source::model::LegadoSearchRule {
+    let base_rule = LegadoSearchRule {
         book_list: Some("$.items[*]".into()),
         name: Some("@js:key".into()),
         book_url: Some("$.url".into()),

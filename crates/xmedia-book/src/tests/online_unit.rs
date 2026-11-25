@@ -21,15 +21,15 @@ use xmedia_core::infra::persistence::repositories::{
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, register_core_models};
 
+use crate::application::online::helpers::{DownloadRateLimiter, validate_safe_cover_image};
+use crate::application::online::*;
 use crate::domain::book::{BookFormat, BookSource};
-use crate::infra::persistence::repositories::ToastyBookSourceRepository;
-use crate::source::BookSourceEngine;
-use crate::source::http::HttpClientConfig;
-use crate::source::model::ConcurrentRateSpec;
+use crate::domain::online::ConcurrentRateSpec;
+use crate::infra::source::BookSourceEngine;
+use crate::infra::source::http::HttpClientConfig;
+use crate::infra::source::packager::BookFormatPackager;
+use crate::infra::source::tracked_store::TrackedBookStore;
 use crate::{ensure_book_schema, init_book_module, register_book_models};
-
-use super::helpers::{DownloadRateLimiter, validate_safe_cover_image};
-use super::*;
 
 async fn setup_test_online_service() -> (TempDir, User, Arc<BookOnlineService>) {
     let (tmp, admin, _member, online_svc) = setup_test_online_service_with_member().await;
@@ -97,21 +97,21 @@ async fn setup_test_online_service_with_member() -> (TempDir, User, User, Arc<Bo
         events.clone(),
         lifecycles,
     ));
-    let book_services =
-        init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
-    let sources_repo = Arc::new(ToastyBookSourceRepository::new(db));
+    let book_services = init_book_module(db, tmp.path(), libs_repo, &lib_svc, events).unwrap();
     let online_svc = Arc::new(
-        BookOnlineService::with_engine(
-            sources_repo,
+        BookOnlineService::new(
+            book_services.sources.clone(),
             tmp.path(),
             book_services.catalog.clone(),
-            BookSourceEngine::new(
+            Arc::new(BookSourceEngine::new(
                 HttpClientConfig {
                     allow_private_ips: true,
                     ..Default::default()
                 },
                 Duration::from_secs(10),
-            ),
+            )),
+            Arc::new(BookFormatPackager),
+            Arc::new(TrackedBookStore::new(tmp.path()).unwrap()),
             true,
         )
         .unwrap(),
@@ -129,12 +129,10 @@ fn cover_image_validation_rejects_html_and_svg_xss_payloads() {
     assert!(validate_safe_cover_image(Some("image/svg+xml"), svg).is_err());
     assert!(validate_safe_cover_image(None, svg).is_err());
 
-    // Valid PNG magic bytes with text/html header must still be rejected
     let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
     assert!(validate_safe_cover_image(Some("text/html"), &png).is_err());
     assert!(validate_safe_cover_image(Some("image/svg+xml"), &png).is_err());
 
-    // Valid PNG / JPEG / WebP with safe or octet-stream header succeed
     assert_eq!(
         validate_safe_cover_image(Some("image/png"), &png).unwrap(),
         "image/png"
@@ -157,7 +155,6 @@ fn rate_limiter_wakes_immediately_on_cancel() {
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let cancel_cond = Arc::new((Mutex::new(false), Condvar::new()));
 
-    // First slot succeeds immediately
     assert!(limiter.wait_for_slot(&cancel_flag, &cancel_cond));
 
     let flag_bg = cancel_flag.clone();
@@ -238,6 +235,7 @@ async fn concurrent_download_reports_realtime_speed_preserves_order_and_deletes_
     })
     .to_string();
     let imported = online_svc
+        .sources()
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
@@ -298,7 +296,6 @@ async fn concurrent_download_reports_realtime_speed_preserves_order_and_deletes_
         max_in_flight.load(Ordering::SeqCst)
     );
 
-    // Verify chapter ordering in packaged TXT via streaming reader
     let (fname, mime, bytes) = online_svc
         .read_download_file(admin.id, finished.id)
         .await
@@ -314,7 +311,6 @@ async fn concurrent_download_reports_realtime_speed_preserves_order_and_deletes_
         "chapter order must be preserved"
     );
 
-    // Verify disk artifact exists, then DELETE removes both record and disk directory
     let job_dir = tmp
         .path()
         .join("online_downloads")
@@ -385,6 +381,7 @@ async fn download_can_be_cancelled_mid_flight() {
     })
     .to_string();
     let imported = online_svc
+        .sources()
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
@@ -411,7 +408,6 @@ async fn download_can_be_cancelled_mid_flight() {
         .await
         .unwrap();
 
-    // Wait until at least 1 chapter has been processed or job is running
     for _ in 0..40 {
         let cur = online_svc.get_download(admin.id, job.id).await.unwrap();
         if cur.processed_chapters >= 1 {
@@ -423,7 +419,6 @@ async fn download_can_be_cancelled_mid_flight() {
     let cancelled = online_svc.cancel_download(admin.id, job.id).await.unwrap();
     assert_eq!(cancelled.status, DownloadJobStatus::Cancelled);
 
-    // Give background workers a moment to observe cancellation
     tokio::time::sleep(Duration::from_millis(150)).await;
     let after = online_svc.get_download(admin.id, job.id).await.unwrap();
     assert_eq!(after.status, DownloadJobStatus::Cancelled);
@@ -481,12 +476,12 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
     })
     .to_string();
     let imported = online_svc
+        .sources()
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
     let source_id = imported.sources[0].id;
 
-    // 1. Track online book -> creates a real unified Book + initial valid EPUB 3.0 skeleton
     let tracked = online_svc
         .track_online_book(
             &admin,
@@ -512,7 +507,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
     assert_eq!(tracked.format, BookFormat::Epub);
     assert!(tracked.file_size > 0);
 
-    // Verify initial skeleton EPUB 3.0 is valid ZIP with intro.xhtml
     let epub_path = tmp
         .path()
         .join("book")
@@ -528,7 +522,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
         assert!(archive.by_name("OEBPS/intro.xhtml").is_ok());
     }
 
-    // Duplicate track call must return the exact same BookId
     let tracked_again = online_svc
         .track_online_book(
             &admin,
@@ -548,7 +541,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
         .unwrap();
     assert_eq!(tracked_again.id, tracked.id);
 
-    // 2. Fetch chapter 0 & chapter 1 -> incremental single-chapter cache + epub_dirty = true
     let ch0 = online_svc
         .get_tracked_chapter(&admin, tracked.id, 0, false)
         .await
@@ -558,7 +550,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
     assert_eq!(ch0.cached_chapters, 1);
     assert!(ch0.epub_dirty);
 
-    // Second read of chapter 0 hits local chapter cache immediately
     let ch0_cached = online_svc
         .get_tracked_chapter(&admin, tracked.id, 0, false)
         .await
@@ -571,7 +562,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
         .unwrap();
     assert_eq!(ch1.cached_chapters, 2);
 
-    // 3. On-demand EPUB 3.0 sync -> rebuilds standard EPUB3 containing both cached chapters
     let synced = online_svc
         .sync_tracked_epub(tracked.id, false)
         .await
@@ -598,7 +588,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
         assert!(ch2_html.contains("第2章正文第一段"));
     }
 
-    // 4. Batch download with book_id updates the SAME Book in-place (no duplicate book!)
     let job = online_svc
         .start_download(
             &admin,
@@ -636,7 +625,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
     assert_eq!(finished.status, DownloadJobStatus::Completed);
     assert_eq!(finished.imported_book_id, Some(tracked.id.0));
 
-    // Verify all 3 chapters are now in the same EPUB3 file and only 1 Book exists
     {
         let raw = std::fs::read(&epub_path).unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(raw)).unwrap();
@@ -649,7 +637,6 @@ async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
         .unwrap();
     assert_eq!(search_page.total, 1);
 
-    // 5. Deleting the Book cleans up both EPUB3 file and online_tracked chapter workspace
     let tracked_dir = tmp
         .path()
         .join("book")
@@ -752,13 +739,13 @@ async fn test_source_debugger_runs_full_chain_and_individual_rule_modes() {
     .to_string();
 
     let imported = online_svc
+        .sources()
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
     let src = &imported.sources[0];
     assert_eq!(src.check_keyword.as_deref(), Some("星辰"));
 
-    // 1. Full chain using default checkKeyWord
     let full = online_svc
         .test_source(&admin, src.id, SourceTestInput::default())
         .await
@@ -777,7 +764,6 @@ async fn test_source_debugger_runs_full_chain_and_individual_rule_modes() {
             .contains("第1章的完整调试正文内容")
     );
 
-    // 2. Full chain starting directly from a book URL (skips search stage)
     let direct_book = online_svc
         .test_source(
             &admin,
@@ -795,7 +781,6 @@ async fn test_source_debugger_runs_full_chain_and_individual_rule_modes() {
     assert_eq!(direct_book.steps[0].stage, "book_info");
     assert_eq!(direct_book.toc_total_count, 2);
 
-    // 3. Targeted content-only mode on chapter 2
     let content_only = online_svc
         .test_source(
             &admin,
@@ -826,27 +811,26 @@ async fn test_source_debugger_runs_full_chain_and_individual_rule_modes() {
 #[tokio::test]
 async fn reorder_sources_persists_custom_order_across_enabled_and_disabled() {
     let (_tmp, admin, online_svc) = setup_test_online_service().await;
+    let src_crud = online_svc.sources();
     let batch = serde_json::json!([
         { "bookSourceName": "书源A", "bookSourceUrl": "https://a.example", "enabled": true },
         { "bookSourceName": "书源B", "bookSourceUrl": "https://b.example", "enabled": false },
         { "bookSourceName": "书源C", "bookSourceUrl": "https://c.example", "enabled": true }
     ])
     .to_string();
-    let imported = online_svc.import_sources(&admin, &batch).await.unwrap();
+    let imported = src_crud.import_sources(&admin, &batch).await.unwrap();
     let id_a = imported.sources[0].id;
     let id_b = imported.sources[1].id;
     let id_c = imported.sources[2].id;
 
-    // Place disabled source B at the top, followed by C, then A
-    let reordered = online_svc
+    let reordered = src_crud
         .reorder_sources(&admin, vec![id_b, id_c, id_a])
         .await
         .unwrap();
     let names: Vec<&str> = reordered.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, vec!["书源B", "书源C", "书源A"]);
 
-    // Subsequent list_sources must return the exact persisted order
-    let listed = online_svc.list_sources(&admin).await.unwrap();
+    let listed = src_crud.list_sources(&admin).await.unwrap();
     let listed_names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(listed_names, vec!["书源B", "书源C", "书源A"]);
 }
@@ -854,19 +838,19 @@ async fn reorder_sources_persists_custom_order_across_enabled_and_disabled() {
 #[tokio::test]
 async fn batch_source_operations_enable_disable_group_export_and_delete() {
     let (_tmp, admin, online_svc) = setup_test_online_service().await;
+    let src_crud = online_svc.sources();
     let batch = serde_json::json!([
         { "bookSourceName": "源1", "bookSourceUrl": "https://s1.example", "enabled": true },
         { "bookSourceName": "源2", "bookSourceUrl": "https://s2.example", "enabled": false },
         { "bookSourceName": "源3", "bookSourceUrl": "https://s3.example", "enabled": true }
     ])
     .to_string();
-    let imported = online_svc.import_sources(&admin, &batch).await.unwrap();
+    let imported = src_crud.import_sources(&admin, &batch).await.unwrap();
     let id1 = imported.sources[0].id;
     let id2 = imported.sources[1].id;
     let id3 = imported.sources[2].id;
 
-    // 1. Batch disable [1, 3]
-    let rep = online_svc
+    let rep = src_crud
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
@@ -878,8 +862,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .unwrap();
     assert_eq!(rep.affected_count, 2);
 
-    // 2. Batch enable [2]
-    online_svc
+    src_crud
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
@@ -890,8 +873,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .await
         .unwrap();
 
-    // 3. Batch set group on [1, 2]
-    online_svc
+    src_crud
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
@@ -904,7 +886,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .await
         .unwrap();
 
-    let listed = online_svc.list_sources(&admin).await.unwrap();
+    let listed = src_crud.list_sources(&admin).await.unwrap();
     let s1 = listed.iter().find(|s| s.id == id1).unwrap();
     let s2 = listed.iter().find(|s| s.id == id2).unwrap();
     let s3 = listed.iter().find(|s| s.id == id3).unwrap();
@@ -912,8 +894,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
     assert!(s2.enabled && s2.group_name == "精选");
     assert!(!s3.enabled && s3.group_name.is_empty());
 
-    // 4. Batch export JSON array [1, 2]
-    let exported = online_svc
+    let exported = src_crud
         .export_sources_batch_json(&admin, vec![id1, id2])
         .await
         .unwrap();
@@ -921,8 +902,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
     assert_eq!(arr.len(), 2);
     assert_eq!(arr[0]["bookSourceGroup"], "精选");
 
-    // 5. Batch delete [1, 3]
-    let del = online_svc
+    let del = src_crud
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
@@ -933,7 +913,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .await
         .unwrap();
     assert_eq!(del.affected_count, 2);
-    let remaining = online_svc.list_sources(&admin).await.unwrap();
+    let remaining = src_crud.list_sources(&admin).await.unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, id2);
 }
@@ -976,6 +956,7 @@ async fn start_download_enforces_admin_and_source_consistency_for_tracked_books(
     ])
     .to_string();
     let imported = online_svc
+        .sources()
         .import_sources(&admin, &raw_sources)
         .await
         .unwrap();
@@ -1000,7 +981,6 @@ async fn start_download_enforces_admin_and_source_consistency_for_tracked_books(
         .await
         .unwrap();
 
-    // 1. Non-admin passing book_id with import_to_library = false must be rejected (Forbidden)
     let err = online_svc
         .start_download(
             &member,
@@ -1023,7 +1003,6 @@ async fn start_download_enforces_admin_and_source_consistency_for_tracked_books(
         .unwrap_err();
     assert!(matches!(err, DomainError::Forbidden(_)), "got {err:?}");
 
-    // 2. Admin passing mismatched source_id must be rejected
     let err_src = online_svc
         .start_download(
             &admin,
@@ -1049,7 +1028,6 @@ async fn start_download_enforces_admin_and_source_consistency_for_tracked_books(
         "got {err_src:?}"
     );
 
-    // 3. Admin passing mismatched toc_url must be rejected
     let err_toc = online_svc
         .start_download(
             &admin,
@@ -1075,8 +1053,6 @@ async fn start_download_enforces_admin_and_source_consistency_for_tracked_books(
         "got {err_toc:?}"
     );
 
-    // 4. Non-admin personal download (book_id: None, import_to_library: false) succeeds
-    //    and MUST NOT mutate shared tracked_store chapters
     let job = online_svc
         .start_download(
             &member,
@@ -1167,26 +1143,26 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
     })
     .to_string();
     let en_id = online_svc
+        .sources()
         .import_sources(&admin, &raw_enabled)
         .await
         .unwrap()
         .sources[0]
         .id;
     let dis_id = online_svc
+        .sources()
         .import_sources(&admin, &raw_disabled)
         .await
         .unwrap()
         .sources[0]
         .id;
 
-    // Non-admin searching explicitly with disabled source_id must fail
     assert!(
         online_svc
             .search(&member, "书", Some(vec![dis_id]), 1)
             .await
             .is_err()
     );
-    // Non-admin calling fetch_book_info / fetch_toc / fetch_chapter_content / track_online_book / start_download on disabled source -> Forbidden
     assert!(matches!(
         online_svc
             .fetch_book_info(&member, dis_id, &format!("http://{addr}/book/1"), None)
@@ -1237,7 +1213,6 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
         Err(DomainError::Forbidden(_))
     ));
 
-    // On enabled source: admin sees diagnostics.logs, non-admin gets logs stripped!
     let admin_info = online_svc
         .fetch_book_info(&admin, en_id, &format!("http://{addr}/book/1"), None)
         .await
@@ -1314,6 +1289,7 @@ async fn switch_tracked_source_preserves_old_state_on_failure_and_updates_cover_
     ])
     .to_string();
     let imported = online_svc
+        .sources()
         .import_sources(&admin, &raw_sources)
         .await
         .unwrap();
@@ -1342,7 +1318,6 @@ async fn switch_tracked_source_preserves_old_state_on_failure_and_updates_cover_
         .await
         .unwrap();
 
-    // Failing switch (empty TOC) with clear_cache: true must preserve old source & old cached chapter!
     assert!(
         online_svc
             .switch_tracked_source(
@@ -1374,7 +1349,6 @@ async fn switch_tracked_source_preserves_old_state_on_failure_and_updates_cover_
         "old chapter cache must not be destroyed when new source TOC fails"
     );
 
-    // Successful switch updates source, cover_key, and clears old cache
     let switched = online_svc
         .switch_tracked_source(
             &admin,
@@ -1411,7 +1385,7 @@ async fn switch_tracked_source_preserves_old_state_on_failure_and_updates_cover_
 #[tokio::test]
 async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking() {
     let (_tmp, admin, member, online_svc) = setup_test_online_service_with_member().await;
-    // Duplicate key inside same import batch must collapse to 1 record
+    let src_crud = online_svc.sources();
     let dup_batch = serde_json::json!([
         {
             "bookSourceName": "同批重复源",
@@ -1432,14 +1406,13 @@ async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking(
         }
     ])
     .to_string();
-    let report = online_svc.import_sources(&admin, &dup_batch).await.unwrap();
+    let report = src_crud.import_sources(&admin, &dup_batch).await.unwrap();
     assert_eq!(report.imported_count, 1);
-    assert_eq!(online_svc.list_sources(&admin).await.unwrap().len(), 1);
+    assert_eq!(src_crud.list_sources(&admin).await.unwrap().len(), 1);
     let sid = report.sources[0].id;
 
-    // update_source rejects multi-entry JSON array
     assert!(
-        online_svc
+        src_crud
             .update_source(
                 &admin,
                 sid,
@@ -1452,9 +1425,8 @@ async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking(
             .is_err()
     );
 
-    // update_source syncs enabled/weight/group_name into raw_json and stores long variable
     let long_var = "x".repeat(500);
-    let updated = online_svc
+    let updated = src_crud
         .update_source(
             &admin,
             sid,
@@ -1469,22 +1441,21 @@ async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking(
         .await
         .unwrap();
     assert_eq!(updated.variable_preview.chars().count(), 240);
-    let full_var = online_svc.get_source_variable(&admin, sid).await.unwrap();
+    let full_var = src_crud.get_source_variable(&admin, sid).await.unwrap();
     assert_eq!(full_var, long_var);
     assert!(matches!(
-        online_svc.get_source_variable(&member, sid).await,
+        src_crud.get_source_variable(&member, sid).await,
         Err(DomainError::Forbidden(_))
     ));
 
     let exported_single: serde_json::Value =
-        serde_json::from_str(&online_svc.export_source_json(&admin, sid).await.unwrap()).unwrap();
+        serde_json::from_str(&src_crud.export_source_json(&admin, sid).await.unwrap()).unwrap();
     assert_eq!(exported_single["enabled"], false);
     assert_eq!(exported_single["weight"], 77);
     assert_eq!(exported_single["bookSourceGroup"], "精校组");
 
-    // export_sources_batch_json deduplicates duplicate IDs
     let exported_batch: Vec<serde_json::Value> = serde_json::from_str(
-        &online_svc
+        &src_crud
             .export_sources_batch_json(&admin, vec![sid, sid, sid])
             .await
             .unwrap(),
@@ -1492,7 +1463,6 @@ async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking(
     .unwrap();
     assert_eq!(exported_batch.len(), 1);
 
-    // Credential masking covers loginUi password type + sensitive keywords, and login action merges
     let login1 = online_svc
         .run_login_action(
             &admin,
@@ -1523,7 +1493,6 @@ async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking(
         Some("小明")
     );
 
-    // Partial second action preserves omitted credentials and masked values
     let login2 = online_svc
         .run_login_action(
             &admin,
@@ -1538,13 +1507,12 @@ async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking(
         .unwrap();
     assert_eq!(login2.result, "secret-pass:api-key-999");
 
-    // reorder_sources syncs weight to raw_json without clobbering runtime_state
-    let _ = online_svc.reorder_sources(&admin, vec![sid]).await.unwrap();
+    let _ = src_crud.reorder_sources(&admin, vec![sid]).await.unwrap();
     let after_reorder: serde_json::Value =
-        serde_json::from_str(&online_svc.export_source_json(&admin, sid).await.unwrap()).unwrap();
+        serde_json::from_str(&src_crud.export_source_json(&admin, sid).await.unwrap()).unwrap();
     assert_eq!(after_reorder["weight"], 10);
     assert_eq!(
-        online_svc.get_source_variable(&admin, sid).await.unwrap(),
+        src_crud.get_source_variable(&admin, sid).await.unwrap(),
         long_var
     );
 }
@@ -1580,7 +1548,6 @@ async fn test_source_debugger_edge_cases_diagnostics_large_toc_empty_urls_and_da
     });
 
     let (_tmp, admin, online_svc) = setup_test_online_service().await;
-    // 1. Large TOC (>500 chapters) with chapter_index_override = 505 & data: URL direct jump
     let raw_large = serde_json::json!({
         "bookSourceName": "大目录调试源",
         "bookSourceUrl": format!("http://{addr}"),
@@ -1597,6 +1564,7 @@ async fn test_source_debugger_edge_cases_diagnostics_large_toc_empty_urls_and_da
     })
     .to_string();
     let large_id = online_svc
+        .sources()
         .import_sources(&admin, &raw_large)
         .await
         .unwrap()
@@ -1633,7 +1601,6 @@ async fn test_source_debugger_edge_cases_diagnostics_large_toc_empty_urls_and_da
             .contains("章节正文编号505")
     );
 
-    // 2. Full mode where TOC has only volume entries (no valid chapter URL) -> overall_ok == false
     let raw_vol = serde_json::json!({
         "bookSourceName": "空链接目录源",
         "bookSourceUrl": format!("http://{addr}#vol"),
@@ -1650,6 +1617,7 @@ async fn test_source_debugger_edge_cases_diagnostics_large_toc_empty_urls_and_da
     })
     .to_string();
     let vol_id = online_svc
+        .sources()
         .import_sources(&admin, &raw_vol)
         .await
         .unwrap()
@@ -1678,7 +1646,6 @@ async fn test_source_debugger_edge_cases_diagnostics_large_toc_empty_urls_and_da
             .any(|s| s.stage == "content" && !s.ok)
     );
 
-    // 3. Failed stage preserves diagnostics.logs collected before error
     let raw_fail = serde_json::json!({
         "bookSourceName": "失败保留日志源",
         "bookSourceUrl": format!("http://{addr}#fail"),
@@ -1687,6 +1654,7 @@ async fn test_source_debugger_edge_cases_diagnostics_large_toc_empty_urls_and_da
     })
     .to_string();
     let fail_id = online_svc
+        .sources()
         .import_sources(&admin, &raw_fail)
         .await
         .unwrap()
@@ -1742,6 +1710,7 @@ async fn concurrent_track_online_book_creates_single_book_and_delete_cleans_lock
     })
     .to_string();
     let sid = online_svc
+        .sources()
         .import_sources(&admin, &raw_src)
         .await
         .unwrap()
@@ -1770,7 +1739,6 @@ async fn concurrent_track_online_book_creates_single_book_and_delete_cleans_lock
         "concurrent track_online_book must not create duplicates"
     );
 
-    // Trigger lock entry creation, then delete book and verify lock maps are cleaned
     let _ = online_svc.sync_tracked_epub(b1.id, true).await.unwrap();
     assert!(
         online_svc
@@ -1833,6 +1801,7 @@ async fn sync_tracked_epub_preserves_dirty_flag_when_chapter_arrives_concurrentl
     })
     .to_string();
     let sid = online_svc
+        .sources()
         .import_sources(&admin, &raw_src)
         .await
         .unwrap()
@@ -1857,7 +1826,6 @@ async fn sync_tracked_epub_preserves_dirty_flag_when_chapter_arrives_concurrentl
         .await
         .unwrap();
 
-    // Fetch ch0 and ch1 concurrently while running sync_tracked_epub
     let (c0, c1, _sync) = tokio::join!(
         online_svc.get_tracked_chapter(&admin, tracked.id, 0, false),
         online_svc.get_tracked_chapter(&admin, tracked.id, 1, false),
@@ -1866,7 +1834,6 @@ async fn sync_tracked_epub_preserves_dirty_flag_when_chapter_arrives_concurrentl
     c0.unwrap();
     c1.unwrap();
 
-    // Now run final ensure_tracked_epub_synced; both chapters MUST end up in the EPUB
     online_svc
         .ensure_tracked_epub_synced(tracked.id)
         .await
@@ -1890,20 +1857,20 @@ async fn sync_tracked_epub_preserves_dirty_flag_when_chapter_arrives_concurrentl
 #[tokio::test]
 async fn login_action_supports_clearing_variable_cache_cookie_and_concurrent_same_host_cookies() {
     let (_tmp, admin, online_svc) = setup_test_online_service().await;
+    let src_crud = online_svc.sources();
     let raw_src = serde_json::json!({
         "bookSourceName": "状态清理与Cookie并发源",
         "bookSourceUrl": "https://book-probe.test",
         "ruleSearch": { "bookList": "$.list", "name": "$.name", "bookUrl": "$.url" }
     })
     .to_string();
-    let sid = online_svc
+    let sid = src_crud
         .import_sources(&admin, &raw_src)
         .await
         .unwrap()
         .sources[0]
         .id;
 
-    // 1. Set non-empty variable, cache entry, and host cookies
     online_svc
         .run_login_action(
             &admin,
@@ -1920,11 +1887,10 @@ async fn login_action_supports_clearing_variable_cache_cookie_and_concurrent_sam
         .await
         .unwrap();
     assert_eq!(
-        online_svc.get_source_variable(&admin, sid).await.unwrap(),
+        src_crud.get_source_variable(&admin, sid).await.unwrap(),
         "BOOK_NONEMPTY"
     );
 
-    // 2. Clear variable, cache key, and host cookies via JS
     online_svc
         .run_login_action(
             &admin,
@@ -1960,12 +1926,8 @@ async fn login_action_supports_clearing_variable_cache_cookie_and_concurrent_sam
     assert_eq!(parsed["v"], "");
     assert!(parsed["k1"].is_null());
     assert_eq!(parsed["ck"], "");
-    assert_eq!(
-        online_svc.get_source_variable(&admin, sid).await.unwrap(),
-        ""
-    );
+    assert_eq!(src_crud.get_source_variable(&admin, sid).await.unwrap(), "");
 
-    // 3. Concurrent writes to distinct cookie keys on the same host preserve both
     let (r1, r2) = tokio::join!(
         online_svc.run_login_action(
             &admin,

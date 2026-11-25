@@ -244,8 +244,47 @@ pub struct Book {
     pub updated_at: Timestamp,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateMetadataPatch {
+    pub title: Option<String>,
+    pub authors: Option<Vec<String>>,
+    pub description: Option<String>,
+    pub isbn: Option<String>,
+    pub language: Option<String>,
+    pub publisher: Option<String>,
+    pub published_at: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub series: Option<String>,
+    pub series_index: Option<f64>,
+    pub rating: Option<f64>,
+}
+
 impl Book {
     pub fn new(
+        library_id: LibraryId,
+        format: BookFormat,
+        source: BookSource,
+        file_size: u64,
+        file_hash: impl Into<String>,
+        cover_key: Option<String>,
+        metadata: BookMetadata,
+    ) -> DomainResult<Self> {
+        Self::with_id(
+            BookId::new(),
+            library_id,
+            format,
+            source,
+            file_size,
+            file_hash,
+            cover_key,
+            metadata,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_id(
+        id: BookId,
         library_id: LibraryId,
         format: BookFormat,
         source: BookSource,
@@ -257,7 +296,7 @@ impl Book {
         let metadata = metadata.normalized()?;
         let now = Timestamp::now();
         Ok(Self {
-            id: BookId::new(),
+            id,
             library_id,
             format,
             source,
@@ -277,6 +316,44 @@ impl Book {
         Ok(())
     }
 
+    pub fn apply_metadata_patch(&mut self, patch: UpdateMetadataPatch) -> DomainResult<()> {
+        let mut meta = self.metadata.clone();
+        if let Some(title) = patch.title {
+            meta.title = title;
+        }
+        if let Some(authors) = patch.authors {
+            meta.authors = authors;
+        }
+        if let Some(description) = patch.description {
+            meta.description = Some(description);
+        }
+        if let Some(isbn) = patch.isbn {
+            meta.isbn = Some(isbn);
+        }
+        if let Some(language) = patch.language {
+            meta.language = Some(language);
+        }
+        if let Some(publisher) = patch.publisher {
+            meta.publisher = Some(publisher);
+        }
+        if let Some(published_at) = patch.published_at {
+            meta.published_at = Some(published_at);
+        }
+        if let Some(tags) = patch.tags {
+            meta.tags = tags;
+        }
+        if let Some(series) = patch.series {
+            meta.series = Some(series);
+        }
+        if let Some(series_index) = patch.series_index {
+            meta.series_index = Some(series_index);
+        }
+        if let Some(rating) = patch.rating {
+            meta.rating = Some(rating);
+        }
+        self.update_metadata(meta)
+    }
+
     pub fn set_tags(&mut self, tags: Vec<String>) {
         self.metadata.tags = BookMetadata::normalize_list(tags);
         self.updated_at = Timestamp::now();
@@ -284,6 +361,14 @@ impl Book {
 
     pub fn set_cover(&mut self, cover_key: Option<String>) {
         self.cover_key = cover_key;
+        self.updated_at = Timestamp::now();
+    }
+
+    pub fn relocate_mounted_file(&mut self, relative_path: String, file_mtime: i64) {
+        self.source = BookSource::MountedFile {
+            relative_path,
+            file_mtime,
+        };
         self.updated_at = Timestamp::now();
     }
 
@@ -302,6 +387,139 @@ impl Book {
             (new_mtime, &mut self.source)
         {
             *file_mtime = mtime;
+        }
+        self.updated_at = Timestamp::now();
+    }
+
+    pub fn mark_tracked_epub_dirty(&mut self) {
+        if let BookSource::OnlineTracked { epub_dirty, .. } = &mut self.source {
+            *epub_dirty = true;
+            self.updated_at = Timestamp::now();
+        }
+    }
+
+    pub fn record_tracked_toc_refresh(
+        &mut self,
+        effective_toc_url: String,
+        new_last_chapter: Option<String>,
+        new_cached: u32,
+        new_total: u32,
+    ) -> bool {
+        let mut dirty_flag = false;
+        if let BookSource::OnlineTracked {
+            toc_url,
+            last_chapter,
+            cached_chapters,
+            total_chapters,
+            epub_dirty,
+            ..
+        } = &mut self.source
+        {
+            *toc_url = effective_toc_url;
+            *last_chapter = new_last_chapter;
+            *cached_chapters = new_cached;
+            *total_chapters = new_total;
+            dirty_flag = *epub_dirty;
+        }
+        self.metadata.chapter_count = (new_total > 0).then_some(new_total);
+        self.updated_at = Timestamp::now();
+        dirty_flag
+    }
+
+    pub fn record_tracked_chapter_cached(&mut self, new_cached: u32, new_total: u32) {
+        if let BookSource::OnlineTracked {
+            cached_chapters,
+            total_chapters,
+            epub_dirty,
+            ..
+        } = &mut self.source
+        {
+            *cached_chapters = new_cached;
+            *total_chapters = new_total.max(*total_chapters);
+            *epub_dirty = true;
+        }
+        self.updated_at = Timestamp::now();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn switch_online_tracking(
+        &mut self,
+        new_source_id: uuid::Uuid,
+        new_book_url: String,
+        new_toc_url: String,
+        new_last_chapter: Option<String>,
+        new_cached: u32,
+        new_total: u32,
+        new_intro: Option<String>,
+        new_cover_key: Option<String>,
+    ) {
+        if let BookSource::OnlineTracked {
+            source_id,
+            book_url,
+            toc_url,
+            last_chapter,
+            cached_chapters,
+            total_chapters,
+            epub_dirty,
+            ..
+        } = &mut self.source
+        {
+            *source_id = new_source_id;
+            *book_url = new_book_url;
+            *toc_url = new_toc_url;
+            *last_chapter = new_last_chapter;
+            *cached_chapters = new_cached;
+            *total_chapters = new_total;
+            *epub_dirty = true;
+        }
+        if let Some(intro) = BookMetadata::normalize_optional(new_intro) {
+            self.metadata.description = Some(intro);
+        }
+        if let Some(ck) = new_cover_key {
+            self.cover_key = Some(ck);
+        }
+        self.metadata.chapter_count = (new_total > 0).then_some(new_total);
+        self.updated_at = Timestamp::now();
+    }
+
+    pub fn commit_synced_tracked_epub(
+        &mut self,
+        new_storage_key: String,
+        file_size: u64,
+        file_hash: String,
+        cached_count: u32,
+        total_count: u32,
+        is_clean: bool,
+    ) {
+        self.file_size = file_size;
+        self.file_hash = file_hash;
+        if let BookSource::OnlineTracked {
+            storage_key,
+            cached_chapters,
+            total_chapters,
+            epub_dirty,
+            ..
+        } = &mut self.source
+        {
+            *storage_key = new_storage_key;
+            if is_clean {
+                *cached_chapters = cached_count;
+                if total_count > 0 {
+                    *total_chapters = total_count;
+                }
+                *epub_dirty = false;
+            } else {
+                *epub_dirty = true;
+            }
+        }
+        if is_clean {
+            self.metadata.chapter_count = if total_count > 0 {
+                Some(total_count)
+            } else if cached_count > 0 {
+                Some(cached_count)
+            } else {
+                self.metadata.chapter_count
+            };
         }
         self.updated_at = Timestamp::now();
     }

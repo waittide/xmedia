@@ -1,74 +1,31 @@
 mod debug;
 mod downloads;
 mod dto;
-mod helpers;
+pub(crate) mod helpers;
 mod reader;
-mod sources;
 mod tracked;
-
-#[cfg(test)]
-mod tests;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use xmedia_core::application::online_items::{OnlineSourceDirectory, OnlineSourceInfo};
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::user::User;
+use xmedia_source::crud::SourceCrudService;
 
 use crate::application::catalog::BookCatalogService;
+use crate::application::ports::{BookPackagerPort, BookSourceEnginePort, TrackedBookStorePort};
 use crate::domain::book::BookId;
-use crate::domain::repository::BookSourceRepository;
-use crate::source::BookSourceEngine;
-use crate::source::tracked_store::TrackedBookStore;
+use crate::domain::online::LegadoBookSource;
 
 pub use dto::*;
 pub(crate) use helpers::validate_safe_cover_image;
 use helpers::{AsyncLockMap, StoredDownloadJob};
 
-pub struct BookOnlineSourceDirectory {
-    sources: Arc<dyn BookSourceRepository>,
-}
-
-impl BookOnlineSourceDirectory {
-    pub fn new(sources: Arc<dyn BookSourceRepository>) -> Self {
-        Self { sources }
-    }
-}
-
-#[async_trait]
-impl OnlineSourceDirectory for BookOnlineSourceDirectory {
-    async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
-        let rows = self.sources.list_all().await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                (
-                    r.id,
-                    OnlineSourceInfo {
-                        name: r.name,
-                        enabled: r.enabled,
-                    },
-                )
-            })
-            .collect())
-    }
-
-    async fn find_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
-        Ok(self
-            .sources
-            .find_by_id(id)
-            .await?
-            .map(|r| OnlineSourceInfo {
-                name: r.name,
-                enabled: r.enabled,
-            }))
-    }
-}
+pub type BookOnlineSourceDirectory = SourceCrudService<LegadoBookSource>;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -83,18 +40,16 @@ const TRACKED_EPUB_DEBOUNCE: Duration = Duration::from_secs(6);
 const TRACKED_EPUB_IMMEDIATE_BATCH: u32 = 20;
 
 pub struct BookOnlineService {
-    sources: Arc<dyn BookSourceRepository>,
-    catalog: Arc<BookCatalogService>,
-    engine: BookSourceEngine,
-    cache_dir: PathBuf,
+    sources: Arc<BookOnlineSourceDirectory>,
+    pub(crate) catalog: Arc<BookCatalogService>,
+    engine: Arc<dyn BookSourceEnginePort>,
+    packager: Arc<dyn BookPackagerPort>,
+    pub(crate) tracked_store: Arc<dyn TrackedBookStorePort>,
     download_dir: PathBuf,
-    tracked_store: TrackedBookStore,
     book_state_locks: AsyncLockMap<BookId>,
-    epub_sync_locks: AsyncLockMap<BookId>,
-    pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>>,
+    pub(crate) epub_sync_locks: AsyncLockMap<BookId>,
+    pub(crate) pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>>,
     track_locks: AsyncLockMap<(Uuid, String)>,
-    source_state_locks: AsyncLockMap<Uuid>,
-    seed_import_lock: tokio::sync::Mutex<()>,
     downloads: Arc<RwLock<HashMap<Uuid, StoredDownloadJob>>>,
     allow_private_ips: bool,
     op_timeout: Duration,
@@ -103,41 +58,21 @@ pub struct BookOnlineService {
 
 impl BookOnlineService {
     pub fn new(
-        sources: Arc<dyn BookSourceRepository>,
+        sources: Arc<BookOnlineSourceDirectory>,
         data_dir: &Path,
         catalog: Arc<BookCatalogService>,
-    ) -> DomainResult<Self> {
-        Self::with_engine(
-            sources,
-            data_dir,
-            catalog,
-            BookSourceEngine::default(),
-            false,
-        )
-    }
-
-    pub fn with_engine(
-        sources: Arc<dyn BookSourceRepository>,
-        data_dir: &Path,
-        catalog: Arc<BookCatalogService>,
-        engine: BookSourceEngine,
+        engine: Arc<dyn BookSourceEnginePort>,
+        packager: Arc<dyn BookPackagerPort>,
+        tracked_store: Arc<dyn TrackedBookStorePort>,
         allow_private_ips: bool,
     ) -> DomainResult<Self> {
-        let cache_dir = data_dir.join("online_book_cache");
         let download_dir = data_dir.join("online_downloads");
-        std::fs::create_dir_all(&cache_dir).map_err(|e| {
-            DomainError::Storage(format!(
-                "创建在线书源缓存目录 '{}' 失败: {e}",
-                cache_dir.display()
-            ))
-        })?;
         std::fs::create_dir_all(&download_dir).map_err(|e| {
             DomainError::Storage(format!(
                 "创建在线下载输出目录 '{}' 失败: {e}",
                 download_dir.display()
             ))
         })?;
-        // Clean up any leftover per-job download directories from previous server runs.
         if let Ok(entries) = std::fs::read_dir(&download_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -148,7 +83,7 @@ impl BookOnlineService {
                 }
             }
         }
-        let tracked_store = TrackedBookStore::new(data_dir).map_err(DomainError::Storage)?;
+
         let book_state_locks: AsyncLockMap<BookId> = Arc::new(Mutex::new(HashMap::new()));
         let epub_sync_locks: AsyncLockMap<BookId> = Arc::new(Mutex::new(HashMap::new()));
         let pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>> =
@@ -158,7 +93,7 @@ impl BookOnlineService {
             let state_locks = Arc::clone(&book_state_locks);
             let sync_locks = Arc::clone(&epub_sync_locks);
             let gens = Arc::clone(&pending_sync_gens);
-            let store = tracked_store.clone();
+            let store = Arc::clone(&tracked_store);
             catalog.set_on_book_deleted_hook(Arc::new(move |book_id| {
                 state_locks
                     .lock()
@@ -179,15 +114,13 @@ impl BookOnlineService {
             sources,
             catalog,
             engine,
-            cache_dir,
-            download_dir,
+            packager,
             tracked_store,
+            download_dir,
             book_state_locks,
             epub_sync_locks,
             pending_sync_gens,
             track_locks: Arc::new(Mutex::new(HashMap::new())),
-            source_state_locks: Arc::new(Mutex::new(HashMap::new())),
-            seed_import_lock: tokio::sync::Mutex::new(()),
             downloads: Arc::new(RwLock::new(HashMap::new())),
             allow_private_ips,
             op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
@@ -195,11 +128,41 @@ impl BookOnlineService {
         })
     }
 
+    pub fn sources(&self) -> &Arc<BookOnlineSourceDirectory> {
+        &self.sources
+    }
+
+    pub fn catalog(&self) -> &Arc<BookCatalogService> {
+        &self.catalog
+    }
+
     #[cfg(test)]
     pub(crate) fn with_timeouts(mut self, op_timeout: Duration, detail_timeout: Duration) -> Self {
         self.op_timeout = op_timeout;
         self.detail_timeout = detail_timeout;
         self
+    }
+
+    /// Executes a `loginUi` / `loginUrl` action via `SourceCrudService::run_login_action_with`.
+    pub async fn run_login_action(
+        &self,
+        actor: &User,
+        id: Uuid,
+        login_info: HashMap<String, String>,
+        action: Option<String>,
+    ) -> DomainResult<LoginActionResponseDto> {
+        let engine = Arc::clone(&self.engine);
+        self.sources
+            .run_login_action_with(
+                actor,
+                id,
+                login_info,
+                action,
+                move |parsed, state, merged_login, act| {
+                    engine.run_login_action_sync(parsed, state, merged_login, act)
+                },
+            )
+            .await
     }
 
     /// Removes in-memory synchronization locks and generation counters for a deleted book.

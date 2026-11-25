@@ -2,23 +2,371 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
-    format_test_failure_summary, format_timeout_step, merge_diagnostics,
-    merge_runtime_state_with_base, summarize_steps_outcome,
+    format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
 };
 
-use crate::source::model::{
+use crate::application::ports::BookSourceEnginePort;
+use crate::domain::online::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
-    OnlineChapterItem, SearchBookResult,
+    OnlineChapterItem, SearchBookResult, SourceRuntimeState,
 };
 
 use super::dto::{SourceDebugStepDto, SourceTestInput, SourceTestMode, SourceTestReportDto};
 use super::helpers::CancelOnDrop;
 use super::{BookOnlineService, SOURCE_TEST_TOTAL_TIMEOUT};
+
+#[derive(Default)]
+struct DebugRunAcc {
+    state: SourceRuntimeState,
+    steps: Vec<SourceDebugStepDto>,
+    all_diag: ExecutionDiagnostics,
+    search_items: Vec<SearchBookResult>,
+    search_total_count: usize,
+    book_detail: Option<OnlineBookDetail>,
+    toc_chapters: Vec<OnlineChapterItem>,
+    toc_total_count: usize,
+    content_chapter_index: Option<usize>,
+    content_chapter_title: Option<String>,
+    content_chapter_url: Option<String>,
+    content_text: Option<String>,
+    content_char_count: usize,
+    next_book_url: Option<String>,
+    next_fallback_hint: Option<BookJsContext>,
+    next_toc_url: Option<String>,
+    next_chapter_url: Option<String>,
+    next_chapter_title: String,
+    next_chapter_idx: usize,
+    chapter_index_override: Option<usize>,
+    toc_succeeded_without_chapter_url: bool,
+}
+
+impl DebugRunAcc {
+    fn run_search_stage(
+        &mut self,
+        engine: &dyn BookSourceEnginePort,
+        parsed: &LegadoBookSource,
+        kw: &str,
+        budget: Duration,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let t0 = Instant::now();
+        match engine.search_sync_with_control(parsed, self.state.clone(), kw, 1, budget, cancel) {
+            Ok(out) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                self.state = out.state;
+                merge_diagnostics(&mut self.all_diag, &out.diagnostics);
+                self.search_total_count = out.data.len();
+                let ok = self.search_total_count > 0;
+                let summary = if ok {
+                    format!("命中 {} 本（关键词：{kw}）", self.search_total_count)
+                } else {
+                    format!("关键词「{kw}」未匹配到书籍")
+                };
+                let err = (!ok)
+                    .then(|| "搜索未返回条目，请检查关键词、是否需要登录或书源规则".to_string());
+                self.search_items = out.data.into_iter().take(30).collect();
+                if let Some(first) = self.search_items.first() {
+                    self.next_book_url = Some(first.book_url.clone());
+                    self.next_fallback_hint = Some(BookJsContext {
+                        name: first.name.clone(),
+                        author: first.author.clone(),
+                        book_url: first.book_url.clone(),
+                        toc_url: String::new(),
+                        cover_url: first.cover_url.clone(),
+                        intro: first.intro.clone(),
+                        dur_chapter_index: 0,
+                        dur_chapter_title: String::new(),
+                        custom_variable: String::new(),
+                    });
+                }
+                self.steps.push(SourceDebugStepDto {
+                    stage: "search".into(),
+                    label: "搜索规则 (ruleSearch)".into(),
+                    ok,
+                    elapsed_ms,
+                    summary,
+                    error: err,
+                    diagnostics: out.diagnostics,
+                });
+            }
+            Err(err) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                merge_diagnostics(&mut self.all_diag, &err.diagnostics);
+                self.steps.push(SourceDebugStepDto {
+                    stage: "search".into(),
+                    label: "搜索规则 (ruleSearch)".into(),
+                    ok: false,
+                    elapsed_ms,
+                    summary: "搜索请求或解析失败".into(),
+                    error: Some(err.message),
+                    diagnostics: err.diagnostics,
+                });
+            }
+        }
+    }
+
+    fn run_book_info_stage(
+        &mut self,
+        engine: &dyn BookSourceEnginePort,
+        parsed: &LegadoBookSource,
+        b_url: &str,
+        budget: Duration,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let t0 = Instant::now();
+        match engine.fetch_book_info_sync_with_control(
+            parsed,
+            self.state.clone(),
+            b_url,
+            self.next_fallback_hint.as_ref(),
+            budget,
+            cancel,
+        ) {
+            Ok(out) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                self.state = out.state;
+                merge_diagnostics(&mut self.all_diag, &out.diagnostics);
+                let detail = out.data;
+                let ok = !detail.name.is_empty() || !detail.toc_url.is_empty();
+                let summary = if ok {
+                    let author_part = if detail.author.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" / {}", detail.author)
+                    };
+                    format!("《{}》{}", detail.name, author_part)
+                } else {
+                    "详情页未解析出书名与目录地址".into()
+                };
+                let err = (!ok).then(|| "ruleBookInfo 未能提取有效书名或目录 URL".to_string());
+                if self.next_toc_url.is_none() {
+                    self.next_toc_url = Some(if detail.toc_url.is_empty() {
+                        b_url.to_string()
+                    } else {
+                        detail.toc_url.clone()
+                    });
+                }
+                self.book_detail = Some(detail);
+                self.steps.push(SourceDebugStepDto {
+                    stage: "book_info".into(),
+                    label: "详情规则 (ruleBookInfo)".into(),
+                    ok,
+                    elapsed_ms,
+                    summary,
+                    error: err,
+                    diagnostics: out.diagnostics,
+                });
+            }
+            Err(err) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                merge_diagnostics(&mut self.all_diag, &err.diagnostics);
+                self.steps.push(SourceDebugStepDto {
+                    stage: "book_info".into(),
+                    label: "详情规则 (ruleBookInfo)".into(),
+                    ok: false,
+                    elapsed_ms,
+                    summary: "详情请求或解析失败".into(),
+                    error: Some(err.message),
+                    diagnostics: err.diagnostics,
+                });
+            }
+        }
+    }
+
+    fn build_book_ctx(&self) -> BookJsContext {
+        if let Some(ref d) = self.book_detail {
+            BookJsContext {
+                name: d.name.clone(),
+                author: d.author.clone(),
+                book_url: d.book_url.clone(),
+                toc_url: d.toc_url.clone(),
+                cover_url: d.cover_url.clone(),
+                intro: d.intro.clone(),
+                dur_chapter_index: self.next_chapter_idx,
+                dur_chapter_title: self.next_chapter_title.clone(),
+                custom_variable: String::new(),
+            }
+        } else if let Some(ref hint) = self.next_fallback_hint {
+            hint.clone()
+        } else {
+            BookJsContext {
+                book_url: self.next_book_url.clone().unwrap_or_default(),
+                toc_url: self.next_toc_url.clone().unwrap_or_default(),
+                ..BookJsContext::default()
+            }
+        }
+    }
+
+    fn run_toc_stage(
+        &mut self,
+        engine: &dyn BookSourceEnginePort,
+        parsed: &LegadoBookSource,
+        t_url: &str,
+        book_ctx: &BookJsContext,
+        budget: Duration,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let t0 = Instant::now();
+        match engine.fetch_toc_sync_with_control(
+            parsed,
+            self.state.clone(),
+            t_url,
+            book_ctx,
+            budget,
+            cancel,
+        ) {
+            Ok(out) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                self.state = out.state;
+                merge_diagnostics(&mut self.all_diag, &out.diagnostics);
+                let full_toc = out.data;
+                self.toc_total_count = full_toc.len();
+                let ok = self.toc_total_count > 0;
+                let summary = if ok {
+                    format!("解析到 {} 章", self.toc_total_count)
+                } else {
+                    "目录未解析到任何章节".into()
+                };
+                let err = (!ok).then(|| "ruleToc 未匹配到章节列表".to_string());
+
+                if self.next_chapter_url.is_none() {
+                    let chosen = self
+                        .chapter_index_override
+                        .and_then(|idx| full_toc.iter().find(|c| c.index == idx))
+                        .or_else(|| {
+                            full_toc
+                                .iter()
+                                .find(|c| !c.is_volume && !c.url.trim().is_empty())
+                        })
+                        .or_else(|| full_toc.iter().find(|c| !c.url.trim().is_empty()));
+                    if let Some(ch) = chosen {
+                        self.next_chapter_url = Some(ch.url.clone());
+                        self.next_chapter_title = ch.title.clone();
+                        self.next_chapter_idx = ch.index;
+                    } else if ok {
+                        self.toc_succeeded_without_chapter_url = true;
+                    }
+                }
+
+                self.toc_chapters = full_toc.into_iter().take(500).collect();
+                self.steps.push(SourceDebugStepDto {
+                    stage: "toc".into(),
+                    label: "目录规则 (ruleToc)".into(),
+                    ok,
+                    elapsed_ms,
+                    summary,
+                    error: err,
+                    diagnostics: out.diagnostics,
+                });
+            }
+            Err(err) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                merge_diagnostics(&mut self.all_diag, &err.diagnostics);
+                self.steps.push(SourceDebugStepDto {
+                    stage: "toc".into(),
+                    label: "目录规则 (ruleToc)".into(),
+                    ok: false,
+                    elapsed_ms,
+                    summary: "目录请求或解析失败".into(),
+                    error: Some(err.message),
+                    diagnostics: err.diagnostics,
+                });
+            }
+        }
+    }
+
+    fn run_content_stage(
+        &mut self,
+        engine: &dyn BookSourceEnginePort,
+        parsed: &LegadoBookSource,
+        c_url: &str,
+        book_ctx: &BookJsContext,
+        budget: Duration,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let t0 = Instant::now();
+        let ch_ctx = ChapterJsContext {
+            index: self.next_chapter_idx,
+            title: self.next_chapter_title.clone(),
+            url: c_url.to_string(),
+        };
+        let mut content_book_ctx = book_ctx.clone();
+        content_book_ctx.dur_chapter_index = self.next_chapter_idx;
+        content_book_ctx.dur_chapter_title = self.next_chapter_title.clone();
+
+        match engine.fetch_chapter_content_sync_with_control(
+            parsed,
+            self.state.clone(),
+            c_url,
+            &content_book_ctx,
+            &ch_ctx,
+            budget,
+            cancel,
+        ) {
+            Ok(out) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                self.state = out.state;
+                merge_diagnostics(&mut self.all_diag, &out.diagnostics);
+                let char_count = out.data.content.chars().count();
+                let resolved_title = if !out.data.title.trim().is_empty() {
+                    out.data.title.clone()
+                } else if !self.next_chapter_title.is_empty() {
+                    self.next_chapter_title.clone()
+                } else {
+                    format!("第 {} 章", self.next_chapter_idx + 1)
+                };
+                let ok = char_count > 0;
+                let summary = if ok {
+                    format!("《{resolved_title}》解析正文 {char_count} 字")
+                } else {
+                    format!("《{resolved_title}》正文内容为空")
+                };
+                let err = (!ok).then(|| "ruleContent 提取的正文内容为空".to_string());
+                self.content_chapter_index = Some(self.next_chapter_idx);
+                self.content_chapter_title = Some(resolved_title);
+                self.content_chapter_url = Some(c_url.to_string());
+                self.content_text = Some(out.data.content);
+                self.content_char_count = char_count;
+                self.steps.push(SourceDebugStepDto {
+                    stage: "content".into(),
+                    label: "正文规则 (ruleContent)".into(),
+                    ok,
+                    elapsed_ms,
+                    summary,
+                    error: err,
+                    diagnostics: out.diagnostics,
+                });
+            }
+            Err(err) => {
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                merge_diagnostics(&mut self.all_diag, &err.diagnostics);
+                self.content_chapter_index = Some(self.next_chapter_idx);
+                self.content_chapter_title =
+                    (!self.next_chapter_title.is_empty()).then(|| self.next_chapter_title.clone());
+                self.content_chapter_url = Some(c_url.to_string());
+                self.steps.push(SourceDebugStepDto {
+                    stage: "content".into(),
+                    label: "正文规则 (ruleContent)".into(),
+                    ok: false,
+                    elapsed_ms,
+                    summary: "正文请求或解析失败".into(),
+                    error: Some(err.message),
+                    diagnostics: err.diagnostics,
+                });
+            }
+        }
+    }
+}
+
+fn non_empty_trimmed(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
 
 impl BookOnlineService {
     pub async fn test_source(
@@ -28,77 +376,50 @@ impl BookOnlineService {
         input: SourceTestInput,
     ) -> DomainResult<SourceTestReportDto> {
         require_admin(actor)?;
-        let rec = self.load_source(id).await?;
+        let rec = self.sources.load_source(id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
-        let raw_input = input
-            .keyword
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string);
-
+        let raw_input = non_empty_trimmed(input.keyword.as_deref());
         let default_kw = parsed
             .rule_search
             .as_ref()
-            .and_then(|r| r.check_key_word.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("我的")
-            .to_string();
+            .and_then(|r| non_empty_trimmed(r.check_key_word.as_deref()))
+            .unwrap_or_else(|| "我的".to_string());
 
         let is_direct_url = |s: &str| {
             s.starts_with("http://") || s.starts_with("https://") || s.starts_with("data:")
         };
 
-        let explicit_book_url = input
-            .book_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string);
-        let explicit_toc_url = input
-            .toc_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string);
-        let explicit_chapter_url = input
-            .chapter_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string);
+        let explicit_book_url = non_empty_trimmed(input.book_url.as_deref());
+        let explicit_toc_url = non_empty_trimmed(input.toc_url.as_deref());
+        let explicit_chapter_url = non_empty_trimmed(input.chapter_url.as_deref());
 
         match input.mode {
-            SourceTestMode::BookInfo => {
-                if explicit_book_url.is_none() && raw_input.is_none() {
-                    return Err(DomainError::Validation(
-                        "请输入书籍详情页 URL，或在搜索结果中点击「测此书详情」".into(),
-                    ));
-                }
+            SourceTestMode::BookInfo if explicit_book_url.is_none() && raw_input.is_none() => {
+                return Err(DomainError::Validation(
+                    "请输入书籍详情页 URL，或在搜索结果中点击「测此书详情」".into(),
+                ));
             }
-            SourceTestMode::Toc => {
-                if explicit_toc_url.is_none() && explicit_book_url.is_none() && raw_input.is_none()
-                {
-                    return Err(DomainError::Validation(
-                        "请输入目录页 URL，或先运行详情测试".into(),
-                    ));
-                }
+            SourceTestMode::Toc
+                if explicit_toc_url.is_none()
+                    && explicit_book_url.is_none()
+                    && raw_input.is_none() =>
+            {
+                return Err(DomainError::Validation(
+                    "请输入目录页 URL，或先运行详情测试".into(),
+                ));
             }
-            SourceTestMode::Content => {
-                if explicit_chapter_url.is_none() && raw_input.is_none() {
-                    return Err(DomainError::Validation(
-                        "请输入章节正文页 URL，或在目录列表中点击「测本章正文」".into(),
-                    ));
-                }
+            SourceTestMode::Content if explicit_chapter_url.is_none() && raw_input.is_none() => {
+                return Err(DomainError::Validation(
+                    "请输入章节正文页 URL，或在目录列表中点击「测本章正文」".into(),
+                ));
             }
-            SourceTestMode::Full | SourceTestMode::Search => {}
+            _ => {}
         }
 
         let effective_keyword = match input.mode {
-            SourceTestMode::BookInfo => explicit_book_url
+            SourceTestMode::BookInfo | SourceTestMode::Full => explicit_book_url
                 .clone()
                 .or_else(|| raw_input.clone())
                 .unwrap_or_else(|| default_kw.clone()),
@@ -111,21 +432,13 @@ impl BookOnlineService {
                 .clone()
                 .or_else(|| raw_input.clone())
                 .unwrap_or_else(|| default_kw.clone()),
-            SourceTestMode::Full => explicit_book_url
-                .clone()
-                .or_else(|| raw_input.clone())
-                .unwrap_or_else(|| default_kw.clone()),
             SourceTestMode::Search => raw_input.clone().unwrap_or_else(|| default_kw.clone()),
         };
+
         let mode = input.mode;
         let chapter_index_override = input.chapter_index;
-        let chapter_title_override = input
-            .chapter_title
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string);
-        let engine = self.engine.clone();
+        let chapter_title_override = non_empty_trimmed(input.chapter_title.as_deref());
+        let engine = Arc::clone(&self.engine);
         let prev_state = rec.runtime_state.clone();
         let base_state = prev_state.clone();
         let kw_clone = effective_keyword.clone();
@@ -142,391 +455,111 @@ impl BookOnlineService {
                         .saturating_sub(total_start.elapsed())
                         .max(Duration::from_millis(1))
                 };
-                let mut state = prev_state;
-                let mut steps: Vec<SourceDebugStepDto> = Vec::new();
-                let mut all_diag = ExecutionDiagnostics::default();
+                let mut acc = DebugRunAcc {
+                    state: prev_state,
+                    next_book_url: explicit_book_url,
+                    next_toc_url: explicit_toc_url,
+                    next_chapter_url: explicit_chapter_url,
+                    next_chapter_title: chapter_title_override.unwrap_or_default(),
+                    next_chapter_idx: chapter_index_override.unwrap_or(0),
+                    chapter_index_override,
+                    ..Default::default()
+                };
 
-                let mut search_items: Vec<SearchBookResult> = Vec::new();
-                let mut search_total_count: usize = 0;
-                let mut book_detail: Option<OnlineBookDetail> = None;
-                let mut toc_chapters: Vec<OnlineChapterItem> = Vec::new();
-                let mut toc_total_count: usize = 0;
-                let mut content_chapter_index: Option<usize> = None;
-                let mut content_chapter_title: Option<String> = None;
-                let mut content_chapter_url: Option<String> = None;
-                let mut content_text: Option<String> = None;
-                let mut content_char_count: usize = 0;
-
-                let mut next_book_url: Option<String> = explicit_book_url.clone();
-                let mut next_fallback_hint: Option<BookJsContext> = None;
-                let mut next_toc_url: Option<String> = explicit_toc_url.clone();
-                let mut next_chapter_url: Option<String> = explicit_chapter_url.clone();
-                let mut next_chapter_title = chapter_title_override.unwrap_or_default();
-                let mut next_chapter_idx = chapter_index_override.unwrap_or(0);
-
-                // In Full mode, pasting a direct URL (including data:) into the keyword box jumps straight to book_info
                 let skip_search_for_url = mode == SourceTestMode::Full
-                    && (next_book_url.is_some() || raw_input.as_deref().is_some_and(is_direct_url));
-                if skip_search_for_url && next_book_url.is_none() {
-                    next_book_url = raw_input.clone();
+                    && (acc.next_book_url.is_some()
+                        || raw_input.as_deref().is_some_and(is_direct_url));
+                if skip_search_for_url && acc.next_book_url.is_none() {
+                    acc.next_book_url = raw_input.clone();
                 }
 
-                // Stage 1: ruleSearch
                 if mode == SourceTestMode::Search
                     || (mode == SourceTestMode::Full && !skip_search_for_url)
                 {
-                    let t0 = Instant::now();
-                    match engine.search_sync_with_control(
+                    acc.run_search_stage(
+                        engine.as_ref(),
                         &parsed,
-                        state.clone(),
                         &kw_clone,
-                        1,
                         remaining_budget(),
                         cancel_worker.clone(),
-                    ) {
-                        Ok(out) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            state = out.state;
-                            merge_diagnostics(&mut all_diag, &out.diagnostics);
-                            search_total_count = out.data.len();
-                            let ok = search_total_count > 0;
-                            let summary = if ok {
-                                format!("命中 {search_total_count} 本（关键词：{kw_clone}）")
-                            } else {
-                                format!("关键词「{kw_clone}」未匹配到书籍")
-                            };
-                            let err = if ok {
-                                None
-                            } else {
-                                Some("搜索未返回条目，请检查关键词、是否需要登录或书源规则".into())
-                            };
-                            search_items = out.data.into_iter().take(30).collect();
-                            if let Some(first) = search_items.first() {
-                                next_book_url = Some(first.book_url.clone());
-                                next_fallback_hint = Some(BookJsContext {
-                                    name: first.name.clone(),
-                                    author: first.author.clone(),
-                                    book_url: first.book_url.clone(),
-                                    toc_url: String::new(),
-                                    cover_url: first.cover_url.clone(),
-                                    intro: first.intro.clone(),
-                                    dur_chapter_index: 0,
-                                    dur_chapter_title: String::new(),
-                                    custom_variable: String::new(),
-                                });
-                            }
-                            steps.push(SourceDebugStepDto {
-                                stage: "search".into(),
-                                label: "搜索规则 (ruleSearch)".into(),
-                                ok,
-                                elapsed_ms,
-                                summary,
-                                error: err,
-                                diagnostics: out.diagnostics,
-                            });
-                        }
-                        Err(err) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diagnostics(&mut all_diag, &err.diagnostics);
-                            steps.push(SourceDebugStepDto {
-                                stage: "search".into(),
-                                label: "搜索规则 (ruleSearch)".into(),
-                                ok: false,
-                                elapsed_ms,
-                                summary: "搜索请求或解析失败".into(),
-                                error: Some(err.message),
-                                diagnostics: err.diagnostics,
-                            });
-                        }
-                    }
+                    );
                 }
 
-                // Stage 2: ruleBookInfo
                 let run_book_info = match mode {
                     SourceTestMode::BookInfo => {
-                        if next_book_url.is_none() {
-                            next_book_url = raw_input.clone();
+                        if acc.next_book_url.is_none() {
+                            acc.next_book_url = raw_input.clone();
                         }
-                        next_book_url.is_some()
+                        acc.next_book_url.is_some()
                     }
-                    SourceTestMode::Full => next_book_url.is_some(),
+                    SourceTestMode::Full => acc.next_book_url.is_some(),
                     _ => false,
                 };
-
-                if run_book_info && let Some(ref b_url) = next_book_url {
-                    let t0 = Instant::now();
-                    match engine.fetch_book_info_sync_with_control(
+                if run_book_info && let Some(b_url) = acc.next_book_url.clone() {
+                    acc.run_book_info_stage(
+                        engine.as_ref(),
                         &parsed,
-                        state.clone(),
-                        b_url,
-                        next_fallback_hint.as_ref(),
+                        &b_url,
                         remaining_budget(),
                         cancel_worker.clone(),
-                    ) {
-                        Ok(out) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            state = out.state;
-                            merge_diagnostics(&mut all_diag, &out.diagnostics);
-                            let detail = out.data;
-                            let ok = !detail.name.is_empty() || !detail.toc_url.is_empty();
-                            let summary = if ok {
-                                let author_part = if detail.author.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" / {}", detail.author)
-                                };
-                                format!("《{}》{}", detail.name, author_part)
-                            } else {
-                                "详情页未解析出书名与目录地址".into()
-                            };
-                            let err = if ok {
-                                None
-                            } else {
-                                Some("ruleBookInfo 未能提取有效书名或目录 URL".into())
-                            };
-                            if next_toc_url.is_none() {
-                                next_toc_url = Some(if detail.toc_url.is_empty() {
-                                    b_url.clone()
-                                } else {
-                                    detail.toc_url.clone()
-                                });
-                            }
-                            book_detail = Some(detail);
-                            steps.push(SourceDebugStepDto {
-                                stage: "book_info".into(),
-                                label: "详情规则 (ruleBookInfo)".into(),
-                                ok,
-                                elapsed_ms,
-                                summary,
-                                error: err,
-                                diagnostics: out.diagnostics,
-                            });
-                        }
-                        Err(err) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diagnostics(&mut all_diag, &err.diagnostics);
-                            steps.push(SourceDebugStepDto {
-                                stage: "book_info".into(),
-                                label: "详情规则 (ruleBookInfo)".into(),
-                                ok: false,
-                                elapsed_ms,
-                                summary: "详情请求或解析失败".into(),
-                                error: Some(err.message),
-                                diagnostics: err.diagnostics,
-                            });
-                        }
-                    }
+                    );
                 }
 
-                // Build BookJsContext for toc / content stages
-                let book_ctx = if let Some(ref d) = book_detail {
-                    BookJsContext {
-                        name: d.name.clone(),
-                        author: d.author.clone(),
-                        book_url: d.book_url.clone(),
-                        toc_url: d.toc_url.clone(),
-                        cover_url: d.cover_url.clone(),
-                        intro: d.intro.clone(),
-                        dur_chapter_index: next_chapter_idx,
-                        dur_chapter_title: next_chapter_title.clone(),
-                        custom_variable: String::new(),
-                    }
-                } else if let Some(ref hint) = next_fallback_hint {
-                    hint.clone()
-                } else {
-                    BookJsContext {
-                        book_url: next_book_url.clone().unwrap_or_default(),
-                        toc_url: next_toc_url.clone().unwrap_or_default(),
-                        ..BookJsContext::default()
-                    }
-                };
-
-                // Stage 3: ruleToc
+                let book_ctx = acc.build_book_ctx();
                 let run_toc = match mode {
                     SourceTestMode::Toc => {
-                        if next_toc_url.is_none() {
-                            next_toc_url = next_book_url.clone().or_else(|| raw_input.clone());
+                        if acc.next_toc_url.is_none() {
+                            acc.next_toc_url =
+                                acc.next_book_url.clone().or_else(|| raw_input.clone());
                         }
-                        next_toc_url.is_some()
+                        acc.next_toc_url.is_some()
                     }
                     SourceTestMode::Full => {
-                        next_toc_url.is_some()
-                            && steps.last().is_none_or(|s| s.stage != "book_info" || s.ok)
+                        acc.next_toc_url.is_some()
+                            && acc
+                                .steps
+                                .last()
+                                .is_none_or(|s| s.stage != "book_info" || s.ok)
                     }
                     _ => false,
                 };
-
-                let mut toc_succeeded_without_chapter_url = false;
-                if run_toc && let Some(ref t_url) = next_toc_url {
-                    let t0 = Instant::now();
-                    match engine.fetch_toc_sync_with_control(
+                if run_toc && let Some(t_url) = acc.next_toc_url.clone() {
+                    acc.run_toc_stage(
+                        engine.as_ref(),
                         &parsed,
-                        state.clone(),
-                        t_url,
+                        &t_url,
                         &book_ctx,
                         remaining_budget(),
                         cancel_worker.clone(),
-                    ) {
-                        Ok(out) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            state = out.state;
-                            merge_diagnostics(&mut all_diag, &out.diagnostics);
-                            let full_toc = out.data;
-                            toc_total_count = full_toc.len();
-                            let ok = toc_total_count > 0;
-                            let summary = if ok {
-                                format!("解析到 {toc_total_count} 章")
-                            } else {
-                                "目录未解析到任何章节".into()
-                            };
-                            let err = if ok {
-                                None
-                            } else {
-                                Some("ruleToc 未匹配到章节列表".into())
-                            };
-
-                            // Look up `chapter_index_override` from FULL TOC before truncating to 500
-                            if next_chapter_url.is_none() {
-                                let chosen = chapter_index_override
-                                    .and_then(|idx| full_toc.iter().find(|c| c.index == idx))
-                                    .or_else(|| {
-                                        full_toc
-                                            .iter()
-                                            .find(|c| !c.is_volume && !c.url.trim().is_empty())
-                                    })
-                                    .or_else(|| full_toc.iter().find(|c| !c.url.trim().is_empty()));
-                                if let Some(ch) = chosen {
-                                    next_chapter_url = Some(ch.url.clone());
-                                    next_chapter_title = ch.title.clone();
-                                    next_chapter_idx = ch.index;
-                                } else if ok {
-                                    toc_succeeded_without_chapter_url = true;
-                                }
-                            }
-
-                            toc_chapters = full_toc.into_iter().take(500).collect();
-
-                            steps.push(SourceDebugStepDto {
-                                stage: "toc".into(),
-                                label: "目录规则 (ruleToc)".into(),
-                                ok,
-                                elapsed_ms,
-                                summary,
-                                error: err,
-                                diagnostics: out.diagnostics,
-                            });
-                        }
-                        Err(err) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diagnostics(&mut all_diag, &err.diagnostics);
-                            steps.push(SourceDebugStepDto {
-                                stage: "toc".into(),
-                                label: "目录规则 (ruleToc)".into(),
-                                ok: false,
-                                elapsed_ms,
-                                summary: "目录请求或解析失败".into(),
-                                error: Some(err.message),
-                                diagnostics: err.diagnostics,
-                            });
-                        }
-                    }
+                    );
                 }
 
-                // Stage 4: ruleContent
                 let run_content = match mode {
                     SourceTestMode::Content => {
-                        if next_chapter_url.is_none() {
-                            next_chapter_url = raw_input.clone();
+                        if acc.next_chapter_url.is_none() {
+                            acc.next_chapter_url = raw_input.clone();
                         }
-                        next_chapter_url.is_some()
+                        acc.next_chapter_url.is_some()
                     }
                     SourceTestMode::Full => {
-                        next_chapter_url
+                        acc.next_chapter_url
                             .as_deref()
                             .is_some_and(|u| !u.trim().is_empty())
-                            && steps.last().is_none_or(|s| s.stage != "toc" || s.ok)
+                            && acc.steps.last().is_none_or(|s| s.stage != "toc" || s.ok)
                     }
                     _ => false,
                 };
-
-                if run_content && let Some(ref c_url) = next_chapter_url {
-                    let t0 = Instant::now();
-                    let ch_ctx = ChapterJsContext {
-                        index: next_chapter_idx,
-                        title: next_chapter_title.clone(),
-                        url: c_url.clone(),
-                    };
-                    let mut content_book_ctx = book_ctx.clone();
-                    content_book_ctx.dur_chapter_index = next_chapter_idx;
-                    content_book_ctx.dur_chapter_title = next_chapter_title.clone();
-
-                    match engine.fetch_chapter_content_sync_with_control(
+                if run_content && let Some(c_url) = acc.next_chapter_url.clone() {
+                    acc.run_content_stage(
+                        engine.as_ref(),
                         &parsed,
-                        state.clone(),
-                        c_url,
-                        &content_book_ctx,
-                        &ch_ctx,
+                        &c_url,
+                        &book_ctx,
                         remaining_budget(),
                         cancel_worker.clone(),
-                    ) {
-                        Ok(out) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            state = out.state;
-                            merge_diagnostics(&mut all_diag, &out.diagnostics);
-                            let char_count = out.data.content.chars().count();
-                            let resolved_title = if !out.data.title.trim().is_empty() {
-                                out.data.title.clone()
-                            } else if !next_chapter_title.is_empty() {
-                                next_chapter_title.clone()
-                            } else {
-                                format!("第 {} 章", next_chapter_idx + 1)
-                            };
-                            let ok = char_count > 0;
-                            let summary = if ok {
-                                format!("《{resolved_title}》解析正文 {char_count} 字")
-                            } else {
-                                format!("《{resolved_title}》正文内容为空")
-                            };
-                            let err = if ok {
-                                None
-                            } else {
-                                Some("ruleContent 提取的正文内容为空".into())
-                            };
-                            content_chapter_index = Some(next_chapter_idx);
-                            content_chapter_title = Some(resolved_title);
-                            content_chapter_url = Some(c_url.clone());
-                            content_text = Some(out.data.content);
-                            content_char_count = char_count;
-                            steps.push(SourceDebugStepDto {
-                                stage: "content".into(),
-                                label: "正文规则 (ruleContent)".into(),
-                                ok,
-                                elapsed_ms,
-                                summary,
-                                error: err,
-                                diagnostics: out.diagnostics,
-                            });
-                        }
-                        Err(err) => {
-                            let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diagnostics(&mut all_diag, &err.diagnostics);
-                            content_chapter_index = Some(next_chapter_idx);
-                            content_chapter_title = (!next_chapter_title.is_empty())
-                                .then_some(next_chapter_title.clone());
-                            content_chapter_url = Some(c_url.clone());
-                            steps.push(SourceDebugStepDto {
-                                stage: "content".into(),
-                                label: "正文规则 (ruleContent)".into(),
-                                ok: false,
-                                elapsed_ms,
-                                summary: "正文请求或解析失败".into(),
-                                error: Some(err.message),
-                                diagnostics: err.diagnostics,
-                            });
-                        }
-                    }
-                } else if mode == SourceTestMode::Full && toc_succeeded_without_chapter_url {
-                    steps.push(SourceDebugStepDto {
+                    );
+                } else if mode == SourceTestMode::Full && acc.toc_succeeded_without_chapter_url {
+                    acc.steps.push(SourceDebugStepDto {
                         stage: "content".into(),
                         label: "正文规则 (ruleContent)".into(),
                         ok: false,
@@ -538,8 +571,9 @@ impl BookOnlineService {
                 }
 
                 let total_elapsed_ms = total_start.elapsed().as_millis() as u64;
-                let (overall_ok, first_error) = summarize_steps_outcome(&steps);
-                let sample_titles: Vec<String> = search_items
+                let (overall_ok, first_error) = summarize_steps_outcome(&acc.steps);
+                let sample_titles: Vec<String> = acc
+                    .search_items
                     .iter()
                     .take(5)
                     .map(|b| b.name.clone())
@@ -550,22 +584,22 @@ impl BookOnlineService {
                     mode,
                     keyword: kw_clone,
                     total_elapsed_ms,
-                    result_count: search_total_count,
+                    result_count: acc.search_total_count,
                     sample_titles,
                     error: first_error,
-                    diagnostics: all_diag,
-                    steps,
-                    search_items,
-                    book_detail,
-                    toc_chapters,
-                    toc_total_count,
-                    content_chapter_index,
-                    content_chapter_title,
-                    content_chapter_url,
-                    content_text,
-                    content_char_count,
+                    diagnostics: acc.all_diag,
+                    steps: acc.steps,
+                    search_items: acc.search_items,
+                    book_detail: acc.book_detail,
+                    toc_chapters: acc.toc_chapters,
+                    toc_total_count: acc.toc_total_count,
+                    content_chapter_index: acc.content_chapter_index,
+                    content_chapter_title: acc.content_chapter_title,
+                    content_chapter_url: acc.content_chapter_url,
+                    content_text: acc.content_text,
+                    content_char_count: acc.content_char_count,
                 };
-                (state, report)
+                (acc.state, report)
             }),
         )
         .await;
@@ -612,7 +646,6 @@ impl BookOnlineService {
             }
         };
 
-        let now = Timestamp::now();
         let last_msg = if report.ok {
             match report.mode {
                 SourceTestMode::Full => {
@@ -638,19 +671,13 @@ impl BookOnlineService {
             format_test_failure_summary(&report.steps)
         };
 
-        let lock = self.source_state_lock_for(id);
-        let _guard = lock.lock().await;
-        let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged_state = match maybe_final_state {
-            Some(final_state) => {
-                merge_runtime_state_with_base(&base_state, current, final_state, false)
-            }
-            None => current.unwrap_or(base_state),
-        };
-
-        let _ = self
-            .sources
-            .update_test_result(id, merged_state, report.ok, Some(last_msg), now)
+        if let Some(final_state) = maybe_final_state {
+            self.sources
+                .persist_runtime_state_with_base(id, &base_state, final_state, false)
+                .await?;
+        }
+        self.sources
+            .record_test_outcome(id, report.ok, last_msg)
             .await?;
 
         Ok(report)

@@ -152,7 +152,8 @@ impl BookCatalogService {
             None
         };
 
-        let mut book = Book::new(
+        let book = Book::with_id(
+            book_id,
             managed_lib.id,
             format,
             BookSource::ManagedUpload {
@@ -163,7 +164,6 @@ impl BookCatalogService {
             cover_key,
             parsed.metadata,
         )?;
-        book.id = book_id;
 
         self.books.save(&book).await?;
         self.bindings
@@ -496,43 +496,7 @@ impl BookCatalogService {
     ) -> DomainResult<BookSummaryDto> {
         require_admin(actor)?;
         let mut book = self.find_book(book_id).await?;
-        let mut meta = book.metadata.clone();
-
-        if let Some(title) = patch.title {
-            meta.title = title;
-        }
-        if let Some(authors) = patch.authors {
-            meta.authors = authors;
-        }
-        if let Some(description) = patch.description {
-            meta.description = Some(description);
-        }
-        if let Some(isbn) = patch.isbn {
-            meta.isbn = Some(isbn);
-        }
-        if let Some(language) = patch.language {
-            meta.language = Some(language);
-        }
-        if let Some(publisher) = patch.publisher {
-            meta.publisher = Some(publisher);
-        }
-        if let Some(published_at) = patch.published_at {
-            meta.published_at = Some(published_at);
-        }
-        if let Some(tags) = patch.tags {
-            meta.tags = tags;
-        }
-        if let Some(series) = patch.series {
-            meta.series = Some(series);
-        }
-        if let Some(series_index) = patch.series_index {
-            meta.series_index = Some(series_index);
-        }
-        if let Some(rating) = patch.rating {
-            meta.rating = Some(rating);
-        }
-
-        book.update_metadata(meta)?;
+        book.apply_metadata_patch(patch)?;
         self.books.save(&book).await?;
         let mut enriched = self.enrich_books(Some(actor), &[book]).await?;
         enriched
@@ -902,6 +866,14 @@ impl BookCatalogService {
         let (library, book) = self.find_book_with_library(book_id).await?;
         let stream = self.storage.open_book_stream(&library, &book, spec).await?;
         Ok((book, stream))
+    }
+
+    pub(crate) async fn open_path_stream(
+        &self,
+        path: &Path,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<ByteRangeStream> {
+        self.storage.open_path_stream(path, spec).await
     }
 
     fn enrich_books_with_maps(

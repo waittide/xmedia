@@ -5,10 +5,10 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
+use xmedia_source::crud::SourceRecord;
+use xmedia_source::http::HttpClientConfig;
 
-use crate::domain::online::BookSourceRecord;
-use crate::source::http::HttpClientConfig;
-use crate::source::model::{
+use crate::domain::online::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource,
 };
 
@@ -16,10 +16,7 @@ use super::dto::{
     AggregatedSearchItemDto, AggregatedSearchResponseDto, OnlineBookDetailResponseDto,
     OnlineContentResponseDto, OnlineTocResponseDto, SourceSearchErrorDto,
 };
-use super::helpers::{
-    CancelOnDrop, CancelTasksOnDrop, ChapterFetchOptions, read_cached_chapter_at,
-    write_cached_chapter_at,
-};
+use super::helpers::{CancelOnDrop, CancelTasksOnDrop, ChapterFetchOptions};
 use super::{BookOnlineService, SEARCH_MAX_CONCURRENCY};
 
 impl BookOnlineService {
@@ -35,7 +32,7 @@ impl BookOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut sources = self.sources.list_all().await?;
+        let mut sources = self.sources.repository().list_all().await?;
         let is_admin = actor.role.is_admin();
 
         if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
@@ -56,7 +53,7 @@ impl BookOnlineService {
         let mut handles = Vec::with_capacity(sources.len());
         let mut cancel_all_guard = CancelTasksOnDrop::new();
         for rec in sources {
-            let engine = self.engine.clone();
+            let engine = Arc::clone(&self.engine);
             let kw_owned = kw.to_string();
             let parsed_res = serde_json::from_str::<LegadoBookSource>(&rec.raw_json);
             let sid = rec.id;
@@ -139,6 +136,7 @@ impl BookOnlineService {
                     Ok(out) => {
                         if out.state != prev_state
                             && let Err(err) = self
+                                .sources
                                 .persist_runtime_state_with_base(sid, &prev_state, out.state, false)
                                 .await
                         {
@@ -176,7 +174,7 @@ impl BookOnlineService {
 
     pub(super) async fn fetch_book_info_internal(
         &self,
-        rec: BookSourceRecord,
+        rec: SourceRecord,
         book_url: &str,
         fallback_hint: Option<BookJsContext>,
         include_logs: bool,
@@ -186,7 +184,7 @@ impl BookOnlineService {
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
         let detail_timeout = self.detail_timeout;
-        let engine = self.engine.clone();
+        let engine = Arc::clone(&self.engine);
         let url_owned = book_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
@@ -235,6 +233,7 @@ impl BookOnlineService {
 
         if out.state != prev_state_cmp
             && let Err(err) = self
+                .sources
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await
         {
@@ -259,12 +258,6 @@ impl BookOnlineService {
         xmedia_source::http::resolve_literal_http_url(raw, base.as_deref())
     }
 
-    /// Validates caller-supplied `book_url` / `toc_url` / `chapter_url`.
-    ///
-    /// Literal `http://` / `https://` URLs are validated strictly (no caller-injected Legado HTTP
-    /// request options). Legado `data:` pseudo-URLs (optionally carrying `{"type": "..."}` metadata)
-    /// are allowed ONLY when the target book source itself declares `data:` pseudo-URL rules, and
-    /// never execute outbound HTTP requests or HTTP request options (`method`/`headers`/`body`).
     pub(super) fn validate_caller_source_url(raw: &str, raw_json: &str) -> DomainResult<String> {
         const MAX_DATA_URL_BYTES: usize = 256 * 1024;
         let trimmed = raw.trim();
@@ -319,7 +312,7 @@ impl BookOnlineService {
         book_url: &str,
         fallback_hint: Option<BookJsContext>,
     ) -> DomainResult<OnlineBookDetailResponseDto> {
-        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let rec = self.sources.load_source_for_actor(actor, source_id).await?;
         let clean_book_url = Self::validate_caller_source_url(book_url, &rec.raw_json)?;
         if let Some(ref hint) = fallback_hint {
             if !hint.book_url.trim().is_empty() {
@@ -335,7 +328,7 @@ impl BookOnlineService {
 
     pub(super) async fn fetch_toc_internal(
         &self,
-        rec: BookSourceRecord,
+        rec: SourceRecord,
         toc_url: &str,
         book_ctx: BookJsContext,
         include_logs: bool,
@@ -345,7 +338,7 @@ impl BookOnlineService {
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
         let detail_timeout = self.detail_timeout;
-        let engine = self.engine.clone();
+        let engine = Arc::clone(&self.engine);
         let url_owned = toc_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
@@ -394,6 +387,7 @@ impl BookOnlineService {
 
         if out.state != prev_state_cmp
             && let Err(err) = self
+                .sources
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await
         {
@@ -417,7 +411,7 @@ impl BookOnlineService {
         toc_url: &str,
         book_ctx: BookJsContext,
     ) -> DomainResult<OnlineTocResponseDto> {
-        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let rec = self.sources.load_source_for_actor(actor, source_id).await?;
         let clean_toc_url = Self::validate_caller_source_url(toc_url, &rec.raw_json)?;
         if !book_ctx.book_url.trim().is_empty() {
             Self::validate_caller_source_url(&book_ctx.book_url, &rec.raw_json)?;
@@ -431,7 +425,7 @@ impl BookOnlineService {
 
     pub(super) async fn fetch_chapter_content_internal(
         &self,
-        rec: BookSourceRecord,
+        rec: SourceRecord,
         chapter_url: &str,
         book_ctx: BookJsContext,
         chapter_ctx: ChapterJsContext,
@@ -439,10 +433,10 @@ impl BookOnlineService {
     ) -> DomainResult<OnlineContentResponseDto> {
         let source_id = rec.id;
         if !opts.force_refresh {
-            let cache_dir = self.cache_dir.clone();
+            let store = Arc::clone(&self.tracked_store);
             let ch_url = chapter_url.to_string();
             let cached = tokio::task::spawn_blocking(move || {
-                read_cached_chapter_at(&cache_dir, source_id, &ch_url)
+                store.read_cached_online_chapter(source_id, &ch_url)
             })
             .await
             .ok()
@@ -462,7 +456,7 @@ impl BookOnlineService {
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
         let detail_timeout = self.detail_timeout;
-        let engine = self.engine.clone();
+        let engine = Arc::clone(&self.engine);
         let url_owned = chapter_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
@@ -513,17 +507,18 @@ impl BookOnlineService {
 
         if out.state != prev_state_cmp
             && let Err(err) = self
+                .sources
                 .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_chapter_content");
         }
         if opts.allow_shared_cache_write {
-            let cache_dir = self.cache_dir.clone();
+            let store = Arc::clone(&self.tracked_store);
             let ch_url = chapter_url.to_string();
             let content_clone = out.data.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                write_cached_chapter_at(&cache_dir, source_id, &ch_url, &content_clone);
+                store.write_cached_online_chapter(source_id, &ch_url, &content_clone);
             })
             .await;
         }
@@ -549,7 +544,7 @@ impl BookOnlineService {
         chapter_ctx: ChapterJsContext,
         force_refresh: bool,
     ) -> DomainResult<OnlineContentResponseDto> {
-        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let rec = self.sources.load_source_for_actor(actor, source_id).await?;
         let clean_chapter_url = Self::validate_caller_source_url(chapter_url, &rec.raw_json)?;
         if !book_ctx.book_url.trim().is_empty() {
             Self::validate_caller_source_url(&book_ctx.book_url, &rec.raw_json)?;

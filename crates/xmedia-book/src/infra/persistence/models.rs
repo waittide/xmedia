@@ -2,8 +2,8 @@ use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::domain::book::{BookFormat, BookMetadata, BookSource};
+use crate::domain::online::SourceRuntimeState;
 use crate::domain::reading::ReadingLocation;
-use crate::source::model::SourceRuntimeState;
 
 #[derive(Debug, toasty::Model)]
 #[table = "book_books"]

@@ -2,7 +2,6 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
-pub mod source;
 
 #[cfg(test)]
 mod tests;
@@ -15,7 +14,7 @@ use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
-use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::persistence::repositories::{
@@ -31,6 +30,9 @@ use infra::parser::CompositeBookParser;
 use infra::persistence::repositories::{
     ToastyBookReadingRepository, ToastyBookRepository, ToastyBookSourceRepository,
 };
+use infra::source::BookSourceEngine;
+use infra::source::packager::BookFormatPackager;
+use infra::source::tracked_store::TrackedBookStore;
 use infra::storage::{LocalBookScanner, LocalBookStorage};
 
 pub use infra::persistence::{ensure_book_schema, register_book_models};
@@ -86,7 +88,11 @@ pub fn init_book_module_with_bindings(
 ) -> DomainResult<BookServices> {
     let books = Arc::new(ToastyBookRepository::new(db.clone()));
     let readings = Arc::new(ToastyBookReadingRepository::new(db.clone()));
-    let sources = Arc::new(ToastyBookSourceRepository::new(db.clone()));
+    let sources_repo = Arc::new(ToastyBookSourceRepository::with_cache_dir(
+        db.clone(),
+        data_dir.join("online_book_cache"),
+    ));
+    let sources = Arc::new(BookOnlineSourceDirectory::new(sources_repo));
     let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db));
     let parser = Arc::new(CompositeBookParser);
     let storage = Arc::new(LocalBookStorage::new(data_dir)?);
@@ -106,24 +112,28 @@ pub fn init_book_module_with_bindings(
         books.clone(),
         bindings.clone(),
     ));
-    let engine = source::BookSourceEngine::new(
-        source::http::HttpClientConfig {
+    let engine = Arc::new(BookSourceEngine::new(
+        infra::source::http::HttpClientConfig {
             allow_private_ips,
             ..Default::default()
         },
         std::time::Duration::from_secs(45),
-    );
-    let online = Arc::new(BookOnlineService::with_engine(
+    ));
+    let packager = Arc::new(BookFormatPackager);
+    let tracked_store = Arc::new(TrackedBookStore::new(data_dir).map_err(DomainError::Storage)?);
+    let online = Arc::new(BookOnlineService::new(
         sources.clone(),
         data_dir,
         catalog.clone(),
         engine,
+        packager,
+        tracked_store,
         allow_private_ips,
     )?);
     let online_items = Arc::new(OnlineLibraryService::new(
         MediaKind::Book,
         online_items_repo.clone(),
-        Arc::new(BookOnlineSourceDirectory::new(sources)),
+        sources.clone(),
     ));
 
     let lifecycle = Arc::new(BookDomainLifecycle::new(
@@ -141,5 +151,11 @@ pub fn init_book_module_with_bindings(
     ));
     library_service.register_lifecycle(lifecycle);
 
-    Ok(BookServices::new(catalog, reading, online, online_items))
+    Ok(BookServices::new(
+        catalog,
+        reading,
+        sources,
+        online,
+        online_items,
+    ))
 }

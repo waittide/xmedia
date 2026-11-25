@@ -170,4 +170,8 @@ impl Shelf {
             self.updated_at = Timestamp::now();
         }
     }
+
+    pub fn retain_bound_books(&mut self, bound_ids: &std::collections::HashSet<uuid::Uuid>) {
+        self.book_ids.retain(|id| bound_ids.contains(&id.0));
+    }
 }
