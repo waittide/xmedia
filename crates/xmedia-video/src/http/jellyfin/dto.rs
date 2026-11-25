@@ -7,8 +7,9 @@ use crate::application::dto::{
     SeasonGroupDto, ShowSummaryDto, SubtitleTrackDto, VideoDetailDto, VideoSummaryDto,
 };
 use crate::domain::id::{ShowId, VideoId};
+use crate::domain::online::OnlineVideoPlayResult;
 use crate::domain::video::{VideoContainer, VideoItem};
-use crate::source::model::OnlineVideoPlayResult;
+use crate::http::online::encode_query_component;
 
 pub const JELLYFIN_SERVER_ID: &str = "00000000000040008000786d65646961";
 pub const JELLYFIN_SERVER_NAME: &str = "XMedia";
@@ -217,7 +218,7 @@ pub fn build_media_source_local(
     for (sub_pos, sub) in subtitles.iter().enumerate() {
         let delivery_url = format!(
             "/Videos/{id_str}/{id_str}/Subtitles/{sub_pos}/Stream.vtt?api_key={}",
-            crate::source::hls::encode_query_component(api_key)
+            encode_query_component(api_key)
         );
         streams.push(json!({
             "Codec": "vtt",
@@ -239,7 +240,7 @@ pub fn build_media_source_local(
 
     let direct_url = format!(
         "/Videos/{id_str}/stream?Static=true&MediaSourceId={id_str}&api_key={}",
-        crate::source::hls::encode_query_component(api_key)
+        encode_query_component(api_key)
     );
     let mut ms = json!({
         "Protocol": "File",
@@ -275,7 +276,7 @@ pub fn build_media_source_online(
     api_key: &str,
 ) -> Value {
     let id_str = format_jf_id(video.id.0);
-    let encoded_key = crate::source::hls::encode_query_component(api_key);
+    let encoded_key = encode_query_component(api_key);
     let is_hls = play.stream_type.eq_ignore_ascii_case("hls")
         || play.stream_url.to_ascii_lowercase().contains(".m3u8");
 
@@ -461,7 +462,7 @@ pub fn build_video_summary_item(
             // Lightweight placeholder source for catalog listing (real URL resolved in PlaybackInfo)
             let direct_url = format!(
                 "/Videos/{id_str}/stream?Static=true&MediaSourceId={id_str}&api_key={}",
-                crate::source::hls::encode_query_component(api_key)
+                encode_query_component(api_key)
             );
             obj["MediaSources"] = json!([{
                 "Protocol": "Http",

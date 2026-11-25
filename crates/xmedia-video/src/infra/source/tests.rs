@@ -5,18 +5,33 @@ use url::Url;
 use uuid::Uuid;
 use xmedia_source::http::{HttpClientConfig, LegadoHttpClient};
 
-use crate::source::applecms::{
-    infer_stream_type, parse_vod_play_groups, search as applecms_search,
+use crate::domain::online::{SourceRuntimeState, VideoSourceFormat, VideoSourceSpec};
+use crate::infra::source::applecms::{
+    fetch_detail as applecms_fetch_detail, infer_stream_type, parse_vod_play_groups,
+    search as applecms_search,
 };
-use crate::source::hls::{
-    infer_segment_content_type, is_hls_playlist_response, looks_like_html_bytes,
-    rewrite_m3u8_playlist,
+use crate::infra::source::engine::VideoSourceEngine;
+use crate::infra::source::hls::{
+    MAX_SUBTITLE_BYTES, infer_segment_content_type, is_hls_playlist_response,
+    looks_like_html_bytes, rewrite_m3u8_playlist_with, validate_and_normalize_subtitle_to_vtt,
 };
-use crate::source::model::{VideoSourceFormat, VideoSourceSpec};
+
+fn test_hls_proxy_url(target_url: &str, source_id: Option<Uuid>, token: Option<&str>) -> String {
+    let encoded: String = form_urlencoded::byte_serialize(target_url.as_bytes()).collect();
+    let mut out = format!("/proxy/hls?url={encoded}");
+    if let Some(sid) = source_id {
+        out.push_str(&format!("&source_id={sid}"));
+    }
+    if let Some(tok) = token {
+        let enc_tok: String = form_urlencoded::byte_serialize(tok.as_bytes()).collect();
+        out.push_str(&format!("&token={enc_tok}"));
+    }
+    out
+}
 
 #[test]
 fn parse_seeds_video_json_succeeds_with_all_six_verified_sources() {
-    let raw = include_str!("../../testdata/online_sources.json");
+    let raw = include_str!("../../../testdata/online_sources.json");
     let batch = VideoSourceSpec::parse_json_batch(raw).expect("video.json must parse");
     assert_eq!(batch.len(), 6);
 
@@ -180,7 +195,7 @@ async fn applecms_detail_strips_html_tags_and_decodes_entities_in_intro() {
             false,
         )
         .unwrap();
-        crate::source::applecms::fetch_detail(&spec, &http, Some("42"), None)
+        applecms_fetch_detail(&spec, &http, Some("42"), None)
     })
     .await
     .unwrap()
@@ -212,40 +227,44 @@ fn rewrite_m3u8_playlist_rewrites_all_five_directives_and_segment_lines() {
         720p/seg0.m4s\n\
         https://alt.cdn.example.com:8443/seg1.ts?auth=ok\n";
 
-    let out_no_tok = rewrite_m3u8_playlist(playlist, &base_url, Some(sid), None);
+    let out_no_tok = rewrite_m3u8_playlist_with(playlist, &base_url, |u| {
+        test_hls_proxy_url(u, Some(sid), None)
+    });
     assert!(!out_no_tok.contains("token="));
     assert!(out_no_tok.contains(
-        "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2Fkeys%2Fsession.key&source_id="
+        "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2Fkeys%2Fsession.key&source_id="
     ));
     assert!(out_no_tok.contains(
-        "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"Chinese\",URI=\"/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2Fsubs%2Fzh.m3u8&source_id="
+        "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"Chinese\",URI=\"/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2Fsubs%2Fzh.m3u8&source_id="
     ));
     assert!(out_no_tok.contains(
-        "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=80000,URI=\"/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2Fiframe%2F720.m3u8&source_id="
+        "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=80000,URI=\"/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2Fiframe%2F720.m3u8&source_id="
     ));
     assert!(out_no_tok.contains(
-        "#EXT-X-KEY:METHOD=AES-128,URI=\"/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fkeys.example.net%2Fep1.key&source_id="
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"/proxy/hls?url=https%3A%2F%2Fkeys.example.net%2Fep1.key&source_id="
     ));
     assert!(out_no_tok.contains("URI=\"skd://fairplay-key-id\""));
     assert!(out_no_tok.contains(
-        "#EXT-X-MAP:URI=\"/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Finit.mp4&source_id="
+        "#EXT-X-MAP:URI=\"/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Finit.mp4&source_id="
     ));
     assert!(out_no_tok.contains("BYTERANGE=\"1334@0\""));
     assert!(out_no_tok.contains(
-        "#EXT-X-PART:DURATION=0.5,URI=\"/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Fpart1.m4s&source_id="
+        "#EXT-X-PART:DURATION=0.5,URI=\"/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Fpart1.m4s&source_id="
     ));
     assert!(out_no_tok.contains("#EXT-X-BYTERANGE:108238@1334\n"));
     assert!(out_no_tok.contains(
-        "/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Fmedia.m3u8&source_id="
+        "/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Fmedia.m3u8&source_id="
     ));
     assert!(out_no_tok.contains(
-        "/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Fseg0.m4s&source_id="
+        "/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fv2%2F720p%2Fseg0.m4s&source_id="
     ));
     assert!(out_no_tok.contains(
-        "/api/v1/video/online/hls-proxy?url=https%3A%2F%2Falt.cdn.example.com%3A8443%2Fseg1.ts%3Fauth%3Dok&source_id="
+        "/proxy/hls?url=https%3A%2F%2Falt.cdn.example.com%3A8443%2Fseg1.ts%3Fauth%3Dok&source_id="
     ));
 
-    let out_with_tok = rewrite_m3u8_playlist(playlist, &base_url, Some(sid), Some("jwt+123"));
+    let out_with_tok = rewrite_m3u8_playlist_with(playlist, &base_url, |u| {
+        test_hls_proxy_url(u, Some(sid), Some("jwt+123"))
+    });
     assert!(out_with_tok.contains("&token=jwt%2B123"));
 }
 
@@ -362,14 +381,13 @@ async fn applecms_guards_against_plain_text_and_403_search_errors() {
 fn rewrite_m3u8_playlist_strips_leading_bom_and_whitespace_before_extm3u() {
     let base_url = Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
     let playlist = "\u{feff}  \r\n\t#EXTM3U\n#EXTINF:5.0,\nseg0.ts\n#EXT-X-ENDLIST\n";
-    let rewritten = rewrite_m3u8_playlist(playlist, &base_url, None, None);
+    let rewritten =
+        rewrite_m3u8_playlist_with(playlist, &base_url, |u| test_hls_proxy_url(u, None, None));
     assert!(
         rewritten.starts_with("#EXTM3U\n"),
         "expected line 1 to start with #EXTM3U, got: {rewritten:?}"
     );
-    assert!(rewritten.contains(
-        "/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fseg0.ts"
-    ));
+    assert!(rewritten.contains("/proxy/hls?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fseg0.ts"));
 }
 
 #[test]
@@ -475,9 +493,6 @@ async fn rule_play_subtitles_evaluates_jsonpath_js_and_edge_cases() {
     use axum::Router;
     use axum::http::StatusCode;
     use axum::routing::get;
-
-    use crate::source::engine::VideoSourceEngine;
-    use crate::source::model::SourceRuntimeState;
 
     let app = Router::new()
         .route(
@@ -634,9 +649,6 @@ fn video_search_url_template_encodes_keyword_and_isolates_legado_options_json_in
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use crate::source::engine::VideoSourceEngine;
-    use crate::source::model::SourceRuntimeState;
-
     #[derive(Default)]
     struct Captured {
         targets: Vec<String>,
@@ -742,9 +754,6 @@ fn video_search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixe
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-
-    use crate::source::engine::VideoSourceEngine;
-    use crate::source::model::SourceRuntimeState;
 
     #[derive(Default)]
     struct Captured {
@@ -915,7 +924,7 @@ fn video_search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixe
 
 #[test]
 fn video_run_login_action_strips_at_js_and_tag_js_wrappers() {
-    let engine = crate::source::VideoSourceEngine::default();
+    let engine = VideoSourceEngine::default();
     let src_at: VideoSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "AtJsLogin",
         "sourceUrl": "https://video.example.test",
@@ -925,7 +934,7 @@ fn video_run_login_action_strips_at_js_and_tag_js_wrappers() {
     let out_at = engine
         .run_login_action_sync(
             &src_at,
-            crate::source::model::SourceRuntimeState::default(),
+            SourceRuntimeState::default(),
             HashMap::from([("user".to_string(), "alice".to_string())]),
             Some("login()"),
         )
@@ -942,7 +951,7 @@ fn video_run_login_action_strips_at_js_and_tag_js_wrappers() {
     let out_tag = engine
         .run_login_action_sync(
             &src_tag,
-            crate::source::model::SourceRuntimeState::default(),
+            SourceRuntimeState::default(),
             HashMap::from([("user".to_string(), "bob".to_string())]),
             None,
         )
@@ -952,8 +961,6 @@ fn video_run_login_action_strips_at_js_and_tag_js_wrappers() {
 
 #[test]
 fn subtitle_proxy_normalizer_passes_vtt_converts_srt_and_rejects_xss_or_oversized() {
-    use crate::source::hls::{MAX_SUBTITLE_BYTES, validate_and_normalize_subtitle_to_vtt};
-
     let vtt = b"\xEF\xBB\xBFWEBVTT\r\n\r\n00:00:01.000 --> 00:00:03.000\r\nHello, world!\r\n";
     let vtt_out = validate_and_normalize_subtitle_to_vtt(vtt, Some("text/vtt")).unwrap();
     assert_eq!(
@@ -1005,9 +1012,6 @@ async fn video_js_pipeline_url_blocks_option_injection_and_mutation_while_restor
     use axum::routing::any;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
-
-    use crate::source::VideoSourceEngine;
-    use crate::source::model::SourceRuntimeState;
 
     let pwned_hits = Arc::new(AtomicUsize::new(0));
     let pwned_hits_c = pwned_hits.clone();
@@ -1234,9 +1238,6 @@ async fn rule_play_sanitizes_dangerous_schemes_and_merges_header_with_media_head
 
     use axum::{Router, routing::get};
 
-    use crate::source::engine::VideoSourceEngine;
-    use crate::source::model::SourceRuntimeState;
-
     let app = Router::new()
         .route(
             "/play/js-stream",
@@ -1443,6 +1444,181 @@ async fn rule_play_sanitizes_dangerous_schemes_and_merges_header_with_media_head
     })
     .await
     .unwrap();
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn stream_transport_enforces_content_length_and_stream_byte_limiter_caps() {
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use axum::response::Response;
+    use axum::routing::get;
+    use xmedia_core::domain::error::DomainError;
+    use xmedia_core::infra::stream::MpscByteStream;
+
+    use crate::application::ports::{
+        HlsProxyOutcome, ProxyStreamOutcome, VideoStreamTransportPort,
+    };
+    use crate::infra::source::HttpVideoStreamTransport;
+
+    let app = Router::new()
+        .route(
+            "/video/oversized-cl.mp4",
+            get(|| async {
+                let mut body = vec![0u8; 2048];
+                body[4..8].copy_from_slice(b"ftyp");
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "video/mp4")
+                    .header("content-length", "2048")
+                    .body(Body::from(body))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/video/oversized-chunked.mp4",
+            get(|| async {
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                tokio::spawn(async move {
+                    let mut c1 = vec![0u8; 600];
+                    c1[4..8].copy_from_slice(b"ftyp");
+                    let _ = tx.send(Ok(bytes::Bytes::from(c1))).await;
+                    let _ = tx.send(Ok(bytes::Bytes::from(vec![1u8; 600]))).await;
+                });
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "video/mp4")
+                    .body(Body::from_stream(MpscByteStream::into_boxed(rx)))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/hls/oversized-seg.ts",
+            get(|| async {
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                tokio::spawn(async move {
+                    let mut c1 = vec![0xAAu8; 600];
+                    c1[0] = 0x47;
+                    c1[188] = 0x47;
+                    let _ = tx.send(Ok(bytes::Bytes::from(c1))).await;
+                    let _ = tx.send(Ok(bytes::Bytes::from(vec![0xBBu8; 600]))).await;
+                });
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "video/mp2t")
+                    .body(Body::from_stream(MpscByteStream::into_boxed(rx)))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/subs/oversized-chunked.vtt",
+            get(|| async {
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                tokio::spawn(async move {
+                    let _ = tx
+                        .send(Ok(bytes::Bytes::from_static(
+                            b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n",
+                        )))
+                        .await;
+                    let _ = tx.send(Ok(bytes::Bytes::from(vec![b'a'; 600]))).await;
+                });
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/vtt")
+                    .body(Body::from_stream(MpscByteStream::into_boxed(rx)))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let transport = HttpVideoStreamTransport::new(HttpClientConfig {
+        allow_private_ips: true,
+        ..Default::default()
+    })
+    .with_max_bytes(1024, 512);
+
+    // 1. Declared Content-Length > max_bytes rejected immediately
+    let cl_res = transport
+        .open_stream_proxy(
+            &format!("{origin}/video/oversized-cl.mp4"),
+            HashMap::new(),
+            None,
+        )
+        .await;
+    assert!(matches!(cl_res, Err(DomainError::Validation(_))));
+
+    // 2. Chunked stream without Content-Length cut off by StreamByteLimiter
+    let ProxyStreamOutcome::Stream(mut payload) = transport
+        .open_stream_proxy(
+            &format!("{origin}/video/oversized-chunked.mp4"),
+            HashMap::new(),
+            None,
+        )
+        .await
+        .expect("initial sniff under 1024 bytes succeeds")
+    else {
+        panic!("expected Stream outcome");
+    };
+    let mut saw_limit_err = false;
+    while let Some(item) = std::future::poll_fn(|cx| payload.stream.as_mut().poll_next(cx)).await {
+        if let Err(DomainError::Validation(msg)) = item
+            && msg.contains("1024")
+        {
+            saw_limit_err = true;
+            break;
+        }
+    }
+    assert!(
+        saw_limit_err,
+        "expected StreamByteLimiter error on stream-proxy"
+    );
+
+    // 3. Chunked HLS segment cut off by StreamByteLimiter
+    let HlsProxyOutcome::Segment(mut seg_payload) = transport
+        .open_hls_proxy(
+            &format!("{origin}/hls/oversized-seg.ts"),
+            HashMap::new(),
+            None,
+            &|u| u.to_string(),
+        )
+        .await
+        .expect("initial segment sniff under 1024 bytes succeeds")
+    else {
+        panic!("expected Segment outcome");
+    };
+    let mut saw_seg_err = false;
+    while let Some(item) =
+        std::future::poll_fn(|cx| seg_payload.stream.as_mut().poll_next(cx)).await
+    {
+        if let Err(DomainError::Validation(msg)) = item
+            && msg.contains("1024")
+        {
+            saw_seg_err = true;
+            break;
+        }
+    }
+    assert!(
+        saw_seg_err,
+        "expected StreamByteLimiter error on hls-proxy segment"
+    );
+
+    // 4. Chunked subtitle cut off by StreamByteLimiter
+    let sub_err = transport
+        .fetch_subtitle_vtt(
+            &format!("{origin}/subs/oversized-chunked.vtt"),
+            &HashMap::new(),
+        )
+        .await
+        .expect_err("chunked subtitle exceeding 512 bytes must fail");
+    assert!(matches!(sub_err, DomainError::Validation(ref m) if m.contains("512")));
 
     srv.abort();
 }

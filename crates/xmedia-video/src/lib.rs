@@ -2,7 +2,6 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
-pub mod source;
 
 #[cfg(test)]
 mod tests;
@@ -37,8 +36,8 @@ use infra::media_engine::FfmpegVideoEngine;
 use infra::persistence::repositories::{
     ToastyVideoCatalogRepository, ToastyVideoSourceRepository, ToastyVideoWatchRepository,
 };
+use infra::source::{HttpVideoStreamTransport, VideoSourceEngine};
 use infra::storage::{LocalVideoScanner, LocalVideoStorage};
-use source::VideoSourceEngine;
 
 pub use infra::persistence::{ensure_video_schema, register_video_models};
 
@@ -138,15 +137,17 @@ pub fn init_video_module_with_bindings(
     library_service.register_lifecycle(ingest.clone());
 
     let source_crud = Arc::new(SourceCrudService::<VideoSourceSpec>::new(source_repo));
-    let source_engine = VideoSourceEngine::new(
-        HttpClientConfig {
-            allow_private_ips,
-            ..Default::default()
-        },
+    let http_config = HttpClientConfig {
+        allow_private_ips,
+        ..Default::default()
+    };
+    let source_engine = Arc::new(VideoSourceEngine::new(
+        http_config.clone(),
         Duration::from_secs(45),
-    );
+    ));
+    let stream_transport = Arc::new(HttpVideoStreamTransport::new(http_config));
     let online = Arc::new(
-        VideoOnlineService::with_engine(source_crud.clone(), source_engine, allow_private_ips)
+        VideoOnlineService::new(source_crud.clone(), source_engine, stream_transport)
             .with_tracking(VideoTrackingDeps {
                 libraries: libraries_repo,
                 catalog_repo,

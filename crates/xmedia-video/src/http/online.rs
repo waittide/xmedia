@@ -10,6 +10,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
+use xmedia_core::domain::error::DomainError;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth};
 use xmedia_source::crud::{LoginActionRequest, sources_prefixed_crud_router};
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
@@ -22,9 +23,67 @@ use crate::application::online::{
     TrackOnlineVideoResultDto, TrackedVideoPlayResponseDto, VideoCacheReportDto,
     VideoSourceTestInput, VideoSourceTestReportDto,
 };
+use crate::application::ports::VideoProxyUrlBuilder;
 use crate::domain::id::{ShowId, VideoId};
 use crate::domain::online::VideoSourceSpec;
 use crate::http::state::VideoHttpState;
+
+pub fn encode_query_component(val: &str) -> String {
+    form_urlencoded::byte_serialize(val.as_bytes()).collect()
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RestVideoProxyUrlBuilder;
+
+impl VideoProxyUrlBuilder for RestVideoProxyUrlBuilder {
+    fn poster_proxy_url(&self, target_url: &str, source_id: Option<Uuid>) -> String {
+        let mut out = format!(
+            "/api/v1/video/online/poster-proxy?url={}",
+            encode_query_component(target_url)
+        );
+        if let Some(sid) = source_id {
+            out.push_str("&source_id=");
+            out.push_str(&sid.to_string());
+        }
+        out
+    }
+
+    fn stream_proxy_url(&self, target_url: &str, source_id: Uuid, token: Option<&str>) -> String {
+        let mut out = format!(
+            "/api/v1/video/online/stream-proxy?url={}&source_id={source_id}",
+            encode_query_component(target_url)
+        );
+        if let Some(tok) = token.map(str::trim).filter(|t| !t.is_empty()) {
+            out.push_str("&token=");
+            out.push_str(&encode_query_component(tok));
+        }
+        out
+    }
+
+    fn hls_proxy_url(&self, target_url: &str, source_id: Uuid, token: Option<&str>) -> String {
+        let mut out = format!(
+            "/api/v1/video/online/hls-proxy?url={}&source_id={source_id}",
+            encode_query_component(target_url)
+        );
+        if let Some(tok) = token.map(str::trim).filter(|t| !t.is_empty()) {
+            out.push_str("&token=");
+            out.push_str(&encode_query_component(tok));
+        }
+        out
+    }
+
+    fn subtitle_proxy_url(&self, target_url: &str, source_id: Uuid, token: Option<&str>) -> String {
+        let mut out = format!(
+            "/api/v1/video/online/subtitle-proxy?url={}&source_id={source_id}",
+            encode_query_component(target_url)
+        );
+        if let Some(tok) = token.map(str::trim).filter(|t| !t.is_empty()) {
+            out.push_str("&token=");
+            out.push_str(&encode_query_component(tok));
+        }
+        out
+    }
+}
 
 pub fn router() -> Router<VideoHttpState> {
     Router::new()
@@ -113,6 +172,10 @@ struct TrackedPlayQuery {
     token: Option<String>,
 }
 
+fn require_query_source_id(source_id: Option<Uuid>) -> Result<Uuid, DomainError> {
+    source_id.ok_or_else(|| DomainError::Validation("缺少必填参数 source_id".into()))
+}
+
 async fn run_login_action(
     State(state): State<VideoHttpState>,
     WebAuth(user): WebAuth,
@@ -133,7 +196,11 @@ async fn test_source(
     Path(id): Path<Uuid>,
     Json(req): Json<VideoSourceTestInput>,
 ) -> ApiResult<Json<VideoSourceTestReportDto>> {
-    let out = state.services.online.test_source(&user, id, req).await?;
+    let out = state
+        .services
+        .online
+        .test_source(&user, id, req, &RestVideoProxyUrlBuilder)
+        .await?;
     Ok(Json(out))
 }
 
@@ -158,7 +225,13 @@ async fn online_search(
     let out = state
         .services
         .online
-        .search(&user, &req.keyword, req.source_ids, req.page)
+        .search(
+            &user,
+            &req.keyword,
+            req.source_ids,
+            req.page,
+            &RestVideoProxyUrlBuilder,
+        )
         .await?;
     Ok(Json(out))
 }
@@ -171,7 +244,13 @@ async fn online_browse(
     let out = state
         .services
         .online
-        .browse(&user, req.source_id, req.category_id.as_deref(), req.page)
+        .browse(
+            &user,
+            req.source_id,
+            req.category_id.as_deref(),
+            req.page,
+            &RestVideoProxyUrlBuilder,
+        )
         .await?;
     Ok(Json(out))
 }
@@ -189,6 +268,7 @@ async fn online_detail(
             req.source_id,
             req.video_id.as_deref(),
             req.detail_url.as_deref(),
+            Some(&RestVideoProxyUrlBuilder),
         )
         .await?;
     Ok(Json(out))
@@ -207,6 +287,7 @@ async fn online_play(
             req.source_id,
             &req.play_url,
             req.group_name.as_deref(),
+            &RestVideoProxyUrlBuilder,
         )
         .await?;
     Ok(Json(out))
@@ -271,7 +352,12 @@ async fn resolve_tracked_video_play(
     let out = state
         .services
         .online
-        .resolve_tracked_video_play(&user, VideoId(id), q.token.as_deref())
+        .resolve_tracked_video_play(
+            &user,
+            VideoId(id),
+            q.token.as_deref(),
+            &RestVideoProxyUrlBuilder,
+        )
         .await?;
     Ok(Json(out))
 }
@@ -362,13 +448,14 @@ async fn online_stream_proxy(
     Query(q): Query<StreamProxyQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let source_id = require_query_source_id(q.source_id)?;
     let range_header = headers.get(RANGE).and_then(|v| v.to_str().ok());
     let has_query_token = q.token.as_deref().is_some_and(|t| !t.trim().is_empty());
 
     match state
         .services
         .online
-        .open_stream_proxy(&user, &q.url, q.source_id, range_header)
+        .open_stream_proxy(&user, &q.url, source_id, range_header)
         .await?
     {
         ProxyStreamOutcome::Stream(payload) => Ok(build_stream_response(payload, has_query_token)),
@@ -384,13 +471,21 @@ async fn online_hls_proxy(
     Query(q): Query<StreamProxyQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let source_id = require_query_source_id(q.source_id)?;
     let range_header = headers.get(RANGE).and_then(|v| v.to_str().ok());
     let query_token = q.token.as_deref().map(str::trim).filter(|t| !t.is_empty());
 
     match state
         .services
         .online
-        .open_hls_proxy(&user, &q.url, q.source_id, range_header, query_token)
+        .open_hls_proxy(
+            &user,
+            &q.url,
+            source_id,
+            range_header,
+            query_token,
+            &RestVideoProxyUrlBuilder,
+        )
         .await?
     {
         HlsProxyOutcome::Playlist(rewritten) => {
@@ -423,11 +518,12 @@ async fn online_subtitle_proxy(
     WebAuth(user): WebAuth,
     Query(q): Query<StreamProxyQuery>,
 ) -> Result<Response, ApiError> {
+    let source_id = require_query_source_id(q.source_id)?;
     let has_query_token = q.token.as_deref().is_some_and(|t| !t.trim().is_empty());
     let vtt = state
         .services
         .online
-        .fetch_subtitle_proxy(&user, &q.url, q.source_id)
+        .open_subtitle_proxy(&user, &q.url, source_id)
         .await?;
     let mut resp = Response::new(Body::from(vtt));
     resp.headers_mut().insert(

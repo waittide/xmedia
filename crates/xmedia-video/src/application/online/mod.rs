@@ -1,6 +1,8 @@
 mod browse;
 mod debug;
 mod dto;
+mod playback;
+mod proxy;
 mod tracked;
 
 use std::collections::HashMap;
@@ -9,24 +11,25 @@ use std::time::Duration;
 
 use uuid::Uuid;
 use xmedia_core::application::ports::RealtimeEventPort;
-use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::User;
 pub(super) use xmedia_source::concurrency::{
     AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
 };
-use xmedia_source::crud::{SourceCrudService, SourceRecord, SourceRepository};
-use xmedia_source::http::HttpClientConfig;
+use xmedia_source::crud::{SourceCrudService, SourceRecord};
+use xmedia_source::http::normalize_cookie_key;
 use xmedia_source::model::{ConcurrentRateSpec, SourceCallError};
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
 use crate::application::catalog::VideoCatalogService;
 use crate::application::lifecycle::VideoDomainLifecycle;
-use crate::application::ports::{VideoMediaEnginePort, VideoStoragePort};
+use crate::application::ports::{
+    VideoMediaEnginePort, VideoSourceEnginePort, VideoStoragePort, VideoStreamTransportPort,
+};
 use crate::domain::id::VideoId;
 use crate::domain::online::{ExecutionDiagnostics, SourceRuntimeState, VideoSourceSpec};
 use crate::domain::repository::VideoCatalogRepository;
-use crate::source::VideoSourceEngine;
 
 pub use dto::*;
 
@@ -48,41 +51,68 @@ pub struct VideoTrackingDeps {
 
 pub struct VideoOnlineService {
     source_crud: Arc<SourceCrudService<VideoSourceSpec>>,
-    engine: VideoSourceEngine,
-    http_config: HttpClientConfig,
+    engine: Arc<dyn VideoSourceEnginePort>,
+    transport: Arc<dyn VideoStreamTransportPort>,
     track_locks: AsyncLockMap<(Uuid, String)>,
     video_cache_locks: AsyncLockMap<VideoId>,
     rate_limiters: RateLimiterMap,
     tracking: Option<VideoTrackingDeps>,
-    allow_private_ips: bool,
     op_timeout: Duration,
     detail_timeout: Duration,
 }
 
-impl VideoOnlineService {
-    pub fn new(sources: Arc<dyn SourceRepository>) -> Self {
-        Self::with_engine(
-            Arc::new(SourceCrudService::new(sources)),
-            VideoSourceEngine::default(),
-            false,
-        )
+pub(super) fn lookup_cookie_for_url(
+    cookies: &HashMap<String, String>,
+    target_url: &str,
+) -> Option<String> {
+    let key = normalize_cookie_key(target_url);
+    if key.is_empty() {
+        return None;
     }
+    if let Some(v) = cookies.get(&key)
+        && !v.trim().is_empty()
+    {
+        return Some(v.clone());
+    }
+    let mut best: Option<(&str, &str)> = None;
+    for (stored_host, val) in cookies {
+        let clean_stored = stored_host.trim_start_matches('.');
+        if clean_stored.is_empty() || val.trim().is_empty() {
+            continue;
+        }
+        if key.len() > clean_stored.len()
+            && key.ends_with(clean_stored)
+            && key.as_bytes()[key.len() - clean_stored.len() - 1] == b'.'
+        {
+            let replace = match best {
+                None => true,
+                Some((prev_host, _)) => {
+                    clean_stored.len() > prev_host.len()
+                        || (clean_stored.len() == prev_host.len() && clean_stored < prev_host)
+                }
+            };
+            if replace {
+                best = Some((clean_stored, val.as_str()));
+            }
+        }
+    }
+    best.map(|(_, v)| v.to_string())
+}
 
-    pub fn with_engine(
+impl VideoOnlineService {
+    pub fn new(
         source_crud: Arc<SourceCrudService<VideoSourceSpec>>,
-        engine: VideoSourceEngine,
-        allow_private_ips: bool,
+        engine: Arc<dyn VideoSourceEnginePort>,
+        transport: Arc<dyn VideoStreamTransportPort>,
     ) -> Self {
-        let http_config = engine.http_config().clone();
         Self {
             source_crud,
             engine,
-            http_config,
+            transport,
             track_locks: Arc::new(Mutex::new(HashMap::new())),
             video_cache_locks: Arc::new(Mutex::new(HashMap::new())),
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             tracking: None,
-            allow_private_ips,
             op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
             detail_timeout: DETAIL_OP_TIMEOUT,
         }
@@ -114,6 +144,65 @@ impl VideoOnlineService {
         id: Uuid,
     ) -> DomainResult<SourceRecord> {
         self.source_crud.load_source_for_actor(actor, id).await
+    }
+
+    pub(super) async fn resolve_source_media_headers(
+        &self,
+        actor: &User,
+        source_id: Uuid,
+        target_url: &str,
+    ) -> DomainResult<HashMap<String, String>> {
+        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
+            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let mut merged = spec.parse_media_header_map_for_target(target_url);
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        Ok(merged)
+    }
+
+    pub(super) async fn resolve_source_media_headers_with_cookies(
+        &self,
+        actor: &User,
+        source_id: Uuid,
+        target_url: &str,
+    ) -> DomainResult<HashMap<String, String>> {
+        let rec = self.load_source_for_actor(actor, source_id).await?;
+        let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
+            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let mut merged = spec.parse_media_header_map_for_target(target_url);
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
+            && spec.enabled_cookie_jar
+            && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)
+        {
+            merged.insert("Cookie".to_string(), cookie);
+        }
+        Ok(merged)
+    }
+
+    pub(super) async fn resolve_internal_media_headers(
+        &self,
+        source_id: Option<Uuid>,
+        target_url: &str,
+    ) -> HashMap<String, String> {
+        let Some(sid) = source_id else {
+            return HashMap::new();
+        };
+        let Ok(rec) = self.load_source(sid).await else {
+            return HashMap::new();
+        };
+        let Ok(spec) = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json) else {
+            return HashMap::new();
+        };
+        let mut merged = spec.parse_media_header_map_for_target(target_url);
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
+            && spec.enabled_cookie_jar
+            && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)
+        {
+            merged.insert("Cookie".to_string(), cookie);
+        }
+        merged
     }
 
     pub(super) async fn persist_runtime_state_with_base(
@@ -166,9 +255,5 @@ impl VideoOnlineService {
         timeout: Duration,
     ) -> Result<(), String> {
         acquire_source_rate_slot(&self.rate_limiters, source_id, spec, timeout).await
-    }
-
-    pub fn allow_private_ips(&self) -> bool {
-        self.allow_private_ips
     }
 }

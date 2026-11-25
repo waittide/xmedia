@@ -16,9 +16,8 @@ use crate::application::dto::SaveWatchProgressInput;
 use crate::application::online::{HlsProxyOutcome, ProxyStreamOutcome};
 use crate::domain::id::{ShowId, VideoId};
 use crate::http::into_video_http_response;
-use crate::http::online::{build_416_response, build_stream_response};
+use crate::http::online::{build_416_response, build_stream_response, encode_query_component};
 use crate::http::state::VideoHttpState;
-use crate::source::hls::encode_query_component;
 
 use super::JfQuery;
 use super::catalog::resolve_synthetic_season;
@@ -94,7 +93,7 @@ pub async fn handle_video_stream(
     match state
         .services
         .online
-        .open_stream_proxy_for_tracked(&play_res.stream_url, Some(source_id), range_header)
+        .open_stream_proxy_for_tracked(&play_res.stream_url, source_id, range_header)
         .await?
     {
         ProxyStreamOutcome::Stream(payload) => Ok(build_stream_response(payload, true)),
@@ -150,7 +149,7 @@ pub async fn handle_video_hls_master(
         .open_hls_proxy_for_tracked(
             user,
             &play_res.stream_url,
-            Some(source_id),
+            source_id,
             range_header,
             |resolved| {
                 format!(
@@ -230,18 +229,12 @@ pub async fn handle_video_hls_proxy(
     match state
         .services
         .online
-        .open_hls_proxy_for_tracked(
-            user,
-            raw_url,
-            Some(bound_source_id),
-            range_header,
-            |resolved| {
-                format!(
-                    "proxy?url={}&source_id={bound_source_id}&api_key={encoded_key}",
-                    encode_query_component(resolved)
-                )
-            },
-        )
+        .open_hls_proxy_for_tracked(user, raw_url, bound_source_id, range_header, |resolved| {
+            format!(
+                "proxy?url={}&source_id={bound_source_id}&api_key={encoded_key}",
+                encode_query_component(resolved)
+            )
+        })
         .await?
     {
         HlsProxyOutcome::Playlist(rewritten) => Ok(build_hls_playlist_response(rewritten)),
@@ -296,7 +289,7 @@ pub async fn handle_subtitle_stream(
         state
             .services
             .online
-            .fetch_subtitle_proxy(user, &sub.url, Some(source_id))
+            .open_subtitle_proxy(user, &sub.url, source_id)
             .await?
     };
 

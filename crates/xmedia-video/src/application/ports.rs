@@ -1,7 +1,13 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use url::Url;
+use uuid::Uuid;
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::application::ports::{
     BinaryPayload, ByteChunkStream, ByteRangeSpec, ByteRangeStream,
@@ -12,6 +18,10 @@ use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 use xmedia_core::domain::user::VideoQualityProfile;
 
 use crate::domain::id::VideoId;
+use crate::domain::online::{
+    OnlineVideoCategory, OnlineVideoDetail, OnlineVideoPlayResult, OnlineVideoSummary,
+    SourceCallError, SourceCallOutput, SourceRuntimeState, VideoBrowseOutput, VideoSourceSpec,
+};
 use crate::domain::video::{SidecarSubtitle, VideoContainer, VideoItem};
 
 #[derive(Debug, Clone, Default)]
@@ -205,4 +215,142 @@ pub fn parse_quality_param(raw: Option<&str>) -> VideoQualityProfile {
         Some("480p") | Some("p480") | Some("480") => VideoQualityProfile::P480,
         _ => VideoQualityProfile::Auto,
     }
+}
+
+pub struct ProxyStreamPayload {
+    pub status: u16,
+    pub content_type: String,
+    pub content_length: Option<u64>,
+    pub content_range: Option<String>,
+    pub accept_ranges: String,
+    pub stream: ByteChunkStream,
+}
+
+pub enum ProxyStreamOutcome {
+    Stream(ProxyStreamPayload),
+    RangeNotSatisfiable { content_range: Option<String> },
+}
+
+pub enum HlsProxyOutcome {
+    Playlist(String),
+    Segment(ProxyStreamPayload),
+    RangeNotSatisfiable { content_range: Option<String> },
+}
+
+pub trait VideoProxyUrlBuilder: Send + Sync {
+    fn poster_proxy_url(&self, target_url: &str, source_id: Option<Uuid>) -> String;
+    fn stream_proxy_url(&self, target_url: &str, source_id: Uuid, token: Option<&str>) -> String;
+    fn hls_proxy_url(&self, target_url: &str, source_id: Uuid, token: Option<&str>) -> String;
+    fn subtitle_proxy_url(&self, target_url: &str, source_id: Uuid, token: Option<&str>) -> String;
+}
+
+pub trait VideoSourceEnginePort: Send + Sync {
+    fn fetch_categories_sync_with_control(
+        &self,
+        source: &VideoSourceSpec,
+        state: SourceRuntimeState,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineVideoCategory>>, SourceCallError>;
+
+    fn search_sync_with_control(
+        &self,
+        source: &VideoSourceSpec,
+        state: SourceRuntimeState,
+        keyword: &str,
+        page: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineVideoSummary>>, SourceCallError>;
+
+    fn browse_sync_with_control(
+        &self,
+        source: &VideoSourceSpec,
+        state: SourceRuntimeState,
+        category_id: Option<&str>,
+        page: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<VideoBrowseOutput>, SourceCallError>;
+
+    fn fetch_detail_sync_with_control(
+        &self,
+        source: &VideoSourceSpec,
+        state: SourceRuntimeState,
+        video_id: Option<&str>,
+        detail_url: Option<&str>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineVideoDetail>, SourceCallError>;
+
+    fn resolve_play_sync_with_control(
+        &self,
+        source: &VideoSourceSpec,
+        state: SourceRuntimeState,
+        play_url: &str,
+        group_name: Option<&str>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineVideoPlayResult>, SourceCallError>;
+
+    fn run_login_action_sync(
+        &self,
+        source: &VideoSourceSpec,
+        state: SourceRuntimeState,
+        login_info: HashMap<String, String>,
+        action: Option<&str>,
+    ) -> Result<SourceCallOutput<String>, String>;
+}
+
+#[async_trait]
+pub trait VideoStreamTransportPort: Send + Sync {
+    async fn fetch_poster_bytes(
+        &self,
+        raw_url: &str,
+        source_headers: &HashMap<String, String>,
+    ) -> DomainResult<(Vec<u8>, &'static str)>;
+
+    async fn fetch_subtitle_vtt(
+        &self,
+        raw_url: &str,
+        source_headers: &HashMap<String, String>,
+    ) -> DomainResult<String>;
+
+    async fn open_stream_proxy(
+        &self,
+        raw_url: &str,
+        source_headers: HashMap<String, String>,
+        range_header: Option<&str>,
+    ) -> DomainResult<ProxyStreamOutcome>;
+
+    async fn open_hls_proxy(
+        &self,
+        raw_url: &str,
+        source_headers: HashMap<String, String>,
+        range_header: Option<&str>,
+        rewrite_uri: &(dyn for<'a> Fn(&'a str) -> String + Send + Sync),
+    ) -> DomainResult<HlsProxyOutcome>;
+
+    async fn download_direct_video_to_path(
+        &self,
+        raw_url: &str,
+        source_headers: HashMap<String, String>,
+        dest_path: &Path,
+        max_bytes: u64,
+    ) -> DomainResult<VideoContainer>;
+
+    async fn fetch_hls_playlist_text(
+        &self,
+        raw_url: &str,
+        source_headers: HashMap<String, String>,
+    ) -> DomainResult<(String, Url)>;
+
+    async fn download_hls_asset_to_path(
+        &self,
+        raw_url: &str,
+        source_headers: HashMap<String, String>,
+        dest_path: &Path,
+        total_bytes: u64,
+        max_bytes: u64,
+    ) -> DomainResult<u64>;
 }

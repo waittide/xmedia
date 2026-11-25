@@ -1196,7 +1196,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     let (st, hdrs, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={apple_id}",
             urlencoding_param(&format!("{origin}/media/movie.mp4"))
         ),
         Some(&member_tok),
@@ -1209,7 +1209,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={apple_id}",
             urlencoding_param(&format!("{origin}/media/html-page.mp4"))
         ),
         Some(&member_tok),
@@ -1273,24 +1273,55 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     assert_eq!(hdrs.get(header::CONTENT_TYPE).unwrap(), "video/mp2t");
     assert_eq!(hdrs.get(header::CONTENT_RANGE).unwrap(), "bytes 0-187/376");
 
-    // Disabled source rejected on hls-proxy for non-admin
-    let (st, _, _) = get_bytes_with_auth(
-        &app,
-        &format!(
-            "/api/v1/video/online/hls-proxy?url={}&source_id={disabled_id}",
-            urlencoding_param(&format!("{origin}/cdn/v2/master.m3u8"))
-        ),
-        Some(&member_tok),
-        None,
-    )
-    .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    // Disabled, missing, and nonexistent source_id rejected across stream-proxy, hls-proxy, subtitle-proxy
+    let missing_sid = Uuid::new_v4();
+    for endpoint in ["stream-proxy", "hls-proxy", "subtitle-proxy"] {
+        let target = urlencoding_param(&format!("{origin}/cdn/v2/master.m3u8"));
+        let (st_no_sid, _, _) = get_bytes_with_auth(
+            &app,
+            &format!("/api/v1/video/online/{endpoint}?url={target}"),
+            Some(&member_tok),
+            None,
+        )
+        .await;
+        assert_eq!(
+            st_no_sid,
+            StatusCode::BAD_REQUEST,
+            "missing source_id must be rejected on {endpoint}"
+        );
+
+        let (st_unknown, _, _) = get_bytes_with_auth(
+            &app,
+            &format!("/api/v1/video/online/{endpoint}?url={target}&source_id={missing_sid}"),
+            Some(&member_tok),
+            None,
+        )
+        .await;
+        assert_eq!(
+            st_unknown,
+            StatusCode::NOT_FOUND,
+            "nonexistent source_id must be rejected on {endpoint}"
+        );
+
+        let (st_dis, _, _) = get_bytes_with_auth(
+            &app,
+            &format!("/api/v1/video/online/{endpoint}?url={target}&source_id={disabled_id}"),
+            Some(&member_tok),
+            None,
+        )
+        .await;
+        assert_eq!(
+            st_dis,
+            StatusCode::FORBIDDEN,
+            "disabled source_id must be rejected for non-admin on {endpoint}"
+        );
+    }
 
     // > 8 MiB playlist rejected
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/hls-proxy?url={}",
+            "/api/v1/video/online/hls-proxy?url={}&source_id={apple_id}",
             urlencoding_param(&format!("{origin}/cdn/oversized.m3u8"))
         ),
         Some(&member_tok),
@@ -1343,11 +1374,27 @@ async fn ssrf_blocks_loopback_and_redirects_when_allow_private_ips_is_false() {
     let (_tmp, app, admin_tok, member_tok) = setup_test_app(false).await;
     let (origin, _, mock_handle) = start_mock_video_origin().await;
 
+    let (st, imp) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({
+            "raw_json": serde_json::json!({
+                "sourceName": "Loopback Source",
+                "apiUrl": format!("{origin}/applecms/api.php/provide/vod/"),
+                "enabled": true
+            }).to_string()
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let sid = imp["sources"][0]["id"].as_str().unwrap();
+
     // 1. Direct loopback blocked on stream-proxy, hls-proxy, poster-proxy
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/media/movie.mp4"))
         ),
         Some(&member_tok),
@@ -1359,7 +1406,7 @@ async fn ssrf_blocks_loopback_and_redirects_when_allow_private_ips_is_false() {
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/hls-proxy?url={}",
+            "/api/v1/video/online/hls-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/cdn/v2/master.m3u8"))
         ),
         Some(&member_tok),
@@ -1391,7 +1438,7 @@ async fn ssrf_blocks_loopback_and_redirects_when_allow_private_ips_is_false() {
         let (st, _, _) = get_bytes_with_auth(
             &app,
             &format!(
-                "/api/v1/video/online/stream-proxy?url={}",
+                "/api/v1/video/online/stream-proxy?url={}&source_id={sid}",
                 urlencoding_param(blocked)
             ),
             Some(&member_tok),
@@ -1406,22 +1453,6 @@ async fn ssrf_blocks_loopback_and_redirects_when_allow_private_ips_is_false() {
     }
 
     // 3. AppleCMS source pointing to 127.0.0.1 is blocked during search/categories/test
-    let (st, imp) = post_json(
-        &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
-        serde_json::json!({
-            "raw_json": serde_json::json!({
-                "sourceName": "Loopback Source",
-                "apiUrl": format!("{origin}/applecms/api.php/provide/vod/"),
-                "enabled": true
-            }).to_string()
-        }),
-    )
-    .await;
-    assert_eq!(st, StatusCode::OK);
-    let sid = imp["sources"][0]["id"].as_str().unwrap();
-
     let (st, cat_err) = post_json(
         &app,
         "/api/v1/video/online/categories",
@@ -1463,7 +1494,7 @@ fn delayed_chunked_response(content_type: &'static str, chunks: Vec<(Vec<u8>, u6
 
 #[tokio::test]
 async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
-    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
 
     let origin_app = Router::new()
         .route(
@@ -1548,11 +1579,28 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
         axum::serve(listener, origin_app).await.unwrap();
     });
 
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({
+            "raw_json": serde_json::json!({
+                "sourceName": "SniffProxySource",
+                "sourceUrl": origin,
+                "apiUrl": format!("{origin}/api"),
+                "enabled": true
+            }).to_string()
+        }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap();
+
     // 1. hls-proxy multi-chunk split BOM+whitespace before #EXTM3U on extensionless URL
     let (st, hdrs, body) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/hls-proxy?url={}",
+            "/api/v1/video/online/hls-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/stream/chunked-bom"))
         ),
         Some(&member_tok),
@@ -1578,7 +1626,7 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/hls-proxy?url={}",
+            "/api/v1/video/online/hls-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/stream/chunked-html"))
         ),
         Some(&member_tok),
@@ -1590,7 +1638,7 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/stream/chunked-html"))
         ),
         Some(&member_tok),
@@ -1603,7 +1651,7 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/media/disguised-html.mp4"))
         ),
         Some(&member_tok),
@@ -1615,7 +1663,7 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/media/disguised-svg.bin"))
         ),
         Some(&member_tok),
@@ -1628,7 +1676,7 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
     let (st, hdrs, mp4_bytes) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/media/chunked-mp4.mp4"))
         ),
         Some(&member_tok),
@@ -1645,7 +1693,7 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
     let (st, hdrs, ts_bytes) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/hls-proxy?url={}",
+            "/api/v1/video/online/hls-proxy?url={}&source_id={sid}",
             urlencoding_param(&format!("{origin}/stream/chunked-ts.ts"))
         ),
         Some(&member_tok),
@@ -2489,7 +2537,7 @@ async fn rule_play_subtitles_jsonpath_and_js_e2e() {
 
 #[tokio::test]
 async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
-    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
     let origin_app = Router::new()
         .route(
             "/bad.m3u8",
@@ -2520,11 +2568,28 @@ async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
         axum::serve(listener, origin_app).await.unwrap();
     });
 
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({
+            "raw_json": serde_json::json!({
+                "sourceName": "MalformedHlsSource",
+                "sourceUrl": origin,
+                "apiUrl": format!("{origin}/api"),
+                "enabled": true
+            }).to_string()
+        }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap();
+
     let encoded_url: String =
         form_urlencoded::byte_serialize(format!("{origin}/bad.m3u8").as_bytes()).collect();
     let (st, _, _) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}"),
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}&source_id={sid}"),
         Some(&member_tok),
         None,
     )
@@ -2535,7 +2600,7 @@ async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
         form_urlencoded::byte_serialize(format!("{origin}/fake-tag.m3u8").as_bytes()).collect();
     let (st_fake, _, _) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/hls-proxy?url={encoded_fake}"),
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_fake}&source_id={sid}"),
         Some(&member_tok),
         None,
     )
@@ -2547,7 +2612,7 @@ async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
 
 #[tokio::test]
 async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8() {
-    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n");
     for i in 0..120 {
@@ -2606,13 +2671,30 @@ async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8
         axum::serve(listener, origin_app).await.unwrap();
     });
 
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({
+            "raw_json": serde_json::json!({
+                "sourceName": "LargeRangeHlsSource",
+                "sourceUrl": origin,
+                "apiUrl": format!("{origin}/api"),
+                "enabled": true
+            }).to_string()
+        }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap();
+
     let encoded_url: String =
         form_urlencoded::byte_serialize(format!("{origin}/large.m3u8").as_bytes()).collect();
 
     // Case 1: Range starting at byte 0 that truncates the playlist before seg_119.ts
     let (st1, _, body1) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}"),
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}&source_id={sid}"),
         Some(&member_tok),
         Some("bytes=0-511"),
     )
@@ -2628,7 +2710,7 @@ async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8
     // Case 2: Mid-playlist Range where #EXTM3U header is omitted in the 206 slice
     let (st2, _, body2) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}"),
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}&source_id={sid}"),
         Some(&member_tok),
         Some("bytes=200-711"),
     )
@@ -2655,7 +2737,7 @@ async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8
 
 #[tokio::test]
 async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream_range_hls_e2e() {
-    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
 
     let mut manifest = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n");
     for i in 0..80 {
@@ -2727,13 +2809,30 @@ async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream
         axum::serve(listener, origin_app).await.unwrap();
     });
 
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({
+            "raw_json": serde_json::json!({
+                "sourceName": "XmlSvgGuardSource",
+                "sourceUrl": origin,
+                "apiUrl": format!("{origin}/api"),
+                "enabled": true
+            }).to_string()
+        }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap();
+
     // GAP-04: single-chunk and split-chunk <?xml ...?><svg> rejected on both stream-proxy and hls-proxy
     for endpoint in ["stream-proxy", "hls-proxy"] {
         for path in ["/xml-svg.bin", "/xml-svg-split.bin"] {
             let encoded = urlencoding_param(&format!("{origin}{path}"));
             let (st, _, _) = get_bytes_with_auth(
                 &app,
-                &format!("/api/v1/video/online/{endpoint}?url={encoded}"),
+                &format!("/api/v1/video/online/{endpoint}?url={encoded}&source_id={sid}"),
                 Some(&member_tok),
                 None,
             )
@@ -2750,7 +2849,7 @@ async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream
     let encoded_manifest = urlencoding_param(&format!("{origin}/manifest"));
     let (st_hls, hdrs_hls, body_hls) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/hls-proxy?url={encoded_manifest}"),
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_manifest}&source_id={sid}"),
         Some(&member_tok),
         Some("bytes=10-500"),
     )
@@ -2968,7 +3067,7 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
     let encoded_manifest = urlencoding_param(&format!("{origin}/chunked-manifest"));
     let (st_hls, hdrs_hls, body_hls) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/hls-proxy?url={encoded_manifest}"),
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_manifest}&source_id={sid}"),
         Some(&member_tok),
         Some("bytes=24-120"),
     )
@@ -2988,7 +3087,7 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
     // I2-GAP-03 (stream-proxy): same chunked 206 partial HLS is rejected with 400 Bad Request
     let (st_stream_hls, _, _) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/stream-proxy?url={encoded_manifest}"),
+        &format!("/api/v1/video/online/stream-proxy?url={encoded_manifest}&source_id={sid}"),
         Some(&member_tok),
         Some("bytes=24-120"),
     )
@@ -3008,7 +3107,7 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
             let encoded = urlencoding_param(&format!("{origin}{path}"));
             let (st, _, _) = get_bytes_with_auth(
                 &app,
-                &format!("/api/v1/video/online/{endpoint}?url={encoded}"),
+                &format!("/api/v1/video/online/{endpoint}?url={encoded}&source_id={sid}"),
                 Some(&member_tok),
                 None,
             )
@@ -3025,7 +3124,7 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
     let encoded_live = urlencoding_param(&format!("{origin}/live"));
     let (st_live_hls, hdrs_live_hls, body_live_hls) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/hls-proxy?url={encoded_live}"),
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_live}&source_id={sid}"),
         Some(&member_tok),
         None,
     )
@@ -3044,7 +3143,7 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
 
     let (st_live_stream, _, _) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/online/stream-proxy?url={encoded_live}"),
+        &format!("/api/v1/video/online/stream-proxy?url={encoded_live}&source_id={sid}"),
         Some(&member_tok),
         None,
     )
@@ -3199,7 +3298,7 @@ async fn subtitle_proxy_serves_vtt_converts_srt_injects_headers_and_enforces_sec
             "/subs/huge.vtt",
             get(|| async {
                 let mut body = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n".to_vec();
-                body.extend(vec![b'x'; 4 * 1024 * 1024 + 128]);
+                body.extend(vec![b'x'; 16 * 1024 * 1024 + 128]);
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "text/vtt")
@@ -3306,11 +3405,28 @@ async fn subtitle_proxy_serves_vtt_converts_srt_injects_headers_and_enforces_sec
     }
 
     // 5. Hardened default app blocks loopback SSRF on subtitle-proxy
-    let (_tmp_h, app_hardened, _adm_h, mem_h) = setup_test_app(false).await;
+    let (_tmp_h, app_hardened, adm_h, mem_h) = setup_test_app(false).await;
+    let (st_imp_h, imp_h) = post_json(
+        &app_hardened,
+        "/api/v1/video/sources/import",
+        &adm_h,
+        serde_json::json!({
+            "raw_json": serde_json::json!({
+                "sourceName": "HardenedSubSource",
+                "sourceUrl": "https://sub.example.test",
+                "apiUrl": "https://sub.example.test/api",
+                "enabled": true
+            }).to_string()
+        }),
+    )
+    .await;
+    assert_eq!(st_imp_h, StatusCode::OK);
+    let sid_h = imp_h["sources"][0]["id"].as_str().unwrap();
+
     let encoded_loop = urlencoding_param(&format!("{origin}/subs/zh.vtt"));
     let (st_ssrf, _, _) = get_bytes_with_auth(
         &app_hardened,
-        &format!("/api/v1/video/online/subtitle-proxy?url={encoded_loop}"),
+        &format!("/api/v1/video/online/subtitle-proxy?url={encoded_loop}&source_id={sid_h}"),
         Some(&mem_h),
         None,
     )
@@ -3459,8 +3575,9 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
     use xmedia_source::http::HttpClientConfig;
 
     use crate::application::online::VideoOnlineService;
+    use crate::http::online::RestVideoProxyUrlBuilder;
     use crate::infra::persistence::repositories::ToastyVideoSourceRepository;
-    use crate::source::VideoSourceEngine;
+    use crate::infra::source::{HttpVideoStreamTransport, VideoSourceEngine};
 
     let after_hits = Arc::new(AtomicUsize::new(0));
     let after_hits_c = after_hits.clone();
@@ -3528,14 +3645,16 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
 
     let sources_repo = Arc::new(ToastyVideoSourceRepository::new(db));
     let source_crud = Arc::new(xmedia_source::crud::SourceCrudService::new(sources_repo));
-    let engine = VideoSourceEngine::new(
-        HttpClientConfig {
-            allow_private_ips: true,
-            ..Default::default()
-        },
+    let http_cfg = HttpClientConfig {
+        allow_private_ips: true,
+        ..Default::default()
+    };
+    let engine = Arc::new(VideoSourceEngine::new(
+        http_cfg.clone(),
         Duration::from_secs(5),
-    );
-    let svc = VideoOnlineService::with_engine(source_crud, engine, true)
+    ));
+    let transport = Arc::new(HttpVideoStreamTransport::new(http_cfg));
+    let svc = VideoOnlineService::new(source_crud, engine, transport)
         .with_timeouts(Duration::from_millis(120), Duration::from_millis(160));
 
     let raw_src = serde_json::json!({
@@ -3575,14 +3694,32 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
     let cat_err = svc.categories(&admin, sid).await.unwrap_err();
     assert!(matches!(cat_err, DomainError::Validation(ref m) if m.contains("超时")));
 
-    let browse_err = svc.browse(&admin, sid, None, 1).await.unwrap_err();
+    let browse_err = svc
+        .browse(&admin, sid, None, 1, &RestVideoProxyUrlBuilder)
+        .await
+        .unwrap_err();
     assert!(matches!(browse_err, DomainError::Validation(ref m) if m.contains("超时")));
 
-    let detail_err = svc.detail(&admin, sid, Some("1"), None).await.unwrap_err();
+    let detail_err = svc
+        .detail(
+            &admin,
+            sid,
+            Some("1"),
+            None,
+            Some(&RestVideoProxyUrlBuilder),
+        )
+        .await
+        .unwrap_err();
     assert!(matches!(detail_err, DomainError::Validation(ref m) if m.contains("超时")));
 
     let play_err = svc
-        .play(&admin, sid, &format!("{base}/ep1"), None)
+        .play(
+            &admin,
+            sid,
+            &format!("{base}/ep1"),
+            None,
+            &RestVideoProxyUrlBuilder,
+        )
         .await
         .unwrap_err();
     assert!(matches!(play_err, DomainError::Validation(ref m) if m.contains("超时")));

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use xmedia_core::application::ports::ByteChunkStream;
 
 use crate::application::dto::{ShowDetailDto, VideoSummaryDto};
+pub use crate::application::ports::{HlsProxyOutcome, ProxyStreamOutcome, ProxyStreamPayload};
 use crate::domain::id::VideoId;
 pub use crate::domain::online::VideoSourceTestMode;
 use crate::domain::online::{
@@ -107,26 +107,6 @@ pub struct OnlineVideoPlayResponseDto {
     #[serde(flatten)]
     pub play: OnlineVideoPlayResult,
     pub diagnostics: ExecutionDiagnostics,
-}
-
-pub struct ProxyStreamPayload {
-    pub status: u16,
-    pub content_type: String,
-    pub content_length: Option<u64>,
-    pub content_range: Option<String>,
-    pub accept_ranges: String,
-    pub stream: ByteChunkStream,
-}
-
-pub enum ProxyStreamOutcome {
-    Stream(ProxyStreamPayload),
-    RangeNotSatisfiable { content_range: Option<String> },
-}
-
-pub enum HlsProxyOutcome {
-    Playlist(String),
-    Segment(ProxyStreamPayload),
-    RangeNotSatisfiable { content_range: Option<String> },
 }
 
 #[derive(Debug, Clone, Deserialize)]

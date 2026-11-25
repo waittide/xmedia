@@ -8,6 +8,11 @@ use url::Url;
 use xmedia_source::http::{LegadoHttpClient, resolve_relative_url};
 use xmedia_source::rule::cached_regex;
 
+use crate::domain::online::{
+    OnlineVideoCategory, OnlineVideoDetail, OnlineVideoEpisode, OnlineVideoPlayGroup,
+    OnlineVideoSummary, VideoSourceSpec,
+};
+
 static RE_SCRIPT_STYLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?is)<(?:script|style)\b[^>]*>[\s\S]*?</(?:script|style)>").expect("valid regex")
 });
@@ -46,11 +51,6 @@ fn is_obvious_share_page_url(raw_url: &str) -> bool {
     }
     raw_url.to_ascii_lowercase().contains("/share/")
 }
-
-use crate::source::model::{
-    OnlineVideoCategory, OnlineVideoDetail, OnlineVideoEpisode, OnlineVideoPlayGroup,
-    OnlineVideoSummary, VideoSourceSpec,
-};
 
 #[derive(Debug, Deserialize)]
 struct AppleCmsResponse {
@@ -517,8 +517,6 @@ pub fn parse_vod_play_groups(
         return Vec::new();
     }
 
-    // Apply playUrlFilterRegex if valid and at least 1 episode matches across all groups.
-    // On regex-miss fallback, still exclude obvious HTML share pages (e.g. `/share/`).
     if let Some(re) = cached_regex(play_filter_regex) {
         let any_match = raw_groups
             .iter()
@@ -544,7 +542,6 @@ pub fn parse_vod_play_groups(
         raw_groups = filtered;
     }
 
-    // Order by preferred_play_from (case-insensitive exact match priority, preserving original order).
     let mut pref_rank: HashMap<String, usize> = HashMap::new();
     for (idx, p) in preferred_play_from.iter().enumerate() {
         let lower = p.trim().to_ascii_lowercase();
