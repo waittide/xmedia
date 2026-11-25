@@ -55,6 +55,10 @@ export function peekHomeCache<K extends MediaKind>(kind: K): DomainHomeMap[K] | 
   return (cacheByUser[currentUserKey]?.[kind]?.data as DomainHomeMap[K] | undefined) ?? null
 }
 
+export function hasHomeOverviewAvailable(kind: MediaKind): boolean {
+  return Boolean(cacheByUser[currentUserKey]?.[kind] || inflightByUser[currentUserKey]?.[kind])
+}
+
 export function fetchHomeOverview<K extends MediaKind>(
   kind: K,
   options: { force?: boolean; maxAgeMs?: number } = {},
@@ -65,13 +69,13 @@ export function fetchHomeOverview<K extends MediaKind>(
   const userCache = (cacheByUser[userKey] ??= {})
   const userInflight = (inflightByUser[userKey] ??= {})
 
+  const pending = userInflight[kind]
+  if (!force && pending) return pending as Promise<DomainHomeMap[K]>
+
   const existing = userCache[kind]
   if (!force && existing && Date.now() - existing.updatedAt < maxAgeMs) {
     return Promise.resolve(existing.data as DomainHomeMap[K])
   }
-
-  const pending = userInflight[kind]
-  if (pending) return pending as Promise<DomainHomeMap[K]>
 
   const req = (async (): Promise<DomainHomeMap[K]> => {
     let data: unknown

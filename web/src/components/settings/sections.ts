@@ -53,49 +53,12 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   },
 ]
 
-const LEGACY_DOMAIN_CATALOG_PATHS: Record<MediaKind, string> = {
-  book: '/book/library',
-  comic: '/comic/series',
-  music: '/music/songs',
-  video: '/video/catalog',
-}
-
 export function resolveLibraryRoute(
-  router: Router,
+  _router: Router,
   domain: MediaKind,
   params?: LibraryRouteParams,
 ): RouteLocationRaw {
-  const hasCanonicalLibrary = router
-    .getRoutes()
-    .some(
-      (r) =>
-        r.name === `${domain}-library` ||
-        r.path === `/${domain}/library` ||
-        (r.path.includes(':domain') && r.path.endsWith('/library')),
-    )
-
-  if (hasCanonicalLibrary) {
-    return libraryRoute(domain, params)
-  }
-
-  const query: Record<string, string> = {}
-  if (params?.scope && params.scope !== 'local') {
-    query.scope = params.scope
-    if (params.sourceId) query.source = params.sourceId
-  }
-  if (params?.library) {
-    if (domain === 'comic') {
-      query.library_id = params.library
-    } else {
-      query.library = params.library
-    }
-  }
-  if (params?.q?.trim()) {
-    query.q = params.q.trim()
-  }
-
-  const path = LEGACY_DOMAIN_CATALOG_PATHS[domain]
-  return Object.keys(query).length > 0 ? { path, query } : { path }
+  return libraryRoute(domain, params)
 }
 
 export const DOMAIN_ICONS: Record<MediaKind, Component> = {

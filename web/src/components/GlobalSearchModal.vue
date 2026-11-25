@@ -113,51 +113,6 @@ const quickNavItems = computed(() => {
   return out
 })
 
-/**
- * Uses canonical Stage 3C/4 routes when registered in router; gracefully translates
- * to current legacy routes before router switchover so navigation never hits catch-all.
- */
-function resolveRoute(target: RouteLocationRaw): RouteLocationRaw {
-  const matched = router.resolve(target)
-  const isCatchAll =
-    matched.matched.length === 0 ||
-    matched.matched[matched.matched.length - 1]?.path === '/:pathMatch(.*)*'
-  if (!isCatchAll) return target
-
-  if (typeof target === 'string') return target
-  const path = 'path' in target && typeof target.path === 'string' ? target.path : ''
-  const queryObj = 'query' in target ? target.query : undefined
-
-  const libMatch = /^\/(book|comic|music|video)\/library$/.exec(path)
-  if (libMatch) {
-    const d = libMatch[1] as MediaKind
-    const legacyPath =
-      d === 'comic' ? '/comic/series' : d === 'music' ? '/music/songs' : `/${d}/catalog`
-    return { path: legacyPath, query: queryObj }
-  }
-
-  const itemMatch = /^\/(book|comic|music|video)\/item\/(.+)$/.exec(path)
-  if (itemMatch) {
-    const d = itemMatch[1] as MediaKind
-    const id = itemMatch[2]!
-    if (d === 'book') return { path: `/book/item/${id}`, query: queryObj }
-    if (d === 'comic') return { path: `/comic/item/${id}`, query: queryObj }
-    if (d === 'music') return { path: `/music/albums/${id}`, query: queryObj }
-    return { path: `/video/shows/${id}`, query: queryObj }
-  }
-
-  const playMatch = /^\/(book|comic|music|video)\/play\/(.+)$/.exec(path)
-  if (playMatch) {
-    const d = playMatch[1] as MediaKind
-    const id = playMatch[2]!
-    if (d === 'book') return { path: `/book/read/${id}`, query: queryObj }
-    if (d === 'comic') return { path: `/comic/read/${id}`, query: queryObj }
-    if (d === 'video') return { path: `/video/watch/${id}`, query: queryObj }
-  }
-
-  return target
-}
-
 function navigateTo(target: RouteLocationRaw, domain?: MediaKind): void {
   if (query.value.trim()) {
     addRecent(query.value)
@@ -166,7 +121,7 @@ function navigateTo(target: RouteLocationRaw, domain?: MediaKind): void {
     domainStore.setActiveDomain(domain)
   }
   emit('close')
-  void router.push(resolveRoute(target))
+  void router.push(target)
 }
 
 function onSelectItem(item: MediaItemVM): void {

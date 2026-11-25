@@ -8,6 +8,7 @@ import {
   type Ref,
 } from 'vue'
 import { withAuthToken } from '@/api/client'
+import { fetchHomeOverview, hasHomeOverviewAvailable } from '@/config/homeCache'
 import { api as bookApi } from '@/domains/book/api'
 import type { BookSummaryDto } from '@/domains/book/types'
 import { api as comicApi } from '@/domains/comic/api'
@@ -235,6 +236,15 @@ async function fetchLocalShelfItems(
 ): Promise<MediaItemVM[]> {
   if (domain === 'book') {
     if (view === 'continue') {
+      if (hasHomeOverviewAvailable('book') || limit <= 6) {
+        const home = await fetchHomeOverview('book')
+        if (
+          home.stats.reading_count <= home.continue_reading.length ||
+          limit <= home.continue_reading.length
+        ) {
+          return home.continue_reading.slice(0, limit).map((b) => mapBookToVM(b, view))
+        }
+      }
       const recent = await bookApi.listRecent(limit)
       return recent.map((b) => mapBookToVM(b, view))
     }
@@ -250,7 +260,7 @@ async function fetchLocalShelfItems(
 
   if (domain === 'comic') {
     if (view === 'continue') {
-      const home = await comicApi.homeOverview()
+      const home = await fetchHomeOverview('comic')
       return home.continue_reading.map(mapComicContinueToVM)
     }
     const list = await comicApi.listSeries({
@@ -263,7 +273,7 @@ async function fetchLocalShelfItems(
 
   if (domain === 'music') {
     if (view === 'continue') {
-      const home = await musicApi.homeOverview()
+      const home = await fetchHomeOverview('music')
       const seen = new Set<string>()
       const out: MediaItemVM[] = []
       for (const bm of home.bookmarks) {
@@ -287,7 +297,7 @@ async function fetchLocalShelfItems(
 
   // video
   if (view === 'continue') {
-    const home = await videoApi.homeOverview()
+    const home = await fetchHomeOverview('video')
     return home.continue_watching.map((v) => mapVideoToVM(v, view))
   }
   const favs = await videoApi.listFavorites()

@@ -26,12 +26,6 @@ const visibleSections = computed<SettingsSectionDef[]>(() =>
   SETTINGS_SECTIONS.filter((item) => !item.adminOnly || authStore.isAdmin),
 )
 
-function supportsSectionPath(): boolean {
-  return router
-    .getRoutes()
-    .some((r) => r.path.includes('/settings/:section') || r.name === 'settings-appearance')
-}
-
 const activeSection = ref<SettingsSection>(resolveSectionFromRoute(route))
 const mobileShowDetail = ref<boolean>(hasExplicitSectionInRoute(route))
 const errorMsg = ref('')
@@ -49,12 +43,7 @@ function sectionSummary(item: SettingsSectionDef): string {
 }
 
 function syncRoute(section: SettingsSection): void {
-  const usePathMode = supportsSectionPath()
-  const targetPath = usePathMode ? `/settings/${section}` : '/settings'
-  void router.replace({
-    path: targetPath,
-    query: usePathMode ? undefined : { tab: section },
-  })
+  void router.replace({ path: `/settings/${section}` })
 }
 
 function applyRouteState(): void {
