@@ -121,12 +121,12 @@ function hydrateDraft(m: ScrapedMetadata | null): void {
   draft.cast = (m.cast ?? []).join(' / ')
   draft.seriesOrAlbum = m.series_or_album ?? ''
   draft.publisherOrStudio = m.publisher_or_studio ?? ''
-  draft.dateOrYear = m.published_date || (m.year ? String(m.year) : '')
+  draft.dateOrYear = m.published_date || (m.year != null ? String(m.year) : '')
   draft.isbn = m.isbn ?? ''
-  draft.rating = m.rating ? String(m.rating) : ''
+  draft.rating = m.rating != null ? String(m.rating) : ''
   draft.language = m.language ?? ''
-  draft.discOrSeason = m.disc_or_season_number ? String(m.disc_or_season_number) : ''
-  draft.trackOrEpisode = m.track_or_episode_number ? String(m.track_or_episode_number) : ''
+  draft.discOrSeason = m.disc_or_season_number != null ? String(m.disc_or_season_number) : ''
+  draft.trackOrEpisode = m.track_or_episode_number != null ? String(m.track_or_episode_number) : ''
   draft.genres = (m.genres ?? []).join(' / ')
   draft.tags = (m.tags ?? []).join(' / ')
   draft.combinedBookTags = combinedTags.join(' / ')
@@ -180,7 +180,7 @@ function buildEditedMetadata(): ScrapedMetadata | null {
     cast: splitListTokens(draft.cast),
     series_or_album: draft.seriesOrAlbum.trim() || null,
     publisher_or_studio: draft.publisherOrStudio.trim() || null,
-    year: parsedYear && Number.isFinite(parsedYear) ? parsedYear : null,
+    year: parsedYear !== null && Number.isFinite(parsedYear) ? parsedYear : null,
     published_date: trimmedDate || null,
     isbn: draft.isbn.trim() || null,
     rating: parsedRating !== null && Number.isFinite(parsedRating) ? parsedRating : null,

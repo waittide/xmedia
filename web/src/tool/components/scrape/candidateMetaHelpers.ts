@@ -139,12 +139,12 @@ export function countPopulatedFields(meta: ScrapedMetadata): number {
   if (meta.illustrators_or_directors.length > 0) count += 1
   if (meta.series_or_album) count += 1
   if (meta.publisher_or_studio) count += 1
-  if (meta.published_date || meta.year) count += 1
+  if (meta.published_date || meta.year != null) count += 1
   if (meta.isbn) count += 1
-  if (meta.rating) count += 1
+  if (meta.rating != null) count += 1
   if (meta.language) count += 1
-  if (meta.disc_or_season_number) count += 1
-  if (meta.track_or_episode_number) count += 1
+  if (meta.disc_or_season_number != null) count += 1
+  if (meta.track_or_episode_number != null) count += 1
   if (meta.cast.length > 0) count += 1
   if (meta.genres.length > 0) count += 1
   if (meta.tags.length > 0) count += 1

@@ -110,7 +110,7 @@ const savedSessionCount = computed(() => {
 
       <button
         type="button"
-        class="md-icon-btn md-icon-btn-sm md-state hidden md:inline-flex"
+        class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
         :title="sidebarCollapsed ? '展开左侧队列列表' : '收起左侧队列列表（最大化三栏宽度）'"
         :aria-label="sidebarCollapsed ? '展开左侧队列列表' : '收起左侧队列列表'"
         @click="emit('toggleSidebar')"

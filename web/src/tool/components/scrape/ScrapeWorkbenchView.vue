@@ -68,7 +68,7 @@ const autoSearchTrigger = ref(0)
 const candidatePreview = ref<CandidatePreviewState | null>(null)
 let lastEntryKey = ''
 
-const isMobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 840 : false)
+const isMobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 600 : false)
 const showCompactQueueDropdown = computed(() => props.sidebarCollapsed || isMobileViewport.value)
 const queueDropdownOpen = ref(false)
 
@@ -88,7 +88,7 @@ function handleSelectCandidatePreview(next: CandidatePreviewState | null): void 
 }
 
 function handleResize(): void {
-  isMobileViewport.value = window.innerWidth < 840
+  isMobileViewport.value = window.innerWidth < 600
 }
 
 watch(

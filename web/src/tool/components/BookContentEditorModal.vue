@@ -414,8 +414,9 @@ function toggleLivePreview(): void {
 }
 
 watch(
-  () => [indentParagraphs.value, themeStore.isDark] as const,
-  () => {
+  () => [indentParagraphs.value, themeStore.isDark, themeStore.effectiveSeedColor] as const,
+  async () => {
+    await nextTick()
     if (showLivePreview.value && currentRecord.value) {
       flushActiveSurfaceToRecord()
       previewSrcdoc.value = buildLivePreviewSrcdoc(

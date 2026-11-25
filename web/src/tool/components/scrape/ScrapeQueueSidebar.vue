@@ -100,7 +100,7 @@ const filteredEntries = computed(() => {
   <Transition name="md-fade">
     <div
       v-if="mobileMenuOpen"
-      class="fixed inset-0 z-30 bg-[var(--md-sys-color-scrim)]/32 md:hidden"
+      class="fixed inset-0 z-30 bg-[var(--md-sys-color-scrim)]/32 sm:hidden"
       @click="emit('closeMobile')"
     />
   </Transition>
@@ -110,18 +110,18 @@ const filteredEntries = computed(() => {
     :role="mobileMenuOpen ? 'dialog' : undefined"
     :aria-modal="mobileMenuOpen ? 'true' : undefined"
     aria-label="刮削队列"
-    class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none md:static"
+    class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none sm:static"
     :class="[
       mobileMenuOpen
-        ? 'w-72 translate-x-0 rounded-r-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-1)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
-        : '-translate-x-full md:translate-x-0',
-      collapsed ? 'md:w-20' : 'md:w-64',
+        ? 'w-72 translate-x-0 rounded-r-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-1)] sm:rounded-none sm:bg-[var(--md-sys-color-surface-container)] sm:shadow-none'
+        : '-translate-x-full sm:translate-x-0',
+      collapsed ? 'sm:w-20' : 'sm:w-64',
     ]"
   >
     <!-- COMPACT RAIL MODE (80px) -->
     <nav
       v-if="isCompact"
-      class="hidden flex-1 flex-col items-center gap-2.5 overflow-y-auto px-2 pt-3 pb-4 md:flex"
+      class="hidden flex-1 flex-col items-center gap-2.5 overflow-y-auto px-2 pt-3 pb-4 sm:flex"
     >
       <button
         type="button"

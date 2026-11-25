@@ -513,15 +513,15 @@ export function useMetadataForm() {
         musicForm.album = meta.series_or_album
         return true
       }
-      if (field === 'year' && meta.year && shouldWrite(musicForm.year, fillMode)) {
+      if (field === 'year' && meta.year != null && shouldWrite(musicForm.year, fillMode)) {
         musicForm.year = String(meta.year)
         return true
       }
-      if (field === 'track_or_episode' && meta.track_or_episode_number && shouldWrite(musicForm.track, fillMode)) {
+      if (field === 'track_or_episode' && meta.track_or_episode_number != null && shouldWrite(musicForm.track, fillMode)) {
         musicForm.track = String(meta.track_or_episode_number)
         return true
       }
-      if (field === 'disc_or_season' && meta.disc_or_season_number && shouldWrite(musicForm.disc, fillMode)) {
+      if (field === 'disc_or_season' && meta.disc_or_season_number != null && shouldWrite(musicForm.disc, fillMode)) {
         musicForm.disc = String(meta.disc_or_season_number)
         return true
       }
@@ -566,11 +566,11 @@ export function useMetadataForm() {
       videoForm.studio = meta.publisher_or_studio
       return true
     }
-    if (field === 'year' && meta.year && !isVideoFieldLocked('year') && shouldWrite(videoForm.year, fillMode)) {
+    if (field === 'year' && meta.year != null && !isVideoFieldLocked('year') && shouldWrite(videoForm.year, fillMode)) {
       videoForm.year = String(meta.year)
       return true
     }
-    if (field === 'rating' && meta.rating && !isVideoFieldLocked('rating') && shouldWrite(videoForm.rating, fillMode)) {
+    if (field === 'rating' && meta.rating != null && !isVideoFieldLocked('rating') && shouldWrite(videoForm.rating, fillMode)) {
       videoForm.rating = String(meta.rating)
       return true
     }

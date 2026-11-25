@@ -167,11 +167,14 @@ onBeforeUnmount(() => {
         <MdTextField
           v-model="passwordInput"
           type="password"
-          :leading-icon="LuLock"
           :placeholder="t('tool.unlock.placeholder')"
           :aria-label="t('tool.unlock.placeholder')"
           autofocus
-        />
+        >
+          <template #leading>
+            <LuLock class="h-4 w-4" aria-hidden="true" />
+          </template>
+        </MdTextField>
 
         <MdButton
           type="submit"

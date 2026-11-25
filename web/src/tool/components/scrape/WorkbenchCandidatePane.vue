@@ -435,9 +435,10 @@ async function runSearch(): Promise<void> {
       artist_or_author: artistOrAuthor.value.trim() || undefined,
       album_or_series: albumOrSeries.value.trim() || undefined,
       isbn: isbnTrim || undefined,
-      year: parsedYear && Number.isFinite(parsedYear) ? parsedYear : undefined,
-      season: parsedSeason && Number.isFinite(parsedSeason) ? parsedSeason : undefined,
-      episode: parsedEpisode && Number.isFinite(parsedEpisode) ? parsedEpisode : undefined,
+      year: parsedYear !== undefined && Number.isFinite(parsedYear) ? parsedYear : undefined,
+      season: parsedSeason !== undefined && Number.isFinite(parsedSeason) ? parsedSeason : undefined,
+      episode:
+        parsedEpisode !== undefined && Number.isFinite(parsedEpisode) ? parsedEpisode : undefined,
       duration_secs: durationSecs.value,
       providers: enabledProviderIds.value.length > 0 ? enabledProviderIds.value : undefined,
     }
@@ -547,9 +548,9 @@ watch(
     artistOrAuthor.value = q.artist_or_author ?? ''
     albumOrSeries.value = q.album_or_series ?? ''
     isbn.value = q.isbn ?? ''
-    yearInput.value = q.year ? String(q.year) : ''
-    seasonInput.value = q.season !== undefined && q.season !== null ? String(q.season) : ''
-    episodeInput.value = q.episode !== undefined && q.episode !== null ? String(q.episode) : ''
+    yearInput.value = q.year != null ? String(q.year) : ''
+    seasonInput.value = q.season != null ? String(q.season) : ''
+    episodeInput.value = q.episode != null ? String(q.episode) : ''
     durationSecs.value = q.duration_secs ?? undefined
     candidates.value = []
     serverMergedResult.value = null
