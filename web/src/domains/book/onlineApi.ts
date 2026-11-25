@@ -1,7 +1,31 @@
 import { requestJson, withAuthToken } from '@/api/client'
 import { createDomainSourceApi } from '@/components/online-sources/createDomainSourceApi'
-import type { OnlineSourceManagerAdapter } from '@/components/online-sources/types'
+import {
+  isSafeDataImageUrl,
+  isSafeHttpUrl,
+  type BaseSourceTestReportDto,
+  type BatchSourcesPayload,
+  type BatchSourcesReportDto,
+  type BrowserRedirectHint,
+  type ExecutionDiagnostics,
+  type ImportSourcesReportDto,
+  type LoginActionResponseDto as SharedLoginActionResponseDto,
+  type LoginUiItem,
+  type LoginUiStyle,
+  type OnlineSourceManagerAdapter,
+  type OnlineSourceSummaryDto,
+  type SourceDebugStepDto,
+} from '@/components/online-sources/types'
 import type { BookSummaryDto } from './types'
+
+export { isSafeHttpUrl }
+export type {
+  BrowserRedirectHint,
+  ExecutionDiagnostics,
+  LoginUiItem,
+  LoginUiStyle,
+  SourceDebugStepDto,
+}
 
 export interface TrackedChapterMetaDto {
   index: number
@@ -33,69 +57,11 @@ export interface TrackedChapterResponseDto {
   epub_dirty: boolean
 }
 
-export interface LoginUiStyle {
-  layout_flex_grow?: number | null
-  layout_flex_basis_percent?: number | null
-}
-
-export interface LoginUiItem {
-  name: string
-  type: string
-  action?: string | null
-  style?: LoginUiStyle | null
-}
-
-export interface BookSourceSummaryDto {
-  id: string
-  name: string
-  source_url: string
-  group_name: string
-  comment: string | null
-  check_keyword: string | null
-  enabled: boolean
-  weight: number
-  source_type: number
-  has_login_url: boolean
-  login_ui: LoginUiItem[]
-  login_info: Record<string, string>
-  has_variable: boolean
-  variable_preview: string
-  cookie_hosts: string[]
-  last_test_ok: boolean | null
-  last_test_msg: string | null
-  updated_at: string
-}
-
-export interface ImportBookSourcesReportDto {
-  imported_count: number
-  updated_count: number
-  sources: BookSourceSummaryDto[]
-}
-
-export type BatchBookSourcesPayload =
-  | { ids: string[]; action: 'enable' | 'disable' | 'delete' }
-  | { ids: string[]; action: 'set_group'; group_name: string }
-
-export interface BatchBookSourcesReportDto {
-  affected_count: number
-}
-
-export interface BrowserRedirectHint {
-  url: string
-  title: string
-}
-
-export interface ExecutionDiagnostics {
-  toasts: string[]
-  logs: string[]
-  browser_urls: BrowserRedirectHint[]
-}
-
-export interface LoginActionResponseDto {
-  result: string
-  diagnostics: ExecutionDiagnostics
-  source: BookSourceSummaryDto
-}
+export type BookSourceSummaryDto = OnlineSourceSummaryDto
+export type ImportBookSourcesReportDto = ImportSourcesReportDto<BookSourceSummaryDto>
+export type BatchBookSourcesPayload = BatchSourcesPayload
+export type BatchBookSourcesReportDto = BatchSourcesReportDto
+export type LoginActionResponseDto = SharedLoginActionResponseDto<BookSourceSummaryDto>
 
 export type SourceTestMode = 'full' | 'search' | 'book_info' | 'toc' | 'content'
 
@@ -109,26 +75,7 @@ export interface SourceTestInput {
   chapter_title?: string | null
 }
 
-export interface SourceDebugStepDto {
-  stage: 'search' | 'book_info' | 'toc' | 'content' | string
-  label: string
-  ok: boolean
-  elapsed_ms: number
-  summary: string
-  error: string | null
-  diagnostics: ExecutionDiagnostics
-}
-
-export interface SourceTestReportDto {
-  ok: boolean
-  mode: SourceTestMode
-  keyword: string
-  total_elapsed_ms: number
-  result_count: number
-  sample_titles: string[]
-  error: string | null
-  diagnostics: ExecutionDiagnostics
-  steps: SourceDebugStepDto[]
+export interface SourceTestReportDto extends BaseSourceTestReportDto<SourceTestMode> {
   search_items: SearchBookResult[]
   book_detail: OnlineBookDetail | null
   toc_chapters: OnlineChapterItem[]
@@ -282,23 +229,11 @@ export interface ChapterJsContextInput {
   url: string
 }
 
-const SAFE_DATA_IMAGE_RE = /^data:image\/(png|jpeg|jpg|webp|gif|avif);base64,/i
-
-export function isSafeHttpUrl(rawUrl: string | null | undefined): boolean {
-  if (!rawUrl || !rawUrl.trim()) return false
-  try {
-    const parsed = new URL(rawUrl.trim())
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
-  } catch {
-    return false
-  }
-}
-
 export function buildOnlineCoverUrl(rawUrl: string | null | undefined): string {
   if (!rawUrl || !rawUrl.trim()) return ''
   const u = rawUrl.trim()
   if (u.toLowerCase().startsWith('data:')) {
-    return SAFE_DATA_IMAGE_RE.test(u) ? u : ''
+    return isSafeDataImageUrl(u) ? u : ''
   }
   if (!isSafeHttpUrl(u)) return ''
   return withAuthToken(`/api/v1/book/online/cover-proxy?url=${encodeURIComponent(u)}`)

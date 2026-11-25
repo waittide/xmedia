@@ -8,7 +8,9 @@ import {
   type OnlineSourceManagerAdapter,
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
-import type { TrackDto } from './types'
+import type { LyricLineDto, StructuredLyricsDto, TrackDto } from './types'
+
+export type { LyricLineDto, StructuredLyricsDto }
 
 export type MusicSourceSummaryDto = OnlineSourceSummaryDto
 export type MusicSourceTestMode = 'full' | 'search' | 'explore' | 'detail' | 'stream' | 'lyric'
@@ -51,21 +53,6 @@ export interface OnlineMusicTrackDto {
 export interface MusicExploreCategoryDto {
   title: string
   url: string
-}
-
-export interface LyricLineDto {
-  start_ms: number
-  text: string
-}
-
-export interface StructuredLyricsDto {
-  lang: string
-  synced: boolean
-  display_artist: string | null
-  display_title: string | null
-  offset_ms: number
-  lines: LyricLineDto[]
-  plain_text: string
 }
 
 export interface OnlineMusicResolvedTrackDto {

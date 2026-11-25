@@ -21,7 +21,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime as formatDuration } from '@/utils/format'
-import { api, buildCoverUrl, buildDownloadUrl } from '../api'
+import { api, buildCoverUrl } from '../api'
+import { downloadLocalTrack } from '../download'
 import { useMusicI18n as useI18n } from '../i18n'
 import { onlineMusicApi } from '../onlineApi'
 import { usePlayerStore } from '../player'
@@ -240,16 +241,6 @@ async function confirmDeleteTrack(track: TrackDto): Promise<void> {
       tone: 'error',
     })
   }
-}
-
-function triggerDownload(trackId: string): void {
-  const url = buildDownloadUrl(trackId)
-  const link = document.createElement('a')
-  link.href = url
-  link.rel = 'noopener'
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
 }
 
 async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
@@ -525,7 +516,7 @@ async function handleCacheTrackedTrack(track: TrackDto): Promise<void> {
                   <MdMenuItem
                     :icon="LuDownload"
                     :label="t('common.download')"
-                    @select="triggerDownload(entry.track.id)"
+                    @select="downloadLocalTrack(entry.track.id)"
                   />
 
                   <div class="my-1 border-t border-outline-variant pt-1">

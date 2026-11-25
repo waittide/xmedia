@@ -1,4 +1,3 @@
-import type { ThemeMode } from '@/theme/md3'
 import type { UserRole } from '@/types/api'
 
 export type { UserRole }
@@ -9,36 +8,6 @@ export type BookSortField = 'created_at' | 'updated_at' | 'title' | 'file_size'
 export type SortOrder = 'asc' | 'desc'
 export type TagMatchMode = 'any' | 'all'
 
-export interface ReaderPreferences {
-  font_family: string
-  font_size: number
-  line_height: number
-  margin_px: number
-  flow: ReadingFlow
-}
-
-export interface UserPreferences {
-  theme_mode: ThemeMode
-  seed_color?: string | null
-  locale: LocaleCode
-  reader: ReaderPreferences
-}
-
-export interface UserDto {
-  id: string
-  username: string
-  display_name: string
-  role: UserRole
-  preferences: UserPreferences
-  created_at: string
-  updated_at: string
-}
-
-export interface AuthSessionDto {
-  token: string
-  user: UserDto
-}
-
 export type LibraryKind =
   | { type: 'mounted'; root_path: string }
   | { type: 'managed' }
@@ -48,11 +17,6 @@ export type ScanStatus =
   | { state: 'scanning'; processed?: number; total?: number }
   | { state: 'completed'; added: number; updated: number; missing: number }
   | { state: 'failed'; message: string }
-
-export type SystemWsEvent = {
-  event: 'library_scan_updated'
-  data: LibraryDto
-}
 
 export interface LibraryDto {
   id: string
