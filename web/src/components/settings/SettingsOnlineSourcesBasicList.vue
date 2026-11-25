@@ -47,6 +47,7 @@ const subscriptionUrl = ref('')
 const urlImporting = ref(false)
 const fileImporting = ref(false)
 const dialogError = ref('')
+const urlFetchBlocked = ref(false)
 const busyIds = ref<Set<string>>(new Set())
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
@@ -102,6 +103,7 @@ function healthInfo(src: OnlineSourceSummaryDto): {
 
 function openAddDialog(): void {
   dialogError.value = ''
+  urlFetchBlocked.value = false
   subscriptionUrl.value = ''
   addDialogOpen.value = true
 }
@@ -150,6 +152,7 @@ async function handleDelete(src: OnlineSourceSummaryDto): Promise<void> {
 
 function triggerFilePicker(): void {
   dialogError.value = ''
+  urlFetchBlocked.value = false
   fileInputRef.value?.click()
 }
 
@@ -159,6 +162,7 @@ async function handleFileSelected(ev: Event): Promise<void> {
   input.value = ''
   if (!file || fileImporting.value) return
   dialogError.value = ''
+  urlFetchBlocked.value = false
   fileImporting.value = true
   try {
     const text = await file.text()
@@ -183,6 +187,7 @@ async function handleImportFromUrl(): Promise<void> {
   const raw = subscriptionUrl.value.trim()
   if (!raw || urlImporting.value) return
   dialogError.value = ''
+  urlFetchBlocked.value = false
 
   let parsed: URL
   try {
@@ -196,13 +201,46 @@ async function handleImportFromUrl(): Promise<void> {
   }
 
   urlImporting.value = true
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15_000)
+
+  let text = ''
   try {
-    const res = await fetch(parsed.toString())
+    const res = await fetch(parsed.toString(), {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      headers: { Accept: 'application/json, text/plain, */*' },
+      signal: controller.signal,
+    })
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} ${res.statusText}`.trim())
     }
-    const text = await res.text()
-    const report = await props.adapter.importSources(text)
+    text = await res.text()
+  } catch (err) {
+    const isAbort = err instanceof DOMException && err.name === 'AbortError'
+    const detail = isAbort ? 'Timeout (15s)' : extractApiError(err)
+    urlFetchBlocked.value = true
+    dialogError.value = t('settings.sourceUrlImportFailed', { detail })
+    urlImporting.value = false
+    clearTimeout(timeoutId)
+    return
+  } finally {
+    clearTimeout(timeoutId)
+  }
+
+  try {
+    const trimmed = text.trim()
+    if (!trimmed) {
+      throw new Error(t('onlineSources.edit.jsonEmptyError'))
+    }
+    try {
+      JSON.parse(trimmed)
+    } catch {
+      throw new Error(t('onlineSources.edit.jsonSyntaxError'))
+    }
+    const report = await props.adapter.importSources(trimmed)
     snackbar.show({
       message: t('onlineSources.messages.importSuccess', {
         domain: domainLabel.value,
@@ -214,8 +252,7 @@ async function handleImportFromUrl(): Promise<void> {
     addDialogOpen.value = false
     emit('refresh')
   } catch (err) {
-    const detail = extractApiError(err)
-    dialogError.value = t('settings.sourceUrlImportFailed', { detail })
+    dialogError.value = extractApiError(err)
   } finally {
     urlImporting.value = false
   }
@@ -343,10 +380,20 @@ function switchToAdvanced(): void {
       <div
         v-if="dialogError"
         role="alert"
-        class="text-body-small flex items-start gap-2 rounded-corner-md bg-error-container px-3.5 py-2.5 text-on-error-container"
+        class="text-body-small flex flex-col gap-2 rounded-corner-md bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
-        <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
-        <span class="break-words">{{ dialogError }}</span>
+        <div class="flex items-start gap-2">
+          <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span class="break-words">{{ dialogError }}</span>
+        </div>
+        <div v-if="urlFetchBlocked" class="flex flex-wrap items-center gap-2 pl-6">
+          <MdButton variant="tonal" size="sm" :disabled="isAddBusy" @click="triggerFilePicker">
+            {{ t('onlineSources.toolbar.uploadFileBtn') }}
+          </MdButton>
+          <MdButton variant="text" size="sm" :disabled="isAddBusy" @click="switchToAdvanced">
+            {{ t('settings.openAdvancedLink') }}
+          </MdButton>
+        </div>
       </div>
 
       <!-- 1. Local JSON File -->
