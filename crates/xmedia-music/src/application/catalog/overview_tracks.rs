@@ -6,11 +6,14 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::user::UserId;
 
-use super::{MusicCatalogService, shuffle_prefix, sort_tracks};
+use super::MusicCatalogService;
 use crate::application::dto::{
     BookmarkDto, CatalogStatsDto, HomeOverviewDto, PlayQueueDto, PoolTrackDto, TrackDto,
 };
-use crate::domain::catalog::{Album, AlbumId, PagedResult, Track, TrackId, TrackQuery};
+use crate::domain::catalog::{
+    AlbumId, AlbumListQuery, AlbumListType, PagedResult, SortOrder, Track, TrackId, TrackQuery,
+    TrackSortField,
+};
 use crate::domain::collection::StarTargetKind;
 
 impl MusicCatalogService {
@@ -58,44 +61,22 @@ impl MusicCatalogService {
     }
 
     pub async fn get_home_overview(&self, user_id: UserId) -> DomainResult<HomeOverviewDto> {
-        let mut all_active_tracks = self.load_bound_tracks(user_id).await?;
-        let total_tracks = all_active_tracks.len() as u64;
-
-        let mut active_track_ids: HashSet<TrackId> =
-            HashSet::with_capacity(all_active_tracks.len());
-        let mut active_library_ids: HashSet<LibraryId> = HashSet::new();
-        let mut genre_set: HashSet<String> = HashSet::new();
-        let mut track_idx: HashMap<TrackId, usize> =
-            HashMap::with_capacity(all_active_tracks.len());
-        for (idx, tr) in all_active_tracks.iter().enumerate() {
-            active_track_ids.insert(tr.id);
-            active_library_ids.insert(tr.library_id);
-            track_idx.insert(tr.id, idx);
-            if let Some(ref g) = tr.genre {
-                let clean = g.trim().to_lowercase();
-                if !clean.is_empty() {
-                    genre_set.insert(clean);
-                }
-            }
-        }
-        let genres_count = genre_set.len() as u64;
-
-        let mut user_albums = self.project_user_albums(&all_active_tracks).await?;
-        user_albums.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-        let total_albums = user_albums.len() as u64;
-        let active_album_ids: HashSet<AlbumId> = user_albums.iter().map(|a| a.id).collect();
-        let user_artists = self.project_user_artists(&all_active_tracks).await?;
-        let total_artists = user_artists.len() as u64;
+        let allowed = self.bound_track_ids(user_id).await?;
+        let counts = self.catalog.get_bound_overview_stats(&allowed).await?;
 
         let all_stars = self.collections.list_starred(user_id, None).await?;
         let mut track_star_map: HashMap<Uuid, Timestamp> = HashMap::new();
         let mut album_star_map: HashMap<Uuid, Timestamp> = HashMap::new();
         for s in all_stars {
             match s.kind {
-                StarTargetKind::Track if active_track_ids.contains(&TrackId(s.target_id)) => {
+                StarTargetKind::Track
+                    if counts.active_track_ids.contains(&TrackId(s.target_id)) =>
+                {
                     track_star_map.insert(s.target_id, s.starred_at);
                 }
-                StarTargetKind::Album if active_album_ids.contains(&AlbumId(s.target_id)) => {
+                StarTargetKind::Album
+                    if counts.active_album_ids.contains(&AlbumId(s.target_id)) =>
+                {
                     album_star_map.insert(s.target_id, s.starred_at);
                 }
                 _ => {}
@@ -108,10 +89,14 @@ impl MusicCatalogService {
         let mut album_rating_map: HashMap<Uuid, u8> = HashMap::new();
         for r in all_ratings {
             match r.kind {
-                StarTargetKind::Track if active_track_ids.contains(&TrackId(r.target_id)) => {
+                StarTargetKind::Track
+                    if counts.active_track_ids.contains(&TrackId(r.target_id)) =>
+                {
                     track_rating_map.insert(r.target_id, r.rating);
                 }
-                StarTargetKind::Album if active_album_ids.contains(&AlbumId(r.target_id)) => {
+                StarTargetKind::Album
+                    if counts.active_album_ids.contains(&AlbumId(r.target_id)) =>
+                {
                     album_rating_map.insert(r.target_id, r.rating);
                 }
                 _ => {}
@@ -123,27 +108,40 @@ impl MusicCatalogService {
             HashMap::with_capacity(all_stats.len());
         let mut album_play_counts: HashMap<AlbumId, u64> = HashMap::new();
         for st in all_stats {
-            if !active_track_ids.contains(&st.track_id) {
+            if !counts.active_track_ids.contains(&st.track_id) {
                 continue;
             }
             *album_play_counts.entry(st.album_id).or_default() += st.play_count;
             track_stat_map.insert(st.track_id, (st.play_count, st.last_played_at));
         }
 
-        let recent_added_raw: Vec<Album> = user_albums.iter().take(12).cloned().collect();
-        let album_by_id: HashMap<AlbumId, Album> =
-            user_albums.into_iter().map(|a| (a.id, a)).collect();
+        let recent_added_raw = self
+            .catalog
+            .query_bound_albums(
+                &counts.active_track_ids,
+                &AlbumListQuery {
+                    list_type: AlbumListType::Newest,
+                    size: 12,
+                    ..Default::default()
+                },
+                &[],
+                &[],
+                &[],
+            )
+            .await?
+            .items;
 
         let mut freq_pairs: Vec<(AlbumId, u64)> = album_play_counts
             .iter()
+            .filter(|(id, _)| counts.active_album_ids.contains(id))
             .map(|(&id, &cnt)| (id, cnt))
             .collect();
         freq_pairs.sort_by_key(|a| std::cmp::Reverse(a.1));
-        let frequent_raw: Vec<Album> = freq_pairs
-            .into_iter()
-            .filter_map(|(id, _)| album_by_id.get(&id).cloned())
-            .take(12)
-            .collect();
+        let freq_ids: Vec<AlbumId> = freq_pairs.into_iter().take(12).map(|(id, _)| id).collect();
+        let frequent_raw = self
+            .catalog
+            .project_bound_albums_by_ids(&counts.active_track_ids, &freq_ids, None)
+            .await?;
 
         let recent_added = Self::enrich_albums_with_maps(
             recent_added_raw,
@@ -161,7 +159,7 @@ impl MusicCatalogService {
         let scrobbles = self.collections.list_recent_scrobbles(user_id, 30).await?;
         let mut recent_ids: Vec<TrackId> = Vec::new();
         for sc in scrobbles {
-            if !active_track_ids.contains(&sc.track_id) {
+            if !counts.active_track_ids.contains(&sc.track_id) {
                 continue;
             }
             if !recent_ids.contains(&sc.track_id) {
@@ -176,44 +174,44 @@ impl MusicCatalogService {
             .list_bookmarks(user_id)
             .await?
             .into_iter()
-            .filter(|bm| active_track_ids.contains(&bm.track_id))
+            .filter(|bm| counts.active_track_ids.contains(&bm.track_id))
             .collect();
         let bookmarks_count = raw_bookmarks.len() as u64;
         let raw_queue = self.collections.get_play_queue(user_id).await?;
 
-        let mut track_pool: HashMap<TrackId, Track> = HashMap::new();
-        for id in &recent_ids {
-            if let Some(&idx) = track_idx.get(id) {
-                track_pool
-                    .entry(*id)
-                    .or_insert_with(|| all_active_tracks[idx].clone());
+        let random_raw = self
+            .catalog
+            .list_random_bound_tracks(&counts.active_track_ids, 12, None, None, None, None)
+            .await?;
+        let random_ids: Vec<TrackId> = random_raw.iter().map(|t| t.id).collect();
+        let mut track_pool: HashMap<TrackId, Track> =
+            random_raw.into_iter().map(|t| (t.id, t)).collect();
+
+        let mut extra_fetch_ids: Vec<TrackId> = Vec::new();
+        for &id in &recent_ids {
+            if !track_pool.contains_key(&id) && !extra_fetch_ids.contains(&id) {
+                extra_fetch_ids.push(id);
             }
         }
         for bm in &raw_bookmarks {
-            if let Some(&idx) = track_idx.get(&bm.track_id) {
-                track_pool
-                    .entry(bm.track_id)
-                    .or_insert_with(|| all_active_tracks[idx].clone());
+            if !track_pool.contains_key(&bm.track_id) && !extra_fetch_ids.contains(&bm.track_id) {
+                extra_fetch_ids.push(bm.track_id);
             }
         }
         if let Some(ref q) = raw_queue
             && let Some(cid) = q.current_track_id
-            && let Some(&idx) = track_idx.get(&cid)
+            && counts.active_track_ids.contains(&cid)
+            && !track_pool.contains_key(&cid)
+            && !extra_fetch_ids.contains(&cid)
         {
-            track_pool
-                .entry(cid)
-                .or_insert_with(|| all_active_tracks[idx].clone());
+            extra_fetch_ids.push(cid);
         }
-
-        let sample_count = all_active_tracks.len().min(12);
-        shuffle_prefix(&mut all_active_tracks, sample_count);
-        let random_ids: Vec<TrackId> = all_active_tracks
-            .iter()
-            .take(sample_count)
-            .map(|t| t.id)
-            .collect();
-        for tr in all_active_tracks.into_iter().take(sample_count) {
-            track_pool.entry(tr.id).or_insert(tr);
+        if !extra_fetch_ids.is_empty() {
+            for tr in self.catalog.find_tracks_by_ids(&extra_fetch_ids).await? {
+                if !tr.is_missing {
+                    track_pool.insert(tr.id, tr);
+                }
+            }
         }
 
         let needed_ids: Vec<TrackId> = track_pool.keys().copied().collect();
@@ -254,13 +252,16 @@ impl MusicCatalogService {
         let play_queue = raw_queue.and_then(|q| {
             let current_track_id = q
                 .current_track_id
-                .filter(|cid| active_track_ids.contains(cid));
+                .filter(|cid| counts.active_track_ids.contains(cid));
             let current_tracks: Vec<TrackDto> = current_track_id
                 .and_then(|cid| dto_lookup.get(&cid).cloned())
                 .into_iter()
                 .collect();
             if current_track_id.is_none()
-                && !q.track_ids.iter().any(|tid| active_track_ids.contains(tid))
+                && !q
+                    .track_ids
+                    .iter()
+                    .any(|tid| counts.active_track_ids.contains(tid))
             {
                 return None;
             }
@@ -278,8 +279,6 @@ impl MusicCatalogService {
             .list_visible_playlists(user_id)
             .await?
             .len() as u64;
-        let tags_count = self.catalog.count_active_tags(&active_track_ids).await?;
-        let libraries_count = active_library_ids.len() as u64;
 
         let mut listening_ids: HashSet<TrackId> = bookmarks.iter().map(|b| b.track.id).collect();
         if let Some(ref pq) = play_queue
@@ -294,16 +293,16 @@ impl MusicCatalogService {
 
         Ok(HomeOverviewDto {
             stats: CatalogStatsDto {
-                total_tracks,
-                total_albums,
-                total_artists,
+                total_tracks: counts.total_tracks,
+                total_albums: counts.total_albums,
+                total_artists: counts.total_artists,
                 starred_tracks,
                 playlists_count,
                 listening_count,
                 bookmarks_count,
-                genres_count,
-                tags_count,
-                libraries_count,
+                genres_count: counts.genres_count,
+                tags_count: counts.tags_count,
+                libraries_count: counts.libraries_count,
             },
             recent_added_albums: recent_added,
             frequent_albums: frequent,
@@ -319,102 +318,14 @@ impl MusicCatalogService {
         user_id: UserId,
         query: TrackQuery,
     ) -> DomainResult<PagedResult<TrackDto>> {
-        let tracks = self.load_bound_tracks(user_id).await?;
-        let tag_filter = query
-            .tag
-            .as_ref()
-            .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty());
-        let tag_map_for_filter = if tag_filter.is_some() {
-            let ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
-            Some(self.catalog.get_tags_for_tracks(&ids).await?)
-        } else {
-            None
-        };
-        let genre_lower = query
-            .genre
-            .as_ref()
-            .map(|g| g.trim().to_lowercase())
-            .filter(|g| !g.is_empty());
-        let kw_lower = query
-            .search
-            .as_ref()
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty());
-
-        let mut matched: Vec<Track> = tracks
-            .into_iter()
-            .filter(|t| {
-                if let Some(lib_id) = query.library_id
-                    && t.library_id != lib_id
-                {
-                    return false;
-                }
-                if let Some(alb_id) = query.album_id
-                    && t.album_id != alb_id
-                {
-                    return false;
-                }
-                if let Some(ar_id) = query.artist_id
-                    && t.artist_id != ar_id
-                    && t.album_artist_id != ar_id
-                {
-                    return false;
-                }
-                if let (Some(tf), Some(tmap)) = (&tag_filter, &tag_map_for_filter)
-                    && !tmap
-                        .get(&t.id)
-                        .is_some_and(|list| list.iter().any(|x| x.to_lowercase() == *tf))
-                {
-                    return false;
-                }
-                if let Some(ref g) = genre_lower
-                    && !t
-                        .genre
-                        .as_ref()
-                        .is_some_and(|tg| tg.trim().to_lowercase() == *g)
-                {
-                    return false;
-                }
-                if let Some(fy) = query.year_from
-                    && t.year.is_none_or(|y| y < fy)
-                {
-                    return false;
-                }
-                if let Some(ty) = query.year_to
-                    && t.year.is_none_or(|y| y > ty)
-                {
-                    return false;
-                }
-                if let Some(ref kw) = kw_lower {
-                    let hit = t.title.to_lowercase().contains(kw)
-                        || t.artist_name.to_lowercase().contains(kw)
-                        || t.album_title.to_lowercase().contains(kw);
-                    if !hit {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
-
-        sort_tracks(&mut matched, query.sort_by, query.sort_order);
-
-        let total = matched.len() as u64;
-        let page = query.page.max(1);
-        let page_size = query.page_size.max(1);
-        let start = ((page - 1) as usize).saturating_mul(page_size as usize);
-        let page_items: Vec<Track> = matched
-            .into_iter()
-            .skip(start)
-            .take(page_size as usize)
-            .collect();
-        let items = self.enrich_tracks(user_id, page_items).await?;
+        let allowed = self.bound_track_ids(user_id).await?;
+        let paged = self.catalog.query_bound_tracks(&allowed, &query).await?;
+        let items = self.enrich_tracks(user_id, paged.items).await?;
         Ok(PagedResult {
             items,
-            total,
-            page,
-            page_size,
+            total: paged.total,
+            page: paged.page,
+            page_size: paged.page_size,
         })
     }
 
@@ -467,43 +378,11 @@ impl MusicCatalogService {
         from_year: Option<i32>,
         to_year: Option<i32>,
     ) -> DomainResult<Vec<TrackDto>> {
-        let genre_lower = genre
-            .map(|g| g.trim().to_lowercase())
-            .filter(|g| !g.is_empty());
-        let mut tracks: Vec<Track> = self
-            .load_bound_tracks(user_id)
-            .await?
-            .into_iter()
-            .filter(|t| {
-                if let Some(lid) = library_id
-                    && t.library_id != lid
-                {
-                    return false;
-                }
-                if let Some(ref g) = genre_lower
-                    && !t
-                        .genre
-                        .as_ref()
-                        .is_some_and(|tg| tg.trim().to_lowercase() == *g)
-                {
-                    return false;
-                }
-                if let Some(fy) = from_year
-                    && t.year.is_none_or(|y| y < fy)
-                {
-                    return false;
-                }
-                if let Some(ty) = to_year
-                    && t.year.is_none_or(|y| y > ty)
-                {
-                    return false;
-                }
-                true
-            })
-            .collect();
-        let take_n = tracks.len().min(size.clamp(1, 500) as usize);
-        shuffle_prefix(&mut tracks, take_n);
-        tracks.truncate(take_n);
+        let allowed = self.bound_track_ids(user_id).await?;
+        let tracks = self
+            .catalog
+            .list_random_bound_tracks(&allowed, size, library_id, genre, from_year, to_year)
+            .await?;
         self.enrich_tracks(user_id, tracks).await
     }
 
@@ -515,25 +394,23 @@ impl MusicCatalogService {
         size: u32,
         library_id: Option<LibraryId>,
     ) -> DomainResult<Vec<TrackDto>> {
-        let g_lower = genre.trim().to_lowercase();
-        let mut tracks: Vec<Track> = self
-            .load_bound_tracks(user_id)
-            .await?
-            .into_iter()
-            .filter(|t| {
-                library_id.is_none_or(|lid| t.library_id == lid)
-                    && t.genre
-                        .as_ref()
-                        .is_some_and(|tg| tg.trim().to_lowercase() == g_lower)
-            })
-            .collect();
-        tracks.sort_by_key(|t| t.title.to_lowercase());
-        let sliced: Vec<Track> = tracks
-            .into_iter()
-            .skip(offset as usize)
-            .take(size.clamp(1, 500) as usize)
-            .collect();
-        self.enrich_tracks(user_id, sliced).await
+        let allowed = self.bound_track_ids(user_id).await?;
+        let tracks = self
+            .catalog
+            .list_bound_tracks_offset(
+                &allowed,
+                &TrackQuery {
+                    library_id,
+                    genre: Some(genre.to_string()),
+                    sort_by: TrackSortField::Title,
+                    sort_order: SortOrder::Asc,
+                    ..Default::default()
+                },
+                offset,
+                size.clamp(1, 500),
+            )
+            .await?;
+        self.enrich_tracks(user_id, tracks).await
     }
 
     pub async fn get_top_tracks_for_artist_name(
@@ -545,12 +422,11 @@ impl MusicCatalogService {
         let Some(artist) = self.catalog.find_artist_by_name(artist_name.trim()).await? else {
             return Ok(Vec::new());
         };
-        let tracks: Vec<Track> = self
-            .load_bound_tracks(user_id)
-            .await?
-            .into_iter()
-            .filter(|t| t.artist_id == artist.id || t.album_artist_id == artist.id)
-            .collect();
+        let allowed = self.bound_track_ids(user_id).await?;
+        let tracks = self
+            .catalog
+            .list_bound_tracks_by_artist(&allowed, artist.id)
+            .await?;
         let mut dtos = self.enrich_tracks(user_id, tracks).await?;
         dtos.sort_by(|a, b| {
             b.play_count

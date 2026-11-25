@@ -1,4 +1,6 @@
 mod albums_artists;
+mod bound_catalog;
+mod sql;
 mod tags_search;
 mod tracks;
 
@@ -10,9 +12,10 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::catalog::{
-    Album, AlbumId, Artist, ArtistId, AudioFormat, MusicTagStat, PagedResult, Track, TrackId,
-    TrackQuery,
+    Album, AlbumId, AlbumListQuery, Artist, ArtistId, ArtistQuery, AudioFormat, BoundCatalogCounts,
+    GenreStat, MusicTagStat, PagedResult, Track, TrackId, TrackQuery,
 };
+use crate::domain::collection::{RatingEntry, StarredEntry, TrackPlayStat};
 use crate::domain::repository::MusicCatalogRepository;
 use crate::infra::persistence::models::{MusicAlbumModel, MusicArtistModel, MusicTrackModel};
 
@@ -129,6 +132,176 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
 
     async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>> {
         self.list_tracks_by_artist_impl(artist_id).await
+    }
+
+    async fn count_bound_active_tracks(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<u64> {
+        self.count_bound_active_tracks_impl(allowed_track_ids).await
+    }
+
+    async fn count_bound_tracks_by_library(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<HashMap<LibraryId, u64>> {
+        self.count_bound_tracks_by_library_impl(allowed_track_ids)
+            .await
+    }
+
+    async fn get_bound_overview_stats(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<BoundCatalogCounts> {
+        self.get_bound_overview_stats_impl(allowed_track_ids).await
+    }
+
+    async fn query_bound_tracks(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &TrackQuery,
+    ) -> DomainResult<PagedResult<Track>> {
+        self.query_bound_tracks_impl(allowed_track_ids, query).await
+    }
+
+    async fn list_bound_tracks_offset(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &TrackQuery,
+        offset: u32,
+        limit: u32,
+    ) -> DomainResult<Vec<Track>> {
+        self.list_bound_tracks_offset_impl(allowed_track_ids, query, offset, limit)
+            .await
+    }
+
+    async fn list_random_bound_tracks(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        size: u32,
+        library_id: Option<LibraryId>,
+        genre: Option<&str>,
+        from_year: Option<i32>,
+        to_year: Option<i32>,
+    ) -> DomainResult<Vec<Track>> {
+        self.list_random_bound_tracks_impl(
+            allowed_track_ids,
+            size,
+            library_id,
+            genre,
+            from_year,
+            to_year,
+        )
+        .await
+    }
+
+    async fn list_bound_tracks_by_album(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        album_id: AlbumId,
+    ) -> DomainResult<Vec<Track>> {
+        self.list_bound_tracks_by_album_impl(allowed_track_ids, album_id)
+            .await
+    }
+
+    async fn list_bound_tracks_by_artist(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_id: ArtistId,
+    ) -> DomainResult<Vec<Track>> {
+        self.list_bound_tracks_by_artist_impl(allowed_track_ids, artist_id)
+            .await
+    }
+
+    async fn query_bound_albums(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &AlbumListQuery,
+        starred_ids: &[StarredEntry],
+        play_stats: &[TrackPlayStat],
+        ratings: &[RatingEntry],
+    ) -> DomainResult<PagedResult<Album>> {
+        self.query_bound_albums_impl(allowed_track_ids, query, starred_ids, play_stats, ratings)
+            .await
+    }
+
+    async fn project_bound_albums_by_ids(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        album_ids: &[AlbumId],
+        library_id: Option<LibraryId>,
+    ) -> DomainResult<Vec<Album>> {
+        self.project_bound_albums_by_ids_impl(allowed_track_ids, album_ids, library_id)
+            .await
+    }
+
+    async fn list_bound_albums_by_artist(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_id: ArtistId,
+    ) -> DomainResult<Vec<Album>> {
+        self.list_bound_albums_by_artist_impl(allowed_track_ids, artist_id)
+            .await
+    }
+
+    async fn query_bound_artists(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &ArtistQuery,
+    ) -> DomainResult<PagedResult<Artist>> {
+        self.query_bound_artists_impl(allowed_track_ids, query)
+            .await
+    }
+
+    async fn project_bound_artists_by_ids(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_ids: &[ArtistId],
+        library_id: Option<LibraryId>,
+    ) -> DomainResult<Vec<Artist>> {
+        self.project_bound_artists_by_ids_impl(allowed_track_ids, artist_ids, library_id)
+            .await
+    }
+
+    async fn list_bound_genres(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<Vec<GenreStat>> {
+        self.list_bound_genres_impl(allowed_track_ids).await
+    }
+
+    async fn list_bound_tags(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<Vec<MusicTagStat>> {
+        self.list_bound_tags_impl(allowed_track_ids).await
+    }
+
+    async fn has_bound_active_track(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        track_id: TrackId,
+    ) -> DomainResult<bool> {
+        self.has_bound_active_track_impl(allowed_track_ids, track_id)
+            .await
+    }
+
+    async fn has_bound_active_album(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        album_id: AlbumId,
+    ) -> DomainResult<bool> {
+        self.has_bound_active_album_impl(allowed_track_ids, album_id)
+            .await
+    }
+
+    async fn has_bound_active_artist(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_id: ArtistId,
+    ) -> DomainResult<bool> {
+        self.has_bound_active_artist_impl(allowed_track_ids, artist_id)
+            .await
     }
 
     async fn save_track(&self, track: &Track) -> DomainResult<()> {

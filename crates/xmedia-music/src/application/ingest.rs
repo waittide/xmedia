@@ -73,7 +73,10 @@ impl MusicIngestService {
     pub async fn get_scan_status(&self, user_id: UserId) -> DomainResult<GlobalScanStatusDto> {
         let libs = self.libraries.list_by_media(MediaKind::Music).await?;
         let scanning = libs.iter().any(|l| l.scan_status.is_scanning());
-        let count = self.catalog_service.load_bound_tracks(user_id).await?.len() as u64;
+        let count = self
+            .catalog_service
+            .count_bound_active_tracks(user_id)
+            .await?;
         Ok(GlobalScanStatusDto { scanning, count })
     }
 

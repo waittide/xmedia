@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 
 use jiff::Timestamp;
 use uuid::Uuid;
@@ -6,13 +6,13 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::{User, UserId, require_admin};
 
-use super::{MusicCatalogService, MusicDirectoryNode, shuffle_prefix, sort_album_tracks};
+use super::{MusicCatalogService, MusicDirectoryNode};
 use crate::application::dto::{
     AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, SearchResultDto, TrackDto,
 };
 use crate::domain::catalog::{
-    Album, AlbumId, AlbumListQuery, AlbumListType, Artist, ArtistId, ArtistQuery, ArtistRoleFilter,
-    GenreStat, MusicTagStat, PagedResult, SearchQuery, Track, TrackId,
+    AlbumId, AlbumListQuery, AlbumListType, ArtistId, ArtistQuery, ArtistRoleFilter, GenreStat,
+    MusicTagStat, PagedResult, SearchQuery, SortOrder, Track, TrackId, TrackQuery, TrackSortField,
 };
 use crate::domain::collection::StarTargetKind;
 
@@ -22,158 +22,48 @@ impl MusicCatalogService {
         user_id: UserId,
         query: AlbumListQuery,
     ) -> DomainResult<PagedResult<AlbumDto>> {
-        let bound_tracks = self.load_bound_tracks(user_id).await?;
-        let active_track_ids: HashSet<TrackId> = bound_tracks.iter().map(|t| t.id).collect();
-        let mut pool = self.project_user_albums(&bound_tracks).await?;
+        let allowed = self.bound_track_ids(user_id).await?;
+        let stars = self
+            .collections
+            .list_starred(user_id, Some(StarTargetKind::Album))
+            .await?;
+        let ratings = self.collections.list_user_ratings(user_id).await?;
+        let stats = self.collections.list_user_play_stats(user_id).await?;
 
-        let kw_lower = query
-            .search
-            .as_ref()
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty());
-        let genre_lower = query
-            .genre
-            .as_ref()
-            .map(|g| g.trim().to_lowercase())
-            .filter(|g| !g.is_empty());
-        let (year_min, year_max) = match (query.from_year, query.to_year) {
-            (Some(f), Some(t)) => (Some(f.min(t)), Some(f.max(t))),
-            (f, t) => (f, t),
-        };
-
-        pool.retain(|a| {
-            if let Some(lib_id) = query.library_id
-                && a.library_id != lib_id
-            {
-                return false;
-            }
-            if let Some(ref g) = genre_lower
-                && !a
-                    .genre
-                    .as_ref()
-                    .is_some_and(|ag| ag.trim().to_lowercase() == *g)
-            {
-                return false;
-            }
-            if let Some(min_y) = year_min
-                && a.year.is_none_or(|y| y < min_y)
-            {
-                return false;
-            }
-            if let Some(max_y) = year_max
-                && a.year.is_none_or(|y| y > max_y)
-            {
-                return false;
-            }
-            if let Some(ref kw) = kw_lower {
-                let hit = a.title.to_lowercase().contains(kw)
-                    || a.album_artist_name.to_lowercase().contains(kw);
-                if !hit {
-                    return false;
-                }
-            }
-            true
-        });
-
-        match query.list_type {
-            AlbumListType::Starred => {
-                let mut stars = self
-                    .collections
-                    .list_starred(user_id, Some(StarTargetKind::Album))
-                    .await?;
-                stars.sort_by_key(|a| std::cmp::Reverse(a.starred_at));
-                let lookup: HashMap<AlbumId, Album> = pool.into_iter().map(|a| (a.id, a)).collect();
-                pool = stars
-                    .into_iter()
-                    .filter_map(|s| lookup.get(&AlbumId(s.target_id)).cloned())
-                    .collect();
-            }
-            AlbumListType::Frequent => {
-                let stats = self.collections.list_user_play_stats(user_id).await?;
-                let mut agg: HashMap<AlbumId, u64> = HashMap::new();
-                for st in stats {
-                    if active_track_ids.contains(&st.track_id) {
-                        *agg.entry(st.album_id).or_default() += st.play_count;
-                    }
-                }
-                let mut pairs: Vec<(AlbumId, u64)> = agg.into_iter().collect();
-                pairs.sort_by_key(|a| std::cmp::Reverse(a.1));
-                let lookup: HashMap<AlbumId, Album> = pool.into_iter().map(|a| (a.id, a)).collect();
-                pool = pairs
-                    .into_iter()
-                    .filter_map(|(id, _)| lookup.get(&id).cloned())
-                    .collect();
-            }
-            AlbumListType::Recent => {
-                let stats = self.collections.list_user_play_stats(user_id).await?;
-                let mut agg: HashMap<AlbumId, Timestamp> = HashMap::new();
-                for st in stats {
-                    if !active_track_ids.contains(&st.track_id) {
-                        continue;
-                    }
-                    agg.entry(st.album_id)
-                        .and_modify(|ts| {
-                            if st.last_played_at > *ts {
-                                *ts = st.last_played_at;
-                            }
-                        })
-                        .or_insert(st.last_played_at);
-                }
-                let mut pairs: Vec<(AlbumId, Timestamp)> = agg.into_iter().collect();
-                pairs.sort_by_key(|a| std::cmp::Reverse(a.1));
-                let lookup: HashMap<AlbumId, Album> = pool.into_iter().map(|a| (a.id, a)).collect();
-                pool = pairs
-                    .into_iter()
-                    .filter_map(|(id, _)| lookup.get(&id).cloned())
-                    .collect();
-            }
-            AlbumListType::Newest => {
-                pool.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-            }
-            AlbumListType::AlphabeticalByName | AlbumListType::ByGenre => {
-                pool.sort_by_key(|a| a.title.to_lowercase());
-            }
-            AlbumListType::AlphabeticalByArtist => {
-                pool.sort_by(|a, b| {
-                    a.album_artist_name
-                        .to_lowercase()
-                        .cmp(&b.album_artist_name.to_lowercase())
-                        .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-                });
-            }
-            AlbumListType::ByYear => {
-                let rev = query
-                    .from_year
-                    .zip(query.to_year)
-                    .is_some_and(|(f, t)| f > t);
-                pool.sort_by(|a, b| {
-                    let ord = a
-                        .year
-                        .cmp(&b.year)
-                        .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-                    if rev { ord.reverse() } else { ord }
-                });
-            }
-            AlbumListType::Random => {
-                let len = pool.len();
-                shuffle_prefix(&mut pool, len);
-            }
+        let paged = self
+            .catalog
+            .query_bound_albums(&allowed, &query, &stars, &stats, &ratings)
+            .await?;
+        if paged.items.is_empty() {
+            return Ok(PagedResult {
+                items: Vec::new(),
+                total: paged.total,
+                page: paged.page,
+                page_size: paged.page_size,
+            });
         }
 
-        let total = pool.len() as u64;
-        let size = query.size.max(1);
-        let page_items: Vec<Album> = pool
+        let star_map: HashMap<Uuid, Timestamp> = stars
             .into_iter()
-            .skip(query.offset as usize)
-            .take(size as usize)
+            .map(|s| (s.target_id, s.starred_at))
             .collect();
-        let page = (query.offset / size) + 1;
-        let items = self.enrich_albums(user_id, page_items).await?;
+        let rating_map: HashMap<Uuid, u8> = ratings
+            .into_iter()
+            .filter(|r| r.kind == StarTargetKind::Album)
+            .map(|r| (r.target_id, r.rating))
+            .collect();
+        let mut album_play_counts: HashMap<AlbumId, u64> = HashMap::new();
+        for st in stats {
+            *album_play_counts.entry(st.album_id).or_default() += st.play_count;
+        }
+
+        let items =
+            Self::enrich_albums_with_maps(paged.items, &star_map, &rating_map, &album_play_counts);
         Ok(PagedResult {
             items,
-            total,
-            page,
-            page_size: size,
+            total: paged.total,
+            page: paged.page,
+            page_size: paged.page_size,
         })
     }
 
@@ -182,19 +72,20 @@ impl MusicCatalogService {
         user_id: UserId,
         album_id: AlbumId,
     ) -> DomainResult<AlbumDetailDto> {
-        let bound_tracks = self.load_bound_tracks(user_id).await?;
-        let mut tracks: Vec<Track> = bound_tracks
-            .into_iter()
-            .filter(|t| t.album_id == album_id)
-            .collect();
+        let allowed = self.bound_track_ids(user_id).await?;
+        let tracks = self
+            .catalog
+            .list_bound_tracks_by_album(&allowed, album_id)
+            .await?;
         if tracks.is_empty() {
             return Err(DomainError::NotFound("album not found".into()));
         }
-        sort_album_tracks(&mut tracks);
-        let projected = self.project_user_albums(&tracks).await?;
-        let album = projected
+        let album = self
+            .catalog
+            .project_bound_albums_by_ids(&allowed, &[album_id], None)
+            .await?
             .into_iter()
-            .find(|a| a.id == album_id)
+            .next()
             .ok_or_else(|| DomainError::NotFound("album not found".into()))?;
         let album_dto = self
             .enrich_albums(user_id, vec![album])
@@ -214,54 +105,14 @@ impl MusicCatalogService {
         user_id: UserId,
         query: ArtistQuery,
     ) -> DomainResult<PagedResult<ArtistDto>> {
-        let mut bound_tracks = self.load_bound_tracks(user_id).await?;
-        if let Some(lib_id) = query.library_id {
-            bound_tracks.retain(|t| t.library_id == lib_id);
-        }
-        let mut artists = self.project_user_artists(&bound_tracks).await?;
-        let kw_lower = query
-            .search
-            .as_ref()
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty());
-
-        artists.retain(|a| {
-            match query.role_filter {
-                ArtistRoleFilter::All => {}
-                ArtistRoleFilter::AlbumArtist => {
-                    if !a.is_album_artist {
-                        return false;
-                    }
-                }
-                ArtistRoleFilter::TrackArtist => {
-                    if !a.is_track_artist {
-                        return false;
-                    }
-                }
-            }
-            if let Some(ref kw) = kw_lower
-                && !a.name.to_lowercase().contains(kw)
-            {
-                return false;
-            }
-            true
-        });
-
-        artists.sort_by_key(|a| a.name.to_lowercase());
-        let total = artists.len() as u64;
-        let size = query.size.max(1);
-        let page_items: Vec<Artist> = artists
-            .into_iter()
-            .skip(query.offset as usize)
-            .take(size as usize)
-            .collect();
-        let page = (query.offset / size) + 1;
-        let items = self.enrich_artists(user_id, page_items).await?;
+        let allowed = self.bound_track_ids(user_id).await?;
+        let paged = self.catalog.query_bound_artists(&allowed, &query).await?;
+        let items = self.enrich_artists(user_id, paged.items).await?;
         Ok(PagedResult {
             items,
-            total,
-            page,
-            page_size: size,
+            total: paged.total,
+            page: paged.page,
+            page_size: paged.page_size,
         })
     }
 
@@ -270,33 +121,26 @@ impl MusicCatalogService {
         user_id: UserId,
         artist_id: ArtistId,
     ) -> DomainResult<ArtistDetailDto> {
-        let bound_tracks = self.load_bound_tracks(user_id).await?;
-        let all_tracks: Vec<Track> = bound_tracks
-            .iter()
-            .filter(|t| t.artist_id == artist_id || t.album_artist_id == artist_id)
-            .cloned()
-            .collect();
+        let allowed = self.bound_track_ids(user_id).await?;
+        let all_tracks = self
+            .catalog
+            .list_bound_tracks_by_artist(&allowed, artist_id)
+            .await?;
         if all_tracks.is_empty() {
             return Err(DomainError::NotFound("artist not found".into()));
         }
 
         let artist = self
-            .project_user_artists(&all_tracks)
+            .catalog
+            .project_bound_artists_by_ids(&allowed, &[artist_id], None)
             .await?
             .into_iter()
-            .find(|a| a.id == artist_id)
+            .next()
             .ok_or_else(|| DomainError::NotFound("artist not found".into()))?;
-        let mut albums: Vec<Album> = self
-            .project_user_albums(&bound_tracks)
-            .await?
-            .into_iter()
-            .filter(|a| a.album_artist_id == artist_id)
-            .collect();
-        albums.sort_by(|a, b| {
-            b.year
-                .cmp(&a.year)
-                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-        });
+        let albums = self
+            .catalog
+            .list_bound_albums_by_artist(&allowed, artist_id)
+            .await?;
 
         let appears_raw: Vec<Track> = all_tracks
             .iter()
@@ -330,61 +174,13 @@ impl MusicCatalogService {
     }
 
     pub async fn list_genres(&self, user_id: UserId) -> DomainResult<Vec<GenreStat>> {
-        let tracks = self.load_bound_tracks(user_id).await?;
-        let mut map: BTreeMap<String, (String, u64, HashSet<AlbumId>)> = BTreeMap::new();
-        for tr in tracks {
-            if let Some(ref g) = tr.genre {
-                let trimmed = g.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let entry = map
-                    .entry(trimmed.to_lowercase())
-                    .or_insert_with(|| (trimmed.to_string(), 0, HashSet::new()));
-                entry.1 += 1;
-                entry.2.insert(tr.album_id);
-            }
-        }
-        let mut out: Vec<GenreStat> = map
-            .into_values()
-            .map(|(display, song_count, albums)| GenreStat {
-                name: display,
-                song_count,
-                album_count: albums.len() as u64,
-            })
-            .collect();
-        out.sort_by(|a, b| {
-            b.song_count
-                .cmp(&a.song_count)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-        Ok(out)
+        let allowed = self.bound_track_ids(user_id).await?;
+        self.catalog.list_bound_genres(&allowed).await
     }
 
     pub async fn list_tags(&self, user_id: UserId) -> DomainResult<Vec<MusicTagStat>> {
-        let tracks = self.load_bound_tracks(user_id).await?;
-        if tracks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
-        let tag_map = self.catalog.get_tags_for_tracks(&ids).await?;
-        let mut counts: BTreeMap<String, (String, u64)> = BTreeMap::new();
-        for tags in tag_map.into_values() {
-            for tag in tags {
-                let entry = counts.entry(tag.to_lowercase()).or_insert_with(|| (tag, 0));
-                entry.1 += 1;
-            }
-        }
-        let mut out: Vec<MusicTagStat> = counts
-            .into_values()
-            .map(|(name, song_count)| MusicTagStat { name, song_count })
-            .collect();
-        out.sort_by(|a, b| {
-            b.song_count
-                .cmp(&a.song_count)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-        Ok(out)
+        let allowed = self.bound_track_ids(user_id).await?;
+        self.catalog.list_bound_tags(&allowed).await
     }
 
     pub async fn set_track_tags(
@@ -411,49 +207,75 @@ impl MusicCatalogService {
         user_id: UserId,
         query: SearchQuery,
     ) -> DomainResult<SearchResultDto> {
-        let mut bound_tracks = self.load_bound_tracks(user_id).await?;
-        if let Some(lib_id) = query.library_id {
-            bound_tracks.retain(|t| t.library_id == lib_id);
+        let allowed = self.bound_track_ids(user_id).await?;
+        if allowed.is_empty() {
+            return Ok(SearchResultDto {
+                artists: Vec::new(),
+                albums: Vec::new(),
+                tracks: Vec::new(),
+            });
         }
-        let q_lower = query.query.trim().trim_matches('"').to_lowercase();
+        let clean_q = query.query.trim().trim_matches('"');
+        let search_opt = (!clean_q.is_empty()).then(|| clean_q.to_string());
 
-        let mut artists = self.project_user_artists(&bound_tracks).await?;
-        artists.retain(|a| q_lower.is_empty() || a.name.to_lowercase().contains(&q_lower));
-        artists.sort_by_key(|a| a.name.to_lowercase());
-        let artists: Vec<Artist> = artists
-            .into_iter()
-            .skip(query.artist_offset as usize)
-            .take(query.artist_count as usize)
-            .collect();
+        let artists = if query.artist_count > 0 {
+            self.catalog
+                .query_bound_artists(
+                    &allowed,
+                    &ArtistQuery {
+                        library_id: query.library_id,
+                        search: search_opt.clone(),
+                        role_filter: ArtistRoleFilter::All,
+                        offset: query.artist_offset,
+                        size: query.artist_count,
+                    },
+                )
+                .await?
+                .items
+        } else {
+            Vec::new()
+        };
 
-        let mut albums = self.project_user_albums(&bound_tracks).await?;
-        albums.retain(|a| {
-            q_lower.is_empty()
-                || a.title.to_lowercase().contains(&q_lower)
-                || a.album_artist_name.to_lowercase().contains(&q_lower)
-        });
-        albums.sort_by_key(|a| a.title.to_lowercase());
-        let albums: Vec<Album> = albums
-            .into_iter()
-            .skip(query.album_offset as usize)
-            .take(query.album_count as usize)
-            .collect();
+        let albums = if query.album_count > 0 {
+            self.catalog
+                .query_bound_albums(
+                    &allowed,
+                    &AlbumListQuery {
+                        list_type: AlbumListType::AlphabeticalByName,
+                        library_id: query.library_id,
+                        search: search_opt.clone(),
+                        offset: query.album_offset,
+                        size: query.album_count,
+                        ..Default::default()
+                    },
+                    &[],
+                    &[],
+                    &[],
+                )
+                .await?
+                .items
+        } else {
+            Vec::new()
+        };
 
-        let mut tracks: Vec<Track> = bound_tracks
-            .into_iter()
-            .filter(|t| {
-                q_lower.is_empty()
-                    || t.title.to_lowercase().contains(&q_lower)
-                    || t.artist_name.to_lowercase().contains(&q_lower)
-                    || t.album_title.to_lowercase().contains(&q_lower)
-            })
-            .collect();
-        tracks.sort_by_key(|t| t.title.to_lowercase());
-        let tracks: Vec<Track> = tracks
-            .into_iter()
-            .skip(query.song_offset as usize)
-            .take(query.song_count as usize)
-            .collect();
+        let tracks = if query.song_count > 0 {
+            self.catalog
+                .list_bound_tracks_offset(
+                    &allowed,
+                    &TrackQuery {
+                        library_id: query.library_id,
+                        search: search_opt,
+                        sort_by: TrackSortField::Title,
+                        sort_order: SortOrder::Asc,
+                        ..Default::default()
+                    },
+                    query.song_offset,
+                    query.song_count,
+                )
+                .await?
+        } else {
+            Vec::new()
+        };
 
         Ok(SearchResultDto {
             artists: self.enrich_artists(user_id, artists).await?,
@@ -469,17 +291,16 @@ impl MusicCatalogService {
     ) -> DomainResult<MusicDirectoryNode> {
         let uuid = Uuid::parse_str(raw_id.trim())
             .map_err(|_| DomainError::NotFound("invalid directory id".into()))?;
-        let bound_tracks = self.load_bound_tracks(user_id).await?;
+        let allowed = self.bound_track_ids(user_id).await?;
 
         if let Some(album) = self.catalog.find_album_by_id(AlbumId(uuid)).await? {
-            let mut tracks: Vec<Track> = bound_tracks
-                .into_iter()
-                .filter(|t| t.album_id == album.id)
-                .collect();
+            let tracks = self
+                .catalog
+                .list_bound_tracks_by_album(&allowed, album.id)
+                .await?;
             if tracks.is_empty() {
                 return Err(DomainError::NotFound("music directory not found".into()));
             }
-            sort_album_tracks(&mut tracks);
             return Ok(MusicDirectoryNode::Folder {
                 id: album.id.to_string(),
                 parent: Some(album.album_artist_id.to_string()),
@@ -490,12 +311,10 @@ impl MusicCatalogService {
         }
 
         if let Some(artist) = self.catalog.find_artist_by_id(ArtistId(uuid)).await? {
-            let mut albums: Vec<Album> = self
-                .project_user_albums(&bound_tracks)
-                .await?
-                .into_iter()
-                .filter(|a| a.album_artist_id == artist.id)
-                .collect();
+            let mut albums = self
+                .catalog
+                .list_bound_albums_by_artist(&allowed, artist.id)
+                .await?;
             if albums.is_empty() {
                 return Err(DomainError::NotFound("music directory not found".into()));
             }
@@ -510,13 +329,23 @@ impl MusicCatalogService {
         }
 
         if let Some(lib) = self.libraries.find_by_id(LibraryId(uuid)).await? {
-            let lib_tracks: Vec<Track> = bound_tracks
-                .into_iter()
-                .filter(|t| t.library_id == lib.id)
-                .collect();
-            let mut albums = self.project_user_albums(&lib_tracks).await?;
-            albums.sort_by_key(|a| a.title.to_lowercase());
-            albums.truncate(500);
+            let albums = self
+                .catalog
+                .query_bound_albums(
+                    &allowed,
+                    &AlbumListQuery {
+                        list_type: AlbumListType::AlphabeticalByName,
+                        library_id: Some(lib.id),
+                        offset: 0,
+                        size: 500,
+                        ..Default::default()
+                    },
+                    &[],
+                    &[],
+                    &[],
+                )
+                .await?
+                .items;
             return Ok(MusicDirectoryNode::Folder {
                 id: lib.id.to_string(),
                 parent: None,

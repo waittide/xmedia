@@ -15,9 +15,7 @@ use xmedia_core::domain::user::UserId;
 
 use crate::application::dto::{AlbumDto, ArtistDto, OnlineTrackedTrackDto, TrackDto};
 use crate::application::ports::{LyricsResolverPort, MusicStoragePort};
-use crate::domain::catalog::{
-    Album, AlbumId, Artist, ArtistId, SortOrder, Track, TrackId, TrackSortField,
-};
+use crate::domain::catalog::{Album, AlbumId, Artist, Track, TrackId};
 use crate::domain::collection::StarTargetKind;
 use crate::domain::repository::{MusicCatalogRepository, MusicCollectionRepository};
 
@@ -65,6 +63,16 @@ impl MusicCatalogService {
         &self.bindings
     }
 
+    pub(crate) async fn bound_track_ids(&self, user_id: UserId) -> DomainResult<HashSet<TrackId>> {
+        Ok(self
+            .bindings
+            .list_bound_ids(user_id, MediaKind::Music)
+            .await?
+            .into_iter()
+            .map(TrackId)
+            .collect())
+    }
+
     pub async fn list_all_track_ids_for_backfill(&self) -> DomainResult<Vec<Uuid>> {
         Ok(self
             .catalog
@@ -106,105 +114,17 @@ impl MusicCatalogService {
             .await
     }
 
-    pub async fn load_bound_tracks(&self, user_id: UserId) -> DomainResult<Vec<Track>> {
-        let bound_uuids = self
-            .bindings
-            .list_bound_ids(user_id, MediaKind::Music)
-            .await?;
-        if bound_uuids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let ids: Vec<TrackId> = bound_uuids.into_iter().map(TrackId).collect();
-        let tracks = self.catalog.find_tracks_by_ids(&ids).await?;
-        Ok(tracks.into_iter().filter(|t| !t.is_missing).collect())
+    pub async fn count_bound_active_tracks(&self, user_id: UserId) -> DomainResult<u64> {
+        let allowed = self.bound_track_ids(user_id).await?;
+        self.catalog.count_bound_active_tracks(&allowed).await
     }
 
     pub async fn count_bound_tracks_by_library(
         &self,
         user_id: UserId,
     ) -> DomainResult<HashMap<LibraryId, u64>> {
-        let bound_tracks = self.load_bound_tracks(user_id).await?;
-        let mut counts: HashMap<LibraryId, u64> = HashMap::new();
-        for tr in bound_tracks {
-            *counts.entry(tr.library_id).or_insert(0) += 1;
-        }
-        Ok(counts)
-    }
-
-    pub(crate) async fn project_user_albums(
-        &self,
-        bound_tracks: &[Track],
-    ) -> DomainResult<Vec<Album>> {
-        if bound_tracks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut stats: HashMap<AlbumId, (u32, u32, u32)> = HashMap::new();
-        for tr in bound_tracks {
-            let entry = stats.entry(tr.album_id).or_insert((0, 0, 1));
-            entry.0 = entry.0.saturating_add(1);
-            entry.1 = entry.1.saturating_add(tr.duration_secs);
-            if let Some(disc) = tr.disc_number
-                && disc > entry.2
-            {
-                entry.2 = disc;
-            }
-        }
-        let album_ids: Vec<AlbumId> = stats.keys().copied().collect();
-        let albums = self.catalog.find_albums_by_ids(&album_ids).await?;
-        let mut out = Vec::with_capacity(albums.len());
-        for mut alb in albums {
-            if let Some(&(track_count, duration_secs, disc_count)) = stats.get(&alb.id) {
-                alb.track_count = track_count;
-                alb.duration_secs = duration_secs;
-                alb.disc_count = disc_count;
-                out.push(alb);
-            }
-        }
-        Ok(out)
-    }
-
-    pub(crate) async fn project_user_artists(
-        &self,
-        bound_tracks: &[Track],
-    ) -> DomainResult<Vec<Artist>> {
-        if bound_tracks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut track_counts: HashMap<ArtistId, HashSet<TrackId>> = HashMap::new();
-        let mut album_sets: HashMap<ArtistId, HashSet<AlbumId>> = HashMap::new();
-        let mut as_track_artist: HashSet<ArtistId> = HashSet::new();
-        let mut as_album_artist: HashSet<ArtistId> = HashSet::new();
-
-        for tr in bound_tracks {
-            as_track_artist.insert(tr.artist_id);
-            as_album_artist.insert(tr.album_artist_id);
-            track_counts.entry(tr.artist_id).or_default().insert(tr.id);
-            track_counts
-                .entry(tr.album_artist_id)
-                .or_default()
-                .insert(tr.id);
-            album_sets
-                .entry(tr.album_artist_id)
-                .or_default()
-                .insert(tr.album_id);
-        }
-
-        let artist_ids: Vec<ArtistId> = track_counts.keys().copied().collect();
-        let artists = self.catalog.find_artists_by_ids(&artist_ids).await?;
-        let mut out = Vec::with_capacity(artists.len());
-        for mut ar in artists {
-            let t_cnt = track_counts.get(&ar.id).map_or(0, HashSet::len) as u32;
-            let a_cnt = album_sets.get(&ar.id).map_or(0, HashSet::len) as u32;
-            if t_cnt == 0 && a_cnt == 0 {
-                continue;
-            }
-            ar.track_count = t_cnt;
-            ar.album_count = a_cnt;
-            ar.is_track_artist = as_track_artist.contains(&ar.id);
-            ar.is_album_artist = as_album_artist.contains(&ar.id);
-            out.push(ar);
-        }
-        Ok(out)
+        let allowed = self.bound_track_ids(user_id).await?;
+        self.catalog.count_bound_tracks_by_library(&allowed).await
     }
 
     fn enrich_tracks_with_maps(
@@ -416,72 +336,5 @@ impl MusicCatalogService {
                 created_at: ar.created_at,
             })
             .collect())
-    }
-}
-
-fn sort_album_tracks(tracks: &mut [Track]) {
-    tracks.sort_by(|a, b| {
-        a.disc_number
-            .unwrap_or(1)
-            .cmp(&b.disc_number.unwrap_or(1))
-            .then_with(|| {
-                a.track_number
-                    .unwrap_or(u32::MAX)
-                    .cmp(&b.track_number.unwrap_or(u32::MAX))
-            })
-            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-    });
-}
-
-fn sort_tracks(tracks: &mut [Track], sort_by: TrackSortField, sort_order: SortOrder) {
-    tracks.sort_by(|a, b| {
-        let ord = match sort_by {
-            TrackSortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-            TrackSortField::Artist => a
-                .artist_name
-                .to_lowercase()
-                .cmp(&b.artist_name.to_lowercase()),
-            TrackSortField::Album => a
-                .album_title
-                .to_lowercase()
-                .cmp(&b.album_title.to_lowercase()),
-            TrackSortField::CreatedAt => a.created_at.cmp(&b.created_at),
-            TrackSortField::Year => a.year.cmp(&b.year),
-            TrackSortField::Duration => a.duration_secs.cmp(&b.duration_secs),
-            TrackSortField::TrackOrder => a
-                .disc_number
-                .unwrap_or(1)
-                .cmp(&b.disc_number.unwrap_or(1))
-                .then_with(|| {
-                    a.track_number
-                        .unwrap_or(u32::MAX)
-                        .cmp(&b.track_number.unwrap_or(u32::MAX))
-                })
-                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
-        };
-        match sort_order {
-            SortOrder::Asc => ord,
-            SortOrder::Desc => ord.reverse(),
-        }
-    });
-}
-
-fn shuffle_prefix<T>(slice: &mut [T], count: usize) {
-    let n = slice.len();
-    let k = count.min(n);
-    if k <= 1 {
-        return;
-    }
-    let mut rng_state = (Uuid::now_v7().as_u128() as u64)
-        ^ (Timestamp::now().as_nanosecond() as u64)
-        ^ 0x9E37_79B9_7F4A_7C15;
-    for i in 0..k {
-        rng_state = rng_state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = rng_state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z = z ^ (z >> 31);
-        let j = i + ((z as usize) % (n - i));
-        slice.swap(i, j);
     }
 }

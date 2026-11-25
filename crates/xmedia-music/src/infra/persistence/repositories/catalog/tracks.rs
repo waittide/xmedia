@@ -5,9 +5,11 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
 use super::ToastyMusicCatalogRepository;
-use crate::domain::catalog::{
-    AlbumId, ArtistId, PagedResult, SortOrder, Track, TrackId, TrackQuery, TrackSortField,
+use super::sql::{
+    SqlBuilder, TRACK_SELECT_COLUMNS, append_track_query_conditions, row_fields, row_to_track,
+    track_order_by_sql, val_i64,
 };
+use crate::domain::catalog::{AlbumId, ArtistId, PagedResult, Track, TrackId, TrackQuery};
 use crate::infra::persistence::models::{MusicTrackModel, MusicTrackTagModel};
 use crate::infra::persistence::repositories::db_err;
 
@@ -84,137 +86,196 @@ impl ToastyMusicCatalogRepository {
         &self,
         query: &TrackQuery,
     ) -> DomainResult<PagedResult<Track>> {
-        let mut db = self.db.clone();
-        let mut builder =
-            MusicTrackModel::all().filter(MusicTrackModel::fields().is_missing().eq(false));
-        if let Some(lib_id) = query.library_id {
-            builder = builder.filter(MusicTrackModel::fields().library_id().eq(lib_id.0));
-        }
-        if let Some(alb_id) = query.album_id {
-            builder = builder.filter(MusicTrackModel::fields().album_id().eq(alb_id.0));
-        }
-        let rows = builder.exec(&mut db).await.map_err(db_err)?;
+        self.query_tracks_scoped_sql(None, query).await
+    }
 
-        let tag_track_set: Option<HashSet<TrackId>> = if let Some(tag_lower) = query
-            .tag
-            .as_ref()
-            .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty())
-        {
-            let tag_rows = MusicTrackTagModel::filter_by_tag_lower(tag_lower)
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
-            Some(tag_rows.into_iter().map(|r| TrackId(r.track_id)).collect())
-        } else {
-            None
-        };
-        let genre_lower = query
-            .genre
-            .as_ref()
-            .map(|g| g.trim().to_lowercase())
-            .filter(|g| !g.is_empty());
-        let kw_lower = query
-            .search
-            .as_ref()
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty());
-
-        let mut matched: Vec<Track> = rows
-            .into_iter()
-            .map(Self::track_to_domain)
-            .filter(|t| {
-                if query.exclude_online_tracked && t.source.is_online_tracked() {
-                    return false;
-                }
-                if let Some(ref tset) = tag_track_set
-                    && !tset.contains(&t.id)
-                {
-                    return false;
-                }
-                if let Some(ar_id) = query.artist_id
-                    && t.artist_id != ar_id
-                    && t.album_artist_id != ar_id
-                {
-                    return false;
-                }
-                if let Some(ref g) = genre_lower
-                    && !t
-                        .genre
-                        .as_ref()
-                        .is_some_and(|tg| tg.trim().to_lowercase() == *g)
-                {
-                    return false;
-                }
-                if let Some(fy) = query.year_from
-                    && t.year.is_none_or(|y| y < fy)
-                {
-                    return false;
-                }
-                if let Some(ty) = query.year_to
-                    && t.year.is_none_or(|y| y > ty)
-                {
-                    return false;
-                }
-                if let Some(ref kw) = kw_lower {
-                    let hit = t.title.to_lowercase().contains(kw)
-                        || t.artist_name.to_lowercase().contains(kw)
-                        || t.album_title.to_lowercase().contains(kw);
-                    if !hit {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
-
-        matched.sort_by(|a, b| {
-            let ord = match query.sort_by {
-                TrackSortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-                TrackSortField::Artist => a
-                    .artist_name
-                    .to_lowercase()
-                    .cmp(&b.artist_name.to_lowercase()),
-                TrackSortField::Album => a
-                    .album_title
-                    .to_lowercase()
-                    .cmp(&b.album_title.to_lowercase()),
-                TrackSortField::CreatedAt => a.created_at.cmp(&b.created_at),
-                TrackSortField::Year => a.year.cmp(&b.year),
-                TrackSortField::Duration => a.duration_secs.cmp(&b.duration_secs),
-                TrackSortField::TrackOrder => a
-                    .disc_number
-                    .unwrap_or(1)
-                    .cmp(&b.disc_number.unwrap_or(1))
-                    .then_with(|| {
-                        a.track_number
-                            .unwrap_or(u32::MAX)
-                            .cmp(&b.track_number.unwrap_or(u32::MAX))
-                    })
-                    .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
-            };
-            match query.sort_order {
-                SortOrder::Asc => ord,
-                SortOrder::Desc => ord.reverse(),
-            }
-        });
-
-        let total = matched.len() as u64;
+    pub(super) async fn query_bound_tracks_impl(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &TrackQuery,
+    ) -> DomainResult<PagedResult<Track>> {
         let page = query.page.max(1);
         let page_size = query.page_size.max(1);
-        let start = ((page - 1) as usize).saturating_mul(page_size as usize);
-        let items = matched
-            .into_iter()
-            .skip(start)
-            .take(page_size as usize)
-            .collect();
+        if allowed_track_ids.is_empty() {
+            return Ok(PagedResult {
+                items: Vec::new(),
+                total: 0,
+                page,
+                page_size,
+            });
+        }
+        self.query_tracks_scoped_sql(Some(allowed_track_ids), query)
+            .await
+    }
 
+    async fn query_tracks_scoped_sql(
+        &self,
+        allowed: Option<&HashSet<TrackId>>,
+        query: &TrackQuery,
+    ) -> DomainResult<PagedResult<Track>> {
+        let page = query.page.max(1);
+        let page_size = query.page_size.max(1);
+        let offset = u64::from(page - 1).saturating_mul(u64::from(page_size));
+        let mut db = self.db.clone();
+
+        let total = {
+            let mut b = SqlBuilder::default();
+            let mut conds = Vec::new();
+            append_track_query_conditions(&mut b, &mut conds, allowed, query);
+            let where_sql = conds.join(" AND ");
+            let sql = format!("SELECT COUNT(*) FROM music_tracks t WHERE {where_sql}");
+            let rows = b.exec_rows(sql, &mut db).await?;
+            rows.first()
+                .and_then(|r| row_fields(r).ok())
+                .and_then(|f| f.first())
+                .and_then(|v| val_i64(v).ok())
+                .and_then(|n| u64::try_from(n.max(0)).ok())
+                .unwrap_or(0)
+        };
+        if total == 0 {
+            return Ok(PagedResult {
+                items: Vec::new(),
+                total: 0,
+                page,
+                page_size,
+            });
+        }
+
+        let order_sql = track_order_by_sql(query.sort_by, query.sort_order);
+        let mut b = SqlBuilder::default();
+        let mut conds = Vec::new();
+        append_track_query_conditions(&mut b, &mut conds, allowed, query);
+        let where_sql = conds.join(" AND ");
+        let p_limit = b.bind_val(i64::from(page_size));
+        let p_offset = b.bind_val(i64::try_from(offset).unwrap_or(i64::MAX));
+        let sql = format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
+             WHERE {where_sql} ORDER BY {order_sql} LIMIT {p_limit} OFFSET {p_offset}"
+        );
+        let rows = b.exec_rows(sql, &mut db).await?;
+        let items = rows
+            .iter()
+            .map(row_to_track)
+            .collect::<DomainResult<Vec<_>>>()?;
         Ok(PagedResult {
             items,
             total,
             page,
             page_size,
         })
+    }
+
+    pub(super) async fn list_bound_tracks_offset_impl(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &TrackQuery,
+        offset: u32,
+        limit: u32,
+    ) -> DomainResult<Vec<Track>> {
+        if allowed_track_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let order_sql = track_order_by_sql(query.sort_by, query.sort_order);
+        let mut b = SqlBuilder::default();
+        let mut conds = Vec::new();
+        append_track_query_conditions(&mut b, &mut conds, Some(allowed_track_ids), query);
+        let where_sql = conds.join(" AND ");
+        let p_limit = b.bind_val(i64::from(limit));
+        let p_offset = b.bind_val(i64::from(offset));
+        let sql = format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
+             WHERE {where_sql} ORDER BY {order_sql} LIMIT {p_limit} OFFSET {p_offset}"
+        );
+        let rows = b.exec_rows(sql, &mut db).await?;
+        rows.iter().map(row_to_track).collect()
+    }
+
+    pub(super) async fn list_random_bound_tracks_impl(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        size: u32,
+        library_id: Option<LibraryId>,
+        genre: Option<&str>,
+        from_year: Option<i32>,
+        to_year: Option<i32>,
+    ) -> DomainResult<Vec<Track>> {
+        if allowed_track_ids.is_empty() || size == 0 {
+            return Ok(Vec::new());
+        }
+        let query = TrackQuery {
+            library_id,
+            genre: genre.map(str::to_string),
+            year_from: from_year,
+            year_to: to_year,
+            ..Default::default()
+        };
+        let mut db = self.db.clone();
+        let mut b = SqlBuilder::default();
+        let mut conds = Vec::new();
+        append_track_query_conditions(&mut b, &mut conds, Some(allowed_track_ids), &query);
+        let where_sql = conds.join(" AND ");
+        let p_limit = b.bind_val(i64::from(size.clamp(1, 500)));
+        let sql = format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
+             WHERE {where_sql} ORDER BY RANDOM() LIMIT {p_limit}"
+        );
+        let rows = b.exec_rows(sql, &mut db).await?;
+        rows.iter().map(row_to_track).collect()
+    }
+
+    pub(super) async fn list_bound_tracks_by_album_impl(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        album_id: AlbumId,
+    ) -> DomainResult<Vec<Track>> {
+        if allowed_track_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let mut b = SqlBuilder::default();
+        let p_alb = b.bind_uuid(album_id.0);
+        let sql = format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
+             WHERE t.album_id = {p_alb} AND t.is_missing = 0 \
+             ORDER BY COALESCE(t.disc_number, 1) ASC, COALESCE(t.track_number, 4294967295) ASC, LOWER(t.title) ASC"
+        );
+        let rows = b.exec_rows(sql, &mut db).await?;
+        let mut out = Vec::new();
+        for row in &rows {
+            let tr = row_to_track(row)?;
+            if allowed_track_ids.contains(&tr.id) {
+                out.push(tr);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(super) async fn list_bound_tracks_by_artist_impl(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_id: ArtistId,
+    ) -> DomainResult<Vec<Track>> {
+        if allowed_track_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let mut b = SqlBuilder::default();
+        let p_ar = b.bind_uuid(artist_id.0);
+        let sql = format!(
+            "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
+             WHERE t.is_missing = 0 AND (t.artist_id = {p_ar} OR t.album_artist_id = {p_ar}) \
+             ORDER BY LOWER(t.title) ASC"
+        );
+        let rows = b.exec_rows(sql, &mut db).await?;
+        let mut out = Vec::new();
+        for row in &rows {
+            let tr = row_to_track(row)?;
+            if allowed_track_ids.contains(&tr.id) {
+                out.push(tr);
+            }
+        }
+        Ok(out)
     }
 
     pub(super) async fn list_tracks_by_album_impl(

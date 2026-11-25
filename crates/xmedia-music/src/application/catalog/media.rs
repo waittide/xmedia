@@ -5,7 +5,9 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::{User, UserId};
 
 use super::MusicCatalogService;
-use crate::domain::catalog::{AlbumId, ArtistId, StructuredLyrics, Track, TrackId};
+use crate::domain::catalog::{
+    AlbumId, ArtistId, SortOrder, StructuredLyrics, Track, TrackId, TrackQuery, TrackSortField,
+};
 use crate::domain::collection::PlaylistId;
 
 impl MusicCatalogService {
@@ -67,20 +69,21 @@ impl MusicCatalogService {
         } else {
             return Ok(StructuredLyrics::empty());
         };
-        let search_lower = search_term.to_lowercase();
-
-        let mut candidates: Vec<Track> = self
-            .load_bound_tracks(user_id)
-            .await?
-            .into_iter()
-            .filter(|t| {
-                t.title.to_lowercase().contains(&search_lower)
-                    || t.artist_name.to_lowercase().contains(&search_lower)
-                    || t.album_title.to_lowercase().contains(&search_lower)
-            })
-            .collect();
-        candidates.sort_by_key(|t| t.title.to_lowercase());
-        candidates.truncate(25);
+        let allowed = self.bound_track_ids(user_id).await?;
+        let candidates = self
+            .catalog
+            .list_bound_tracks_offset(
+                &allowed,
+                &TrackQuery {
+                    search: Some(search_term.to_string()),
+                    sort_by: TrackSortField::Title,
+                    sort_order: SortOrder::Asc,
+                    ..Default::default()
+                },
+                0,
+                25,
+            )
+            .await?;
 
         let artist_lower = artist_q.to_lowercase();
         let title_lower = title_q.to_lowercase();

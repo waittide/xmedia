@@ -1,47 +1,36 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 
 use super::ToastyMusicCatalogRepository;
+use super::sql::{SqlBuilder, row_fields, val_i64, val_string};
 use crate::domain::catalog::{MusicTagStat, TrackId};
-use crate::infra::persistence::models::{MusicTrackModel, MusicTrackTagModel};
+use crate::infra::persistence::models::MusicTrackTagModel;
 use crate::infra::persistence::repositories::db_err;
 
 impl ToastyMusicCatalogRepository {
     pub(super) async fn list_tags_impl(&self) -> DomainResult<Vec<MusicTagStat>> {
         let mut db = self.db.clone();
-        let active_ids: HashSet<Uuid> = MusicTrackModel::filter_by_is_missing(false)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
-        let rows = MusicTrackTagModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-
-        let mut map: BTreeMap<String, (String, u64)> = BTreeMap::new();
-        for row in rows {
-            if !active_ids.contains(&row.track_id) {
-                continue;
+        let b = SqlBuilder::default();
+        let sql = "SELECT MIN(tt.tag), COUNT(*) \
+                   FROM music_track_tags tt INNER JOIN music_tracks t ON t.id = tt.track_id \
+                   WHERE t.is_missing = 0 \
+                   GROUP BY tt.tag_lower \
+                   ORDER BY COUNT(*) DESC, tt.tag_lower ASC"
+            .to_string();
+        let rows = b.exec_rows(sql, &mut db).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let f = row_fields(row)?;
+            if f.len() >= 2 {
+                out.push(MusicTagStat {
+                    name: val_string(&f[0])?,
+                    song_count: u64::try_from(val_i64(&f[1])?.max(0)).unwrap_or(0),
+                });
             }
-            let entry = map.entry(row.tag_lower).or_insert_with(|| (row.tag, 0));
-            entry.1 += 1;
         }
-
-        let mut out: Vec<MusicTagStat> = map
-            .into_values()
-            .map(|(name, song_count)| MusicTagStat { name, song_count })
-            .collect();
-        out.sort_by(|a, b| {
-            b.song_count
-                .cmp(&a.song_count)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
         Ok(out)
     }
 
@@ -53,17 +42,21 @@ impl ToastyMusicCatalogRepository {
             return Ok(0);
         }
         let mut db = self.db.clone();
-        let rows = MusicTrackTagModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        let mut distinct = HashSet::new();
-        for row in rows {
-            if active_track_ids.contains(&TrackId(row.track_id)) {
-                distinct.insert(row.tag_lower);
-            }
-        }
-        Ok(distinct.len() as u64)
+        let mut b = SqlBuilder::default();
+        let scope = b.bind_track_scope("t.id", active_track_ids);
+        let sql = format!(
+            "SELECT COUNT(DISTINCT tt.tag_lower) \
+             FROM music_track_tags tt INNER JOIN music_tracks t ON t.id = tt.track_id \
+             WHERE t.is_missing = 0 AND {scope}"
+        );
+        let rows = b.exec_rows(sql, &mut db).await?;
+        let count = rows
+            .first()
+            .and_then(|r| row_fields(r).ok())
+            .and_then(|f| f.first())
+            .and_then(|v| val_i64(v).ok())
+            .unwrap_or(0);
+        Ok(u64::try_from(count.max(0)).unwrap_or(0))
     }
 
     pub(super) async fn get_tags_for_tracks_impl(

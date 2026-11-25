@@ -496,6 +496,18 @@ pub struct MusicTagStat {
     pub song_count: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BoundCatalogCounts {
+    pub active_track_ids: std::collections::HashSet<TrackId>,
+    pub active_album_ids: std::collections::HashSet<AlbumId>,
+    pub total_tracks: u64,
+    pub total_albums: u64,
+    pub total_artists: u64,
+    pub genres_count: u64,
+    pub libraries_count: u64,
+    pub tags_count: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchQuery {
     pub query: String,

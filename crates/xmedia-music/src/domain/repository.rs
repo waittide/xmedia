@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use async_trait::async_trait;
 use jiff::Timestamp;
 use uuid::Uuid;
@@ -6,7 +8,8 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::catalog::{
-    Album, AlbumId, Artist, ArtistId, MusicTagStat, PagedResult, Track, TrackId, TrackQuery,
+    Album, AlbumId, AlbumListQuery, Artist, ArtistId, ArtistQuery, BoundCatalogCounts, GenreStat,
+    MusicTagStat, PagedResult, Track, TrackId, TrackQuery,
 };
 use crate::domain::collection::{
     AudioBookmark, PlayQueue, Playlist, PlaylistId, RatingEntry, ScrobbleEntry, StarTargetKind,
@@ -24,6 +27,104 @@ pub trait MusicCatalogRepository: Send + Sync {
     async fn query_tracks(&self, query: &TrackQuery) -> DomainResult<PagedResult<Track>>;
     async fn list_tracks_by_album(&self, album_id: AlbumId) -> DomainResult<Vec<Track>>;
     async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>>;
+
+    async fn count_bound_active_tracks(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<u64>;
+    async fn count_bound_tracks_by_library(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<HashMap<LibraryId, u64>>;
+    async fn get_bound_overview_stats(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<BoundCatalogCounts>;
+    async fn query_bound_tracks(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &TrackQuery,
+    ) -> DomainResult<PagedResult<Track>>;
+    async fn list_bound_tracks_offset(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &TrackQuery,
+        offset: u32,
+        limit: u32,
+    ) -> DomainResult<Vec<Track>>;
+    async fn list_random_bound_tracks(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        size: u32,
+        library_id: Option<LibraryId>,
+        genre: Option<&str>,
+        from_year: Option<i32>,
+        to_year: Option<i32>,
+    ) -> DomainResult<Vec<Track>>;
+    async fn list_bound_tracks_by_album(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        album_id: AlbumId,
+    ) -> DomainResult<Vec<Track>>;
+    async fn list_bound_tracks_by_artist(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_id: ArtistId,
+    ) -> DomainResult<Vec<Track>>;
+    async fn query_bound_albums(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &AlbumListQuery,
+        starred_ids: &[StarredEntry],
+        play_stats: &[TrackPlayStat],
+        ratings: &[RatingEntry],
+    ) -> DomainResult<PagedResult<Album>>;
+    async fn project_bound_albums_by_ids(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        album_ids: &[AlbumId],
+        library_id: Option<LibraryId>,
+    ) -> DomainResult<Vec<Album>>;
+    async fn list_bound_albums_by_artist(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_id: ArtistId,
+    ) -> DomainResult<Vec<Album>>;
+    async fn query_bound_artists(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        query: &ArtistQuery,
+    ) -> DomainResult<PagedResult<Artist>>;
+    async fn project_bound_artists_by_ids(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_ids: &[ArtistId],
+        library_id: Option<LibraryId>,
+    ) -> DomainResult<Vec<Artist>>;
+    async fn list_bound_genres(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<Vec<GenreStat>>;
+    async fn list_bound_tags(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+    ) -> DomainResult<Vec<MusicTagStat>>;
+    async fn has_bound_active_track(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        track_id: TrackId,
+    ) -> DomainResult<bool>;
+    async fn has_bound_active_album(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        album_id: AlbumId,
+    ) -> DomainResult<bool>;
+    async fn has_bound_active_artist(
+        &self,
+        allowed_track_ids: &HashSet<TrackId>,
+        artist_id: ArtistId,
+    ) -> DomainResult<bool>;
+
     async fn save_track(&self, track: &Track) -> DomainResult<()>;
     async fn delete_track(&self, id: TrackId) -> DomainResult<()>;
     async fn delete_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<()>;
@@ -40,16 +141,13 @@ pub trait MusicCatalogRepository: Send + Sync {
     async fn save_artist(&self, artist: &Artist) -> DomainResult<()>;
 
     async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>>;
-    async fn count_active_tags(
-        &self,
-        _active_track_ids: &std::collections::HashSet<TrackId>,
-    ) -> DomainResult<u64> {
+    async fn count_active_tags(&self, _active_track_ids: &HashSet<TrackId>) -> DomainResult<u64> {
         Ok(self.list_tags().await?.len() as u64)
     }
     async fn get_tags_for_tracks(
         &self,
         track_ids: &[TrackId],
-    ) -> DomainResult<std::collections::HashMap<TrackId, Vec<String>>>;
+    ) -> DomainResult<HashMap<TrackId, Vec<String>>>;
     async fn set_track_tags(
         &self,
         track_id: TrackId,
