@@ -264,6 +264,7 @@ export default {
     normalizeToEpub: 'Normalize to EPUB',
     polishBook: 'Polish Book Structure',
     comicPages: 'Manage Pages',
+    optimizeComic: 'Optimize Archive (CBZ)',
     musicToolbox: 'Audio Toolbox',
     videoToolbox: 'Subtitle & Episode Tools',
     moreActions: 'More actions',

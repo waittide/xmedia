@@ -264,6 +264,7 @@ export default {
     normalizeToEpub: '转规范化 EPUB',
     polishBook: '书籍结构抛光',
     comicPages: '页面管理',
+    optimizeComic: '优化压缩归档 (CBZ)',
     musicToolbox: '音频工具箱',
     videoToolbox: '字幕与剧集工具',
     moreActions: '更多操作',

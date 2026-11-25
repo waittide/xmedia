@@ -8,6 +8,34 @@ import type {
   ScrapeTargetKind,
 } from '../../types'
 import {
+  applyBookScrapedField,
+  applyComicScrapedField,
+  bookFormToScrapedMetadata,
+  buildBookPatchEnvelope,
+  buildComicPatchEnvelope,
+  comicFormToScrapedMetadata,
+  hydrateBookForm,
+  hydrateComicForm,
+  resetBookForm,
+  resetComicForm,
+  splitListTokens,
+  type ApplyFillMode,
+  type ScrapedFieldKey,
+} from './formAdaptersBookComic'
+import {
+  applyMusicScrapedField,
+  applyVideoScrapedExternalIds,
+  applyVideoScrapedField,
+  buildMusicPatchEnvelope,
+  buildVideoPatchEnvelope,
+  hydrateMusicForm,
+  hydrateVideoForm,
+  musicFormToScrapedMetadata,
+  resetMusicForm,
+  resetVideoForm,
+  videoFormToScrapedMetadata,
+} from './formAdaptersMusicVideo'
+import {
   isVideoFieldLockedIn,
   toggleVideoFieldLockIn,
   type BookInspectorForm,
@@ -16,62 +44,28 @@ import {
   type VideoInspectorForm,
 } from './types'
 
-export type ScrapedFieldKey =
-  | 'cover'
-  | 'title'
-  | 'original_title'
-  | 'creators'
-  | 'directors'
-  | 'cast'
-  | 'series_or_album'
-  | 'publisher_or_studio'
-  | 'year'
-  | 'isbn'
-  | 'rating'
-  | 'language'
-  | 'track_or_episode'
-  | 'disc_or_season'
-  | 'genres'
-  | 'tags'
-  | 'summary'
-  | 'lyrics'
+export { splitListTokens, type ApplyFillMode, type ScrapedFieldKey }
 
-export type ApplyFillMode = 'overwrite' | 'fill_missing'
-
-export function splitListTokens(raw: string): string[] {
-  return raw
-    .split(/[/；;、\n]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-}
-
-function parseOptInt(raw: string, fallback: number): number {
-  const trimmed = raw.trim()
-  if (!trimmed) return fallback
-  const n = Number.parseInt(trimmed, 10)
-  return Number.isFinite(n) ? n : fallback
-}
-
-function parseClearableInt(raw: string): number {
-  const trimmed = raw.trim()
-  if (!trimmed) return -1
-  const n = Number.parseInt(trimmed, 10)
-  return Number.isFinite(n) && n >= 0 ? n : -1
-}
-
-function parseNullableInt(raw: string): number | null {
-  const trimmed = raw.trim()
-  if (!trimmed) return null
-  const n = Number.parseInt(trimmed, 10)
-  return Number.isFinite(n) ? n : null
-}
-
-function parseNullableFloat(raw: string): number | null {
-  const trimmed = raw.trim()
-  if (!trimmed) return null
-  const n = Number.parseFloat(trimmed)
-  return Number.isFinite(n) ? n : null
-}
+const ALL_SCRAPED_FIELDS: ScrapedFieldKey[] = [
+  'cover',
+  'title',
+  'original_title',
+  'series_or_album',
+  'creators',
+  'directors',
+  'cast',
+  'publisher_or_studio',
+  'year',
+  'isbn',
+  'rating',
+  'language',
+  'track_or_episode',
+  'disc_or_season',
+  'genres',
+  'tags',
+  'summary',
+  'lyrics',
+]
 
 export function inferTargetKindFromDetail(detail: MediaFileDetail): ScrapeTargetKind {
   const m = detail.metadata
@@ -234,167 +228,18 @@ export function useMetadataForm() {
     pendingCoverUrl.value = null
     pendingBackdropUrl.value = null
     const m = d.metadata
-    if (m.kind === 'book') {
-      const b = m.data
-      bookForm.title = b.title
-      bookForm.authors = b.authors.join(' / ')
-      bookForm.series = b.series ?? ''
-      bookForm.subseries = b.subseries ?? ''
-      bookForm.seriesIndex = b.series_index ?? ''
-      bookForm.isbn = b.isbn ?? ''
-      bookForm.publisher = b.publisher ?? ''
-      bookForm.publishedAt = b.published_at ?? ''
-      bookForm.language = b.language ?? ''
-      bookForm.tags = b.tags.join(' / ')
-      bookForm.description = b.description ?? ''
-      bookForm.lockedFields = [...(b.locked_fields ?? [])]
-    } else if (m.kind === 'comic') {
-      const c = m.data
-      comicForm.series = c.series ?? ''
-      comicForm.seriesGroup = c.series_group ?? ''
-      comicForm.title = c.title ?? ''
-      comicForm.number = c.number ?? ''
-      comicForm.volume = c.volume !== null ? String(c.volume) : ''
-      comicForm.year = c.year !== null ? String(c.year) : ''
-      comicForm.language = c.language_iso ?? ''
-      comicForm.direction = c.reading_direction || 'rtl'
-      comicForm.writers = c.writers.join(' / ')
-      comicForm.pencillers = c.pencillers.join(' / ')
-      comicForm.publisher = c.publisher ?? ''
-      comicForm.genres = c.genres.join(' / ')
-      comicForm.tags = c.tags.join(' / ')
-      comicForm.summary = c.summary ?? ''
-    } else if (m.kind === 'music') {
-      const mu = m.data
-      musicForm.title = mu.title
-      musicForm.artist = mu.artist
-      musicForm.albumArtist = mu.album_artist ?? ''
-      musicForm.album = mu.album
-      musicForm.track = mu.track_number !== null ? String(mu.track_number) : ''
-      musicForm.disc = mu.disc_number !== null ? String(mu.disc_number) : ''
-      musicForm.year = mu.year !== null ? String(mu.year) : ''
-      musicForm.genre = mu.genre ?? ''
-      musicForm.comment = mu.comment ?? ''
-      musicForm.embeddedLyrics = mu.embedded_lyrics ?? ''
-      musicForm.sidecarLrc = mu.sidecar_lrc ?? ''
-    } else {
-      const v = m.data
-      videoForm.isEpisode = v.is_episode
-      videoForm.title = v.title
-      videoForm.originalTitle = v.original_title ?? ''
-      videoForm.showTitle = v.show_title ?? ''
-      videoForm.season = v.season_number !== null ? String(v.season_number) : ''
-      videoForm.episode = v.episode_number !== null ? String(v.episode_number) : ''
-      videoForm.year = v.year !== null ? String(v.year) : ''
-      videoForm.rating = v.rating !== null ? String(v.rating) : ''
-      videoForm.studio = v.studio ?? ''
-      videoForm.directors = v.directors.join(' / ')
-      videoForm.actors = v.actors.join(' / ')
-      videoForm.genres = v.genres.join(' / ')
-      videoForm.tags = v.tags.join(' / ')
-      videoForm.tmdbId = v.tmdb_id ?? ''
-      videoForm.bangumiId = v.bangumi_id ?? ''
-      videoForm.summary = v.summary ?? ''
-      videoForm.lockedFields = [...(v.locked_fields ?? [])]
-      if (v.has_poster) {
-        videoArtworkSlot.value = 'poster'
-      } else if (v.has_fanart) {
-        videoArtworkSlot.value = 'fanart'
-      } else if (v.has_thumb) {
-        videoArtworkSlot.value = 'thumb'
-      } else {
-        videoArtworkSlot.value = 'poster'
-      }
-    }
+    if (m.kind === 'book') hydrateBookForm(bookForm, m.data)
+    else if (m.kind === 'comic') hydrateComicForm(comicForm, m.data)
+    else if (m.kind === 'music') hydrateMusicForm(musicForm, m.data)
+    else videoArtworkSlot.value = hydrateVideoForm(videoForm, m.data)
     baselineSnapshot.value = serializeFormSnapshot()
   }
 
   function buildPatchEnvelope(kind: MediaKind): MediaMetadataPatchEnvelope {
-    if (kind === 'book') {
-      return {
-        kind: 'book',
-        patch: {
-          title: bookForm.title,
-          authors: splitListTokens(bookForm.authors),
-          series: bookForm.series,
-          subseries: bookForm.subseries,
-          series_index: bookForm.seriesIndex,
-          isbn: bookForm.isbn,
-          publisher: bookForm.publisher,
-          published_at: bookForm.publishedAt,
-          language: bookForm.language,
-          tags: splitListTokens(bookForm.tags),
-          description: bookForm.description,
-          locked_fields: bookForm.lockedFields,
-        },
-      }
-    }
-    if (kind === 'comic') {
-      return {
-        kind: 'comic',
-        patch: {
-          series: comicForm.series,
-          series_group: comicForm.seriesGroup,
-          title: comicForm.title,
-          number: comicForm.number,
-          volume: parseClearableInt(comicForm.volume),
-          year: parseOptInt(comicForm.year, 0),
-          language_iso: comicForm.language,
-          reading_direction: comicForm.direction,
-          writers: splitListTokens(comicForm.writers),
-          pencillers: splitListTokens(comicForm.pencillers),
-          publisher: comicForm.publisher,
-          genres: splitListTokens(comicForm.genres),
-          tags: splitListTokens(comicForm.tags),
-          summary: comicForm.summary,
-        },
-      }
-    }
-    if (kind === 'music') {
-      return {
-        kind: 'music',
-        patch: {
-          title: musicForm.title,
-          artist: musicForm.artist,
-          album_artist: musicForm.albumArtist,
-          album: musicForm.album,
-          track_number: parseOptInt(musicForm.track, 0),
-          disc_number: parseOptInt(musicForm.disc, 0),
-          year: parseOptInt(musicForm.year, 0),
-          genre: musicForm.genre,
-          comment: musicForm.comment,
-          embedded_lyrics: musicForm.embeddedLyrics,
-          sidecar_lrc: musicForm.sidecarLrc,
-        },
-      }
-    }
-    const parsedRating = videoForm.rating.trim() ? Number.parseFloat(videoForm.rating) : 0
-    return {
-      kind: 'video',
-      patch: {
-        is_episode: videoForm.isEpisode,
-        title: videoForm.title,
-        original_title: videoForm.originalTitle,
-        show_title: videoForm.showTitle,
-        season_number: parseClearableInt(videoForm.season),
-        episode_number: parseOptInt(videoForm.episode, 0),
-        year: parseOptInt(videoForm.year, 0),
-        rating: Number.isFinite(parsedRating) && parsedRating > 0 ? parsedRating : 0,
-        studio: videoForm.studio,
-        directors: splitListTokens(videoForm.directors),
-        actors: splitListTokens(videoForm.actors),
-        genres: splitListTokens(videoForm.genres),
-        tags: splitListTokens(videoForm.tags),
-        tmdb_id: videoForm.tmdbId,
-        bangumi_id: videoForm.bangumiId,
-        summary: videoForm.summary,
-        locked_fields: videoForm.lockedFields,
-      },
-    }
-  }
-
-  function shouldWrite(currentVal: string, fillMode: ApplyFillMode): boolean {
-    return fillMode === 'overwrite' || currentVal.trim().length === 0
+    if (kind === 'book') return buildBookPatchEnvelope(bookForm)
+    if (kind === 'comic') return buildComicPatchEnvelope(comicForm)
+    if (kind === 'music') return buildMusicPatchEnvelope(musicForm)
+    return buildVideoPatchEnvelope(videoForm)
   }
 
   function applyScrapedField(
@@ -421,225 +266,15 @@ export function useMetadataForm() {
     }
 
     if (kind === 'book') {
-      if (field === 'title' && meta.title && !isBookFieldLocked('title') && shouldWrite(bookForm.title, fillMode)) {
-        bookForm.title = meta.title
-        return true
-      }
-      if (field === 'creators' && meta.creators.length > 0 && !isBookFieldLocked('authors') && shouldWrite(bookForm.authors, fillMode)) {
-        bookForm.authors = meta.creators.join(' / ')
-        return true
-      }
-      if (field === 'series_or_album' && meta.series_or_album && !isBookFieldLocked('series') && shouldWrite(bookForm.series, fillMode)) {
-        bookForm.series = meta.series_or_album
-        return true
-      }
-      if (field === 'publisher_or_studio' && meta.publisher_or_studio && !isBookFieldLocked('publisher') && shouldWrite(bookForm.publisher, fillMode)) {
-        bookForm.publisher = meta.publisher_or_studio
-        return true
-      }
-      if (field === 'year' && (meta.published_date || meta.year) && !isBookFieldLocked('published_at') && shouldWrite(bookForm.publishedAt, fillMode)) {
-        bookForm.publishedAt = meta.published_date || String(meta.year)
-        return true
-      }
-      if (field === 'isbn' && meta.isbn && !isBookFieldLocked('isbn') && shouldWrite(bookForm.isbn, fillMode)) {
-        bookForm.isbn = meta.isbn
-        return true
-      }
-      if (field === 'language' && meta.language && !isBookFieldLocked('language') && shouldWrite(bookForm.language, fillMode)) {
-        bookForm.language = meta.language
-        return true
-      }
-      if ((field === 'tags' || field === 'genres') && !isBookFieldLocked('tags')) {
-        const merged = [...meta.genres, ...meta.tags].filter(Boolean)
-        const uniq = Array.from(new Set(merged))
-        if (uniq.length > 0 && shouldWrite(bookForm.tags, fillMode)) {
-          bookForm.tags = uniq.join(' / ')
-          return true
-        }
-      }
-      if (field === 'summary' && meta.summary && !isBookFieldLocked('description') && shouldWrite(bookForm.description, fillMode)) {
-        bookForm.description = meta.summary
-        return true
-      }
-      return false
+      return applyBookScrapedField(bookForm, isBookFieldLocked, field, meta, fillMode)
     }
-
     if (kind === 'comic') {
-      if (field === 'title' && meta.title && shouldWrite(comicForm.title, fillMode)) {
-        comicForm.title = meta.title
-        return true
-      }
-      if (field === 'series_or_album') {
-        const s = meta.series_or_album || meta.title
-        if (s && shouldWrite(comicForm.series, fillMode)) {
-          comicForm.series = s
-          return true
-        }
-      }
-      if (field === 'creators' && meta.creators.length > 0 && shouldWrite(comicForm.writers, fillMode)) {
-        comicForm.writers = meta.creators.join(' / ')
-        return true
-      }
-      if (field === 'directors' && meta.illustrators_or_directors.length > 0 && shouldWrite(comicForm.pencillers, fillMode)) {
-        comicForm.pencillers = meta.illustrators_or_directors.join(' / ')
-        return true
-      }
-      if (field === 'publisher_or_studio' && meta.publisher_or_studio && shouldWrite(comicForm.publisher, fillMode)) {
-        comicForm.publisher = meta.publisher_or_studio
-        return true
-      }
-      if (field === 'year' && meta.year != null && shouldWrite(comicForm.year, fillMode)) {
-        comicForm.year = String(meta.year)
-        return true
-      }
-      if (field === 'disc_or_season' && meta.disc_or_season_number != null && shouldWrite(comicForm.volume, fillMode)) {
-        comicForm.volume = String(meta.disc_or_season_number)
-        return true
-      }
-      if (field === 'track_or_episode' && meta.track_or_episode_number != null && shouldWrite(comicForm.number, fillMode)) {
-        comicForm.number = String(meta.track_or_episode_number)
-        return true
-      }
-      if (field === 'language' && meta.language && shouldWrite(comicForm.language, fillMode)) {
-        comicForm.language = meta.language
-        return true
-      }
-      if (field === 'genres' && meta.genres.length > 0 && shouldWrite(comicForm.genres, fillMode)) {
-        comicForm.genres = meta.genres.join(' / ')
-        return true
-      }
-      if (field === 'tags' && meta.tags.length > 0 && shouldWrite(comicForm.tags, fillMode)) {
-        comicForm.tags = meta.tags.join(' / ')
-        return true
-      }
-      if (field === 'summary' && meta.summary && shouldWrite(comicForm.summary, fillMode)) {
-        comicForm.summary = meta.summary
-        return true
-      }
-      return false
+      return applyComicScrapedField(comicForm, field, meta, fillMode)
     }
-
     if (kind === 'music') {
-      if (field === 'title' && meta.title && shouldWrite(musicForm.title, fillMode)) {
-        musicForm.title = meta.title
-        return true
-      }
-      if (field === 'creators' && meta.creators.length > 0 && shouldWrite(musicForm.artist, fillMode)) {
-        musicForm.artist = meta.creators.join(' / ')
-        if (shouldWrite(musicForm.albumArtist, fillMode)) {
-          musicForm.albumArtist = meta.creators[0] || ''
-        }
-        return true
-      }
-      if (field === 'series_or_album' && meta.series_or_album && shouldWrite(musicForm.album, fillMode)) {
-        musicForm.album = meta.series_or_album
-        return true
-      }
-      if (field === 'year' && meta.year != null && shouldWrite(musicForm.year, fillMode)) {
-        musicForm.year = String(meta.year)
-        return true
-      }
-      if (field === 'track_or_episode' && meta.track_or_episode_number != null && shouldWrite(musicForm.track, fillMode)) {
-        musicForm.track = String(meta.track_or_episode_number)
-        return true
-      }
-      if (field === 'disc_or_season' && meta.disc_or_season_number != null && shouldWrite(musicForm.disc, fillMode)) {
-        musicForm.disc = String(meta.disc_or_season_number)
-        return true
-      }
-      if (field === 'genres' && meta.genres.length > 0 && shouldWrite(musicForm.genre, fillMode)) {
-        musicForm.genre = meta.genres[0] || ''
-        return true
-      }
-      if (field === 'summary' && meta.summary && shouldWrite(musicForm.comment, fillMode)) {
-        musicForm.comment = meta.summary
-        return true
-      }
-      if (field === 'lyrics') {
-        const lyr = meta.synced_lyrics || meta.plain_lyrics
-        if (lyr && shouldWrite(musicForm.embeddedLyrics, fillMode)) {
-          musicForm.embeddedLyrics = lyr
-          if (meta.synced_lyrics && shouldWrite(musicForm.sidecarLrc, fillMode)) {
-            musicForm.sidecarLrc = meta.synced_lyrics
-          }
-          return true
-        }
-      }
-      return false
+      return applyMusicScrapedField(musicForm, field, meta, fillMode)
     }
-
-    // video
-    if (field === 'title' && meta.title && !isVideoFieldLocked('title') && shouldWrite(videoForm.title, fillMode)) {
-      videoForm.title = meta.title
-      return true
-    }
-    if (field === 'original_title' && meta.original_title && !isVideoFieldLocked('original_title') && shouldWrite(videoForm.originalTitle, fillMode)) {
-      videoForm.originalTitle = meta.original_title
-      return true
-    }
-    if (field === 'series_or_album') {
-      const show = meta.series_or_album || (videoForm.isEpisode ? meta.title : null)
-      if (show && !isVideoFieldLocked('show_title') && shouldWrite(videoForm.showTitle, fillMode)) {
-        videoForm.showTitle = show
-        return true
-      }
-    }
-    if (field === 'publisher_or_studio' && meta.publisher_or_studio && !isVideoFieldLocked('studio') && shouldWrite(videoForm.studio, fillMode)) {
-      videoForm.studio = meta.publisher_or_studio
-      return true
-    }
-    if (field === 'year' && meta.year != null && !isVideoFieldLocked('year') && shouldWrite(videoForm.year, fillMode)) {
-      videoForm.year = String(meta.year)
-      return true
-    }
-    if (field === 'rating' && meta.rating != null && !isVideoFieldLocked('rating') && shouldWrite(videoForm.rating, fillMode)) {
-      videoForm.rating = String(meta.rating)
-      return true
-    }
-    if (field === 'directors') {
-      const dirs = meta.illustrators_or_directors.length > 0 ? meta.illustrators_or_directors : meta.creators
-      if (dirs.length > 0 && !isVideoFieldLocked('directors') && shouldWrite(videoForm.directors, fillMode)) {
-        videoForm.directors = dirs.join(' / ')
-        return true
-      }
-    }
-    if (field === 'cast' && meta.cast.length > 0 && !isVideoFieldLocked('actors') && shouldWrite(videoForm.actors, fillMode)) {
-      videoForm.actors = meta.cast.join(' / ')
-      return true
-    }
-    if (field === 'genres' && meta.genres.length > 0 && !isVideoFieldLocked('genres') && shouldWrite(videoForm.genres, fillMode)) {
-      videoForm.genres = meta.genres.join(' / ')
-      return true
-    }
-    if (field === 'tags' && meta.tags.length > 0 && !isVideoFieldLocked('tags') && shouldWrite(videoForm.tags, fillMode)) {
-      videoForm.tags = meta.tags.join(' / ')
-      return true
-    }
-    if (field === 'summary' && meta.summary && !isVideoFieldLocked('summary') && shouldWrite(videoForm.summary, fillMode)) {
-      videoForm.summary = meta.summary
-      return true
-    }
-    if (
-      field === 'track_or_episode' &&
-      meta.track_or_episode_number !== null &&
-      meta.track_or_episode_number !== undefined &&
-      !isVideoFieldLocked('episode_number') &&
-      shouldWrite(videoForm.episode, fillMode)
-    ) {
-      videoForm.episode = String(meta.track_or_episode_number)
-      return true
-    }
-    if (
-      field === 'disc_or_season' &&
-      meta.disc_or_season_number !== null &&
-      meta.disc_or_season_number !== undefined &&
-      !isVideoFieldLocked('season_number') &&
-      shouldWrite(videoForm.season, fillMode)
-    ) {
-      videoForm.season = String(meta.disc_or_season_number)
-      return true
-    }
-    return false
+    return applyVideoScrapedField(videoForm, isVideoFieldLocked, field, meta, fillMode)
   }
 
   function applyScrapedMetadata(
@@ -647,42 +282,12 @@ export function useMetadataForm() {
     meta: ScrapedMetadata,
     fillMode: ApplyFillMode = 'overwrite',
   ): number {
-    const fields: ScrapedFieldKey[] = [
-      'cover',
-      'title',
-      'original_title',
-      'series_or_album',
-      'creators',
-      'directors',
-      'cast',
-      'publisher_or_studio',
-      'year',
-      'isbn',
-      'rating',
-      'language',
-      'track_or_episode',
-      'disc_or_season',
-      'genres',
-      'tags',
-      'summary',
-      'lyrics',
-    ]
     let applied = 0
-    for (const f of fields) {
-      if (applyScrapedField(kind, f, meta, fillMode)) {
-        applied += 1
-      }
+    for (const f of ALL_SCRAPED_FIELDS) {
+      if (applyScrapedField(kind, f, meta, fillMode)) applied += 1
     }
     if (kind === 'video') {
-      const extIds = meta.external_ids ?? {}
-      const tmdbId = extIds.tmdb || (meta.provider_id === 'tmdb' ? meta.external_id : '')
-      const bgmId = extIds.bangumi || (meta.provider_id === 'bangumi' ? meta.external_id : '')
-      if (tmdbId && !isVideoFieldLocked('tmdb_id') && shouldWrite(videoForm.tmdbId, fillMode)) {
-        videoForm.tmdbId = tmdbId
-      }
-      if (bgmId && !isVideoFieldLocked('bangumi_id') && shouldWrite(videoForm.bangumiId, fillMode)) {
-        videoForm.bangumiId = bgmId
-      }
+      applyVideoScrapedExternalIds(videoForm, isVideoFieldLocked, meta, fillMode)
     }
     return applied
   }
@@ -690,63 +295,10 @@ export function useMetadataForm() {
   function resetAllForms(): void {
     pendingCoverUrl.value = null
     pendingBackdropUrl.value = null
-    bookForm.title = ''
-    bookForm.authors = ''
-    bookForm.series = ''
-    bookForm.subseries = ''
-    bookForm.seriesIndex = ''
-    bookForm.isbn = ''
-    bookForm.publisher = ''
-    bookForm.publishedAt = ''
-    bookForm.language = ''
-    bookForm.tags = ''
-    bookForm.description = ''
-    bookForm.lockedFields = []
-
-    comicForm.series = ''
-    comicForm.seriesGroup = ''
-    comicForm.title = ''
-    comicForm.number = ''
-    comicForm.volume = ''
-    comicForm.year = ''
-    comicForm.language = ''
-    comicForm.direction = 'rtl'
-    comicForm.writers = ''
-    comicForm.pencillers = ''
-    comicForm.publisher = ''
-    comicForm.genres = ''
-    comicForm.tags = ''
-    comicForm.summary = ''
-
-    musicForm.title = ''
-    musicForm.artist = ''
-    musicForm.albumArtist = ''
-    musicForm.album = ''
-    musicForm.track = ''
-    musicForm.disc = ''
-    musicForm.year = ''
-    musicForm.genre = ''
-    musicForm.comment = ''
-    musicForm.embeddedLyrics = ''
-    musicForm.sidecarLrc = ''
-
-    videoForm.isEpisode = false
-    videoForm.title = ''
-    videoForm.originalTitle = ''
-    videoForm.showTitle = ''
-    videoForm.season = ''
-    videoForm.episode = ''
-    videoForm.year = ''
-    videoForm.rating = ''
-    videoForm.studio = ''
-    videoForm.directors = ''
-    videoForm.actors = ''
-    videoForm.genres = ''
-    videoForm.tags = ''
-    videoForm.tmdbId = ''
-    videoForm.bangumiId = ''
-    videoForm.summary = ''
-    videoForm.lockedFields = []
+    resetBookForm(bookForm)
+    resetComicForm(comicForm)
+    resetMusicForm(musicForm)
+    resetVideoForm(videoForm)
   }
 
   function hydrateFromScrapedMetadata(kind: MediaKind, meta: ScrapedMetadata | null): void {
@@ -771,86 +323,10 @@ export function useMetadataForm() {
     includeCover = true,
   ): ScrapedMetadata {
     const coverUrl = includeCover ? base.cover_url : null
-    if (kind === 'book') {
-      const trimmedDate = bookForm.publishedAt.trim()
-      const yearMatch = trimmedDate.match(/^(\d{4})/)
-      const parsedYear = yearMatch ? Number.parseInt(yearMatch[1]!, 10) : null
-      return {
-        ...base,
-        title: bookForm.title.trim() || null,
-        creators: splitListTokens(bookForm.authors),
-        series_or_album: bookForm.series.trim() || null,
-        isbn: bookForm.isbn.trim() || null,
-        publisher_or_studio: bookForm.publisher.trim() || null,
-        published_date: trimmedDate || null,
-        year: parsedYear !== null && Number.isFinite(parsedYear) ? parsedYear : null,
-        language: bookForm.language.trim() || null,
-        genres: [],
-        tags: splitListTokens(bookForm.tags),
-        summary: bookForm.description.trim() || null,
-        cover_url: coverUrl,
-      }
-    }
-    if (kind === 'comic') {
-      return {
-        ...base,
-        title: comicForm.title.trim() || null,
-        series_or_album: comicForm.series.trim() || null,
-        creators: splitListTokens(comicForm.writers),
-        illustrators_or_directors: splitListTokens(comicForm.pencillers),
-        publisher_or_studio: comicForm.publisher.trim() || null,
-        year: parseNullableInt(comicForm.year),
-        disc_or_season_number: parseNullableInt(comicForm.volume),
-        track_or_episode_number: parseNullableInt(comicForm.number),
-        language: comicForm.language.trim() || null,
-        genres: splitListTokens(comicForm.genres),
-        tags: splitListTokens(comicForm.tags),
-        summary: comicForm.summary.trim() || null,
-        cover_url: coverUrl,
-      }
-    }
-    if (kind === 'music') {
-      const lyr = (musicForm.sidecarLrc || musicForm.embeddedLyrics).trim()
-      const hasTimestamps = /\[\d{1,2}:\d{2}/.test(lyr)
-      return {
-        ...base,
-        title: musicForm.title.trim() || null,
-        creators: splitListTokens(musicForm.artist),
-        series_or_album: musicForm.album.trim() || null,
-        disc_or_season_number: parseNullableInt(musicForm.disc),
-        track_or_episode_number: parseNullableInt(musicForm.track),
-        year: parseNullableInt(musicForm.year),
-        genres: splitListTokens(musicForm.genre),
-        summary: musicForm.comment.trim() || null,
-        synced_lyrics: lyr && hasTimestamps ? lyr : null,
-        plain_lyrics: lyr && !hasTimestamps ? lyr : null,
-        cover_url: coverUrl,
-      }
-    }
-    const nextExtIds: Record<string, string> = { ...(base.external_ids ?? {}) }
-    if (videoForm.tmdbId.trim()) nextExtIds.tmdb = videoForm.tmdbId.trim()
-    else delete nextExtIds.tmdb
-    if (videoForm.bangumiId.trim()) nextExtIds.bangumi = videoForm.bangumiId.trim()
-    else delete nextExtIds.bangumi
-    return {
-      ...base,
-      target: videoForm.isEpisode ? 'tv_show' : 'movie',
-      title: videoForm.title.trim() || null,
-      original_title: videoForm.originalTitle.trim() || null,
-      series_or_album: videoForm.showTitle.trim() || null,
-      disc_or_season_number: parseNullableInt(videoForm.season),
-      track_or_episode_number: parseNullableInt(videoForm.episode),
-      year: parseNullableInt(videoForm.year),
-      rating: parseNullableFloat(videoForm.rating),
-      publisher_or_studio: videoForm.studio.trim() || null,
-      illustrators_or_directors: splitListTokens(videoForm.directors),
-      cast: splitListTokens(videoForm.actors),
-      genres: splitListTokens(videoForm.genres),
-      tags: splitListTokens(videoForm.tags),
-      summary: videoForm.summary.trim() || null,
-      external_ids: nextExtIds,
-      cover_url: coverUrl,
-    }
+    if (kind === 'book') return bookFormToScrapedMetadata(bookForm, base, coverUrl)
+    if (kind === 'comic') return comicFormToScrapedMetadata(comicForm, base, coverUrl)
+    if (kind === 'music') return musicFormToScrapedMetadata(musicForm, base, coverUrl)
+    return videoFormToScrapedMetadata(videoForm, base, coverUrl)
   }
 
   return {
