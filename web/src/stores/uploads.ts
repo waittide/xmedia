@@ -1,5 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
+import { getActiveAuthHeader, resolveAppApiUrl } from '@/api/appHost'
+import { notifyUnauthorized } from '@/api/client'
 import { invalidateHomeCache } from '@/config/homeCache'
 import { i18n } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
@@ -126,8 +128,12 @@ function sendUploadXhr<T>(
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', url)
+    xhr.open('POST', resolveAppApiUrl(url))
     xhr.withCredentials = true
+    const authHeaders = getActiveAuthHeader()
+    for (const [headerName, headerValue] of Object.entries(authHeaders)) {
+      xhr.setRequestHeader(headerName, headerValue)
+    }
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable && options.onProgress) {
         options.onProgress(ev.loaded, ev.total)
@@ -519,7 +525,10 @@ export const useUploadStore = defineStore('uploads', () => {
       activeXhrs.set(task.id, { attemptId, xhr })
     }
     const onUnauthorized = () => {
-      authStore.clearLocalSession()
+      notifyUnauthorized()
+      if (authStore.isAuthenticated) {
+        authStore.clearLocalSession()
+      }
     }
 
     try {
@@ -587,7 +596,7 @@ export const useUploadStore = defineStore('uploads', () => {
         task.progress = 100
         task.canRetry = false
         taskPayloads.delete(task.id)
-        task.targetRoute = '/music/songs'
+        task.targetRoute = '/music/library'
         notifyCatalogChanged('music')
       } else {
         const fd = new FormData()
@@ -608,7 +617,7 @@ export const useUploadStore = defineStore('uploads', () => {
         task.canRetry = false
         taskPayloads.delete(task.id)
         if (res.uploaded_videos?.[0]?.id) {
-          task.targetRoute = `/video/watch/${res.uploaded_videos[0].id}`
+          task.targetRoute = `/video/play/${res.uploaded_videos[0].id}`
         }
         notifyCatalogChanged('video')
       }
