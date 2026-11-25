@@ -6115,10 +6115,13 @@ dependencies = [
 name = "xmedia-source"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.23.1",
+ "bytes",
  "chardetng",
  "encoding_rs",
+ "futures-core",
  "hex",
  "jiff",
  "md-5",
