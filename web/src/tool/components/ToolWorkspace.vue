@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { RouterView } from 'vue-router'
 import { LuBookOpen, LuClapperboard, LuDisc3, LuLayers } from 'vue-icons-plus/lu'
 import MdButton from '@/components/ui/MdButton.vue'
 import type { MediaKind } from '@/types/api'
@@ -10,8 +11,6 @@ import { useToolScrapeStore } from '../stores/scrape'
 import { useToolWorkspaceStore } from '../stores/workspace'
 import { useToolTaskStore } from '../tasks'
 import type { ToolStatusDto } from '../types'
-import ToolHomeView from './ToolHomeView.vue'
-import ToolItemsBrowser from './ToolItemsBrowser.vue'
 import ToolSidebar from './ToolSidebar.vue'
 import ToolTopHeader from './ToolTopHeader.vue'
 import ToolMobileBottomNav from './workspace/ToolMobileBottomNav.vue'
@@ -20,11 +19,9 @@ import { useWorkspaceShortcuts } from './workspace/useWorkspaceShortcuts'
 
 const MetadataInspectorDrawer = defineAsyncComponent(() => import('./MetadataInspectorDrawer.vue'))
 const ScrapeQueueSidebar = defineAsyncComponent(() => import('./scrape/ScrapeQueueSidebar.vue'))
-const ScrapeWorkbenchView = defineAsyncComponent(() => import('./scrape/ScrapeWorkbenchView.vue'))
-const ToolSettingsView = defineAsyncComponent(() => import('./ToolSettingsView.vue'))
 const ToolTasksDrawer = defineAsyncComponent(() => import('./ToolTasksDrawer.vue'))
 
-defineProps<{
+const props = defineProps<{
   status: ToolStatusDto | null
 }>()
 
@@ -37,6 +34,14 @@ const workspaceStore = useToolWorkspaceStore()
 const inspectorStore = useToolInspectorStore()
 const scrapeStore = useToolScrapeStore()
 const taskStore = useToolTaskStore()
+
+watch(
+  () => props.status,
+  (next) => {
+    workspaceStore.toolStatus = next
+  },
+  { immediate: true },
+)
 
 const topHeaderRef = ref<InstanceType<typeof ToolTopHeader> | null>(null)
 const tasksDrawerMounted = ref(false)
@@ -83,6 +88,7 @@ useWorkspaceShortcuts({
 
 const inspectorVisible = computed(
   () =>
+    !scrapeStore.scrapeWorkbenchActive &&
     (workspaceStore.activeNav === 'home' || workspaceStore.activeNav === 'items') &&
     Boolean(inspectorStore.activeDetail || inspectorStore.loadingInspector),
 )
@@ -91,7 +97,6 @@ let unbindTaskListeners: (() => void) | null = null
 
 onMounted(() => {
   unbindTaskListeners = scrapeStore.bindTaskListeners()
-  window.addEventListener('hashchange', workspaceStore.handleHashChange)
   desktopMediaQuery?.addEventListener('change', handleDesktopBreakpointChange)
   largeMediaQuery?.addEventListener('change', handleLargeBreakpointChange)
   void workspaceStore.loadInitial()
@@ -99,7 +104,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unbindTaskListeners?.()
-  window.removeEventListener('hashchange', workspaceStore.handleHashChange)
   desktopMediaQuery?.removeEventListener('change', handleDesktopBreakpointChange)
   largeMediaQuery?.removeEventListener('change', handleLargeBreakpointChange)
 })
@@ -179,114 +183,67 @@ onBeforeUnmount(() => {
       <main
         class="flex min-w-0 flex-1 overflow-hidden bg-surface md:mr-3 md:mb-3 md:rounded-corner-xl"
       >
-        <ScrapeWorkbenchView
-          v-if="scrapeStore.scrapeWorkbenchActive && workspaceStore.activeNav === 'items'"
-          :detail="inspectorStore.activeDetail"
-          :loading-detail="inspectorStore.loadingInspector"
-          :entries="scrapeStore.workbenchQueueEntries"
-          :saved-keys="scrapeStore.scrapeWorkbenchSavedPaths"
-          :artwork-version="inspectorStore.artworkVersion"
-          :artwork-versions="inspectorStore.fileArtworkVersions"
-          :sidebar-collapsed="workspaceStore.collapsed"
-          :has-prev="scrapeStore.hasPrevInspect"
-          :has-next="scrapeStore.hasNextInspect"
-          :position-label="scrapeStore.inspectPositionLabel"
-          :settings="workspaceStore.settings"
-          @exit="scrapeStore.exitScrapeWorkbench()"
-          @toggle-sidebar="workspaceStore.toggleSidebar(isDesktop)"
-          @select-entry="workspaceStore.inspectEntry"
-          @step="scrapeStore.stepInspectingFile"
-          @updated="scrapeStore.handleDetailUpdated"
-          @open-settings-scrapers="workspaceStore.openSettingsTab('scrapers')"
-          @settings-updated="workspaceStore.handleSettingsUpdated"
-          @open-history="workspaceStore.openHistoryModal('metadata')"
-        />
+        <RouterView v-slot="{ Component, route: currentRoute }">
+          <component :is="Component" v-if="currentRoute.name === 'tool-scrape'" />
 
-        <template v-else>
-          <div class="min-w-0 flex-1 overflow-y-auto" @scroll.passive="onToolMainScroll">
-            <div
-              v-if="workspaceStore.initialLoadError && !workspaceStore.settings"
-              role="alert"
-              class="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"
-            >
-              <p class="max-w-md text-body-medium font-medium text-error">
-                {{ workspaceStore.initialLoadError }}
-              </p>
-              <MdButton
-                variant="filled"
-                :loading="workspaceStore.loadingInitial"
-                @click="workspaceStore.loadInitial()"
+          <template v-else>
+            <div class="min-w-0 flex-1 overflow-y-auto" @scroll.passive="onToolMainScroll">
+              <div
+                v-if="workspaceStore.initialLoadError && !workspaceStore.settings"
+                role="alert"
+                class="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"
               >
-                {{ t('tool.workspace.retryLoadConfig') }}
-              </MdButton>
+                <p class="max-w-md text-body-medium font-medium text-error">
+                  {{ workspaceStore.initialLoadError }}
+                </p>
+                <MdButton
+                  variant="filled"
+                  :loading="workspaceStore.loadingInitial"
+                  @click="workspaceStore.loadInitial()"
+                >
+                  {{ t('tool.workspace.retryLoadConfig') }}
+                </MdButton>
+              </div>
+
+              <component :is="Component" v-else />
             </div>
 
-            <ToolSettingsView
-              v-else-if="workspaceStore.activeNav === 'settings'"
-              :settings="workspaceStore.settings"
-              :active-domain="workspaceStore.activeDomain"
-              :initial-tab="workspaceStore.settingsInitialTab"
-              :ffmpeg-status="status?.ffmpeg ?? null"
-              @back="workspaceStore.exitSettings()"
-              @updated="workspaceStore.handleSettingsUpdated"
-              @select-domain="workspaceStore.switchDomain"
+            <MetadataInspectorDrawer
+              v-if="inspectorVisible"
+              :open="inspectorVisible"
+              :modal="!isLargeDesktop"
+              :loading="inspectorStore.loadingInspector"
+              :detail="inspectorStore.activeDetail"
+              :artwork-version="
+                inspectorStore.activeDetail
+                  ? inspectorStore.getFileArtworkVersion(
+                      inspectorStore.activeDetail.entry.root_id,
+                      inspectorStore.activeDetail.entry.rel_path,
+                    )
+                  : inspectorStore.artworkVersion
+              "
+              :has-prev="scrapeStore.hasPrevInspect"
+              :has-next="scrapeStore.hasNextInspect"
+              :position-label="scrapeStore.inspectPositionLabel"
+              :shortcuts-disabled="workspaceStore.anyModalOpen"
+              @step="scrapeStore.stepInspectingFile"
+              @close="workspaceStore.closeInspectorAndSync()"
+              @updated="scrapeStore.handleDetailUpdated"
+              @open-workbench="(d) => scrapeStore.openScrapeWorkbench(d.entry)"
+              @open-content-editor="workspaceStore.openBookContentEditor"
+              @open-normalize-epub="(e) => workspaceStore.openBookNormalizeModal([e])"
+              @open-comic-pages="workspaceStore.openComicPageManager"
+              @open-comic-optimize="(e) => workspaceStore.openComicSeriesToolsModal([e], 'optimize')"
+              @open-music-tools="(e) => workspaceStore.openMusicToolbox([e])"
+              @open-video-tools="(e) => workspaceStore.openVideoToolbox([e])"
+              @open-rename="(e) => workspaceStore.openRenameModal([e])"
+              @request-delete="
+                (e) => workspaceStore.requestDeleteFiles([workspaceStore.entrySelectionKey(e)], true)
+              "
+              @open-history="workspaceStore.openHistoryModal('metadata')"
             />
-
-            <ToolHomeView
-              v-else-if="workspaceStore.activeNav === 'home'"
-              :active-domain="workspaceStore.activeDomain"
-              :domain-roots="workspaceStore.domainRoots"
-              :active-root-id="workspaceStore.activeRootId"
-              :snapshot="workspaceStore.snapshot"
-              :loading-dir="workspaceStore.loadingDir"
-              :artwork-version="inspectorStore.artworkVersion"
-              :artwork-versions="inspectorStore.fileArtworkVersions"
-              :stats="workspaceStore.stats"
-              @open-items="(f) => workspaceStore.selectCompletenessFilter(f ?? 'all')"
-              @inspect-file="workspaceStore.inspectEntry"
-              @scrape-files="scrapeStore.enqueueScrapeFiles"
-              @open-rename-all="workspaceStore.openRenameModal(workspaceStore.snapshot?.files ?? [])"
-              @open-settings="workspaceStore.openSettingsTab"
-              @refresh-dir="workspaceStore.reloadCurrentScope()"
-            />
-
-            <ToolItemsBrowser v-else />
-          </div>
-
-          <MetadataInspectorDrawer
-            v-if="inspectorVisible"
-            :open="inspectorVisible"
-            :modal="!isLargeDesktop"
-            :loading="inspectorStore.loadingInspector"
-            :detail="inspectorStore.activeDetail"
-            :artwork-version="
-              inspectorStore.activeDetail
-                ? inspectorStore.getFileArtworkVersion(
-                    inspectorStore.activeDetail.entry.root_id,
-                    inspectorStore.activeDetail.entry.rel_path,
-                  )
-                : inspectorStore.artworkVersion
-            "
-            :has-prev="scrapeStore.hasPrevInspect"
-            :has-next="scrapeStore.hasNextInspect"
-            :position-label="scrapeStore.inspectPositionLabel"
-            :shortcuts-disabled="workspaceStore.anyModalOpen"
-            @step="scrapeStore.stepInspectingFile"
-            @close="workspaceStore.closeInspectorAndSync()"
-            @updated="scrapeStore.handleDetailUpdated"
-            @open-workbench="(d) => scrapeStore.openScrapeWorkbench(d.entry)"
-            @open-content-editor="workspaceStore.openBookContentEditor"
-            @open-normalize-epub="(e) => workspaceStore.openBookNormalizeModal([e])"
-            @open-comic-pages="workspaceStore.openComicPageManager"
-            @open-music-tools="(e) => workspaceStore.openMusicToolbox([e])"
-            @open-video-tools="(e) => workspaceStore.openVideoToolbox([e])"
-            @open-rename="(e) => workspaceStore.openRenameModal([e])"
-            @request-delete="
-              (e) => workspaceStore.requestDeleteFiles([workspaceStore.entrySelectionKey(e)], true)
-            "
-            @open-history="workspaceStore.openHistoryModal('metadata')"
-          />
-        </template>
+          </template>
+        </RouterView>
       </main>
     </div>
 

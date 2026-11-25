@@ -19,70 +19,49 @@ import MdButton from '@/components/ui/MdButton.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
-import type { MediaKind } from '@/types/api'
 import { formatBytes } from '@/utils/format'
 import { buildArtworkUrl } from '../api'
-import { isEntryComplete, type ToolCompletenessFilter } from '../completeness'
-import type { DirectorySnapshot, ManagedRootDto, MediaFileEntry } from '../types'
-
-const props = defineProps<{
-  activeDomain: MediaKind
-  domainRoots: ManagedRootDto[]
-  activeRootId: string
-  snapshot: DirectorySnapshot | null
-  loadingDir: boolean
-  artworkVersion: number
-  artworkVersions?: Record<string, number>
-  stats: {
-    total: number
-    complete: number
-    incomplete: number
-    missingCover: number
-    missingSummary: number
-    missingTag: number
-  }
-}>()
-
-const emit = defineEmits<{
-  openItems: [filter?: ToolCompletenessFilter]
-  inspectFile: [file: MediaFileEntry]
-  scrapeFiles: [files: MediaFileEntry[], labelHint?: string]
-  openRenameAll: []
-  openSettings: [tab: 'appearance' | 'roots' | 'scrapers' | 'templates']
-  refreshDir: []
-}>()
+import { isEntryComplete } from '../completeness'
+import { useToolInspectorStore } from '../stores/inspector'
+import { useToolScrapeStore } from '../stores/scrape'
+import { useToolWorkspaceStore } from '../stores/workspace'
+import type { MediaFileEntry } from '../types'
 
 const { t } = useI18n()
-const domainLabels = computed(() => {
-  const dom = props.activeDomain
-  return {
-    missingCover: t(`tool.domainLabels.${dom}.missingCover`),
-    missingSummary: t(`tool.domainLabels.${dom}.missingSummary`),
-    emptyRootsTitle: t(`tool.domainLabels.${dom}.emptyRootsTitle`),
-    emptyRootsDesc: t(`tool.domainLabels.${dom}.emptyRootsDesc`),
-  }
-})
+const workspaceStore = useToolWorkspaceStore()
+const inspectorStore = useToolInspectorStore()
+const scrapeStore = useToolScrapeStore()
+
+const activeDomain = computed(() => workspaceStore.activeDomain)
+const domainRoots = computed(() => workspaceStore.domainRoots)
+const activeRootId = computed(() => workspaceStore.activeRootId)
+const snapshot = computed(() => workspaceStore.snapshot)
+const loadingDir = computed(() => workspaceStore.loadingDir)
+const artworkVersion = computed(() => inspectorStore.artworkVersion)
+const artworkVersions = computed(() => inspectorStore.fileArtworkVersions)
+const stats = computed(() => workspaceStore.stats)
+const domainLabels = computed(() => workspaceStore.domainLabels)
 
 const scopeSubtitle = computed(() => {
-  if (!props.activeRootId && props.domainRoots.length > 1) {
-    return t('tool.home.scopeMultiRoot', { count: props.domainRoots.length })
+  if (!activeRootId.value && domainRoots.value.length > 1) {
+    return t('tool.home.scopeMultiRoot', { count: domainRoots.value.length })
   }
-  const name = props.snapshot?.root_name || props.domainRoots[0]?.name || '—'
-  const rel = props.snapshot?.current_rel_path
+  const name = snapshot.value?.root_name || domainRoots.value[0]?.name || '—'
+  const rel = snapshot.value?.current_rel_path
   return t('tool.home.scopeCurrentRoot', { name: `${name}${rel ? ` / ${rel}` : ''}` })
 })
 
 const completionPct = computed(() => {
-  if (props.stats.total <= 0) return 0
-  return Math.min(100, Math.round((props.stats.complete / props.stats.total) * 100))
+  if (stats.value.total <= 0) return 0
+  return Math.min(100, Math.round((stats.value.complete / stats.value.total) * 100))
 })
 
 const incompleteFiles = computed<MediaFileEntry[]>(() =>
-  (props.snapshot?.files ?? []).filter((f) => !isEntryComplete(f)),
+  (snapshot.value?.files ?? []).filter((f) => !isEntryComplete(f)),
 )
 
 const unorganizedFiles = computed<MediaFileEntry[]>(() =>
-  (props.snapshot?.files ?? []).filter((f) => !f.completeness.is_organized),
+  (snapshot.value?.files ?? []).filter((f) => !f.completeness.is_organized),
 )
 
 const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value.slice(0, 8))
@@ -107,7 +86,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
         {{ domainLabels.emptyRootsDesc }}
       </p>
       <div class="mt-6 flex justify-center">
-        <MdButton variant="filled" :icon="LuFolderPlus" @click="emit('openSettings', 'roots')">
+        <MdButton variant="filled" :icon="LuFolderPlus" @click="workspaceStore.openSettingsTab('roots')">
           {{ t('tool.roots.add') }}
         </MdButton>
       </div>
@@ -126,7 +105,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
-          <RefreshButton size="md" :action="() => emit('refreshDir')" :busy="loadingDir" />
+          <RefreshButton size="md" :action="() => workspaceStore.reloadCurrentScope()" :busy="loadingDir" />
 
           <MdButton
             v-if="incompleteFiles.length > 0"
@@ -134,7 +113,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             size="sm"
             :icon="LuSparkles"
             :title="t('tool.home.scrapeIncompleteTitle')"
-            @click="emit('scrapeFiles', incompleteFiles, t('tool.filters.incomplete'))"
+            @click="scrapeStore.enqueueScrapeFiles(incompleteFiles, t('tool.filters.incomplete'))"
           >
             {{ t('tool.home.scrapeIncomplete', { count: incompleteFiles.length }) }}
           </MdButton>
@@ -145,7 +124,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             size="sm"
             :icon="LuFileSignature"
             :title="t('tool.home.batchRenameTitle')"
-            @click="emit('openRenameAll')"
+            @click="workspaceStore.openRenameModal(snapshot?.files ?? [])"
           >
             {{ t('tool.actions.batchRename') }} ({{ unorganizedFiles.length }})
           </MdButton>
@@ -157,7 +136,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
         <button
           type="button"
           class="md-card-filled md-state flex cursor-pointer items-center justify-between p-4 text-left"
-          @click="emit('openItems', 'all')"
+          @click="workspaceStore.selectCompletenessFilter('all')"
         >
           <div>
             <div class="text-body-small text-on-surface-variant">{{ t('tool.cards.totalFiles') }}</div>
@@ -176,7 +155,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
         <button
           type="button"
           class="md-card-filled md-state flex cursor-pointer items-center justify-between p-4 text-left"
-          @click="emit('openItems', 'complete')"
+          @click="workspaceStore.selectCompletenessFilter('complete')"
         >
           <div>
             <div class="text-body-small text-on-surface-variant">{{ t('tool.cards.completeFiles') }}</div>
@@ -197,7 +176,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
         <button
           type="button"
           class="md-card-filled md-state flex cursor-pointer items-center justify-between p-4 text-left"
-          @click="emit('openItems', 'missing_cover')"
+          @click="workspaceStore.selectCompletenessFilter('missing_cover')"
         >
           <div>
             <div class="text-body-small text-on-surface-variant">{{ domainLabels.missingCover }}</div>
@@ -215,7 +194,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
         <button
           type="button"
           class="md-card-filled md-state flex cursor-pointer items-center justify-between p-4 text-left"
-          @click="emit('openItems', 'missing_summary')"
+          @click="workspaceStore.selectCompletenessFilter('missing_summary')"
         >
           <div>
             <div class="text-body-small text-on-surface-variant">{{ domainLabels.missingSummary }}</div>
@@ -280,7 +259,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           <MdButton
             variant="text"
             size="sm"
-            @click="emit('openItems', incompleteFiles.length > 0 ? 'incomplete' : 'all')"
+            @click="workspaceStore.selectCompletenessFilter(incompleteFiles.length > 0 ? 'incomplete' : 'all')"
           >
             <span>{{ t('tool.home.enterItems') }}</span>
             <LuArrowRight class="h-3.5 w-3.5" aria-hidden="true" />
@@ -306,7 +285,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             <button
               type="button"
               class="md-state flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-corner-md py-0.5 text-left"
-              @click="emit('inspectFile', file)"
+              @click="workspaceStore.inspectEntry(file)"
             >
               <div
                 class="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-corner-md bg-surface-container-high"
@@ -377,7 +356,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
               :icon="LuSparkles"
               :tooltip="t('tool.home.quickScrapeItem')"
               :aria-label="t('tool.home.quickScrapeItem')"
-              @click="emit('scrapeFiles', [file], file.display_title)"
+              @click="scrapeStore.enqueueScrapeFiles([file], file.display_title)"
             />
           </div>
         </div>

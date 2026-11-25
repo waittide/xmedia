@@ -17,51 +17,39 @@ import {
 import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdTabs from '@/components/ui/MdTabs.vue'
-import type { FfmpegStatusDto, MediaKind } from '@/types/api'
-import type { PublicSettingsDto } from '../types'
-import ToolScrapersSettingsTab from './settings/ToolScrapersSettingsTab.vue'
+import type { MediaKind } from '@/types/api'
+import type { ToolSettingsTab } from '../router'
+import { useToolWorkspaceStore } from '../stores/workspace'
 import ToolRootsSettingsTab from './settings/ToolRootsSettingsTab.vue'
+import ToolScrapersSettingsTab from './settings/ToolScrapersSettingsTab.vue'
 import ToolTemplatesSettingsTab from './settings/ToolTemplatesSettingsTab.vue'
 
-export type ToolSettingsTab = 'appearance' | 'scrapers' | 'roots' | 'templates'
-
-const props = defineProps<{
-  settings: PublicSettingsDto | null
-  activeDomain: MediaKind
-  initialTab?: ToolSettingsTab
-  ffmpegStatus?: FfmpegStatusDto | null
-}>()
-
-const emit = defineEmits<{
-  back: []
-  updated: [settings: PublicSettingsDto]
-  selectDomain: [domain: MediaKind]
-}>()
+export type { ToolSettingsTab }
 
 const { t } = useI18n()
+const workspaceStore = useToolWorkspaceStore()
 
-const activeTab = ref<ToolSettingsTab>(props.initialTab ?? 'appearance')
-const domainSubTab = ref<MediaKind>(props.activeDomain)
+const activeTab = computed<ToolSettingsTab>(() => workspaceStore.settingsInitialTab)
+const settings = computed(() => workspaceStore.settings)
+const ffmpegStatus = computed(() => workspaceStore.toolStatus?.ffmpeg ?? null)
+const domainSubTab = ref<MediaKind>(workspaceStore.activeDomain)
 const savedBanner = ref(false)
 const errorMsg = ref<string | null>(null)
 
 watch(
-  () => props.initialTab,
-  (next) => {
-    if (next) activeTab.value = next
-  },
-)
-
-watch(
-  () => props.activeDomain,
+  () => workspaceStore.activeDomain,
   (dom) => {
     domainSubTab.value = dom
   },
 )
 
+function selectSettingsTab(tab: ToolSettingsTab): void {
+  void workspaceStore.openSettingsTab(tab)
+}
+
 function selectDomainSubTab(dom: MediaKind): void {
   domainSubTab.value = dom
-  emit('selectDomain', dom)
+  void workspaceStore.switchDomain(dom)
 }
 
 let savedBannerTimer: ReturnType<typeof setTimeout> | null = null
@@ -102,7 +90,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           {{ t('tool.settings.subtitle') }}
         </p>
       </div>
-      <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="emit('back')">
+      <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="workspaceStore.exitSettings()">
         {{ t('tool.settings.backToWorkbench') }}
       </MdButton>
     </div>
@@ -118,7 +106,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
               ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
-          @click="activeTab = 'appearance'"
+          @click="selectSettingsTab('appearance')"
         >
           <LuPalette class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('settings.navAppearance') }}</span>
@@ -132,7 +120,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
               ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
-          @click="activeTab = 'scrapers'"
+          @click="selectSettingsTab('scrapers')"
         >
           <LuSparkles class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('tool.settings.tabScrapers') }}</span>
@@ -148,7 +136,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
               ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
-          @click="activeTab = 'roots'"
+          @click="selectSettingsTab('roots')"
         >
           <LuLibrary class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('tool.settings.tabRoots') }}</span>
@@ -162,7 +150,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
               ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
-          @click="activeTab = 'templates'"
+          @click="selectSettingsTab('templates')"
         >
           <LuFileSignature class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('tool.settings.tabTemplates') }}</span>
@@ -207,7 +195,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           :settings="settings"
           :domain-sub-tab="domainSubTab"
           :ffmpeg-status="ffmpegStatus"
-          @updated="emit('updated', $event)"
+          @updated="workspaceStore.handleSettingsUpdated($event)"
           @error="errorMsg = $event"
           @saved="flashSavedBanner"
         />
@@ -216,7 +204,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           v-else-if="activeTab === 'roots'"
           :settings="settings"
           :domain-sub-tab="domainSubTab"
-          @updated="emit('updated', $event)"
+          @updated="workspaceStore.handleSettingsUpdated($event)"
           @error="errorMsg = $event"
           @saved="flashSavedBanner"
         />
@@ -225,7 +213,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           v-else-if="activeTab === 'templates'"
           :settings="settings"
           :domain-sub-tab="domainSubTab"
-          @updated="emit('updated', $event)"
+          @updated="workspaceStore.handleSettingsUpdated($event)"
           @error="errorMsg = $event"
           @saved="flashSavedBanner"
         />

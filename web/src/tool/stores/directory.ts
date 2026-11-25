@@ -5,14 +5,12 @@ import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import { entryCompositeKey } from '../completeness'
-import type { ToolSettingsTab } from '../components/ToolSettingsView.vue'
 import {
   loadSavedDomain,
   loadSavedNav,
-  parentRelOf,
-  parseToolHash,
   type PrimaryNavKey,
-} from '../components/workspace/hashState'
+  type ToolSettingsTab,
+} from '../router'
 import { useToolTaskStore } from '../tasks'
 import type {
   DirectorySnapshot,
@@ -22,7 +20,7 @@ import type {
   ToolStatusDto,
 } from '../types'
 import { useToolInspectorStore } from './inspector'
-import { useToolSelectionStore } from './selection'
+import { parentRelOf, useToolSelectionStore } from './selection'
 
 export const useToolDirectoryStore = defineStore('toolDirectory', () => {
   const inspectorStore = useToolInspectorStore()
@@ -31,14 +29,12 @@ export const useToolDirectoryStore = defineStore('toolDirectory', () => {
   const t = (key: string, params?: Record<string, unknown>): string =>
     params ? String(i18n.global.t(key, params)) : String(i18n.global.t(key))
 
-  const initialHash = parseToolHash()
-
-  const activeDomain = ref<MediaKind>(loadSavedDomain(initialHash))
-  const activeNav = ref<PrimaryNavKey>(loadSavedNav(initialHash))
+  const activeDomain = ref<MediaKind>(loadSavedDomain())
+  const activeNav = ref<PrimaryNavKey>(loadSavedNav())
   const previousWorkspaceNav = ref<'home' | 'items'>(
     activeNav.value === 'settings' ? 'home' : activeNav.value,
   )
-  const settingsInitialTab = ref<ToolSettingsTab>(initialHash.settingsTab ?? 'appearance')
+  const settingsInitialTab = ref<ToolSettingsTab>('appearance')
   const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
   const mobileMenuOpen = ref(false)
   const notifyingRescan = ref(false)

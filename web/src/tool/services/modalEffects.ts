@@ -80,7 +80,7 @@ export function createModalCompletionHandlers(ctx: ModalEffectsContext) {
       )
       if (stillHere) {
         inspectorStore.activeDetail = null
-        await navigationStore.inspectEntry(stillHere, { skipDirtyCheck: true, replaceHash: true })
+        await navigationStore.inspectEntry(stillHere, { skipDirtyCheck: true, replaceRoute: true })
       } else {
         navigationStore.closeInspectorAndSync()
       }
@@ -105,7 +105,7 @@ export function createModalCompletionHandlers(ctx: ModalEffectsContext) {
       )
       if (stillHere) {
         inspectorStore.activeDetail = null
-        void navigationStore.inspectEntry(stillHere, { skipDirtyCheck: true, replaceHash: true })
+        void navigationStore.inspectEntry(stillHere, { skipDirtyCheck: true, replaceRoute: true })
       }
     }
     const batchId = report.batch_id
@@ -161,7 +161,7 @@ export function createModalCompletionHandlers(ctx: ModalEffectsContext) {
       )
       if (refreshed) {
         inspectorStore.activeDetail = null
-        await navigationStore.inspectEntry(refreshed, { skipDirtyCheck: true, replaceHash: true })
+        await navigationStore.inspectEntry(refreshed, { skipDirtyCheck: true, replaceRoute: true })
       }
     }
     snackbar.show(

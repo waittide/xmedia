@@ -2,7 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { LuClock, LuHome, LuLibrary, LuLoader2, LuSettings } from 'vue-icons-plus/lu'
 import MdBadge from '@/components/ui/MdBadge.vue'
-import type { PrimaryNavKey } from './hashState'
+import type { PrimaryNavKey } from '../../router'
 
 defineProps<{
   activeNav: PrimaryNavKey

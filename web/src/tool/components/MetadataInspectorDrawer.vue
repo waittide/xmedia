@@ -77,6 +77,7 @@ const emit = defineEmits<{
   openContentEditor: [entry: MediaFileEntry]
   openNormalizeEpub: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
+  openComicOptimize: [entry: MediaFileEntry]
   openMusicTools: [entry: MediaFileEntry]
   openVideoTools: [entry: MediaFileEntry]
   openRename: [entry: MediaFileEntry]

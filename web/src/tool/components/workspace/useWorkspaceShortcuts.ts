@@ -1,9 +1,15 @@
 import { onBeforeUnmount, onMounted } from 'vue'
 import { useToolInspectorStore } from '../../stores/inspector'
 import { useToolScrapeStore } from '../../stores/scrape'
+import { PAGE_CHUNK_SIZE } from '../../stores/selection'
 import { useToolWorkspaceStore } from '../../stores/workspace'
 import { useToolTaskStore } from '../../tasks'
-import { PAGE_CHUNK_SIZE, isTypingTarget } from './hashState'
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable
+}
 
 export interface UseWorkspaceShortcutsOptions {
   focusSearch: () => void
@@ -62,7 +68,7 @@ export function useWorkspaceShortcuts(opts: UseWorkspaceShortcutsOptions) {
       }
       const target = list[nextIdx]
       if (target) {
-        void workspaceStore.inspectEntry(target)
+        void workspaceStore.inspectEntry(target, { replaceRoute: true })
       }
     }
   }

@@ -10,12 +10,9 @@ import { buildArtworkUrl, toolApi } from '../../api'
 import { entryCompositeKey } from '../../completeness'
 import { saveAndOrganizeEntry } from '../../services/saveEntry'
 import { useToolInspectorStore } from '../../stores/inspector'
-import type {
-  MediaFileDetail,
-  MediaFileEntry,
-  PublicSettingsDto,
-  ScrapedMetadata,
-} from '../../types'
+import { useToolScrapeStore } from '../../stores/scrape'
+import { useToolWorkspaceStore } from '../../stores/workspace'
+import type { MediaFileEntry, ScrapedMetadata } from '../../types'
 import { useMetadataForm, type ApplyFillMode } from '../inspector/useMetadataForm'
 import CandidateDetailPreviewPane, {
   type CandidateApplyOptions,
@@ -25,35 +22,24 @@ import WorkbenchCandidatePane from './WorkbenchCandidatePane.vue'
 import WorkbenchLocalPane from './WorkbenchLocalPane.vue'
 import WorkbenchTopBar from './WorkbenchTopBar.vue'
 
-const props = defineProps<{
-  detail: MediaFileDetail | null
-  loadingDetail: boolean
-  entries: MediaFileEntry[]
-  savedKeys: Set<string>
-  artworkVersion: number
-  artworkVersions?: Record<string, number>
-  sidebarCollapsed: boolean
-  hasPrev: boolean
-  hasNext: boolean
-  positionLabel: string
-  settings?: PublicSettingsDto | null
-}>()
-
-const emit = defineEmits<{
-  exit: []
-  toggleSidebar: []
-  selectEntry: [entry: MediaFileEntry]
-  step: [delta: -1 | 1]
-  updated: [detail: MediaFileDetail, bumpArtwork: boolean]
-  openSettingsScrapers: []
-  settingsUpdated: [settings: PublicSettingsDto]
-  openHistory: []
-}>()
-
 const { t } = useI18n()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
+const workspaceStore = useToolWorkspaceStore()
 const inspectorStore = useToolInspectorStore()
+const scrapeStore = useToolScrapeStore()
+
+const detail = computed(() => inspectorStore.activeDetail)
+const loadingDetail = computed(() => inspectorStore.loadingInspector)
+const entries = computed(() => scrapeStore.workbenchQueueEntries)
+const savedKeys = computed(() => scrapeStore.scrapeWorkbenchSavedPaths)
+const artworkVersion = computed(() => inspectorStore.artworkVersion)
+const artworkVersions = computed(() => inspectorStore.fileArtworkVersions)
+const sidebarCollapsed = computed(() => workspaceStore.collapsed)
+const hasPrev = computed(() => scrapeStore.hasPrevInspect)
+const hasNext = computed(() => scrapeStore.hasNextInspect)
+const positionLabel = computed(() => scrapeStore.inspectPositionLabel)
+const settings = computed(() => workspaceStore.settings)
 
 const localForm = useMetadataForm()
 const applyForm = useMetadataForm()
@@ -76,7 +62,7 @@ let lastEntryKey = ''
 let saveSeq = 0
 
 const isMobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 600 : false)
-const showCompactQueueDropdown = computed(() => props.sidebarCollapsed || isMobileViewport.value)
+const showCompactQueueDropdown = computed(() => sidebarCollapsed.value || isMobileViewport.value)
 const queueDropdownOpen = ref(false)
 
 type WorkbenchMobilePane = 'local' | 'candidates' | 'preview'
@@ -131,7 +117,7 @@ function handleResize(): void {
 }
 
 watch(
-  () => (props.detail ? entryCompositeKey(props.detail.entry) : ''),
+  () => (detail.value ? entryCompositeKey(detail.value.entry) : ''),
   (key) => {
     if (!key) {
       lastEntryKey = ''
@@ -140,8 +126,8 @@ watch(
       errorMsg.value = null
       return
     }
-    if (props.detail) {
-      localForm.hydrateForm(props.detail)
+    if (detail.value) {
+      localForm.hydrateForm(detail.value)
     }
     if (key === lastEntryKey) return
     lastEntryKey = key
@@ -163,42 +149,42 @@ const isCurrentDirty = computed(
 )
 
 const canSaveMetadata = computed(() => {
-  if (!props.detail) return false
-  if (props.detail.metadata.kind === 'book') {
-    return props.detail.metadata.data.writable
+  if (!detail.value) return false
+  if (detail.value.metadata.kind === 'book') {
+    return detail.value.metadata.data.writable
   }
   return true
 })
 
 function resolveArtworkVersion(rootId: string, relPath: string): number {
-  return props.artworkVersion + (props.artworkVersions?.[`${rootId}::${relPath}`] ?? 0)
+  return artworkVersion.value + (artworkVersions.value?.[`${rootId}::${relPath}`] ?? 0)
 }
 
 const artworkSrc = computed(() => {
-  if (!props.detail) return ''
-  const kind = props.detail.entry.media_kind
-  const ver = resolveArtworkVersion(props.detail.entry.root_id, props.detail.entry.rel_path)
-  if (props.detail.metadata.kind === 'video') {
+  if (!detail.value) return ''
+  const kind = detail.value.entry.media_kind
+  const ver = resolveArtworkVersion(detail.value.entry.root_id, detail.value.entry.rel_path)
+  if (detail.value.metadata.kind === 'video') {
     const slot = videoArtworkSlot.value
     const has =
       slot === 'poster'
-        ? props.detail.metadata.data.has_poster
+        ? detail.value.metadata.data.has_poster
         : slot === 'fanart'
-          ? props.detail.metadata.data.has_fanart
-          : props.detail.metadata.data.has_thumb
+          ? detail.value.metadata.data.has_fanart
+          : detail.value.metadata.data.has_thumb
     if (!has) return ''
     return buildArtworkUrl(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
+      detail.value.entry.root_id,
+      detail.value.entry.rel_path,
       'video',
       ver,
       slot,
     )
   }
-  if (!props.detail.entry.completeness.has_cover) return ''
+  if (!detail.value.entry.completeness.has_cover) return ''
   return buildArtworkUrl(
-    props.detail.entry.root_id,
-    props.detail.entry.rel_path,
+    detail.value.entry.root_id,
+    detail.value.entry.rel_path,
     kind,
     ver,
     'cover',
@@ -206,8 +192,8 @@ const artworkSrc = computed(() => {
 })
 
 function enterLocalEditMode(): void {
-  if (!props.detail || !canSaveMetadata.value) return
-  localForm.hydrateForm(props.detail)
+  if (!detail.value || !canSaveMetadata.value) return
+  localForm.hydrateForm(detail.value)
   localEditMode.value = true
   detailPaneTab.value = 'local'
   mobilePane.value = 'local'
@@ -224,16 +210,16 @@ async function exitLocalEditMode(): Promise<void> {
     })
     if (!ok) return
   }
-  if (props.detail) {
-    localForm.hydrateForm(props.detail)
+  if (detail.value) {
+    localForm.hydrateForm(detail.value)
   }
   localEditMode.value = false
 }
 
 function triggerLocalArtworkUpload(): void {
-  if (!props.detail) return
+  if (!detail.value) return
   pendingUploadSlot.value =
-    props.detail.metadata.kind === 'video' ? videoArtworkSlot.value : 'cover'
+    detail.value.metadata.kind === 'video' ? videoArtworkSlot.value : 'cover'
   coverInputRef.value?.click()
 }
 
@@ -241,24 +227,24 @@ async function handleLocalArtworkPicked(ev: Event): Promise<void> {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || !props.detail) return
+  if (!file || !detail.value) return
   const seq = ++saveSeq
-  const startKey = entryCompositeKey(props.detail.entry)
+  const startKey = entryCompositeKey(detail.value.entry)
   uploadingArtwork.value = true
   errorMsg.value = null
   try {
     const updated = await toolApi.uploadArtwork(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
+      detail.value.entry.root_id,
+      detail.value.entry.rel_path,
       file,
       pendingUploadSlot.value,
-      props.detail.entry.media_kind,
+      detail.value.entry.media_kind,
     )
-    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+    if (seq !== saveSeq || !detail.value || entryCompositeKey(detail.value.entry) !== startKey) {
       return
     }
     lastEntryKey = entryCompositeKey(updated.entry)
-    emit('updated', updated, true)
+    await scrapeStore.handleDetailUpdated(updated, true)
     snackbar.show(t('tool.inspector.coverUpdated'))
   } catch (err) {
     if (seq === saveSeq) {
@@ -272,22 +258,22 @@ async function handleLocalArtworkPicked(ev: Event): Promise<void> {
 }
 
 async function handlePolishLocalBook(): Promise<void> {
-  if (polishingBook.value || !props.detail || props.detail.entry.media_kind !== 'book') return
+  if (polishingBook.value || !detail.value || detail.value.entry.media_kind !== 'book') return
   const seq = ++saveSeq
-  const startKey = entryCompositeKey(props.detail.entry)
+  const startKey = entryCompositeKey(detail.value.entry)
   polishingBook.value = true
   errorMsg.value = null
   try {
     const report = await toolApi.polishBook(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
+      detail.value.entry.root_id,
+      detail.value.entry.rel_path,
     )
-    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+    if (seq !== saveSeq || !detail.value || entryCompositeKey(detail.value.entry) !== startKey) {
       return
     }
     lastEntryKey = entryCompositeKey(report.detail.entry)
     localForm.hydrateForm(report.detail)
-    emit('updated', report.detail, true)
+    await scrapeStore.handleDetailUpdated(report.detail, true)
     snackbar.show(
       t('tool.inspector.bookPolished', {
         step: report.jacket_updated
@@ -308,36 +294,36 @@ async function handlePolishLocalBook(): Promise<void> {
 }
 
 async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Promise<void> {
-  if (!props.detail || !canSaveMetadata.value || savingLocal.value) return
+  if (!detail.value || !canSaveMetadata.value || savingLocal.value) return
   const seq = ++saveSeq
-  const startKey = entryCompositeKey(props.detail.entry)
+  const startKey = entryCompositeKey(detail.value.entry)
   savingLocal.value = true
   errorMsg.value = null
   try {
-    const envelope = localForm.buildPatchEnvelope(props.detail.entry.media_kind)
+    const envelope = localForm.buildPatchEnvelope(detail.value.entry.media_kind)
     const { detail: updated } = await saveAndOrganizeEntry({
-      rootId: props.detail.entry.root_id,
-      relPath: props.detail.entry.rel_path,
-      mediaKind: props.detail.entry.media_kind,
+      rootId: detail.value.entry.root_id,
+      relPath: detail.value.entry.rel_path,
+      mediaKind: detail.value.entry.media_kind,
       envelope,
       organizeAfterSave,
     })
-    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+    if (seq !== saveSeq || !detail.value || entryCompositeKey(detail.value.entry) !== startKey) {
       return
     }
     lastEntryKey = entryCompositeKey(updated.entry)
     localForm.hydrateForm(updated)
     localEditMode.value = false
-    emit('updated', updated, false)
+    await scrapeStore.handleDetailUpdated(updated, false)
     snackbar.show({
       message: organizeAfterSave
         ? t('tool.inspector.savedAndArchived')
         : t('tool.workbench.view.savedLocal'),
       actionLabel: t('tool.inspector.historyAction'),
-      onAction: () => emit('openHistory'),
+      onAction: () => workspaceStore.openHistoryModal('metadata'),
     })
-    if (advanceNext && props.hasNext) {
-      emit('step', 1)
+    if (advanceNext && hasNext.value) {
+      await scrapeStore.stepInspectingFile(1)
     }
   } catch (err) {
     if (seq === saveSeq) {
@@ -363,26 +349,29 @@ async function confirmDiscardIfDirty(): Promise<boolean> {
 
 async function requestStep(delta: -1 | 1): Promise<void> {
   if (saving.value || savingLocal.value) return
-  if (delta < 0 && !props.hasPrev) return
-  if (delta > 0 && !props.hasNext) return
+  if (delta < 0 && !hasPrev.value) return
+  if (delta > 0 && !hasNext.value) return
   if (!(await confirmDiscardIfDirty())) return
   queueDropdownOpen.value = false
-  emit('step', delta)
+  await scrapeStore.stepInspectingFile(delta)
 }
 
 async function requestPickEntry(entry: MediaFileEntry): Promise<void> {
   if (saving.value || savingLocal.value) return
   queueDropdownOpen.value = false
-  if (props.detail && entryCompositeKey(props.detail.entry) === entryCompositeKey(entry)) return
+  if (detail.value && entryCompositeKey(detail.value.entry) === entryCompositeKey(entry)) return
   if (!(await confirmDiscardIfDirty())) return
-  emit('selectEntry', entry)
+  await workspaceStore.inspectEntry(entry, { skipDirtyCheck: true })
 }
 
 async function requestExit(): Promise<void> {
   if (saving.value || savingLocal.value) return
   if (!(await confirmDiscardIfDirty())) return
   queueDropdownOpen.value = false
-  emit('exit')
+  scrapeStore.scrapeWorkbenchActive = false
+  scrapeStore.scrapeWorkbenchPaths = null
+  workspaceStore.mobileMenuOpen = false
+  workspaceStore.syncRouteFromState(false)
 }
 
 async function handleApplyAndSave(
@@ -391,21 +380,21 @@ async function handleApplyAndSave(
   advanceNext = false,
   opts?: CandidateApplyOptions,
 ): Promise<void> {
-  if (!props.detail || !canSaveMetadata.value || saving.value) return
+  if (!detail.value || !canSaveMetadata.value || saving.value) return
   const seq = ++saveSeq
-  const startKey = entryCompositeKey(props.detail.entry)
+  const startKey = entryCompositeKey(detail.value.entry)
   saving.value = true
   errorMsg.value = null
   try {
-    applyForm.hydrateForm(props.detail)
-    applyForm.applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
+    applyForm.hydrateForm(detail.value)
+    applyForm.applyScrapedMetadata(detail.value.entry.media_kind, meta, mode)
 
-    const envelope = applyForm.buildPatchEnvelope(props.detail.entry.media_kind)
+    const envelope = applyForm.buildPatchEnvelope(detail.value.entry.media_kind)
     const organizeAfterSave = Boolean(opts?.organizeAfterSave)
     const { detail: updated, bumpedArtwork } = await saveAndOrganizeEntry({
-      rootId: props.detail.entry.root_id,
-      relPath: props.detail.entry.rel_path,
-      mediaKind: props.detail.entry.media_kind,
+      rootId: detail.value.entry.root_id,
+      relPath: detail.value.entry.rel_path,
+      mediaKind: detail.value.entry.media_kind,
       envelope,
       pendingCoverUrl: applyForm.pendingCoverUrl.value,
       pendingBackdropUrl: applyForm.pendingBackdropUrl.value,
@@ -415,22 +404,22 @@ async function handleApplyAndSave(
     applyForm.pendingCoverUrl.value = null
     applyForm.pendingBackdropUrl.value = null
 
-    if (seq !== saveSeq || !props.detail || entryCompositeKey(props.detail.entry) !== startKey) {
+    if (seq !== saveSeq || !detail.value || entryCompositeKey(detail.value.entry) !== startKey) {
       return
     }
     lastEntryKey = entryCompositeKey(updated.entry)
     localForm.hydrateForm(updated)
-    emit('updated', updated, bumpedArtwork)
+    await scrapeStore.handleDetailUpdated(updated, bumpedArtwork)
     snackbar.show({
       message: organizeAfterSave
         ? t('tool.inspector.savedAndArchived')
         : t('tool.workbench.view.savedApplied'),
       actionLabel: t('tool.inspector.historyAction'),
-      onAction: () => emit('openHistory'),
+      onAction: () => workspaceStore.openHistoryModal('metadata'),
     })
 
-    if (advanceNext && props.hasNext) {
-      emit('step', 1)
+    if (advanceNext && hasNext.value) {
+      await scrapeStore.stepInspectingFile(1)
     }
   } catch (err) {
     if (seq === saveSeq) {
@@ -535,7 +524,7 @@ defineExpose({
       :is-current-dirty="isCurrentDirty"
       :auto-search-on-switch="autoSearchOnSwitch"
       @exit="requestExit"
-      @toggle-sidebar="emit('toggleSidebar')"
+      @toggle-sidebar="workspaceStore.toggleSidebar()"
       @step="requestStep"
       @select-entry="requestPickEntry"
       @update:queue-dropdown-open="queueDropdownOpen = $event"
@@ -628,8 +617,8 @@ defineExpose({
               :selected-preview-key="candidatePreview?.key ?? null"
               @direct-apply="(m, mode) => handleApplyAndSave(m, mode, false)"
               @select-preview="handleSelectCandidatePreview"
-              @open-settings="emit('openSettingsScrapers')"
-              @settings-updated="emit('settingsUpdated', $event)"
+              @open-settings="workspaceStore.openSettingsTab('scrapers')"
+              @settings-updated="workspaceStore.handleSettingsUpdated($event)"
             />
           </div>
         </div>

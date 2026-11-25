@@ -188,7 +188,7 @@ export const useToolScrapeStore = defineStore('toolScrape', () => {
         ),
       }
     }
-    workspaceStore.syncHashFromState(true)
+    workspaceStore.syncRouteFromState(true)
   }
 
   async function handleBookContentSaved(updated: MediaFileDetail): Promise<void> {
@@ -221,11 +221,11 @@ export const useToolScrapeStore = defineStore('toolScrape', () => {
         !inspectorStore.activeDetail ||
         entryCompositeKey(inspectorStore.activeDetail.entry) !== entryCompositeKey(target)
       ) {
-        await workspaceStore.inspectEntry(target, { skipDirtyCheck: true, replaceHash: false })
+        await workspaceStore.inspectEntry(target, { skipDirtyCheck: true, replaceRoute: false })
         return
       }
     }
-    workspaceStore.syncHashFromState(false)
+    workspaceStore.syncRouteFromState(false)
   }
 
   async function exitScrapeWorkbench(): Promise<void> {
@@ -233,7 +233,7 @@ export const useToolScrapeStore = defineStore('toolScrape', () => {
     scrapeWorkbenchActive.value = false
     scrapeWorkbenchPaths.value = null
     workspaceStore.mobileMenuOpen = false
-    workspaceStore.syncHashFromState(false)
+    workspaceStore.syncRouteFromState(false)
   }
 
   async function requestQueuePickEntry(entry: MediaFileEntry): Promise<void> {
@@ -366,7 +366,7 @@ export const useToolScrapeStore = defineStore('toolScrape', () => {
         if (seq !== inspectorStore.currentInspectSeq()) return
         inspectorStore.activeDetail = detail
         inspectorStore.inspectingPath = workspaceStore.entrySelectionKey(detail.entry)
-        workspaceStore.syncHashFromState(true)
+        workspaceStore.syncRouteFromState(true)
       } catch (err) {
         snackbar.show({
           message: err instanceof Error ? err.message : String(err),
@@ -466,7 +466,7 @@ export const useToolScrapeStore = defineStore('toolScrape', () => {
       ) {
         inspectorStore.activeDetail = updated
         inspectorStore.inspectingPath = nextKey
-        workspaceStore.syncHashFromState(true)
+        workspaceStore.syncRouteFromState(true)
       }
     })
 

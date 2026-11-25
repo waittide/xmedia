@@ -25,7 +25,7 @@ export const useToolWorkspaceStore = defineStore('toolWorkspace', () => {
     triggerManualRescan: directoryStore.triggerManualRescan,
     handleSettingsUpdated: directoryStore.handleSettingsUpdated,
 
-    syncHashFromState: navigationStore.syncHashFromState,
+    syncRouteFromState: navigationStore.syncRouteFromState,
     inspectEntry: navigationStore.inspectEntry,
     closeInspectorAndSync: navigationStore.closeInspectorAndSync,
     toggleSidebar: navigationStore.toggleSidebar,
@@ -34,7 +34,6 @@ export const useToolWorkspaceStore = defineStore('toolWorkspace', () => {
     switchDomain: navigationStore.switchDomain,
     selectRoot: navigationStore.selectRoot,
     enterFolder: navigationStore.enterFolder,
-    handleHashChange: navigationStore.handleHashChange,
     openSettingsTab: navigationStore.openSettingsTab,
     exitSettings: navigationStore.exitSettings,
 

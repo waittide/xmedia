@@ -31,7 +31,7 @@ import type { MediaFileEntry, RawFileEntryDto } from '../types'
 import ToolFolderManagerView from './browser/ToolFolderManagerView.vue'
 import ToolMediaItemRow from './browser/ToolMediaItemRow.vue'
 import ToolSelectionActionBar from './browser/ToolSelectionActionBar.vue'
-import { PAGE_CHUNK_SIZE, type SortField } from './workspace/hashState'
+import { PAGE_CHUNK_SIZE, type SortField } from '../stores/selection'
 
 export type { ToolCompletenessFilter }
 export type ToolSortField = SortField

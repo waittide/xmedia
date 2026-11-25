@@ -1,49 +1,89 @@
 import { defineStore } from 'pinia'
+import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
-import type { ToolSettingsTab } from '../components/ToolSettingsView.vue'
 import {
   VALID_DOMAINS,
-  buildToolHash,
-  parseToolHash,
-  type BrowseViewMode,
-} from '../components/workspace/hashState'
+  buildToolRoute,
+  parseToolRoute,
+  toolRouter,
+  type ToolSettingsTab,
+} from '../router'
 import type { MediaFileEntry } from '../types'
 import { useToolDirectoryStore } from './directory'
 import { useToolInspectorStore } from './inspector'
 import { useToolScrapeStore } from './scrape'
-import { useToolSelectionStore } from './selection'
+import { useToolSelectionStore, type BrowseViewMode } from './selection'
+
+let routerHooksInstalled = false
 
 export const useToolNavigationStore = defineStore('toolNavigation', () => {
   const directoryStore = useToolDirectoryStore()
   const selectionStore = useToolSelectionStore()
   const inspectorStore = useToolInspectorStore()
 
-  let suppressHashSync = false
+  let suppressRouteSync = false
+  let programmaticNavDepth = 0
 
-  function syncHashFromState(replace = false): void {
-    if (suppressHashSync || typeof window === 'undefined') return
-    const scrapeStore = useToolScrapeStore()
-    const nextHash = buildToolHash({
-      domain: directoryStore.activeDomain,
-      nav: directoryStore.activeNav,
-      rootId: directoryStore.activeRootId,
-      relPath: directoryStore.currentRelPath,
-      settingsTab: directoryStore.settingsInitialTab,
-      workbench: scrapeStore.scrapeWorkbenchActive,
-      item: inspectorStore.inspectingPath,
-    })
-    if (window.location.hash !== nextHash) {
-      if (replace) window.history.replaceState(null, '', nextHash)
-      else window.history.pushState(null, '', nextHash)
-    }
+  function isProgrammaticNav(): boolean {
+    return programmaticNavDepth > 0 || suppressRouteSync
   }
 
-  directoryStore.registerRouteSync(syncHashFromState)
+  function syncRouteFromState(replace = false): void {
+    if (suppressRouteSync) return
+    const scrapeStore = useToolScrapeStore()
+    const target = buildToolRoute({
+      domain: directoryStore.activeDomain,
+      nav: directoryStore.activeNav,
+      workbench: scrapeStore.scrapeWorkbenchActive,
+      rootId: directoryStore.activeRootId,
+      relPath: directoryStore.currentRelPath,
+      filter: selectionStore.completenessFilter,
+      q: selectionStore.searchQuery,
+      item: inspectorStore.inspectingPath,
+      settingsTab: directoryStore.settingsInitialTab,
+    })
+    const resolved = toolRouter.resolve(target)
+    if (resolved.fullPath === toolRouter.currentRoute.value.fullPath) return
+    programmaticNavDepth += 1
+    const task = replace ? toolRouter.replace(target) : toolRouter.push(target)
+    void task.finally(() => {
+      programmaticNavDepth = Math.max(0, programmaticNavDepth - 1)
+    })
+  }
+
+  directoryStore.registerRouteSync(syncRouteFromState)
+
+  if (!routerHooksInstalled) {
+    routerHooksInstalled = true
+    toolRouter.beforeEach(async (to, from) => {
+      if (isProgrammaticNav() || !from.matched.length || to.fullPath === from.fullPath) {
+        return true
+      }
+      if (!inspectorStore.isInspectorDirty() && !inspectorStore.isWorkbenchDirty()) {
+        return true
+      }
+      const affectsActiveEditor =
+        to.name !== from.name ||
+        to.params.domain !== from.params.domain ||
+        (to.query.root ?? '') !== (from.query.root ?? '') ||
+        (to.query.path ?? '') !== (from.query.path ?? '') ||
+        (to.query.item ?? '') !== (from.query.item ?? '')
+      if (!affectsActiveEditor) return true
+      return inspectorStore.confirmActiveEditorClean()
+    })
+
+    toolRouter.afterEach((to, from) => {
+      if (isProgrammaticNav() || !directoryStore.initialLoaded || to.fullPath === from.fullPath) {
+        return
+      }
+      void applyRouteLocation(to)
+    })
+  }
 
   async function inspectEntry(
     entry: MediaFileEntry,
-    options?: { skipDirtyCheck?: boolean; replaceHash?: boolean },
+    options?: { skipDirtyCheck?: boolean; replaceRoute?: boolean },
   ): Promise<void> {
     const key = directoryStore.entrySelectionKey(entry)
     if (
@@ -57,7 +97,7 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
     inspectorStore.activeDetail = null
     inspectorStore.inspectingPath = key
     inspectorStore.loadingInspector = true
-    syncHashFromState(options?.replaceHash ?? true)
+    syncRouteFromState(options?.replaceRoute ?? false)
     try {
       const detail = await toolApi.inspectFile(
         entry.root_id,
@@ -70,7 +110,7 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
       if (seq === inspectorStore.currentInspectSeq()) {
         inspectorStore.inspectingPath = null
         directoryStore.dirError = err instanceof Error ? err.message : String(err)
-        syncHashFromState(true)
+        syncRouteFromState(true)
       }
     } finally {
       if (seq === inspectorStore.currentInspectSeq()) inspectorStore.loadingInspector = false
@@ -79,7 +119,7 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
 
   function closeInspectorAndSync(): void {
     inspectorStore.clearActiveDetail()
-    syncHashFromState(true)
+    syncRouteFromState(false)
   }
 
   function toggleSidebar(isDesktop?: boolean): void {
@@ -123,12 +163,12 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
       selectionStore.clearSelection()
       if (wasScopedToSingleRoot || !directoryStore.snapshot) {
         inspectorStore.clearActiveDetail()
-        syncHashFromState()
+        syncRouteFromState()
         await directoryStore.loadAllDomainRoots()
         return
       }
     }
-    syncHashFromState()
+    syncRouteFromState()
   }
 
   async function switchDomain(next: MediaKind): Promise<void> {
@@ -144,7 +184,7 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
     directoryStore.mobileMenuOpen = false
     localStorage.setItem('xmedia_tool.active_domain', next)
     await directoryStore.activateDomainWorkspace(next)
-    syncHashFromState()
+    syncRouteFromState()
   }
 
   async function selectRoot(rootId: string, preferredViewMode?: BrowseViewMode): Promise<void> {
@@ -168,11 +208,11 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
     directoryStore.currentRelPath = ''
     selectionStore.clearSelection()
     if (alreadyLoaded) {
-      syncHashFromState()
+      syncRouteFromState()
       return
     }
     inspectorStore.clearActiveDetail()
-    syncHashFromState()
+    syncRouteFromState()
     await directoryStore.loadDirectory(rootId, '')
   }
 
@@ -194,7 +234,7 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
     if (!targetRootId) return
     if (!directoryStore.activeRootId) directoryStore.activeRootId = targetRootId
     directoryStore.currentRelPath = relPath
-    syncHashFromState()
+    syncRouteFromState()
     await directoryStore.loadDirectory(targetRootId, relPath)
   }
 
@@ -214,30 +254,44 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
     }
     directoryStore.activeNav = 'settings'
     directoryStore.mobileMenuOpen = false
-    syncHashFromState()
+    syncRouteFromState()
   }
 
   function exitSettings(): void {
     directoryStore.activeNav = directoryStore.previousWorkspaceNav
-    syncHashFromState()
+    syncRouteFromState()
   }
 
   async function loadInitial(): Promise<void> {
     directoryStore.loadingInitial = true
     directoryStore.initialLoadError = null
-    const bootHash = parseToolHash()
     const scrapeStore = useToolScrapeStore()
     try {
+      await toolRouter.isReady()
+      const bootRoute = parseToolRoute(toolRouter.currentRoute.value)
+      if (bootRoute.domain) {
+        directoryStore.activeDomain = bootRoute.domain
+        localStorage.setItem('xmedia_tool.active_domain', bootRoute.domain)
+      }
+      directoryStore.activeNav = bootRoute.nav
+      if (bootRoute.nav === 'settings') {
+        directoryStore.settingsInitialTab = bootRoute.settingsTab
+      } else {
+        directoryStore.previousWorkspaceNav = bootRoute.nav
+        localStorage.setItem('xmedia_tool.active_nav', bootRoute.nav)
+      }
+
       const s = await toolApi.getSettings()
       directoryStore.settings = s
-      if (bootHash.rootId) {
-        const matched = s.roots.find((r) => r.id === bootHash.rootId)
+
+      if (bootRoute.rootId) {
+        const matched = s.roots.find((r) => r.id === bootRoute.rootId)
         if (matched?.default_kind) {
           directoryStore.activeDomain = matched.default_kind
           directoryStore.syncDomainStateToMemory(
             matched.default_kind,
             matched.id,
-            bootHash.relPath ?? '',
+            bootRoute.relPath,
           )
         }
       }
@@ -248,26 +302,30 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
           localStorage.setItem('xmedia_tool.active_domain', firstWithRoot)
         }
       }
-      suppressHashSync = true
+
+      suppressRouteSync = true
       try {
-        await directoryStore.activateDomainWorkspace(directoryStore.activeDomain)
-        if (bootHash.workbench) {
+        selectionStore.completenessFilter = bootRoute.filter
+        selectionStore.searchQuery = bootRoute.q
+        if (bootRoute.filter !== 'all') selectionStore.setViewMode('flat')
+        await directoryStore.activateDomainWorkspace(directoryStore.activeDomain, true)
+        if (bootRoute.workbench) {
           directoryStore.activeNav = 'items'
           directoryStore.previousWorkspaceNav = 'items'
           scrapeStore.scrapeWorkbenchActive = true
         }
-        const targetEntry = bootHash.item
-          ? directoryStore.findEntryByHashItem(bootHash.item)
-          : bootHash.workbench
+        const targetEntry = bootRoute.item
+          ? directoryStore.findEntryByHashItem(bootRoute.item)
+          : bootRoute.workbench
             ? selectionStore.filteredFiles[0]
             : undefined
         if (targetEntry) {
-          await inspectEntry(targetEntry, { skipDirtyCheck: true, replaceHash: true })
+          await inspectEntry(targetEntry, { skipDirtyCheck: true, replaceRoute: true })
         }
       } finally {
-        suppressHashSync = false
+        suppressRouteSync = false
       }
-      syncHashFromState(true)
+      syncRouteFromState(true)
       directoryStore.initialLoaded = true
     } catch (err) {
       directoryStore.initialLoadError = err instanceof Error ? err.message : String(err)
@@ -276,70 +334,72 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
     }
   }
 
-  async function handleHashChange(): Promise<void> {
-    const parsed = parseToolHash()
-    if (!parsed.domain && !parsed.nav) return
-    if (!(await inspectorStore.confirmActiveEditorClean())) {
-      syncHashFromState(true)
-      return
-    }
+  async function applyRouteLocation(route: RouteLocationNormalizedLoaded): Promise<void> {
+    const parsed = parseToolRoute(route)
     const scrapeStore = useToolScrapeStore()
-    suppressHashSync = true
+    suppressRouteSync = true
     try {
       const domainChanged = Boolean(parsed.domain && parsed.domain !== directoryStore.activeDomain)
       if (parsed.domain) {
         directoryStore.activeDomain = parsed.domain
         localStorage.setItem('xmedia_tool.active_domain', parsed.domain)
       }
-      if (parsed.nav) {
-        directoryStore.activeNav = parsed.nav
-        if (parsed.nav !== 'settings') {
-          directoryStore.previousWorkspaceNav = parsed.nav
-          localStorage.setItem('xmedia_tool.active_nav', parsed.nav)
-        } else if (parsed.settingsTab) {
-          directoryStore.settingsInitialTab = parsed.settingsTab
-        }
+      directoryStore.activeNav = parsed.nav
+      if (parsed.nav === 'settings') {
+        directoryStore.settingsInitialTab = parsed.settingsTab
+      } else {
+        directoryStore.previousWorkspaceNav = parsed.nav
+        localStorage.setItem('xmedia_tool.active_nav', parsed.nav)
       }
+
+      if (parsed.nav === 'items' && !parsed.workbench) {
+        selectionStore.completenessFilter = parsed.filter
+        selectionStore.searchQuery = parsed.q
+        if (parsed.filter !== 'all') selectionStore.setViewMode('flat')
+      }
+
       if (domainChanged) {
         if (parsed.rootId) {
           directoryStore.syncDomainStateToMemory(
             directoryStore.activeDomain,
             parsed.rootId,
-            parsed.relPath ?? '',
+            parsed.relPath,
           )
         }
-        await directoryStore.activateDomainWorkspace(directoryStore.activeDomain)
+        await directoryStore.activateDomainWorkspace(directoryStore.activeDomain, true)
       } else if (
-        (parsed.rootId ?? '') !== directoryStore.activeRootId ||
-        (parsed.relPath ?? '') !== directoryStore.currentRelPath
+        parsed.nav !== 'settings' &&
+        (parsed.rootId !== directoryStore.activeRootId ||
+          parsed.relPath !== directoryStore.currentRelPath)
       ) {
-        directoryStore.activeRootId = parsed.rootId ?? ''
-        directoryStore.currentRelPath = parsed.relPath ?? ''
+        directoryStore.activeRootId = parsed.rootId
+        directoryStore.currentRelPath = parsed.relPath
         await directoryStore.reloadCurrentScope()
       }
-      const nextWorkbench = Boolean(parsed.workbench && directoryStore.activeNav === 'items')
-      scrapeStore.scrapeWorkbenchActive = nextWorkbench
-      if (!nextWorkbench) scrapeStore.scrapeWorkbenchPaths = null
+
+      scrapeStore.scrapeWorkbenchActive = parsed.workbench
+      if (!parsed.workbench) scrapeStore.scrapeWorkbenchPaths = null
+
       if (parsed.item) {
         const hit = directoryStore.findEntryByHashItem(parsed.item)
         if (hit && directoryStore.entrySelectionKey(hit) !== inspectorStore.inspectingPath) {
-          await inspectEntry(hit, { skipDirtyCheck: true, replaceHash: true })
+          await inspectEntry(hit, { skipDirtyCheck: true, replaceRoute: true })
         }
-      } else if (nextWorkbench && !inspectorStore.activeDetail && selectionStore.filteredFiles[0]) {
+      } else if (parsed.workbench && !inspectorStore.activeDetail && selectionStore.filteredFiles[0]) {
         await inspectEntry(selectionStore.filteredFiles[0], {
           skipDirtyCheck: true,
-          replaceHash: true,
+          replaceRoute: true,
         })
-      } else if (!parsed.item && !nextWorkbench && inspectorStore.activeDetail) {
+      } else if (!parsed.item && !parsed.workbench && inspectorStore.activeDetail) {
         inspectorStore.clearActiveDetail()
       }
     } finally {
-      suppressHashSync = false
+      suppressRouteSync = false
     }
   }
 
   return {
-    syncHashFromState,
+    syncRouteFromState,
     inspectEntry,
     closeInspectorAndSync,
     toggleSidebar,
@@ -350,6 +410,6 @@ export const useToolNavigationStore = defineStore('toolNavigation', () => {
     openSettingsTab,
     exitSettings,
     loadInitial,
-    handleHashChange,
+    applyRouteLocation,
   }
 })
