@@ -33,8 +33,8 @@ use xmedia_core::domain::library::{LibraryId, LibraryKind, MediaKind, ScanStatus
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{UserId, UserPreferences};
 use xmedia_core::http::{
-    AUTH_COOKIE_NAME, ApiResult, attach_cookie, build_clear_cookie, build_session_cookie,
-    error_json_response,
+    AUTH_COOKIE_NAME, ApiError, ApiResult, attach_cookie, build_clear_cookie, build_session_cookie,
+    error_json_response, verify_cookie_csrf,
 };
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
@@ -235,7 +235,10 @@ async fn login(
     Ok(attach_cookie(res, cookie))
 }
 
-async fn logout(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
+async fn logout(State(state): State<GatewayState>, req: axum::extract::Request) -> Response {
+    let (parts, _) = req.into_parts();
+    let headers = &parts.headers;
+    let mut has_bearer = false;
     if let Some(auth_val) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -244,26 +247,33 @@ async fn logout(State(state): State<GatewayState>, headers: HeaderMap) -> Respon
         if trimmed.len() >= 7 && trimmed[..7].eq_ignore_ascii_case("bearer ") {
             let tok = trimmed[7..].trim();
             if !tok.is_empty() {
+                has_bearer = true;
                 state.auth.revoke_jwt_token(tok);
             }
         }
     }
-    if let Some(cookie_hdr) = headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|v| v.to_str().ok())
+    if !has_bearer
+        && headers.contains_key(axum::http::header::COOKIE)
+        && let Err(err) = verify_cookie_csrf(&parts)
     {
-        for pair in cookie_hdr.split(';') {
-            if let Some((k, v)) = pair.trim().split_once('=')
-                && k.trim() == AUTH_COOKIE_NAME
-            {
-                let tok = v.trim();
-                if !tok.is_empty() {
-                    state.auth.revoke_jwt_token(tok);
+        return ApiError(err).into_response();
+    }
+    for cookie_hdr in headers.get_all(axum::http::header::COOKIE) {
+        if let Ok(cookie_str) = cookie_hdr.to_str() {
+            for pair in cookie_str.split(';') {
+                if let Some((k, v)) = pair.trim().split_once('=') {
+                    let key = k.trim();
+                    if key == AUTH_COOKIE_NAME || key == "xmedia_session" {
+                        let tok = v.trim();
+                        if !tok.is_empty() {
+                            state.auth.revoke_jwt_token(tok);
+                        }
+                    }
                 }
             }
         }
     }
-    let cookie = build_clear_cookie(&headers);
+    let cookie = build_clear_cookie(headers);
     let res = Json(OkResponse { ok: true }).into_response();
     attach_cookie(res, cookie)
 }

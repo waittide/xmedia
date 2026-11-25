@@ -16,7 +16,9 @@ use axum::http::header::{
     CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
 #[cfg(feature = "server")]
-use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE, WWW_AUTHENTICATE};
+use axum::http::header::{
+    AUTHORIZATION, COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE, WWW_AUTHENTICATE,
+};
 #[cfg(feature = "server")]
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -38,6 +40,8 @@ use crate::domain::user::User;
 
 #[cfg(feature = "server")]
 pub const AUTH_COOKIE_NAME: &str = "xmedia_token";
+#[cfg(feature = "server")]
+const ALT_SESSION_COOKIE_NAME: &str = "xmedia_session";
 
 #[derive(Debug)]
 pub struct ApiError(pub DomainError);
@@ -213,36 +217,40 @@ pub fn attach_cookie(mut res: Response, cookie: HeaderValue) -> Response {
 }
 
 #[cfg(feature = "server")]
-pub fn extract_request_token(parts: &Parts) -> Option<String> {
-    if let Some(raw_auth) = parts
-        .headers
-        .get(AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-    {
-        let trimmed_hdr = raw_auth.trim();
-        if trimmed_hdr.len() >= 7 && trimmed_hdr[..7].eq_ignore_ascii_case("bearer ") {
-            let trimmed = trimmed_hdr[7..].trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
+fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    let raw_auth = headers.get(AUTHORIZATION)?.to_str().ok()?;
+    let trimmed_hdr = raw_auth.trim();
+    if trimmed_hdr.len() >= 7 && trimmed_hdr[..7].eq_ignore_ascii_case("bearer ") {
+        let trimmed = trimmed_hdr[7..].trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
         }
     }
+    None
+}
 
-    for cookie_header in parts.headers.get_all(COOKIE) {
+#[cfg(feature = "server")]
+fn extract_session_cookie_token(headers: &HeaderMap) -> Option<String> {
+    for cookie_header in headers.get_all(COOKIE) {
         if let Ok(cookie_str) = cookie_header.to_str() {
             for pair in cookie_str.split(';') {
-                if let Some((k, v)) = pair.trim().split_once('=')
-                    && k.trim() == AUTH_COOKIE_NAME
-                {
-                    let val = v.trim();
-                    if !val.is_empty() {
-                        return Some(val.to_string());
+                if let Some((k, v)) = pair.trim().split_once('=') {
+                    let key = k.trim();
+                    if key == AUTH_COOKIE_NAME || key == ALT_SESSION_COOKIE_NAME {
+                        let val = v.trim();
+                        if !val.is_empty() {
+                            return Some(val.to_string());
+                        }
                     }
                 }
             }
         }
     }
+    None
+}
 
+#[cfg(feature = "server")]
+fn extract_query_token(parts: &Parts) -> Option<String> {
     // Only allow `?token=` query parameter on safe read-only GET/HEAD routes (e.g. media/SSE streams).
     if matches!(
         parts.method,
@@ -255,17 +263,219 @@ pub fn extract_request_token(parts: &Parts) -> Option<String> {
             }
         }
     }
-
     None
 }
 
 #[cfg(feature = "server")]
+fn is_state_mutating_method(method: &axum::http::Method) -> bool {
+    matches!(
+        *method,
+        axum::http::Method::POST
+            | axum::http::Method::PUT
+            | axum::http::Method::PATCH
+            | axum::http::Method::DELETE
+    )
+}
+
+#[cfg(feature = "server")]
+fn parse_origin_tuple(
+    raw: &str,
+    allow_path_and_query: bool,
+) -> Option<(String, String, Option<u16>)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+        return None;
+    }
+    let uri: axum::http::Uri = trimmed.parse().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let auth = uri.authority()?;
+    if auth.as_str().contains('@') {
+        return None;
+    }
+    if !allow_path_and_query && (!matches!(uri.path(), "" | "/") || uri.query().is_some()) {
+        return None;
+    }
+    let host = auth.host().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    Some((scheme, host, auth.port_u16()))
+}
+
+#[cfg(feature = "server")]
+fn resolve_target_host_and_port(parts: &Parts) -> Option<(String, Option<u16>)> {
+    if cached_trust_proxy()
+        && let Some(fwd_host) = parts
+            .headers
+            .get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    {
+        let auth: axum::http::uri::Authority = fwd_host.parse().ok()?;
+        if auth.as_str().contains('@') {
+            return None;
+        }
+        let host = auth.host().trim_end_matches('.').to_ascii_lowercase();
+        if !host.is_empty() {
+            return Some((host, auth.port_u16()));
+        }
+    }
+
+    if let Some(raw_host) = parts.headers.get(HOST).and_then(|v| v.to_str().ok()) {
+        let trimmed = raw_host.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let auth: axum::http::uri::Authority = trimmed.parse().ok()?;
+        if auth.as_str().contains('@') {
+            return None;
+        }
+        let host = auth.host().trim_end_matches('.').to_ascii_lowercase();
+        if host.is_empty() {
+            return None;
+        }
+        return Some((host, auth.port_u16()));
+    }
+
+    let auth = parts.uri.authority()?;
+    if auth.as_str().contains('@') {
+        return None;
+    }
+    let host = auth.host().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, auth.port_u16()))
+}
+
+#[cfg(feature = "server")]
+fn origin_matches_target(
+    origin: &(String, String, Option<u16>),
+    target: &(String, Option<u16>),
+    headers: &HeaderMap,
+) -> bool {
+    let (origin_scheme, origin_host, origin_port) = origin;
+    let (target_host, target_port) = target;
+    if origin_host != target_host {
+        return false;
+    }
+    let origin_effective_port =
+        origin_port.unwrap_or(if origin_scheme == "https" { 443 } else { 80 });
+    if let Some(tp) = *target_port {
+        return origin_effective_port == tp;
+    }
+    if is_https_request(headers) {
+        return origin_scheme == "https" && origin_effective_port == 443;
+    }
+    origin_port.is_none()
+}
+
+/// Validates `Sec-Fetch-Site` and `Origin` (with `Referer` fallback) against CSRF on
+/// state-mutating (`POST`/`PUT`/`PATCH`/`DELETE`) requests authenticated via session cookie.
+#[cfg(feature = "server")]
+pub fn verify_cookie_csrf(parts: &Parts) -> DomainResult<()> {
+    if !is_state_mutating_method(&parts.method) {
+        return Ok(());
+    }
+
+    for sfs_val in parts.headers.get_all("sec-fetch-site") {
+        let Ok(raw_sfs) = sfs_val.to_str() else {
+            return Err(DomainError::Forbidden(
+                "invalid Sec-Fetch-Site header on cookie-authenticated mutation".into(),
+            ));
+        };
+        let sfs = raw_sfs.trim();
+        if !sfs.eq_ignore_ascii_case("same-origin") && !sfs.eq_ignore_ascii_case("none") {
+            return Err(DomainError::Forbidden(
+                "cross-site session cookie request blocked (CSRF)".into(),
+            ));
+        }
+    }
+
+    let origins: Vec<&HeaderValue> = parts.headers.get_all(ORIGIN).iter().collect();
+    if !origins.is_empty() {
+        if origins.len() > 1 {
+            return Err(DomainError::Forbidden(
+                "multiple Origin headers rejected on cookie-authenticated mutation".into(),
+            ));
+        }
+        let Some(raw_origin) = origins[0].to_str().ok() else {
+            return Err(DomainError::Forbidden(
+                "invalid Origin header on cookie-authenticated mutation".into(),
+            ));
+        };
+        let Some(parsed_origin) = parse_origin_tuple(raw_origin, false) else {
+            return Err(DomainError::Forbidden(
+                "cross-origin session cookie request blocked (CSRF)".into(),
+            ));
+        };
+        let Some(target) = resolve_target_host_and_port(parts) else {
+            return Err(DomainError::Forbidden(
+                "missing Host header for Origin verification on cookie-authenticated mutation"
+                    .into(),
+            ));
+        };
+        if !origin_matches_target(&parsed_origin, &target, &parts.headers) {
+            return Err(DomainError::Forbidden(
+                "cross-origin session cookie request blocked (CSRF)".into(),
+            ));
+        }
+        return Ok(());
+    }
+
+    if let Some(ref_val) = parts.headers.get(REFERER) {
+        let Some(raw_ref) = ref_val.to_str().ok() else {
+            return Err(DomainError::Forbidden(
+                "invalid Referer header on cookie-authenticated mutation".into(),
+            ));
+        };
+        let Some(parsed_ref) = parse_origin_tuple(raw_ref, true) else {
+            return Err(DomainError::Forbidden(
+                "cross-origin session cookie request blocked (CSRF)".into(),
+            ));
+        };
+        let Some(target) = resolve_target_host_and_port(parts) else {
+            return Err(DomainError::Forbidden(
+                "missing Host header for Referer verification on cookie-authenticated mutation"
+                    .into(),
+            ));
+        };
+        if !origin_matches_target(&parsed_ref, &target, &parts.headers) {
+            return Err(DomainError::Forbidden(
+                "cross-origin session cookie request blocked (CSRF)".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+pub fn extract_request_token(parts: &Parts) -> Option<String> {
+    extract_bearer_token(&parts.headers)
+        .or_else(|| extract_session_cookie_token(&parts.headers))
+        .or_else(|| extract_query_token(parts))
+}
+
+#[cfg(feature = "server")]
 pub async fn authenticate_web_parts(parts: &Parts, auth: &AuthService) -> ApiResult<User> {
-    if let Some(token) = extract_request_token(parts) {
+    if let Some(token) = extract_bearer_token(&parts.headers) {
         return Ok(auth.authenticate_jwt(&token).await?);
     }
     if let Some(api_key) = parts.headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
         return Ok(auth.authenticate_api_key(api_key).await?);
+    }
+    if let Some(cookie_token) = extract_session_cookie_token(&parts.headers) {
+        verify_cookie_csrf(parts)?;
+        return Ok(auth.authenticate_jwt(&cookie_token).await?);
+    }
+    if let Some(query_token) = extract_query_token(parts) {
+        return Ok(auth.authenticate_jwt(&query_token).await?);
     }
     Err(ApiError(DomainError::Unauthorized(
         "missing authentication token".into(),
@@ -850,5 +1060,152 @@ mod tests {
         assert!(!stale.exists(), "stale .tmp files should be removed");
         assert!(keep.exists(), "non-.tmp files should be preserved");
         assert_eq!(resolve_temp_dir(), tmp_sub);
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn csrf_check_guards_cookie_mutations_while_preserving_bearer_api_key_basic_and_get() {
+        use axum::http::Request;
+        use std::collections::HashMap;
+        use toasty::Db;
+        use toasty::schema::ModelSet;
+
+        use crate::application::dto::SetupAdminInput;
+        use crate::infra::persistence::repositories::ToastyUserRepository;
+        use crate::infra::security::{JwtTokenService, SecurityManager};
+        use crate::{ensure_core_schema, register_core_models};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_url = format!("sqlite:{}", dir.path().join("csrf.db").display());
+        let mut models = ModelSet::new();
+        register_core_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+
+        let auth = AuthService::new(
+            Arc::new(ToastyUserRepository::new(db)),
+            Arc::new(SecurityManager::new("csrf-test-secret")),
+            Arc::new(JwtTokenService::new("csrf-test-secret", 3600)),
+            Arc::new(RwLock::new(HashMap::new())),
+        );
+        let session = auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: None,
+                password: "password123".into(),
+            })
+            .await
+            .unwrap();
+        let tok = &session.token;
+        let api_key = &session.user.api_key;
+
+        // 1. Cross-origin / cross-port / null Origin or cross-site Sec-Fetch-Site on cookie mutations -> 403 Forbidden
+        for (method, origin, sfs) in [
+            ("POST", Some("https://evil.example"), None),
+            ("PUT", Some("http://localhost:3000"), None),
+            ("PATCH", Some("null"), None),
+            ("DELETE", None, Some("cross-site")),
+            ("POST", Some("http://localhost:8090"), Some("same-site")),
+        ] {
+            let mut b = Request::builder()
+                .method(method)
+                .uri("/api/v1/auth/preferences")
+                .header(HOST, "localhost:8090")
+                .header(COOKIE, format!("{AUTH_COOKIE_NAME}={tok}"));
+            if let Some(o) = origin {
+                b = b.header(ORIGIN, o);
+            }
+            if let Some(s) = sfs {
+                b = b.header("sec-fetch-site", s);
+            }
+            let (parts, _) = b.body(Body::empty()).unwrap().into_parts();
+            let err = authenticate_web_parts(&parts, &auth).await.unwrap_err();
+            assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+        }
+
+        // Also verify `xmedia_session` alias is guarded identically on cross-site mutation
+        let (sess_parts, _) = Request::builder()
+            .method("POST")
+            .uri("/api/v1/users")
+            .header(HOST, "localhost:8090")
+            .header(COOKIE, format!("xmedia_session={tok}"))
+            .header("sec-fetch-site", "cross-site")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+        assert_eq!(
+            authenticate_web_parts(&sess_parts, &auth)
+                .await
+                .unwrap_err()
+                .into_response()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 2. Same-origin cookie mutation succeeds
+        let (same_origin_parts, _) = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/auth/preferences")
+            .header(HOST, "localhost:8090")
+            .header(ORIGIN, "http://localhost:8090")
+            .header("sec-fetch-site", "same-origin")
+            .header(COOKIE, format!("{AUTH_COOKIE_NAME}={tok}"))
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+        assert_eq!(
+            authenticate_web_parts(&same_origin_parts, &auth)
+                .await
+                .unwrap()
+                .username,
+            "admin"
+        );
+
+        // 3. Safe GET with cookie, Bearer POST, X-Api-Key POST, and OPDS Basic GET remain unaffected
+        let (get_parts, _) = Request::builder()
+            .method("GET")
+            .uri("/api/v1/auth/me")
+            .header(HOST, "localhost:8090")
+            .header(ORIGIN, "https://evil.example")
+            .header("sec-fetch-site", "cross-site")
+            .header(COOKIE, format!("{AUTH_COOKIE_NAME}={tok}"))
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+        assert!(authenticate_web_parts(&get_parts, &auth).await.is_ok());
+
+        let (bearer_parts, _) = Request::builder()
+            .method("POST")
+            .uri("/api/v1/libraries")
+            .header(ORIGIN, "https://evil.example")
+            .header("sec-fetch-site", "cross-site")
+            .header(AUTHORIZATION, format!("Bearer {tok}"))
+            .header(COOKIE, format!("{AUTH_COOKIE_NAME}={tok}"))
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+        assert!(authenticate_web_parts(&bearer_parts, &auth).await.is_ok());
+
+        let (apikey_parts, _) = Request::builder()
+            .method("POST")
+            .uri("/api/v1/libraries")
+            .header(ORIGIN, "https://evil.example")
+            .header("sec-fetch-site", "cross-site")
+            .header("x-api-key", api_key.as_str())
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+        assert!(authenticate_web_parts(&apikey_parts, &auth).await.is_ok());
+
+        let b64 = BASE64_STANDARD.encode("admin:password123");
+        let (basic_parts, _) = Request::builder()
+            .method("GET")
+            .uri("/opds/book/v1.2")
+            .header(ORIGIN, "https://evil.example")
+            .header(AUTHORIZATION, format!("Basic {b64}"))
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+        assert!(authenticate_opds_parts(&basic_parts, &auth).await.is_ok());
     }
 }
