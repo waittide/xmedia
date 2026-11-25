@@ -749,11 +749,7 @@ impl MusicOnlineService {
             .storage
             .save_managed_sidecar_lrc(track_id, Bytes::from(lrc_text.into_bytes()))
             .await?;
-        if let TrackSource::OnlineTracked(ref mut info) = track.source {
-            info.sidecar_lrc_key = Some(saved_lrc_key);
-        }
-        track.has_sidecar_lyrics = true;
-        track.updated_at = Timestamp::now();
+        track.attach_online_sidecar_lrc(saved_lrc_key, Timestamp::now());
         deps.catalog_repo.save_track(&track).await?;
         Ok(())
     }
@@ -953,29 +949,17 @@ impl MusicOnlineService {
             .await?;
 
         if let Some(ref probed) = probed_opt {
-            if probed.duration_secs > 0 {
-                track.duration_secs = probed.duration_secs;
-            }
-            if probed.bit_rate_kbps.is_some() {
-                track.bit_rate_kbps = probed.bit_rate_kbps;
-            }
-            if probed.sample_rate_hz.is_some() {
-                track.sample_rate_hz = probed.sample_rate_hz;
-            }
-            if probed.bit_depth.is_some() {
-                track.bit_depth = probed.bit_depth;
-            }
-            if probed.channels.is_some() {
-                track.channels = probed.channels;
-            }
-            if probed.year.is_some() && track.year.is_none() {
-                track.year = probed.year;
-            }
-            if probed.genre.is_some() && track.genre.is_none() {
-                track.genre = probed.genre.clone();
-            }
-            track.replay_gain = probed.replay_gain.clone();
-            track.has_embedded_lyrics = probed.has_embedded_lyrics;
+            track.apply_probed_metadata(
+                probed.duration_secs,
+                probed.bit_rate_kbps,
+                probed.sample_rate_hz,
+                probed.bit_depth,
+                probed.channels,
+                probed.year,
+                probed.genre.clone(),
+                probed.replay_gain.clone(),
+                probed.has_embedded_lyrics,
+            );
             if track.cover_key.is_none()
                 && let Some(ref embedded_cover) = probed.cover
                 && let Ok(key) = deps
@@ -983,10 +967,10 @@ impl MusicOnlineService {
                     .save_cover(&track.id.0.to_string(), embedded_cover)
                     .await
             {
-                track.cover_key = Some(key);
+                track.set_cover_if_absent(key);
             }
         } else if let Some(br) = stream_out.data.bitrate {
-            track.bit_rate_kbps = Some(br);
+            track.set_bit_rate_kbps(br);
         }
 
         if track.cover_key.is_none() {
@@ -1006,11 +990,12 @@ impl MusicOnlineService {
                 )
                 .await
             {
-                track.cover_key = Some(key);
+                track.set_cover_if_absent(key);
             }
         }
 
         let mut final_lrc_key = existing_lrc_key;
+        let mut added_sidecar_lrc = false;
         if final_lrc_key.is_none()
             && !track.has_embedded_lyrics
             && let Some(lrc_text) = self.resolve_lyrics_internal(source_id, ctx).await
@@ -1020,43 +1005,43 @@ impl MusicOnlineService {
                 .await
         {
             final_lrc_key = Some(key);
-            track.has_sidecar_lyrics = true;
+            added_sidecar_lrc = true;
         }
 
-        track.format = final_format;
-        track.file_size = stored.file_size;
-        track.file_hash = stored.file_hash;
-        track.source = TrackSource::OnlineTracked(Box::new(OnlineTrackedTrackSource {
-            storage_key: Some(stored.storage_key),
-            source_id,
-            item_id,
-            detail_url,
-            play_url,
-            url_id,
-            cover_url,
-            cover_id,
-            lyric_id,
-            quality,
-            cached: true,
-            sidecar_lrc_key: final_lrc_key,
-        }));
-        track.updated_at = Timestamp::now();
+        let now = Timestamp::now();
+        track.finalize_online_cached(
+            final_format,
+            stored.file_size,
+            stored.file_hash,
+            OnlineTrackedTrackSource {
+                storage_key: Some(stored.storage_key),
+                source_id,
+                item_id,
+                detail_url,
+                play_url,
+                url_id,
+                cover_url,
+                cover_id,
+                lyric_id,
+                quality,
+                cached: true,
+                sidecar_lrc_key: final_lrc_key,
+            },
+            added_sidecar_lrc,
+            now,
+        );
 
         deps.catalog_repo.save_track(&track).await?;
 
         if let Some(ref cov) = track.cover_key {
             if let Ok(Some(mut album)) = deps.catalog_repo.find_album_by_id(track.album_id).await
-                && album.cover_key.is_none()
+                && album.set_cover_if_absent(cov, now)
             {
-                album.cover_key = Some(cov.clone());
-                album.updated_at = track.updated_at;
                 let _ = deps.catalog_repo.save_album(&album).await;
             }
             if let Ok(Some(mut artist)) = deps.catalog_repo.find_artist_by_id(track.artist_id).await
-                && artist.cover_key.is_none()
+                && artist.set_cover_if_absent(cov, now)
             {
-                artist.cover_key = Some(cov.clone());
-                artist.updated_at = track.updated_at;
                 let _ = deps.catalog_repo.save_artist(&artist).await;
             }
         }

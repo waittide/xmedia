@@ -118,13 +118,7 @@ impl MusicCatalogService {
         raw_id: &str,
         max_size: Option<u32>,
     ) -> DomainResult<BinaryPayload> {
-        let clean = raw_id
-            .trim()
-            .strip_prefix("al-")
-            .or_else(|| raw_id.trim().strip_prefix("ar-"))
-            .or_else(|| raw_id.trim().strip_prefix("tr-"))
-            .or_else(|| raw_id.trim().strip_prefix("pl-"))
-            .unwrap_or_else(|| raw_id.trim());
+        let clean = raw_id.trim();
 
         if let Ok(uuid) = Uuid::parse_str(clean) {
             if let Some(album) = self.catalog.find_album_by_id(AlbumId(uuid)).await? {

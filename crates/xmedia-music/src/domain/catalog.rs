@@ -1,9 +1,16 @@
+mod queries;
+
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 pub use xmedia_core::domain::media::{PagedResult, SortOrder};
+
+pub use queries::{
+    AlbumListQuery, AlbumListType, ArtistQuery, ArtistRoleFilter, BoundCatalogCounts, GenreStat,
+    MusicTagStat, SearchQuery, TrackQuery, TrackSortField,
+};
 
 xmedia_core::define_uuid_id!(TrackId, AlbumId, ArtistId);
 
@@ -254,6 +261,121 @@ impl Track {
     pub fn has_lyrics(&self) -> bool {
         self.has_embedded_lyrics || self.has_sidecar_lyrics
     }
+
+    pub fn attach_managed_sidecar_lrc(&mut self, lrc_key: String, now: Timestamp) -> bool {
+        if let TrackSource::Managed {
+            ref storage_key, ..
+        } = self.source
+        {
+            self.source = TrackSource::Managed {
+                storage_key: storage_key.clone(),
+                sidecar_lrc_key: Some(lrc_key),
+            };
+            self.has_sidecar_lyrics = true;
+            self.updated_at = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn attach_online_sidecar_lrc(&mut self, lrc_key: String, now: Timestamp) {
+        if let TrackSource::OnlineTracked(ref mut info) = self.source {
+            info.sidecar_lrc_key = Some(lrc_key);
+        }
+        self.has_sidecar_lyrics = true;
+        self.updated_at = now;
+    }
+
+    pub fn mark_present(&mut self, now: Timestamp) -> bool {
+        if self.is_missing {
+            self.is_missing = false;
+            self.updated_at = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn mark_missing(&mut self, now: Timestamp) -> bool {
+        if !self.is_missing {
+            self.is_missing = true;
+            self.updated_at = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_cover_if_absent(&mut self, cover_key: String) -> bool {
+        if self.cover_key.is_none() {
+            self.cover_key = Some(cover_key);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_bit_rate_kbps(&mut self, bit_rate_kbps: u32) {
+        self.bit_rate_kbps = Some(bit_rate_kbps);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_probed_metadata(
+        &mut self,
+        duration_secs: u32,
+        bit_rate_kbps: Option<u32>,
+        sample_rate_hz: Option<u32>,
+        bit_depth: Option<u16>,
+        channels: Option<u8>,
+        year: Option<i32>,
+        genre: Option<String>,
+        replay_gain: ReplayGain,
+        has_embedded_lyrics: bool,
+    ) {
+        if duration_secs > 0 {
+            self.duration_secs = duration_secs;
+        }
+        if bit_rate_kbps.is_some() {
+            self.bit_rate_kbps = bit_rate_kbps;
+        }
+        if sample_rate_hz.is_some() {
+            self.sample_rate_hz = sample_rate_hz;
+        }
+        if bit_depth.is_some() {
+            self.bit_depth = bit_depth;
+        }
+        if channels.is_some() {
+            self.channels = channels;
+        }
+        if year.is_some() && self.year.is_none() {
+            self.year = year;
+        }
+        if genre.is_some() && self.genre.is_none() {
+            self.genre = genre;
+        }
+        self.replay_gain = replay_gain;
+        self.has_embedded_lyrics = has_embedded_lyrics;
+    }
+
+    pub fn finalize_online_cached(
+        &mut self,
+        format: AudioFormat,
+        file_size: u64,
+        file_hash: String,
+        cached_source: OnlineTrackedTrackSource,
+        has_sidecar_lyrics: bool,
+        now: Timestamp,
+    ) {
+        if has_sidecar_lyrics {
+            self.has_sidecar_lyrics = true;
+        }
+        self.format = format;
+        self.file_size = file_size;
+        self.file_hash = file_hash;
+        self.source = TrackSource::OnlineTracked(Box::new(cached_source));
+        self.updated_at = now;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +398,48 @@ pub struct Album {
 }
 
 impl Album {
+    pub fn normalize_title(raw_title: &str) -> String {
+        let trimmed = raw_title.trim();
+        if trimmed.is_empty() {
+            "Unknown Album".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        library_id: LibraryId,
+        raw_title: &str,
+        album_artist_id: ArtistId,
+        album_artist_name: &str,
+        year: Option<i32>,
+        genre: Option<&str>,
+        is_compilation: bool,
+        cover_hint: Option<&str>,
+        now: Timestamp,
+    ) -> Self {
+        let title = Self::normalize_title(raw_title);
+        let album_key = Self::compute_key(library_id, &title, album_artist_name, is_compilation);
+        Self {
+            id: AlbumId::new(),
+            library_id,
+            album_key,
+            title,
+            album_artist_id,
+            album_artist_name: album_artist_name.to_string(),
+            year,
+            genre: genre.map(str::to_string),
+            disc_count: 1,
+            track_count: 0,
+            duration_secs: 0,
+            is_compilation,
+            cover_key: cover_hint.map(str::to_string),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     pub fn compute_key(
         library_id: LibraryId,
         album_title: &str,
@@ -290,6 +454,44 @@ impl Album {
         };
         format!("{}:{norm_artist}:{norm_title}", library_id.0)
     }
+
+    pub fn merge_metadata(
+        &mut self,
+        year: Option<i32>,
+        genre: Option<&str>,
+        cover_hint: Option<&str>,
+        now: Timestamp,
+    ) -> bool {
+        let mut dirty = false;
+        if year.is_some() && self.year != year {
+            self.year = year;
+            dirty = true;
+        }
+        if genre.is_some() && self.genre.as_deref() != genre {
+            self.genre = genre.map(str::to_string);
+            dirty = true;
+        }
+        if self.cover_key.is_none()
+            && let Some(cov) = cover_hint
+        {
+            self.cover_key = Some(cov.to_string());
+            dirty = true;
+        }
+        if dirty {
+            self.updated_at = now;
+        }
+        dirty
+    }
+
+    pub fn set_cover_if_absent(&mut self, cover_key: &str, now: Timestamp) -> bool {
+        if self.cover_key.is_none() {
+            self.cover_key = Some(cover_key.to_string());
+            self.updated_at = now;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,6 +505,85 @@ pub struct Artist {
     pub cover_key: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+impl Artist {
+    pub fn normalize_name(raw_name: &str) -> String {
+        let trimmed = raw_name.trim();
+        if trimmed.is_empty() {
+            "Unknown Artist".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    pub fn new(
+        raw_name: &str,
+        is_album_artist: bool,
+        is_track_artist: bool,
+        cover_hint: Option<&str>,
+        now: Timestamp,
+    ) -> Self {
+        Self {
+            id: ArtistId::new(),
+            name: Self::normalize_name(raw_name),
+            is_album_artist,
+            is_track_artist,
+            album_count: 0,
+            track_count: 0,
+            cover_key: cover_hint.map(str::to_string),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn mark_album_artist(&mut self, now: Timestamp) -> bool {
+        if !self.is_album_artist {
+            self.is_album_artist = true;
+            self.updated_at = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn merge_roles_and_cover(
+        &mut self,
+        as_album_artist: bool,
+        as_track_artist: bool,
+        cover_hint: Option<&str>,
+        now: Timestamp,
+    ) -> bool {
+        let mut dirty = false;
+        if as_album_artist && !self.is_album_artist {
+            self.is_album_artist = true;
+            dirty = true;
+        }
+        if as_track_artist && !self.is_track_artist {
+            self.is_track_artist = true;
+            dirty = true;
+        }
+        if self.cover_key.is_none()
+            && let Some(cov) = cover_hint
+        {
+            self.cover_key = Some(cov.to_string());
+            dirty = true;
+        }
+        if dirty {
+            self.updated_at = now;
+        }
+        dirty
+    }
+
+    pub fn set_cover_if_absent(&mut self, cover_key: &str, now: Timestamp) -> bool {
+        if self.cover_key.is_none() {
+            self.cover_key = Some(cover_key.to_string());
+            self.updated_at = now;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,200 +618,5 @@ impl StructuredLyrics {
 
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty() && self.plain_text.trim().is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TrackSortField {
-    Title,
-    Artist,
-    Album,
-    #[default]
-    CreatedAt,
-    Year,
-    Duration,
-    TrackOrder,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackQuery {
-    pub library_id: Option<LibraryId>,
-    pub album_id: Option<AlbumId>,
-    pub artist_id: Option<ArtistId>,
-    pub genre: Option<String>,
-    #[serde(default)]
-    pub tag: Option<String>,
-    pub year_from: Option<i32>,
-    pub year_to: Option<i32>,
-    pub search: Option<String>,
-    pub sort_by: TrackSortField,
-    pub sort_order: SortOrder,
-    pub page: u32,
-    pub page_size: u32,
-    #[serde(skip)]
-    pub exclude_online_tracked: bool,
-}
-
-impl Default for TrackQuery {
-    fn default() -> Self {
-        Self {
-            library_id: None,
-            album_id: None,
-            artist_id: None,
-            genre: None,
-            tag: None,
-            year_from: None,
-            year_to: None,
-            search: None,
-            sort_by: TrackSortField::CreatedAt,
-            sort_order: SortOrder::Desc,
-            page: 1,
-            page_size: 50,
-            exclude_online_tracked: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum AlbumListType {
-    #[default]
-    Newest,
-    Recent,
-    Frequent,
-    Random,
-    Starred,
-    AlphabeticalByName,
-    AlphabeticalByArtist,
-    ByYear,
-    ByGenre,
-}
-
-impl AlbumListType {
-    pub fn parse(raw: &str) -> DomainResult<Self> {
-        match raw.trim() {
-            "newest" => Ok(Self::Newest),
-            "recent" => Ok(Self::Recent),
-            "frequent" => Ok(Self::Frequent),
-            "random" => Ok(Self::Random),
-            "starred" => Ok(Self::Starred),
-            "alphabeticalByName" | "alphabetical_by_name" => Ok(Self::AlphabeticalByName),
-            "alphabeticalByArtist" | "alphabetical_by_artist" => Ok(Self::AlphabeticalByArtist),
-            "byYear" | "by_year" => Ok(Self::ByYear),
-            "byGenre" | "by_genre" => Ok(Self::ByGenre),
-            other => Err(DomainError::Validation(format!(
-                "unsupported album list type: {other}"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AlbumListQuery {
-    pub list_type: AlbumListType,
-    pub library_id: Option<LibraryId>,
-    pub genre: Option<String>,
-    pub from_year: Option<i32>,
-    pub to_year: Option<i32>,
-    pub search: Option<String>,
-    pub offset: u32,
-    pub size: u32,
-}
-
-impl Default for AlbumListQuery {
-    fn default() -> Self {
-        Self {
-            list_type: AlbumListType::Newest,
-            library_id: None,
-            genre: None,
-            from_year: None,
-            to_year: None,
-            search: None,
-            offset: 0,
-            size: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtistRoleFilter {
-    #[default]
-    All,
-    AlbumArtist,
-    TrackArtist,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtistQuery {
-    pub library_id: Option<LibraryId>,
-    pub search: Option<String>,
-    pub role_filter: ArtistRoleFilter,
-    pub offset: u32,
-    pub size: u32,
-}
-
-impl Default for ArtistQuery {
-    fn default() -> Self {
-        Self {
-            library_id: None,
-            search: None,
-            role_filter: ArtistRoleFilter::All,
-            offset: 0,
-            size: 100,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GenreStat {
-    pub name: String,
-    pub song_count: u64,
-    pub album_count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MusicTagStat {
-    pub name: String,
-    pub song_count: u64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BoundCatalogCounts {
-    pub active_track_ids: std::collections::HashSet<TrackId>,
-    pub active_album_ids: std::collections::HashSet<AlbumId>,
-    pub total_tracks: u64,
-    pub total_albums: u64,
-    pub total_artists: u64,
-    pub genres_count: u64,
-    pub libraries_count: u64,
-    pub tags_count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SearchQuery {
-    pub query: String,
-    pub library_id: Option<LibraryId>,
-    pub artist_count: u32,
-    pub artist_offset: u32,
-    pub album_count: u32,
-    pub album_offset: u32,
-    pub song_count: u32,
-    pub song_offset: u32,
-}
-
-impl Default for SearchQuery {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            library_id: None,
-            artist_count: 20,
-            artist_offset: 0,
-            album_count: 20,
-            album_offset: 0,
-            song_count: 20,
-            song_offset: 0,
-        }
     }
 }

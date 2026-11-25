@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use xmedia_core::application::dto::{CreateLibraryInput, CreateUserInput, SetupAdminInput};
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::DomainError;
@@ -6,7 +5,7 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::UserRole;
 
 use super::{make_wav, setup_test_env};
-use crate::application::dto::{UpdatePlaylistInput, UploadFileItem, UploadFilePathItem};
+use crate::application::dto::{UpdatePlaylistInput, UploadFilePathItem};
 use crate::domain::catalog::{
     Album, AlbumId, Artist, ArtistId, AudioFormat, ReplayGain, Track, TrackId, TrackSource,
 };
@@ -51,14 +50,16 @@ async fn upload_files_publishes_media_changed_event() {
     let mut rx = env.events.subscribe();
 
     // Non-admin upload must be rejected without emitting any event
+    let blocked_wav = env.tmp.path().join("Blocked.wav");
+    std::fs::write(&blocked_wav, make_wav(8_000)).unwrap();
     assert!(matches!(
         env.music_services
             .ingest
-            .upload_files(
+            .upload_files_from_paths(
                 &member,
-                vec![UploadFileItem {
+                vec![UploadFilePathItem {
                     filename: "Blocked.wav".into(),
-                    bytes: Bytes::from(make_wav(8_000)),
+                    temp_path: blocked_wav,
                 }],
             )
             .await,
@@ -66,14 +67,16 @@ async fn upload_files_publishes_media_changed_event() {
     ));
     assert!(rx.try_recv().is_err());
 
-    // upload_files emits MediaChanged(Music)
+    // Admin upload_files_from_paths emits MediaChanged(Music)
+    let temp_wav_a = env.tmp.path().join("SongA.wav");
+    std::fs::write(&temp_wav_a, make_wav(8_000)).unwrap();
     env.music_services
         .ingest
-        .upload_files(
+        .upload_files_from_paths(
             &admin,
-            vec![UploadFileItem {
+            vec![UploadFilePathItem {
                 filename: "SongA.wav".into(),
-                bytes: Bytes::from(make_wav(8_000)),
+                temp_path: temp_wav_a,
             }],
         )
         .await
@@ -85,7 +88,7 @@ async fn upload_files_publishes_media_changed_event() {
         })
     ));
 
-    // upload_files_from_paths also emits MediaChanged(Music)
+    // Second upload_files_from_paths also emits MediaChanged(Music)
     let temp_wav = env.tmp.path().join("SongB.wav");
     std::fs::write(&temp_wav, make_wav(8_000)).unwrap();
     env.music_services

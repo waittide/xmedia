@@ -510,17 +510,19 @@ impl MusicCollectionService {
             .filter(|id| bound_ids.contains(&id.0))
             .collect();
         let allowed_current = current_track_id.filter(|cid| bound_ids.contains(&cid.0));
-        let queue = PlayQueue {
-            user_id,
-            track_ids: allowed_ids,
-            current_track_id: allowed_current,
-            position_ms,
-            changed_by: if changed_by.trim().is_empty() {
-                "xmedia-web".to_string()
-            } else {
-                changed_by.trim().to_string()
-            },
-            updated_at: Timestamp::now(),
+        let now = Timestamp::now();
+        let queue = if let Some(mut existing) = self.collections.get_play_queue(user_id).await? {
+            existing.replace_state(allowed_ids, allowed_current, position_ms, changed_by, now);
+            existing
+        } else {
+            PlayQueue::new(
+                user_id,
+                allowed_ids,
+                allowed_current,
+                position_ms,
+                changed_by,
+                now,
+            )
         };
         self.collections.save_play_queue(&queue).await
     }
@@ -571,16 +573,14 @@ impl MusicCollectionService {
         let track_dto = self.catalog_service.get_track(user_id, track_id).await?;
         let now = Timestamp::now();
         let existing = self.collections.get_bookmark(user_id, track_id).await?;
-        let bm = AudioBookmark {
+        let bm = AudioBookmark::new_or_updated(
+            existing.as_ref(),
             user_id,
             track_id,
             position_ms,
-            comment: comment
-                .map(|c| c.trim().to_string())
-                .filter(|c| !c.is_empty()),
-            created_at: existing.map(|e| e.created_at).unwrap_or(now),
-            updated_at: now,
-        };
+            comment,
+            now,
+        );
         self.collections.save_bookmark(&bm).await?;
         Ok(BookmarkDto {
             track: track_dto,

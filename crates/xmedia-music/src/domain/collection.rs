@@ -185,6 +185,48 @@ pub struct PlayQueue {
     pub updated_at: Timestamp,
 }
 
+impl PlayQueue {
+    pub fn new(
+        user_id: UserId,
+        track_ids: Vec<TrackId>,
+        current_track_id: Option<TrackId>,
+        position_ms: u64,
+        changed_by: &str,
+        now: Timestamp,
+    ) -> Self {
+        let mut queue = Self {
+            user_id,
+            track_ids: Vec::new(),
+            current_track_id: None,
+            position_ms: 0,
+            changed_by: String::new(),
+            updated_at: now,
+        };
+        queue.replace_state(track_ids, current_track_id, position_ms, changed_by, now);
+        queue
+    }
+
+    pub fn replace_state(
+        &mut self,
+        track_ids: Vec<TrackId>,
+        current_track_id: Option<TrackId>,
+        position_ms: u64,
+        changed_by: &str,
+        now: Timestamp,
+    ) {
+        self.track_ids = track_ids;
+        self.current_track_id = current_track_id;
+        self.position_ms = position_ms;
+        let trimmed = changed_by.trim();
+        self.changed_by = if trimmed.is_empty() {
+            "xmedia-web".to_string()
+        } else {
+            trimmed.to_string()
+        };
+        self.updated_at = now;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioBookmark {
     pub user_id: UserId,
@@ -193,4 +235,26 @@ pub struct AudioBookmark {
     pub comment: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+impl AudioBookmark {
+    pub fn new_or_updated(
+        existing: Option<&Self>,
+        user_id: UserId,
+        track_id: TrackId,
+        position_ms: u64,
+        comment: Option<String>,
+        now: Timestamp,
+    ) -> Self {
+        Self {
+            user_id,
+            track_id,
+            position_ms,
+            comment: comment
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty()),
+            created_at: existing.map(|e| e.created_at).unwrap_or(now),
+            updated_at: now,
+        }
+    }
 }

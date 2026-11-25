@@ -183,17 +183,21 @@ async fn handle_authenticated_method(
     }
 }
 
-fn parse_uuid_param(params: &SubsonicParams, key: &str) -> Result<Uuid, SubsonicError> {
-    let raw = params
-        .first(key)
-        .ok_or_else(|| SubsonicError::missing_param(key))?;
+pub(super) fn strip_subsonic_id_prefix(raw: &str) -> &str {
     let trimmed = raw.trim();
-    let clean = trimmed
+    trimmed
         .strip_prefix("al-")
         .or_else(|| trimmed.strip_prefix("ar-"))
         .or_else(|| trimmed.strip_prefix("tr-"))
         .or_else(|| trimmed.strip_prefix("pl-"))
-        .unwrap_or(trimmed);
+        .unwrap_or(trimmed)
+}
+
+fn parse_uuid_param(params: &SubsonicParams, key: &str) -> Result<Uuid, SubsonicError> {
+    let raw = params
+        .first(key)
+        .ok_or_else(|| SubsonicError::missing_param(key))?;
+    let clean = strip_subsonic_id_prefix(raw);
     Uuid::parse_str(clean).map_err(|_| SubsonicError::not_found(format!("invalid id '{raw}'")))
 }
 

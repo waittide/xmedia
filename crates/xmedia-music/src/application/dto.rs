@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use bytes::Bytes;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -9,12 +8,6 @@ use xmedia_core::domain::user::UserId;
 
 use crate::domain::catalog::{AlbumId, ArtistId, AudioFormat, ReplayGain, TrackId};
 use crate::domain::collection::PlaylistId;
-
-#[derive(Debug, Clone)]
-pub struct UploadFileItem {
-    pub filename: String,
-    pub bytes: Bytes,
-}
 
 #[derive(Debug, Clone)]
 pub struct UploadFilePathItem {

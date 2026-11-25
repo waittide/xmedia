@@ -4,7 +4,6 @@ use std::sync::{Arc, RwLock};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use bytes::Bytes;
 use encoding_rs::GB18030;
 use md5::{Digest, Md5};
 use tempfile::TempDir;
@@ -26,7 +25,7 @@ use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, register_core_models};
 
 use super::{make_wav, setup_test_env};
-use crate::application::dto::UploadFileItem;
+use crate::application::dto::UploadFilePathItem;
 use crate::domain::catalog::{
     Album, AlbumId, AlbumListQuery, AlbumListType, ArtistId, AudioFormat, ReplayGain, Track,
     TrackId, TrackSource,
@@ -111,18 +110,22 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
 
     // 1. Upload WAV + GB18030 LRC sidecar
     let (gbk_lrc, _, _) = GB18030.encode("[ti:夜曲]\n[ar:周杰伦]\n[00:01.50]为你弹奏肖邦的夜曲\n");
+    let nocturne_wav = tmp.path().join("Nocturne.wav");
+    let nocturne_lrc = tmp.path().join("Nocturne.lrc");
+    std::fs::write(&nocturne_wav, make_wav(16_000)).unwrap();
+    std::fs::write(&nocturne_lrc, &gbk_lrc[..]).unwrap();
     let uploaded = music_services
         .ingest
-        .upload_files(
+        .upload_files_from_paths(
             &admin,
             vec![
-                UploadFileItem {
+                UploadFilePathItem {
                     filename: "Nocturne.wav".into(),
-                    bytes: Bytes::from(make_wav(16_000)),
+                    temp_path: nocturne_wav,
                 },
-                UploadFileItem {
+                UploadFilePathItem {
                     filename: "Nocturne.lrc".into(),
-                    bytes: Bytes::copy_from_slice(&gbk_lrc),
+                    temp_path: nocturne_lrc,
                 },
             ],
         )
@@ -305,13 +308,15 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
 
     // 6. Verify empty/orphan LRC upload rejection, non-admin tag denial, cover auth,
     //    private playlist isolation, lyrics artist fallback, and delete_track cleanup
+    let orphan_lrc = tmp.path().join("orphan.lrc");
+    std::fs::write(&orphan_lrc, b"[00:01.00]orphan line\n").unwrap();
     let orphan_res = music_services
         .ingest
-        .upload_files(
+        .upload_files_from_paths(
             &admin,
-            vec![UploadFileItem {
+            vec![UploadFilePathItem {
                 filename: "orphan.lrc".into(),
-                bytes: Bytes::from_static(b"[00:01.00]orphan line\n"),
+                temp_path: orphan_lrc,
             }],
         )
         .await;

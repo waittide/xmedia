@@ -22,16 +22,28 @@ pub(super) async fn handle_collections_method(
 ) -> Result<Response, SubsonicError> {
     match method {
         "star" | "unstar" => {
-            let ids = params.all("id");
+            let ids: Vec<String> = params
+                .all("id")
+                .into_iter()
+                .map(|s| super::strip_subsonic_id_prefix(&s).to_string())
+                .collect();
             let album_ids: Vec<AlbumId> = params
                 .all("albumId")
                 .iter()
-                .filter_map(|s| Uuid::parse_str(s.trim()).ok().map(AlbumId))
+                .filter_map(|s| {
+                    Uuid::parse_str(super::strip_subsonic_id_prefix(s))
+                        .ok()
+                        .map(AlbumId)
+                })
                 .collect();
             let artist_ids: Vec<ArtistId> = params
                 .all("artistId")
                 .iter()
-                .filter_map(|s| Uuid::parse_str(s.trim()).ok().map(ArtistId))
+                .filter_map(|s| {
+                    Uuid::parse_str(super::strip_subsonic_id_prefix(s))
+                        .ok()
+                        .map(ArtistId)
+                })
                 .collect();
 
             if method == "star" {
@@ -83,6 +95,7 @@ pub(super) async fn handle_collections_method(
             let id = params
                 .first("id")
                 .ok_or_else(|| SubsonicError::missing_param("id"))?;
+            let clean_id = super::strip_subsonic_id_prefix(id);
             let rating = params
                 .u32("rating")
                 .ok_or_else(|| SubsonicError::missing_param("rating"))?;
@@ -92,7 +105,7 @@ pub(super) async fn handle_collections_method(
             state
                 .services
                 .collection
-                .set_rating(user.id, id, rating as u8)
+                .set_rating(user.id, clean_id, rating as u8)
                 .await?;
             Ok(render_ok(params, None))
         }

@@ -71,8 +71,13 @@ pub(super) async fn handle_media_method(
             let id = params
                 .first("id")
                 .ok_or_else(|| SubsonicError::missing_param("id"))?;
+            let clean_id = super::strip_subsonic_id_prefix(id);
             let size = params.u32("size");
-            let cover = state.services.catalog.get_cover_art(user, id, size).await?;
+            let cover = state
+                .services
+                .catalog
+                .get_cover_art(user, clean_id, size)
+                .await?;
             Ok(into_binary_cache_response(cover))
         }
 
