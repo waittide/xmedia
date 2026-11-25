@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import {
   buildEdgeMockSources,
@@ -14,8 +18,16 @@ import {
   REPO_ROOT,
   SutEndpointMissingError,
   XMediaServerManager,
+  allocateFreePort,
   resolveWebDir,
 } from '../lib/client.mjs';
+import {
+  StandaloneGatewayManager,
+  ToolServerManager,
+  extractSetCookiePair,
+  rawHttpRequest,
+  readZipEntries,
+} from '../lib/desktop_tool_managers.mjs';
 import {
   MOCK_AES_KEY_BYTES,
   MOCK_JPEG_BYTES,
@@ -2599,6 +2611,514 @@ function buildTier1Cases() {
         }
       },
     },
+    // =======================================================================
+    // F19: xmedia-tool & xmedia-app (--headless-gateway) Security & Metadata E2E
+    // =======================================================================
+    {
+      id: 'T1-F19-01',
+      feature: 'F19',
+      domain: 'nonreg',
+      sut: 'tool',
+      title: 'xmedia-tool session auth, lock invalidation, brute-force rate limit, 0600 config & CSRF/DNS-rebinding guards',
+      async run(ctx) {
+        const toolMgr = new ToolServerManager({ keepTmp: ctx.keepTmp });
+        try {
+          const password = 'ToolSecretPassword123!';
+          const toolBaseUrl = await toolMgr.start({ password, lockRoots: true });
+          const parsedUrl = new URL(toolBaseUrl);
+
+          // 1. DNS-rebinding Host guard must block spoofed Host even on public status endpoint.
+          const badHostRes = await rawHttpRequest(toolBaseUrl, 'GET', '/api/v1/tool/status', {
+            headers: { Host: `evil.attacker.example:${parsedUrl.port}` },
+          });
+          assert.equal(badHostRes.status, 403, 'Spoofed Host header must be rejected with 403');
+
+          // 2. Cross-origin Origin and Sec-Fetch-Site guards must reject cross-site / same-site requests.
+          const badOriginRes = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/auth/unlock', {
+            headers: { Origin: 'https://evil.attacker.example' },
+            body: { password },
+          });
+          assert.equal(badOriginRes.status, 403, 'Cross-origin Origin must be rejected with 403');
+
+          for (const badSite of ['cross-site', 'same-site']) {
+            const badFetchSiteRes = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/auth/unlock', {
+              headers: { 'Sec-Fetch-Site': badSite },
+              body: { password },
+            });
+            assert.equal(
+              badFetchSiteRes.status,
+              403,
+              `Sec-Fetch-Site: ${badSite} must be rejected with 403`,
+            );
+          }
+
+          // 3. Unauthenticated request to protected endpoint returns 401.
+          const unauthRes = await rawHttpRequest(toolBaseUrl, 'GET', '/api/v1/tool/settings');
+          assert.equal(unauthRes.status, 401);
+
+          // 4. Unlock issues random server-side session token (never unsalted SHA-256 of password).
+          const unlock1 = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/auth/unlock', {
+            headers: { Origin: toolBaseUrl, 'Sec-Fetch-Site': 'same-origin' },
+            body: { password },
+          });
+          assert.equal(unlock1.status, 200);
+          const token1 = unlock1.json?.token;
+          assert.match(token1, /^[0-9a-f]{64}$/);
+          const unsaltedSha256 = createHash('sha256').update(password).digest('hex');
+          assert.notEqual(token1, unsaltedSha256, 'Session token must not be static SHA256(password)');
+
+          const cookiePair = extractSetCookiePair(unlock1.rawSetCookies, 'xmedia_tool_token');
+          assert.ok(cookiePair, 'Expected Set-Cookie for xmedia_tool_token');
+          assert.ok(cookiePair.raw.includes('HttpOnly') && cookiePair.raw.includes('SameSite=Strict'));
+
+          const unlock2 = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/auth/unlock', {
+            body: { password },
+          });
+          assert.equal(unlock2.status, 200);
+          assert.notEqual(unlock2.json?.token, token1, 'Each unlock must issue a distinct random token');
+
+          // 5. Authenticated settings access, --lock-roots enforcement, inbox_path system-dir guard & 0600 config mode.
+          const authHeaders = { Authorization: `Bearer ${token1}` };
+          const settingsRes = await rawHttpRequest(toolBaseUrl, 'GET', '/api/v1/tool/settings', {
+            headers: authHeaders,
+          });
+          assert.equal(settingsRes.status, 200);
+          assert.equal(settingsRes.json?.roots?.length, 1);
+
+          const extraDir = path.join(toolMgr.tmpRoot, 'extra-root');
+          mkdirSync(extraDir, { recursive: true });
+          const lockedRootRes = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/roots', {
+            headers: authHeaders,
+            body: { name: 'Extra', path: extraDir },
+          });
+          assert.ok(
+            lockedRootRes.status >= 400 && lockedRootRes.status < 500,
+            `Expected 4xx when roots are locked, got ${lockedRootRes.status}`,
+          );
+
+          const badInboxRes = await rawHttpRequest(toolBaseUrl, 'PATCH', '/api/v1/tool/settings', {
+            headers: authHeaders,
+            body: {
+              inbox: {
+                ...(settingsRes.json?.inbox || {}),
+                enabled: true,
+                inbox_path: '/etc',
+              },
+            },
+          });
+          assert.ok(
+            badInboxRes.status >= 400 && badInboxRes.status < 500,
+            `Expected 4xx for system directory inbox_path=/etc, got ${badInboxRes.status}`,
+          );
+
+          if (process.platform !== 'win32') {
+            const configPath = path.join(toolMgr.dataDir, 'tool-config.json');
+            const mode = statSync(configPath).mode & 0o777;
+            assert.equal(mode, 0o600, `Expected tool-config.json mode 0600, got 0${mode.toString(8)}`);
+          }
+
+          // 6. POST /auth/lock immediately revokes token1 on the server.
+          const lockRes = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/auth/lock', {
+            headers: authHeaders,
+          });
+          assert.equal(lockRes.status, 200);
+
+          const afterLockRes = await rawHttpRequest(toolBaseUrl, 'GET', '/api/v1/tool/settings', {
+            headers: authHeaders,
+          });
+          assert.equal(afterLockRes.status, 401, 'Locked session token must be invalidated server-side');
+
+          // 7. Repeated wrong passwords hit brute-force rate limit (429).
+          let sawRateLimit = false;
+          for (let attempt = 0; attempt < 10; attempt++) {
+            const badAttempt = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/auth/unlock', {
+              body: { password: `wrong-pass-${attempt}` },
+            });
+            if (badAttempt.status === 429) {
+              sawRateLimit = true;
+              break;
+            }
+            assert.equal(badAttempt.status, 401);
+          }
+          assert.equal(sawRateLimit, true, 'Expected 429 Too Many Requests after repeated failed unlocks');
+        } finally {
+          await toolMgr.cleanup();
+        }
+      },
+    },
+    {
+      id: 'T1-F19-02',
+      feature: 'F19',
+      domain: 'nonreg',
+      sut: 'tool',
+      title: 'xmedia-tool non-destructive ComicInfo.xml (extended tags, fractional volume, non-image ZIP entries) & Video .nfo roundtrip',
+      async run(ctx) {
+        const toolMgr = new ToolServerManager({ keepTmp: ctx.keepTmp });
+        try {
+          const toolBaseUrl = await toolMgr.start();
+          const settingsRes = await rawHttpRequest(toolBaseUrl, 'GET', '/api/v1/tool/settings');
+          assert.equal(settingsRes.status, 200);
+          const rootId = settingsRes.json?.roots?.[0]?.id;
+          assert.ok(rootId, 'Expected default managed root in xmedia-tool');
+
+          // Prepare CBZ with extended ComicInfo.xml fields + fractional volume + non-image entry.
+          const comicsDir = path.join(toolMgr.mediaDir, 'comics');
+          mkdirSync(comicsDir, { recursive: true });
+          const cbzPath = path.join(comicsDir, 'Issue01.cbz');
+          const initialComicInfo = `<?xml version="1.0" encoding="utf-8"?>
+<ComicInfo>
+  <Title>Chapter One</Title>
+  <Series>Starlight Saga</Series>
+  <Number>1</Number>
+  <Count>24</Count>
+  <Volume>1.5</Volume>
+  <Month>7</Month>
+  <Day>19</Day>
+  <CoverArtist>Carol Cover</CoverArtist>
+  <Colorist>Dan Color</Colorist>
+  <Inker>Eve Ink</Inker>
+  <Letterer>Frank Letter</Letterer>
+  <Characters>Alice, Bob</Characters>
+  <AgeRating>Teen</AgeRating>
+  <Web>https://comics.example/starlight/1</Web>
+  <Pages>
+    <Page Image="0" Type="FrontCover" ImageWidth="1" ImageHeight="1" />
+  </Pages>
+</ComicInfo>`;
+          const cbzBytes = buildMinimalZip([
+            { name: '001.png', data: MOCK_PNG_BYTES },
+            { name: 'notes/release-note.txt', data: 'Keep this custom sidecar text inside CBZ!' },
+            { name: 'ComicInfo.xml', data: initialComicInfo },
+          ]);
+          writeFileSync(cbzPath, cbzBytes);
+
+          const inspectComic = await rawHttpRequest(
+            toolBaseUrl,
+            'GET',
+            `/api/v1/tool/files/inspect?root_id=${encodeURIComponent(rootId)}&path=${encodeURIComponent('comics/Issue01.cbz')}`,
+          );
+          assert.equal(inspectComic.status, 200);
+          assert.equal(inspectComic.json?.metadata?.data?.volume, 1.5);
+
+          const patchComic = await rawHttpRequest(toolBaseUrl, 'PATCH', '/api/v1/tool/files/metadata', {
+            body: {
+              root_id: rootId,
+              path: 'comics/Issue01.cbz',
+              kind: 'comic',
+              patch: {
+                title: 'Chapter One (Remastered)',
+                volume: 2.5,
+              },
+            },
+          });
+          assert.equal(patchComic.status, 200);
+          assert.equal(patchComic.json?.metadata?.data?.volume, 2.5);
+
+          const entriesAfterMeta = readZipEntries(readFileSync(cbzPath));
+          assert.equal(
+            entriesAfterMeta.get('notes/release-note.txt')?.toString('utf8'),
+            'Keep this custom sidecar text inside CBZ!',
+          );
+          const updatedComicXml = entriesAfterMeta.get('ComicInfo.xml')?.toString('utf8') || '';
+          assert.ok(updatedComicXml.includes('<Title>Chapter One (Remastered)</Title>'));
+          assert.ok(updatedComicXml.includes('<Volume>2.5</Volume>'));
+          for (const preservedSnippet of [
+            '<Count>24</Count>',
+            '<Month>7</Month>',
+            '<Day>19</Day>',
+            '<CoverArtist>Carol Cover</CoverArtist>',
+            '<Colorist>Dan Color</Colorist>',
+            '<Inker>Eve Ink</Inker>',
+            '<Letterer>Frank Letter</Letterer>',
+            '<Characters>Alice, Bob</Characters>',
+            '<AgeRating>Teen</AgeRating>',
+            '<Web>https://comics.example/starlight/1</Web>',
+            'Type="FrontCover"',
+          ]) {
+            assert.ok(
+              updatedComicXml.includes(preservedSnippet),
+              `Expected ComicInfo.xml to preserve ${preservedSnippet}, got:\n${updatedComicXml}`,
+            );
+          }
+
+          // Also verify save_comic_pages preserves non-image ZIP entries.
+          const savePagesRes = await rawHttpRequest(toolBaseUrl, 'PUT', '/api/v1/tool/comics/pages', {
+            body: {
+              root_id: rootId,
+              path: 'comics/Issue01.cbz',
+              pages: [{ entry_name: '001.png', rotate_degrees: 0 }],
+              reencode: 'keep',
+            },
+          });
+          assert.equal(savePagesRes.status, 200);
+          const entriesAfterSavePages = readZipEntries(readFileSync(cbzPath));
+          assert.equal(
+            entriesAfterSavePages.get('notes/release-note.txt')?.toString('utf8'),
+            'Keep this custom sidecar text inside CBZ!',
+          );
+
+          // Prepare Video + sidecar .nfo with extended Kodi/Jellyfin metadata.
+          const videosDir = path.join(toolMgr.mediaDir, 'videos');
+          mkdirSync(videosDir, { recursive: true });
+          writeFileSync(path.join(videosDir, 'StarlightMovie.mp4'), MOCK_MP4_BYTES);
+          const nfoPath = path.join(videosDir, 'StarlightMovie.nfo');
+          writeFileSync(
+            nfoPath,
+            `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>Original Movie Title</title>
+  <premiered>2024-11-05</premiered>
+  <mpaa>PG-13</mpaa>
+  <country>Japan</country>
+  <uniqueid type="imdb" default="true">tt9876543</uniqueid>
+  <uniqueid type="tvdb">445566</uniqueid>
+  <actor>
+    <name>Alice Star</name>
+    <role>Captain</role>
+    <thumb>https://img.example/alice.jpg</thumb>
+  </actor>
+  <fileinfo>
+    <streamdetails>
+      <video>
+        <codec>hevc</codec>
+        <width>3840</width>
+        <height>2160</height>
+      </video>
+    </streamdetails>
+  </fileinfo>
+</movie>`,
+          );
+
+          const patchVideo = await rawHttpRequest(toolBaseUrl, 'PATCH', '/api/v1/tool/files/metadata', {
+            body: {
+              root_id: rootId,
+              path: 'videos/StarlightMovie.mp4',
+              kind: 'video',
+              patch: {
+                title: 'Starlight Movie Director Cut',
+                summary: 'Updated synopsis without losing streamdetails or uniqueids.',
+              },
+            },
+          });
+          assert.equal(patchVideo.status, 200);
+
+          const updatedNfo = readFileSync(nfoPath, 'utf8');
+          assert.ok(updatedNfo.includes('<title>Starlight Movie Director Cut</title>'));
+          assert.ok(updatedNfo.includes('Updated synopsis without losing streamdetails or uniqueids.'));
+          for (const preservedNfo of [
+            '<premiered>2024-11-05</premiered>',
+            '<mpaa>PG-13</mpaa>',
+            '<country>Japan</country>',
+            'tt9876543',
+            '445566',
+            '<role>Captain</role>',
+            '<thumb>https://img.example/alice.jpg</thumb>',
+            '<streamdetails>',
+            '<codec>hevc</codec>',
+          ]) {
+            assert.ok(
+              updatedNfo.includes(preservedNfo),
+              `Expected .nfo to preserve ${preservedNfo}, got:\n${updatedNfo}`,
+            );
+          }
+        } finally {
+          await toolMgr.cleanup();
+        }
+      },
+    },
+    {
+      id: 'T1-F19-03',
+      feature: 'F19',
+      domain: 'nonreg',
+      sut: 'standalone',
+      title: 'xmedia-app --headless-gateway enforces session ACL, encrypts remote_sources.json, proxies OPDS-PSE & sniffs image magic bytes',
+      async run(ctx) {
+        const opdsPort = await allocateFreePort('127.0.0.1');
+        const expectedAuth = `Basic ${Buffer.from('opds_reader:UltraSecretOpdsPass!').toString('base64')}`;
+        const opdsBaseUrl = `http://127.0.0.1:${opdsPort}`;
+
+        const opdsServer = http.createServer((req, res) => {
+          if (req.headers.authorization !== expectedAuth) {
+            res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="OPDS"' });
+            res.end('Unauthorized');
+            return;
+          }
+          const reqUrl = new URL(req.url || '/', opdsBaseUrl);
+          if (reqUrl.pathname === '/opds') {
+            res.writeHead(200, { 'Content-Type': 'application/atom+xml;profile=opds-catalog' });
+            res.end(`<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:pse="http://vaemendis.net/opds-pse/ns">
+  <id>urn:xmedia:e2e:opds</id>
+  <title>Mock Protected OPDS</title>
+  <updated>2026-01-01T00:00:00Z</updated>
+  <entry>
+    <id>urn:xmedia:e2e:comic:1</id>
+    <title>Protected PSE Comic</title>
+    <updated>2026-01-01T00:00:00Z</updated>
+    <link rel="http://opds-spec.org/image" type="image/png" href="/cover.png" />
+    <link rel="http://vaemendis.net/opds-pse/stream" type="image/jpeg" href="/pse/{pageNumber}?maxWidth={maxWidth}" pse:count="18" />
+  </entry>
+</feed>`);
+            return;
+          }
+          if (reqUrl.pathname === '/cover.png') {
+            res.writeHead(200, { 'Content-Type': 'image/png' });
+            res.end(MOCK_PNG_BYTES);
+            return;
+          }
+          if (reqUrl.pathname === '/pse/4' && reqUrl.searchParams.get('maxWidth') === '1200') {
+            res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+            res.end(MOCK_JPEG_BYTES);
+            return;
+          }
+          if (reqUrl.pathname === '/disguised-svg.png') {
+            res.writeHead(200, { 'Content-Type': 'image/png' });
+            res.end('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+            return;
+          }
+          res.writeHead(404);
+          res.end('Not Found');
+        });
+        await new Promise((resolve) => opdsServer.listen(opdsPort, '127.0.0.1', resolve));
+
+        const appMgr = new StandaloneGatewayManager({ keepTmp: ctx.keepTmp });
+        try {
+          const gwUrl = await appMgr.start();
+          const gwParsed = new URL(gwUrl);
+
+          // 1. Health check works, while DNS-rebinding Host and cross-origin headers return 403.
+          const health = await rawHttpRequest(gwUrl, 'GET', '/_app/health');
+          assert.equal(health.status, 200);
+          assert.equal(health.json?.mode, 'standalone');
+
+          const rebindRes = await rawHttpRequest(gwUrl, 'GET', '/_app/health', {
+            headers: { Host: `attacker.example:${gwParsed.port}` },
+          });
+          assert.equal(rebindRes.status, 403);
+
+          const csrfOriginRes = await rawHttpRequest(gwUrl, 'POST', '/_app/auto-session', {
+            headers: {
+              Origin: 'https://attacker.example',
+              'X-XMedia-App': 'standalone',
+            },
+          });
+          assert.equal(csrfOriginRes.status, 403);
+
+          const csrfFetchSiteRes = await rawHttpRequest(gwUrl, 'POST', '/_app/auto-session', {
+            headers: {
+              'Sec-Fetch-Site': 'cross-site',
+              'X-XMedia-App': 'standalone',
+            },
+          });
+          assert.equal(csrfFetchSiteRes.status, 403);
+
+          // 2. Protected /_app/* routes reject unauthenticated callers with 401.
+          const unauthSources = await rawHttpRequest(gwUrl, 'GET', '/_app/remote-sources');
+          assert.equal(unauthSources.status, 401);
+          const unauthIcon = await rawHttpRequest(gwUrl, 'PUT', '/_app/icon', {
+            body: { icon: 'obsidian' },
+          });
+          assert.equal(unauthIcon.status, 401);
+
+          // 3. POST /_app/auto-session requires X-XMedia-App: standalone and sets HttpOnly xmedia_token cookie.
+          const noHeaderSession = await rawHttpRequest(gwUrl, 'POST', '/_app/auto-session');
+          assert.equal(noHeaderSession.status, 403);
+
+          const autoSession = await rawHttpRequest(gwUrl, 'POST', '/_app/auto-session', {
+            headers: {
+              Origin: gwUrl,
+              'Sec-Fetch-Site': 'same-origin',
+              'X-XMedia-App': 'standalone',
+            },
+          });
+          assert.equal(autoSession.status, 200);
+          const sessionCookie = extractSetCookiePair(autoSession.rawSetCookies, 'xmedia_token');
+          assert.ok(sessionCookie, 'Expected Set-Cookie for xmedia_token');
+          assert.ok(sessionCookie.raw.includes('HttpOnly') && sessionCookie.raw.includes('SameSite=Strict'));
+
+          const cookieHeaders = { Cookie: `xmedia_token=${sessionCookie.value}` };
+
+          // 4. Authenticated PUT /_app/icon & POST /_app/remote-sources succeed, and secrets are encrypted at rest.
+          const setIcon = await rawHttpRequest(gwUrl, 'PUT', '/_app/icon', {
+            headers: cookieHeaders,
+            body: { icon: 'obsidian' },
+          });
+          assert.equal(setIcon.status, 200);
+          assert.equal(setIcon.json?.icon, 'obsidian');
+
+          const createSource = await rawHttpRequest(gwUrl, 'POST', '/_app/remote-sources', {
+            headers: cookieHeaders,
+            body: {
+              name: 'Protected OPDS',
+              protocol: 'opds',
+              url: `${opdsBaseUrl}/opds`,
+              username: 'opds_reader',
+              password: 'UltraSecretOpdsPass!',
+            },
+          });
+          assert.equal(createSource.status, 201);
+          const sourceId = createSource.json?.source?.id;
+          assert.ok(sourceId);
+
+          const sourcesFilePath = path.join(appMgr.dataDir, 'remote_sources.json');
+          const rawSourcesJson = readFileSync(sourcesFilePath, 'utf8');
+          assert.ok(
+            !rawSourcesJson.includes('UltraSecretOpdsPass!'),
+            'remote_sources.json must never store plaintext password',
+          );
+          const parsedDiskSources = JSON.parse(rawSourcesJson);
+          assert.ok(
+            String(parsedDiskSources.sources?.[0]?.password || '').startsWith('enc:v1:'),
+            'Expected AES-256-GCM enc:v1: encrypted password on disk',
+          );
+          if (process.platform !== 'win32') {
+            const mode = statSync(sourcesFilePath).mode & 0o777;
+            assert.equal(mode, 0o600, `Expected remote_sources.json mode 0600, got 0${mode.toString(8)}`);
+          }
+
+          // 5. Browse OPDS -> verify pse_stream_url is proxied through /_app/opds/{id}/proxy-image and streams page 4.
+          const browseRes = await rawHttpRequest(
+            gwUrl,
+            'GET',
+            `/_app/opds/${encodeURIComponent(sourceId)}/browse`,
+            { headers: cookieHeaders },
+          );
+          assert.equal(browseRes.status, 200);
+          const entry = browseRes.json?.entries?.[0];
+          assert.ok(entry, 'Expected OPDS entry');
+          assert.ok(
+            entry.pse_stream_url?.startsWith(`/_app/opds/${sourceId}/proxy-image?url=`),
+            `Expected pse_stream_url to route through local OPDS proxy, got: ${entry.pse_stream_url}`,
+          );
+          assert.ok(
+            entry.pse_stream_url.includes('{pageNumber}') && entry.pse_stream_url.includes('{maxWidth}'),
+            `Expected unescaped template placeholders in pse_stream_url: ${entry.pse_stream_url}`,
+          );
+
+          const page4Path = entry.pse_stream_url
+            .replace('{pageNumber}', '4')
+            .replace('{maxWidth}', '1200');
+          const page4Res = await rawHttpRequest(gwUrl, 'GET', page4Path, {
+            headers: cookieHeaders,
+          });
+          assert.equal(page4Res.status, 200);
+          assertJpeg(page4Res.buffer);
+          assert.ok(String(page4Res.headers['content-security-policy'] || '').includes('sandbox'));
+
+          // 6. SVG payload disguised with Content-Type: image/png is rejected via magic-byte sniffing (415).
+          const disguisedRes = await rawHttpRequest(
+            gwUrl,
+            'GET',
+            `/_app/opds/${encodeURIComponent(sourceId)}/proxy-image?url=${encodeURIComponent(`${opdsBaseUrl}/disguised-svg.png`)}`,
+            { headers: cookieHeaders },
+          );
+          assert.equal(disguisedRes.status, 415, 'SVG disguised as image/png must be rejected with 415');
+        } finally {
+          await appMgr.cleanup();
+          await new Promise((resolve) => opdsServer.close(resolve));
+        }
+      },
+    },
   ];
 }
 
@@ -2631,7 +3151,9 @@ export async function runTier1(context = {}) {
   const mockOrigin = new MockCtor();
   const mockBaseUrl = await mockOrigin.start();
 
-  const needsMockSut = selectedCases.some((c) => c.sut !== 'hardened');
+  const needsMockSut = selectedCases.some(
+    (c) => c.sut !== 'hardened' && c.sut !== 'tool' && c.sut !== 'standalone',
+  );
   const needsHardenedSut = selectedCases.some((c) => c.sut === 'hardened');
 
   let mockManager = null;
