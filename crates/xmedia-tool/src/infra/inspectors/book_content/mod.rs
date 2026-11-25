@@ -8,7 +8,7 @@ mod tests;
 
 use std::path::Path;
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::stream::decode_text_smart;
@@ -127,6 +127,16 @@ pub struct PolishBookReportDto {
     pub removed_orphan_files: usize,
 }
 
+const USER_REGEX_SIZE_LIMIT: usize = 2 * 1024 * 1024;
+
+pub(super) fn compile_bounded_user_regex(pattern: &str, label: &str) -> DomainResult<Regex> {
+    RegexBuilder::new(pattern)
+        .size_limit(USER_REGEX_SIZE_LIMIT)
+        .dfa_size_limit(USER_REGEX_SIZE_LIMIT)
+        .build()
+        .map_err(|e| DomainError::Validation(format!("{label}无效 '{pattern}': {e}")))
+}
+
 pub fn transform_book_content_batch(
     mut chapters: Vec<EditableBookChapterDto>,
     mut stylesheets: Vec<String>,
@@ -138,9 +148,7 @@ pub fn transform_book_content_batch(
         if trimmed.is_empty() {
             continue;
         }
-        let re = Regex::new(trimmed).map_err(|e| {
-            DomainError::Validation(format!("自定义净化正则表达式无效 '{trimmed}': {e}"))
-        })?;
+        let re = compile_bounded_user_regex(trimmed, "自定义净化正则表达式")?;
         compiled_custom.push(re);
     }
 

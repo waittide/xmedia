@@ -519,21 +519,24 @@ impl ScraperProviderPort for QishuiMusicProvider {
             req = req.header(reqwest::header::COOKIE, cookie);
         }
 
-        let Ok(resp) = req.send().await else {
-            return Ok(Vec::new());
-        };
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| DomainError::Storage(format!("汽水音乐 search failed: {e}")))?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "汽水音乐 search returned HTTP {}",
+                resp.status()
+            )));
         }
-        let Ok(txt) = read_response_text(resp, UTF_8).await else {
-            return Ok(Vec::new());
-        };
+        let txt = read_response_text(resp, UTF_8).await?;
         if txt.trim().is_empty() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(
+                "汽水音乐 search returned empty response".into(),
+            ));
         }
-        let Ok(block) = serde_json::from_str::<QsSearchBlock>(txt.trim()) else {
-            return Ok(Vec::new());
-        };
+        let block = serde_json::from_str::<QsSearchBlock>(txt.trim())
+            .map_err(|e| DomainError::Storage(format!("invalid 汽水音乐 search JSON: {e}")))?;
 
         let mut tracks = block.tracks;
         for g in block.result_groups {

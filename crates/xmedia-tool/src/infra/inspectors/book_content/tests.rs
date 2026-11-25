@@ -279,3 +279,21 @@ fn polish_epub_preserves_percent_encoded_cjk_chapters_and_images() {
     }
     assert!(read_epub_internal_asset(&epub_path, "OEBPS/Images/插图 1.png").is_ok());
 }
+
+#[test]
+fn oversized_user_regexes_are_rejected_cleanly() {
+    let huge = "(?:[a-zA-Z0-9_]{1000}){1000}";
+    assert!(segment_txt_chapters("第一章 测试\n正文", Some(huge), None).is_err());
+    assert!(segment_txt_chapters("第一卷 序\n正文", None, Some(huge)).is_err());
+    assert!(
+        transform_book_content_batch(
+            Vec::new(),
+            Vec::new(),
+            &BookTextTransformOptions {
+                custom_strip_patterns: vec![huge.to_string()],
+                ..Default::default()
+            },
+        )
+        .is_err()
+    );
+}

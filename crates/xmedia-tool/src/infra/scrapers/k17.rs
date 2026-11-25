@@ -236,10 +236,14 @@ impl ScraperProviderPort for K17Provider {
             .await
             .map_err(|e| DomainError::Storage(format!("17K search failed: {e}")))?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "17K search returned HTTP {}",
+                resp.status()
+            )));
         }
         let body = read_response_text(resp, UTF_8).await?;
-        let env: K17SearchEnvelope = serde_json::from_str(&body).unwrap_or_default();
+        let env: K17SearchEnvelope = serde_json::from_str(&body)
+            .map_err(|e| DomainError::Storage(format!("invalid 17K search JSON: {e}")))?;
         Ok(map_k17_search_values(env.data, query))
     }
 

@@ -212,10 +212,14 @@ impl ScraperProviderPort for QimaoProvider {
             .await
             .map_err(|e| DomainError::Storage(format!("Qimao search failed: {e}")))?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "Qimao search returned HTTP {}",
+                resp.status()
+            )));
         }
         let body = read_response_text(resp, UTF_8).await?;
-        let env: QimaoSearchEnvelope = serde_json::from_str(&body).unwrap_or_default();
+        let env: QimaoSearchEnvelope = serde_json::from_str(&body)
+            .map_err(|e| DomainError::Storage(format!("invalid Qimao search JSON: {e}")))?;
         Ok(map_qimao_search_items(env.data.search_list, query))
     }
 

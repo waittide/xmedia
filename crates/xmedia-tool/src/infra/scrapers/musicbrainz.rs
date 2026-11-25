@@ -370,9 +370,14 @@ impl ScraperProviderPort for MusicBrainzProvider {
                     DomainError::Storage(format!("MusicBrainz release search failed: {e}"))
                 })?;
             if !resp.status().is_success() {
-                return Ok(Vec::new());
+                return Err(DomainError::Storage(format!(
+                    "MusicBrainz release search returned HTTP {}",
+                    resp.status()
+                )));
             }
-            let body: MbReleaseSearchResp = resp.json().await.unwrap_or_default();
+            let body: MbReleaseSearchResp = resp.json().await.map_err(|e| {
+                DomainError::Storage(format!("invalid MusicBrainz release JSON: {e}"))
+            })?;
             return Ok(body
                 .releases
                 .into_iter()
@@ -397,9 +402,14 @@ impl ScraperProviderPort for MusicBrainzProvider {
                 DomainError::Storage(format!("MusicBrainz recording search failed: {e}"))
             })?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "MusicBrainz recording search returned HTTP {}",
+                resp.status()
+            )));
         }
-        let body: MbRecordingSearchResp = resp.json().await.unwrap_or_default();
+        let body: MbRecordingSearchResp = resp.json().await.map_err(|e| {
+            DomainError::Storage(format!("invalid MusicBrainz recording JSON: {e}"))
+        })?;
         Ok(body
             .recordings
             .into_iter()

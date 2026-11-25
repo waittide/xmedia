@@ -216,6 +216,8 @@ impl ScraperProviderPort for ItunesMusicProvider {
             &[primary_store, "CN", "US"]
         };
 
+        let mut saw_valid_response = false;
+        let mut last_err: Option<DomainError> = None;
         for &sf in storefronts {
             let resp = client
                 .get("https://itunes.apple.com/search")
@@ -230,9 +232,24 @@ impl ScraperProviderPort for ItunesMusicProvider {
                 .await
                 .map_err(|e| DomainError::Storage(format!("iTunes search failed: {e}")))?;
             if !resp.status().is_success() {
+                last_err = Some(DomainError::Storage(format!(
+                    "iTunes search ({sf}) returned HTTP {}",
+                    resp.status()
+                )));
                 continue;
             }
-            let body: ItunesResponse = resp.json().await.unwrap_or_default();
+            let body: ItunesResponse = match resp.json().await {
+                Ok(parsed) => {
+                    saw_valid_response = true;
+                    parsed
+                }
+                Err(e) => {
+                    last_err = Some(DomainError::Storage(format!(
+                        "invalid iTunes search ({sf}) JSON: {e}"
+                    )));
+                    continue;
+                }
+            };
             let mapped: Vec<ScrapeCandidate> = body
                 .results
                 .into_iter()
@@ -241,6 +258,10 @@ impl ScraperProviderPort for ItunesMusicProvider {
             if !mapped.is_empty() {
                 return Ok(mapped);
             }
+        }
+
+        if !saw_valid_response && let Some(err) = last_err {
+            return Err(err);
         }
 
         Ok(Vec::new())

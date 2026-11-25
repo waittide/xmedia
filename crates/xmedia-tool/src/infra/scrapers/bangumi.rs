@@ -490,9 +490,15 @@ impl ScraperProviderPort for BangumiProvider {
             .await
             .map_err(|e| DomainError::Storage(format!("Bangumi search failed: {e}")))?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "Bangumi search returned HTTP {}",
+                resp.status()
+            )));
         }
-        let body: BgmSearchResp = resp.json().await.unwrap_or_default();
+        let body: BgmSearchResp = resp
+            .json()
+            .await
+            .map_err(|e| DomainError::Storage(format!("invalid Bangumi search JSON: {e}")))?;
 
         if query.target == Some(ScrapeTargetKind::MusicTrack) {
             let mut ep_scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();

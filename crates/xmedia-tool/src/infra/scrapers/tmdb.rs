@@ -420,7 +420,10 @@ impl ScraperProviderPort for TmdbProvider {
             )));
         }
 
-        let body: TmdbSearchResponse = resp.json().await.unwrap_or_default();
+        let body: TmdbSearchResponse = resp
+            .json()
+            .await
+            .map_err(|e| DomainError::Storage(format!("invalid TMDB search JSON: {e}")))?;
         let season_ep = match (query.season, query.episode) {
             (Some(s), Some(e)) => Some((s, e)),
             (None, Some(e)) => Some((1, e)),

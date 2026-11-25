@@ -8,7 +8,9 @@ use xmedia_core::infra::stream::decode_text_smart;
 use crate::infra::atomic_fs::atomic_write_bytes;
 
 use super::xhtml::{plain_to_xhtml_body, xhtml_body_to_plain};
-use super::{ChapterEditMode, EditableBookChapterDto, SaveBookChapterInput};
+use super::{
+    ChapterEditMode, EditableBookChapterDto, SaveBookChapterInput, compile_bounded_user_regex,
+};
 
 static DEFAULT_VOLUME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -61,20 +63,14 @@ pub fn segment_txt_chapters(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        Some(pat) => Some(
-            Regex::new(pat)
-                .map_err(|e| DomainError::Validation(format!("章节正则表达式无效: {e}")))?,
-        ),
+        Some(pat) => Some(compile_bounded_user_regex(pat, "章节正则表达式")?),
         None => None,
     };
     let custom_vol = match custom_volume_pattern
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        Some(pat) => Some(
-            Regex::new(pat)
-                .map_err(|e| DomainError::Validation(format!("分卷正则表达式无效: {e}")))?,
-        ),
+        Some(pat) => Some(compile_bounded_user_regex(pat, "分卷正则表达式")?),
         None => None,
     };
 

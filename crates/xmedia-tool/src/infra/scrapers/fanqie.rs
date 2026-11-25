@@ -332,12 +332,19 @@ impl ScraperProviderPort for FanqieProvider {
             .await
             .map_err(|e| DomainError::Storage(format!("Fanqie search failed: {e}")))?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "Fanqie search returned HTTP {}",
+                resp.status()
+            )));
         }
         let body = read_response_text(resp, UTF_8).await?;
-        let env: FanqieSearchEnvelope = serde_json::from_str(&body).unwrap_or_default();
+        let env: FanqieSearchEnvelope = serde_json::from_str(&body)
+            .map_err(|e| DomainError::Storage(format!("invalid Fanqie search JSON: {e}")))?;
         if env.code != 0 {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "Fanqie search returned error code {}",
+                env.code
+            )));
         }
         Ok(map_fanqie_search_items(env.data.ret_data, query))
     }

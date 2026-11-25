@@ -155,9 +155,15 @@ impl ScraperProviderPort for OpenLibraryProvider {
             .await
             .map_err(|e| DomainError::Storage(format!("OpenLibrary search failed: {e}")))?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(DomainError::Storage(format!(
+                "OpenLibrary search returned HTTP {}",
+                resp.status()
+            )));
         }
-        let parsed: OlSearchResponse = resp.json().await.unwrap_or_default();
+        let parsed: OlSearchResponse = resp
+            .json()
+            .await
+            .map_err(|e| DomainError::Storage(format!("invalid OpenLibrary search JSON: {e}")))?;
         Ok(parsed
             .docs
             .into_iter()
