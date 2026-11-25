@@ -1,42 +1,33 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
-import { RouterLink, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import {
-  LuArrowLeft,
-  LuBookmark,
   LuBookOpen,
-  LuFolder,
-  LuMoreVertical,
-  LuPencil,
   LuPlus,
   LuRefreshCw,
   LuSettings2,
   LuTag,
-  LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu'
 import { DomainLibraryTemplate, DomainPoolSection, MediaItemCard } from '@/components/domain'
 import RemoteOpdsBrowser from '@/components/remote/RemoteOpdsBrowser.vue'
 import {
   MdButton,
-  MdCard,
   MdChip,
-  MdDialog,
   MdEmptyState,
   MdIconButton,
-  MdMenu,
   MdMenuItem,
-  MdSelect,
-  MdTextField,
-  MediaCoverImage,
   type MdTabItem,
-  type SelectOption,
 } from '@/components/ui'
-import { api, withAuthUrl } from '@/domains/comic/api'
+import { api } from '@/domains/comic/api'
+import ComicCatalogFilterSheet from '@/domains/comic/components/catalog/ComicCatalogFilterSheet.vue'
+import ComicCollectionsSection from '@/domains/comic/components/catalog/ComicCollectionsSection.vue'
+import ComicMergedShelfSection from '@/domains/comic/components/catalog/ComicMergedShelfSection.vue'
+import ComicShelfFormDialog from '@/domains/comic/components/catalog/ComicShelfFormDialog.vue'
 import OnlineComicSearchSection from '@/domains/comic/components/OnlineComicSearchSection.vue'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
-import { resolveLibrarySeriesCount, useSidebarStore } from '@/domains/comic/store'
+import { useSidebarStore } from '@/domains/comic/store'
 import type {
   ComicBookmarkItemDto,
   SeriesStatus,
@@ -47,7 +38,6 @@ import type {
 import { seriesToMediaItemVM } from '@/domains/comic/utils/mappers'
 import {
   libraryRoute,
-  playRoute,
   useMergedShelf,
   useSourceFilter,
   type LibraryTab,
@@ -221,14 +211,12 @@ const mergedShelf = useMergedShelf('comic', mergedView, {
   autoLoad: false,
 })
 
-// Local series list state
 const seriesList = ref<SeriesSummaryDto[]>([])
 const localLoading = ref(false)
 const manualRefreshing = ref(false)
 const localError = ref<string | null>(null)
 let fetchSeq = 0
 
-// Remote OPDS selection
 const selectedRemoteSourceId = computed(() => {
   const fromUrl = activeSourceId.value
   if (fromUrl && appClientStore.opdsSources.some((s) => s.id === fromUrl)) {
@@ -237,12 +225,8 @@ const selectedRemoteSourceId = computed(() => {
   return appClientStore.opdsSources[0]?.id ?? ''
 })
 
-// Shelf create/edit dialog state
 const shelfDialogOpen = ref(false)
 const editingShelf = ref<ShelfDetailDto | null>(null)
-const shelfNameInput = ref('')
-const shelfDescInput = ref('')
-const savingShelf = ref(false)
 
 const tabs = computed<MdTabItem<LibraryTab>[]>(() =>
   scope.value === 'local'
@@ -261,41 +245,6 @@ const viewOptions = computed<Array<{ value: ComicBrowseView; label: string }>>((
   { value: 'writers', label: t('library.viewWriters') },
   { value: 'pencillers', label: t('library.viewPencillers') },
   { value: 'tags', label: t('library.viewTags') },
-])
-
-const statusOptions = computed<SelectOption[]>(() => [
-  { value: '', label: t('series.all') },
-  { value: 'ongoing', label: t('series.statusOngoing') },
-  { value: 'completed', label: t('series.statusCompleted') },
-  { value: 'hiatus', label: t('series.statusHiatus') },
-])
-
-const readOptions = computed<SelectOption[]>(() => [
-  { value: '', label: t('series.all') },
-  { value: 'unread', label: t('series.readUnread') },
-  { value: 'in_progress', label: t('series.readInProgress') },
-  { value: 'completed', label: t('series.readCompleted') },
-])
-
-const libraryOptions = computed<SelectOption[]>(() => [
-  { value: '', label: t('series.all') },
-  ...sidebarStore.libraries.map((lib) => ({
-    value: lib.id,
-    label: lib.name,
-    badge: resolveLibrarySeriesCount(lib),
-  })),
-])
-
-const sortOptions = computed<SelectOption[]>(() => [
-  { value: 'updated_at', label: t('series.sortUpdated') },
-  { value: 'created_at', label: t('series.sortCreated') },
-  { value: 'title', label: t('series.sortTitle') },
-  { value: 'chapter_count', label: t('series.sortChapters') },
-])
-
-const orderOptions = computed<SelectOption[]>(() => [
-  { value: 'desc', label: t('series.sortDesc') },
-  { value: 'asc', label: t('series.sortAsc') },
 ])
 
 const activeFilterCount = computed(() => {
@@ -446,14 +395,19 @@ const templateEmptyTitle = computed(() => {
 function updateQuery(patch: Record<string, string | null | undefined>): void {
   const next: LocationQueryRaw = {}
   for (const [k, v] of Object.entries(route.query)) {
-    if (k === 'library_id' || k === 'shelf_id' || k === 'shelf' || k === 'sort_by' || k === 'sort_order') {
+    if (
+      k === 'library_id' ||
+      k === 'shelf_id' ||
+      k === 'shelf' ||
+      k === 'sort_by' ||
+      k === 'sort_order'
+    ) {
       continue
     }
     if (v !== undefined && v !== null) {
       next[k] = v
     }
   }
-  // Carry normalized canonical keys if they came from legacy aliases
   if (libraryId.value && !('library' in patch)) next.library = libraryId.value
   if (collectionId.value && !('collection' in patch)) next.collection = collectionId.value
 
@@ -472,7 +426,9 @@ async function handleScopeChange(nextScope: SourceScope): Promise<void> {
 }
 
 function handleTabChange(nextTab: string): void {
-  const tab = nextTab as LibraryTab
+  const tab: LibraryTab = (VALID_TABS as readonly string[]).includes(nextTab)
+    ? (nextTab as LibraryTab)
+    : 'all'
   updateQuery({
     tab: tab === 'all' ? null : tab,
     collection: null,
@@ -636,67 +592,14 @@ function handlePoolChanged(): void {
   void sidebarStore.refresh()
 }
 
-async function handleDeleteBookmark(bm: ComicBookmarkItemDto): Promise<void> {
-  const ok = await dialogStore.confirm({
-    title: t('library.bookmarkDeleteConfirmTitle'),
-    description: t('library.bookmarkDeleteConfirmDesc', { title: bm.series_title }),
-    danger: true,
-    confirmText: t('common.delete'),
-  })
-  if (!ok) return
-  try {
-    await api.deleteBookmark(bm.bookmark.id)
-    snackbarStore.show({ message: t('library.bookmarkDeleted') })
-    await sidebarStore.refresh()
-  } catch (err) {
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  }
-}
-
-// Shelf CRUD
 function openCreateShelf(): void {
   editingShelf.value = null
-  shelfNameInput.value = ''
-  shelfDescInput.value = ''
   shelfDialogOpen.value = true
 }
 
 function openEditShelf(sh: ShelfDetailDto): void {
   editingShelf.value = sh
-  shelfNameInput.value = sh.shelf.name
-  shelfDescInput.value = sh.shelf.description
   shelfDialogOpen.value = true
-}
-
-async function saveShelf(): Promise<void> {
-  const trimmed = shelfNameInput.value.trim()
-  if (!trimmed || savingShelf.value) return
-  savingShelf.value = true
-  try {
-    if (editingShelf.value) {
-      await api.updateShelf(editingShelf.value.shelf.id, {
-        name: trimmed,
-        description: shelfDescInput.value.trim(),
-      })
-    } else {
-      await api.createShelf({
-        name: trimmed,
-        description: shelfDescInput.value.trim(),
-      })
-    }
-    shelfDialogOpen.value = false
-    await sidebarStore.refresh()
-  } catch (err) {
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    savingShelf.value = false
-  }
 }
 
 async function handleDeleteShelf(sh: ShelfDetailDto): Promise<void> {
@@ -733,11 +636,6 @@ function goRemoteSettings(): void {
   void router.push({ path: '/comic/settings', query: { tab: 'sources', kind: 'remote' } })
 }
 
-function mergedItemKey(item: MediaItemVM, idx: number): string {
-  if (item.ref.scope === 'local') return `local:${item.ref.id}:${idx}`
-  return `${item.ref.scope}:${item.ref.sourceId}:${item.ref.ref}:${idx}`
-}
-
 watch(queryFromRoute, (next) => {
   if (next !== searchInput.value) {
     searchInput.value = next
@@ -768,7 +666,14 @@ watch(
 )
 
 watch(
-  [isMergedTab, mergedView, mergedScope, activeSourceId, queryFromRoute, () => upload.catalogVersion],
+  [
+    isMergedTab,
+    mergedView,
+    mergedScope,
+    activeSourceId,
+    queryFromRoute,
+    () => upload.catalogVersion,
+  ],
   () => {
     if (isMergedTab.value) {
       void mergedShelf.refresh()
@@ -839,7 +744,6 @@ onMounted(async () => {
         />
       </template>
 
-      <!-- Dimension Chips + Active Filter Chips (local `all` tab) -->
       <template v-if="scope === 'local' && activeTab === 'all'" #toolbar-chips>
         <template v-if="!collectionId">
           <MdChip
@@ -874,128 +778,33 @@ onMounted(async () => {
         </MdButton>
       </template>
 
-      <!-- Create Shelf Action on Collections Tab -->
       <template v-if="isCollectionsView" #toolbar-trailing>
         <MdButton variant="tonal" size="sm" :icon="LuPlus" @click="openCreateShelf">
           {{ t('shelves.newShelf') }}
         </MdButton>
       </template>
 
-      <!-- Active Collection Subheader -->
       <template v-if="activeCollection && scope === 'local'" #subheader>
-        <MdCard variant="filled" padding="md">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div class="min-w-0 flex-1 space-y-1">
-              <div class="flex flex-wrap items-center gap-2">
-                <MdButton
-                  variant="text"
-                  size="sm"
-                  :icon="LuArrowLeft"
-                  @click="updateQuery({ collection: null, tab: 'collections' })"
-                >
-                  {{ t('library.backToCollections') }}
-                </MdButton>
-                <span class="text-label-medium text-on-surface-variant">
-                  {{ t('library.collectionCount', { count: activeCollection.series.length }) }}
-                </span>
-              </div>
-              <p
-                v-if="activeCollection.shelf.description"
-                class="text-body-small text-on-surface-variant"
-              >
-                {{ activeCollection.shelf.description }}
-              </p>
-            </div>
-
-            <div class="flex shrink-0 items-center gap-1.5">
-              <MdButton
-                variant="tonal"
-                size="sm"
-                :icon="LuPencil"
-                @click="openEditShelf(activeCollection)"
-              >
-                {{ t('shelves.editShelf') }}
-              </MdButton>
-              <MdIconButton
-                variant="standard"
-                size="sm"
-                :icon="LuTrash2"
-                :aria-label="t('shelves.deleteShelf')"
-                :tooltip="t('shelves.deleteShelf')"
-                @click="handleDeleteShelf(activeCollection)"
-              />
-            </div>
-          </div>
-        </MdCard>
+        <ComicCollectionsSection
+          mode="subheader"
+          :active-collection="activeCollection"
+          @back="updateQuery({ collection: null, tab: 'collections' })"
+          @edit="openEditShelf"
+          @delete="handleDeleteShelf"
+        />
       </template>
 
-      <!-- Responsive MD3 Filter Sheet (only for local items view) -->
       <template v-if="isLocalItemsView" #filter-sheet>
-        <div class="space-y-4">
-          <div class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('series.filterLibrary') }}
-            </span>
-            <MdSelect
-              :model-value="libraryId"
-              :options="libraryOptions"
-              @update:model-value="updateQuery({ library: String($event) || null, page: null })"
-            />
-          </div>
-
-          <div class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('series.filterStatus') }}
-            </span>
-            <MdSelect
-              :model-value="statusFilter"
-              :options="statusOptions"
-              @update:model-value="updateQuery({ status: String($event) || null, page: null })"
-            />
-          </div>
-
-          <div class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('series.filterReadStatus') }}
-            </span>
-            <MdSelect
-              :model-value="readStatusFilter"
-              :options="readOptions"
-              @update:model-value="updateQuery({ read_status: String($event) || null, page: null })"
-            />
-          </div>
-
-          <div class="border-t border-outline-variant pt-4 space-y-4">
-            <div class="space-y-1.5">
-              <span class="text-label-medium block text-on-surface-variant">
-                {{ t('library.sortLabel') }}
-              </span>
-              <MdSelect
-                :model-value="sortBy"
-                :options="sortOptions"
-                @update:model-value="
-                  updateQuery({ sort: String($event) === 'updated_at' ? null : String($event) })
-                "
-              />
-            </div>
-
-            <div class="space-y-1.5">
-              <span class="text-label-medium block text-on-surface-variant">
-                {{ t('library.sortOrderLabel') }}
-              </span>
-              <MdSelect
-                :model-value="sortOrder"
-                :options="orderOptions"
-                @update:model-value="
-                  updateQuery({ order: String($event) === 'desc' ? null : String($event) })
-                "
-              />
-            </div>
-          </div>
-        </div>
+        <ComicCatalogFilterSheet
+          :library-id="libraryId"
+          :status-filter="statusFilter"
+          :read-status-filter="readStatusFilter"
+          :sort-by="sortBy"
+          :sort-order="sortOrder"
+          @patch-query="updateQuery"
+        />
       </template>
 
-      <!-- Empty State Actions -->
       <template v-if="isCollectionsView" #empty-actions>
         <MdButton variant="tonal" :icon="LuPlus" @click="openCreateShelf">
           {{ t('shelves.newShelf') }}
@@ -1007,8 +816,6 @@ onMounted(async () => {
         </MdButton>
       </template>
 
-      <!-- Main Slot Content -->
-      <!-- 0. Pool Scope -->
       <DomainPoolSection
         v-if="isPoolBrowseView"
         domain="comic"
@@ -1016,7 +823,6 @@ onMounted(async () => {
         @changed="handlePoolChanged"
       />
 
-      <!-- 1. Online Scope: OnlineMediaSearchShell (single search box lives in DomainLibraryTemplate) -->
       <OnlineComicSearchSection
         v-else-if="isOnlineBrowseView"
         ref="onlineSearchRef"
@@ -1027,7 +833,6 @@ onMounted(async () => {
         @update:source-id="handleOnlineSourceSync"
       />
 
-      <!-- 2. Remote Scope (Standalone OPDS) -->
       <template v-else-if="isRemoteBrowseView">
         <RemoteOpdsBrowser
           v-if="appClientStore.isStandaloneApp"
@@ -1050,171 +855,22 @@ onMounted(async () => {
         </MdEmptyState>
       </template>
 
-      <!-- 3. Merged Continue / Favorites Tabs (local + online/remote) -->
-      <div v-else-if="isMergedTab" class="space-y-8">
-        <div
-          v-if="mergedShelf.items.value.length > 0"
-          class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
-        >
-          <MediaItemCard
-            v-for="(item, idx) in mergedShelf.items.value"
-            :key="mergedItemKey(item, idx)"
-            :item="item"
-            aspect="poster"
-            cover-style="book"
-            :fallback-icon="LuBookOpen"
-            :prefer-play-route="activeTab === 'continue'"
-          />
-        </div>
+      <ComicMergedShelfSection
+        v-else-if="isMergedTab"
+        :items="mergedShelf.items.value"
+        :bookmarks="filteredBookmarks"
+        :prefer-play-route="activeTab === 'continue'"
+      />
 
-        <!-- Bookmarks Section inside Continue Tab (§1.4 `/comic/bookmarks` → `/comic/library?tab=continue`) -->
-        <section v-if="filteredBookmarks.length > 0" class="space-y-3">
-          <div class="flex items-center gap-2">
-            <LuBookmark class="h-4 w-4 text-primary" aria-hidden="true" />
-            <h2 class="text-title-large text-on-surface">
-              {{ t('library.bookmarksTitle') }}
-            </h2>
-            <span class="text-body-small tabular-nums text-on-surface-variant">
-              {{ filteredBookmarks.length }}
-            </span>
-          </div>
-
-          <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            <article
-              v-for="bm in filteredBookmarks"
-              :key="bm.bookmark.id"
-              class="group relative flex items-center gap-3 rounded-corner-md bg-surface-container-low p-3 transition-colors duration-150 ease-standard hover:bg-surface-container"
-            >
-              <div class="h-20 w-14 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
-                <MediaCoverImage
-                  :src="bm.cover_url ? withAuthUrl(bm.cover_url) : null"
-                  :alt="bm.series_title"
-                  aspect-class="aspect-[2/3]"
-                  rounded="rounded-corner-sm"
-                  :fallback-icon="LuBookOpen"
-                  fallback-icon-class="h-5 w-5 text-on-surface-variant/60"
-                />
-              </div>
-
-              <RouterLink
-                :to="
-                  playRoute(
-                    { scope: 'local', domain: 'comic', id: bm.bookmark.chapter_id },
-                    { position: bm.bookmark.page_number, duration: bm.total_pages },
-                  )
-                "
-                class="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-corner-md focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-secondary"
-              >
-                <h3 class="text-title-small truncate text-on-surface group-hover:text-primary">
-                  {{ bm.series_title }}
-                </h3>
-                <p class="text-body-small mt-0.5 truncate text-on-surface-variant">
-                  {{ bm.chapter_title || `#${bm.chapter_number}` }} ·
-                  {{
-                    t('library.bookmarkPage', {
-                      page: bm.bookmark.page_number,
-                      total: bm.total_pages,
-                    })
-                  }}
-                </p>
-                <p
-                  v-if="bm.bookmark.title || bm.bookmark.note"
-                  class="text-body-small mt-1 line-clamp-1 text-on-surface-variant/85"
-                >
-                  {{ bm.bookmark.note || bm.bookmark.title }}
-                </p>
-              </RouterLink>
-
-              <div class="relative z-10 shrink-0">
-                <MdIconButton
-                  variant="standard"
-                  size="sm"
-                  :icon="LuTrash2"
-                  :aria-label="t('common.delete')"
-                  :tooltip="t('common.delete')"
-                  @click.stop="handleDeleteBookmark(bm)"
-                />
-              </div>
-            </article>
-          </div>
-        </section>
-      </div>
-
-      <!-- 4. Collections (Shelves) Compact Cards -->
-      <div
+      <ComicCollectionsSection
         v-else-if="isCollectionsView"
-        class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
-      >
-        <MdCard
-          v-for="sh in filteredShelves"
-          :key="sh.shelf.id"
-          variant="filled"
-          padding="md"
-          class="group relative flex items-start justify-between gap-3 transition-shadow duration-150 ease-standard hover:shadow-elevation-1"
-        >
-          <button
-            type="button"
-            class="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left outline-none after:absolute after:inset-0 after:rounded-corner-md focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-secondary"
-            @click="openCollection(sh.shelf.id)"
-          >
-            <div
-              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
-            >
-              <LuFolder class="h-5 w-5" aria-hidden="true" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <h3 class="text-title-medium truncate text-on-surface group-hover:text-primary">
-                {{ sh.shelf.name }}
-              </h3>
-              <p class="text-body-small mt-0.5 text-on-surface-variant">
-                {{ t('library.collectionCount', { count: sh.series.length }) }}
-              </p>
-              <p
-                v-if="sh.shelf.description"
-                class="text-body-small mt-1 line-clamp-2 text-on-surface-variant/85"
-              >
-                {{ sh.shelf.description }}
-              </p>
-            </div>
-          </button>
+        mode="grid"
+        :shelves="filteredShelves"
+        @select="openCollection"
+        @edit="openEditShelf"
+        @delete="handleDeleteShelf"
+      />
 
-          <div class="relative z-10 shrink-0">
-            <MdMenu placement="bottom-end" :aria-label="t('series.moreActions')">
-              <template #trigger="{ toggle, triggerAttrs }">
-                <MdIconButton
-                  v-bind="triggerAttrs"
-                  variant="standard"
-                  size="sm"
-                  :icon="LuMoreVertical"
-                  :aria-label="t('series.moreActions')"
-                  @click.stop="toggle"
-                />
-              </template>
-              <template #default="{ close }">
-                <MdMenuItem
-                  :label="t('shelves.editShelf')"
-                  :icon="LuPencil"
-                  @select="
-                    close();
-                    openEditShelf(sh)
-                  "
-                />
-                <MdMenuItem
-                  :label="t('shelves.deleteShelf')"
-                  :icon="LuTrash2"
-                  destructive
-                  @select="
-                    close();
-                    handleDeleteShelf(sh)
-                  "
-                />
-              </template>
-            </MdMenu>
-          </div>
-        </MdCard>
-      </div>
-
-      <!-- 5. Taxonomy Dimension Browse (genres / writers / pencillers / tags) -->
       <div
         v-else-if="isTaxonomyView"
         class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5"
@@ -1238,7 +894,6 @@ onMounted(async () => {
         </button>
       </div>
 
-      <!-- 6. Local Series Borderless Poster Grid -->
       <div
         v-else
         class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
@@ -1269,38 +924,10 @@ onMounted(async () => {
       </div>
     </DomainLibraryTemplate>
 
-    <!-- Create / Edit Shelf Dialog -->
-    <MdDialog
+    <ComicShelfFormDialog
       :open="shelfDialogOpen"
-      :title="editingShelf ? t('shelves.editShelf') : t('shelves.createShelf')"
-      size="sm"
+      :editing-shelf="editingShelf"
       @close="shelfDialogOpen = false"
-    >
-      <form class="space-y-4" @submit.prevent="saveShelf">
-        <MdTextField
-          v-model="shelfNameInput"
-          :label="t('shelves.shelfName')"
-          :placeholder="t('shelves.shelfNamePlaceholder')"
-          required
-        />
-        <MdTextField
-          v-model="shelfDescInput"
-          :label="t('shelves.shelfDesc')"
-        />
-      </form>
-      <template #footer>
-        <MdButton variant="text" :disabled="savingShelf" @click="shelfDialogOpen = false">
-          {{ t('common.cancel') }}
-        </MdButton>
-        <MdButton
-          variant="filled"
-          :loading="savingShelf"
-          :disabled="!shelfNameInput.trim() || savingShelf"
-          @click="saveShelf"
-        >
-          {{ t('common.save') }}
-        </MdButton>
-      </template>
-    </MdDialog>
+    />
   </div>
 </template>

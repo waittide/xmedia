@@ -1,61 +1,37 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
-  LuAlertTriangle,
-  LuBookmark,
-  LuChevronRight,
-  LuColumns2,
-  LuEye,
-  LuFileText,
   LuLayers,
   LuMaximize,
   LuMinimize,
-  LuRotateCw,
-  LuScrollText,
   LuSkipBack,
   LuSkipForward,
   LuSlidersHorizontal,
-  LuTrash2,
-  LuZoomIn,
-  LuZoomOut,
 } from 'vue-icons-plus/lu'
 import { ImmersiveMediaTemplate } from '@/components/domain'
 import {
-  AppCheckbox,
   AppSlider,
   MdButton,
-  MdCircularProgress,
-  MdEmptyState,
   MdIconButton,
-  MdSegmentedButton,
-  MdSwitch,
   MdTabs,
   MdTextField,
   type MdTabItem,
-  type SegmentedOption,
 } from '@/components/ui'
+import ComicReaderChaptersSheet from '@/domains/comic/components/reader/ComicReaderChaptersSheet.vue'
+import ComicReaderSettingsSheet from '@/domains/comic/components/reader/ComicReaderSettingsSheet.vue'
+import ComicReaderStage from '@/domains/comic/components/reader/ComicReaderStage.vue'
+import type {
+  ChaptersSheetTab,
+  ComicReaderBookmarkItem,
+  ComicReaderChapterItem,
+  ReaderSheetId,
+} from '@/domains/comic/components/reader/types'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import type { ReaderFitMode, ReaderMode } from '@/domains/comic/types'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 
-export interface ComicReaderChapterItem {
-  key: string
-  label: string
-  metaLabel?: string
-  disabled?: boolean
-}
-
-export interface ComicReaderBookmarkItem {
-  id: string
-  page: number
-  title: string
-  note?: string | null
-}
-
-type ReaderSheetId = 'chapters' | 'settings'
-type ChaptersSheetTab = 'chapters' | 'bookmarks'
+export type { ComicReaderBookmarkItem, ComicReaderChapterItem }
 
 const props = withDefaults(
   defineProps<{
@@ -108,13 +84,15 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
 const theme = useThemeStore()
 const snackbar = useSnackbarStore()
 
 const immersiveRef = ref<InstanceType<typeof ImmersiveMediaTemplate> | null>(null)
-const webtoonContainerRef = ref<HTMLDivElement | null>(null)
-const chaptersListRef = ref<HTMLDivElement | null>(null)
+const stageRef = ref<InstanceType<typeof ComicReaderStage> | null>(null)
+
+function getWebtoonContainer(): HTMLDivElement | null {
+  return stageRef.value?.getWebtoonContainer() ?? null
+}
 
 const activeSheet = ref<ReaderSheetId | null>(null)
 const chaptersSheetTab = ref<ChaptersSheetTab>('chapters')
@@ -223,26 +201,12 @@ function pageImageStyle(pageNum: number): Record<string, string> {
   }
 }
 
-// Works visibly in BOTH dark and light themes
 const eyeCareClass = computed(() => {
   if (!props.dimImages) return ''
   return theme.isDark
     ? 'brightness-[0.82] contrast-[0.95]'
     : 'brightness-[0.94] sepia-[0.14] contrast-[0.96]'
 })
-
-const modeOptions = computed<SegmentedOption<ReaderMode>[]>(() => [
-  { value: 'rtl_double', label: t('reader.modeRtlDouble'), icon: LuColumns2 },
-  { value: 'ltr_single', label: t('reader.modeLtrSingle'), icon: LuFileText },
-  { value: 'ltr_double', label: t('reader.modeLtrDouble'), icon: LuColumns2 },
-  { value: 'webtoon', label: t('reader.modeWebtoon'), icon: LuScrollText },
-])
-
-const fitOptions = computed<SegmentedOption<ReaderFitMode>[]>(() => [
-  { value: 'fit_height', label: t('reader.fitHeight') },
-  { value: 'fit_width', label: t('reader.fitWidth') },
-  { value: 'original', label: t('reader.fitOriginal') },
-])
 
 const sheetTitle = computed(() => {
   if (activeSheet.value === 'settings') return t('reader.settings')
@@ -268,19 +232,17 @@ const chaptersSheetTabs = computed<MdTabItem<ChaptersSheetTab>[]>(() => [
   },
 ])
 
-const filteredChapters = computed(() => {
-  const q = chapterFilter.value.trim().toLowerCase()
-  if (!q) return props.chapters
-  return props.chapters.filter((ch) => ch.label.toLowerCase().includes(q))
-})
-
-const sortedBookmarks = computed(() =>
-  [...props.bookmarks].sort((a, b) => a.page - b.page),
-)
-
 const hasChaptersButton = computed(
   () => props.hasContent && (props.chapters.length > 0 || props.showBookmarksTab),
 )
+
+function handleSheetModelUpdate(next: string | null): void {
+  activeSheet.value = next === 'chapters' || next === 'settings' ? next : null
+}
+
+function handleChaptersTabUpdate(next: string): void {
+  chaptersSheetTab.value = next === 'bookmarks' ? 'bookmarks' : 'chapters'
+}
 
 function pageSrc(pageNum: number): string {
   const base = props.getPageSrc(pageNum)
@@ -303,9 +265,9 @@ function resetStageState(): void {
 }
 
 function onImageLoaded(pageNum: number, ev: Event): void {
-  const img = ev.target as HTMLImageElement
+  const img = ev.target
   delete brokenPages[pageNum]
-  if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+  if (img instanceof HTMLImageElement && img.naturalWidth > 0 && img.naturalHeight > 0) {
     naturalWidths[pageNum] = img.naturalWidth
     widePages[pageNum] = img.naturalWidth > img.naturalHeight * 1.12
   }
@@ -370,12 +332,9 @@ watch(currentPage, (p) => {
   emitPageChange(p)
 })
 
-watch(activeSheet, async (sheet) => {
+watch(activeSheet, (sheet) => {
   if (sheet === 'chapters') {
     chapterFilter.value = ''
-    await nextTick()
-    const activeBtn = chaptersListRef.value?.querySelector<HTMLElement>('[data-active-chapter="true"]')
-    activeBtn?.scrollIntoView({ block: 'center' })
   }
 })
 
@@ -409,7 +368,6 @@ watch(
       currentPage.value = targetInitial
       preloadAround(targetInitial)
       suppressWebtoonObserverUntil = Date.now() + 600
-      // Report initial position so online/local readers capture initial chapter load
       emitPageChange(targetInitial)
     } else if (mode !== oldMode && mode === 'webtoon') {
       suppressWebtoonObserverUntil = Date.now() + 600
@@ -449,7 +407,10 @@ function toggleSheet(id: ReaderSheetId): void {
 }
 
 function preferredScrollBehavior(): ScrollBehavior {
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+  if (
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  ) {
     return 'auto'
   }
   return 'smooth'
@@ -458,7 +419,7 @@ function preferredScrollBehavior(): ScrollBehavior {
 function advanceForward(): void {
   if (!props.hasContent || props.loading) return
   if (props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({
+    getWebtoonContainer()?.scrollBy({
       top: window.innerHeight * 0.82,
       behavior: preferredScrollBehavior(),
     })
@@ -492,7 +453,7 @@ function stepBackward(): void {
   if (!props.hasContent || props.loading) return
   pendingNextChapterTap.value = false
   if (props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({
+    getWebtoonContainer()?.scrollBy({
       top: -window.innerHeight * 0.82,
       behavior: preferredScrollBehavior(),
     })
@@ -553,7 +514,7 @@ function onScrubberValue(targetPage: number): void {
 }
 
 function onWebtoonScroll(): void {
-  const container = webtoonContainerRef.value
+  const container = getWebtoonContainer()
   if (!container) return
   const cur = container.scrollTop
   if (Math.abs(cur - lastWebtoonScrollTop) > 48 && activeSheet.value === null) {
@@ -563,10 +524,10 @@ function onWebtoonScroll(): void {
 }
 
 function scrollToWebtoonPage(pageNum: number): void {
-  const container = webtoonContainerRef.value
+  const container = getWebtoonContainer()
   if (!container) return
   suppressWebtoonObserverUntil = Date.now() + 450
-  const el = container.querySelector(`[data-page="${pageNum}"]`) as HTMLElement | null
+  const el = container.querySelector<HTMLElement>(`[data-page="${pageNum}"]`)
   if (el) {
     el.scrollIntoView({ behavior: 'instant', block: 'start' })
     lastWebtoonScrollTop = container.scrollTop
@@ -583,12 +544,14 @@ function teardownWebtoonObserver(): void {
 
 function setupWebtoonObserver(): void {
   teardownWebtoonObserver()
-  const container = webtoonContainerRef.value
+  const container = getWebtoonContainer()
   if (!container || props.readerMode !== 'webtoon' || props.loading || !props.hasContent) return
   webtoonObserver = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
-        const p = Number((entry.target as HTMLElement).dataset.page)
+        const target = entry.target
+        if (!(target instanceof HTMLElement)) continue
+        const p = Number(target.dataset.page)
         if (!p) continue
         if (entry.isIntersecting) visibleWebtoonPages.add(p)
         else visibleWebtoonPages.delete(p)
@@ -630,9 +593,9 @@ function handleFullscreenChange(): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
-  const target = e.target as HTMLElement | null
+  const target = e.target
   if (
-    target &&
+    target instanceof HTMLElement &&
     (target.tagName === 'INPUT' ||
       target.tagName === 'TEXTAREA' ||
       target.tagName === 'SELECT' ||
@@ -641,11 +604,10 @@ function onKeydown(e: KeyboardEvent): void {
     return
   }
 
-  // Escape is handled by ImmersiveMediaTemplate via useEscapeStack (sheet -> HUD -> exit)
   if (e.key === 'Escape') return
   if (e.metaKey || e.ctrlKey || e.altKey) return
   if (activeSheet.value !== null) return
-  if (target?.closest('[aria-modal="true"]')) return
+  if (target instanceof HTMLElement && target.closest('[aria-modal="true"]')) return
 
   if (e.key === ' ') {
     e.preventDefault()
@@ -659,9 +621,9 @@ function onKeydown(e: KeyboardEvent): void {
     if (isRtl.value) stepBackward()
     else advanceForward()
   } else if (e.key === 'ArrowDown' && props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({ top: 320, behavior: preferredScrollBehavior() })
+    getWebtoonContainer()?.scrollBy({ top: 320, behavior: preferredScrollBehavior() })
   } else if (e.key === 'ArrowUp' && props.readerMode === 'webtoon') {
-    webtoonContainerRef.value?.scrollBy({ top: -320, behavior: preferredScrollBehavior() })
+    getWebtoonContainer()?.scrollBy({ top: -320, behavior: preferredScrollBehavior() })
   } else if (e.key === '+' || e.key === '=') {
     e.preventDefault()
     adjustZoom(10)
@@ -721,7 +683,7 @@ defineExpose({
     :sheet-title="sheetTitle"
     :sheet-subtitle="sheetSubtitle"
     sheet-size="sm"
-    @update:active-sheet="activeSheet = ($event as ReaderSheetId | null)"
+    @update:active-sheet="handleSheetModelUpdate"
     @back="emit('back')"
     @tap-prev="handleTapLeft"
     @tap-next="handleTapRight"
@@ -730,7 +692,6 @@ defineExpose({
       <slot name="header-meta" />
     </template>
 
-    <!-- Strict <= 5 Top HUD Controls (Back + optional Bookmark + Chapters + Settings + Fullscreen) -->
     <template #header-controls>
       <slot name="toolbar-actions" />
 
@@ -767,160 +728,38 @@ defineExpose({
       />
     </template>
 
-    <!-- Main Comic Stage -->
-    <div class="flex h-full w-full flex-col overflow-hidden">
-      <!-- Loading State -->
-      <div
-        v-if="loading"
-        class="flex flex-1 flex-col items-center justify-center gap-3 px-6 pt-14 text-center text-body-small text-on-surface-variant"
-      >
-        <MdCircularProgress indeterminate :size="36" :stroke-width="3" />
-        <span>{{ t('online.loadingPages') }}</span>
-      </div>
+    <ComicReaderStage
+      ref="stageRef"
+      :loading="loading"
+      :load-error="loadError"
+      :has-content="hasContent"
+      :back-label="backLabel"
+      :reader-mode="readerMode"
+      :chapter-key="chapterKey"
+      :total-pages="totalPages"
+      :webtoon-width="webtoonWidth"
+      :zoom-percent="zoomPercent"
+      :is-rtl="isRtl"
+      :current-spread="currentSpread"
+      :eye-care-class="eyeCareClass"
+      :broken-pages="brokenPages"
+      :has-next-chapter="hasNextChapter"
+      :next-chapter-toast-label="nextChapterToastLabel"
+      :get-display-page-src="pageSrc"
+      :get-page-image-style="pageImageStyle"
+      @retry="emit('retry')"
+      @back="emit('back')"
+      @webtoon-scroll="onWebtoonScroll"
+      @image-loaded="onImageLoaded"
+      @image-error="onImageError"
+      @retry-page="retryPageImage"
+      @next-chapter="handleNextChapterClick"
+    >
+      <template #error-actions>
+        <slot name="error-actions" />
+      </template>
+    </ComicReaderStage>
 
-      <!-- Error / Empty State -->
-      <div
-        v-else-if="loadError || !hasContent"
-        class="flex flex-1 flex-col items-center justify-center gap-4 px-6 pt-14 text-center"
-        data-immersive-ignore
-      >
-        <p role="alert" class="text-body-medium max-w-md text-error">
-          {{ loadError || t('online.emptyPages') }}
-        </p>
-        <div class="flex flex-wrap items-center justify-center gap-2">
-          <MdButton variant="tonal" @click="emit('retry')">
-            {{ globalT('common.refresh') }}
-          </MdButton>
-          <MdButton variant="outlined" @click="emit('back')">
-            {{ backLabel }}
-          </MdButton>
-          <slot name="error-actions" />
-        </div>
-      </div>
-
-      <!-- Vertical Webtoon Seamless Scroll Mode -->
-      <div
-        v-else-if="readerMode === 'webtoon'"
-        ref="webtoonContainerRef"
-        class="h-full w-full overflow-y-auto motion-safe:scroll-smooth"
-        @scroll.passive="onWebtoonScroll"
-      >
-        <div
-          class="mx-auto flex flex-col items-center"
-          :style="{
-            width: '100%',
-            maxWidth: `${Math.round((webtoonWidth * zoomPercent) / 100)}px`,
-          }"
-        >
-          <div
-            v-for="p in totalPages"
-            :key="`${chapterKey}-wt-${p}`"
-            :data-page="p"
-            class="relative w-full"
-          >
-            <img
-              v-if="pageSrc(p)"
-              :src="pageSrc(p)"
-              :alt="`Page ${p}`"
-              :loading="p <= 4 ? 'eager' : 'lazy'"
-              class="m-0 block min-h-[40vh] w-full bg-surface-container-low/40 p-0"
-              :class="eyeCareClass"
-              @load="onImageLoaded(p, $event)"
-              @error="onImageError(p)"
-            />
-            <div
-              v-if="!pageSrc(p) || brokenPages[p]"
-              data-immersive-ignore
-              class="flex min-h-40 w-full flex-col items-center justify-center gap-2 bg-surface-container-low/95 p-6 text-center text-body-small text-on-surface-variant"
-              :class="pageSrc(p) ? 'absolute inset-0' : ''"
-              @click.stop
-            >
-              <LuAlertTriangle class="h-6 w-6 text-error" aria-hidden="true" />
-              <span>{{ t('online.imageLoadError', { page: p }) }}</span>
-              <MdButton
-                v-if="pageSrc(p)"
-                variant="tonal"
-                size="sm"
-                :icon="LuRotateCw"
-                @click="retryPageImage(p)"
-              >
-                {{ t('online.retryImage') }}
-              </MdButton>
-            </div>
-          </div>
-
-          <!-- Seamless Next Chapter Card at Bottom of Webtoon Strip -->
-          <div
-            data-immersive-ignore
-            class="my-12 flex w-full flex-col items-center gap-3 px-6 text-center"
-            @click.stop
-          >
-            <MdButton
-              v-if="hasNextChapter"
-              variant="filled"
-              :aria-label="t('reader.nextChapterAria')"
-              @click="handleNextChapterClick"
-            >
-              <span>
-                {{ t('reader.nextChapter') }}<template v-if="nextChapterToastLabel">: {{ nextChapterToastLabel }}</template>
-              </span>
-              <template #trailing>
-                <LuChevronRight class="h-4 w-4" aria-hidden="true" />
-              </template>
-            </MdButton>
-            <p v-else class="text-body-medium text-on-surface-variant">
-              {{ t('reader.reachedSeriesEnd') }}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Paginated Single / Double-Page Spread Mode (RTL & LTR) -->
-      <div v-else class="flex h-full w-full overflow-auto">
-        <div
-          class="m-auto flex items-center justify-center gap-0"
-          :class="isRtl ? 'flex-row-reverse' : 'flex-row'"
-        >
-          <div
-            v-for="p in currentSpread"
-            :key="`${chapterKey}-sp-${p}`"
-            class="relative flex items-center justify-center"
-          >
-            <img
-              v-if="pageSrc(p)"
-              :src="pageSrc(p)"
-              :alt="`Page ${p}`"
-              :style="pageImageStyle(p)"
-              class="m-0 block object-contain p-0 select-none"
-              :class="eyeCareClass"
-              @load="onImageLoaded(p, $event)"
-              @error="onImageError(p)"
-            />
-            <div
-              v-if="!pageSrc(p) || brokenPages[p]"
-              data-immersive-ignore
-              class="flex min-h-60 min-w-52 flex-col items-center justify-center gap-2 rounded-corner-md bg-surface-container-low/95 p-6 text-center text-body-small text-on-surface-variant"
-              :class="pageSrc(p) ? 'absolute inset-0' : ''"
-              @click.stop
-            >
-              <LuAlertTriangle class="h-6 w-6 text-error" aria-hidden="true" />
-              <span>{{ t('online.imageLoadError', { page: p }) }}</span>
-              <MdButton
-                v-if="pageSrc(p)"
-                variant="tonal"
-                size="sm"
-                :icon="LuRotateCw"
-                @click="retryPageImage(p)"
-              >
-                {{ t('online.retryImage') }}
-              </MdButton>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Bottom Floating Page Scrubber HUD (RTL-aligned direction & buttons) -->
     <template v-if="hasContent && !loading && !loadError" #footer>
       <div
         class="flex items-center gap-3"
@@ -976,7 +815,6 @@ defineExpose({
       </div>
     </template>
 
-    <!-- Sheet Subheader (Chapters/Bookmarks Tabs + Chapter Filter) -->
     <template v-if="activeSheet === 'chapters'" #sheet-subheader>
       <div class="space-y-2.5 pb-2">
         <MdTabs
@@ -984,7 +822,7 @@ defineExpose({
           :model-value="chaptersSheetTab"
           :tabs="chaptersSheetTabs"
           variant="secondary"
-          @update:model-value="chaptersSheetTab = $event as ChaptersSheetTab"
+          @update:model-value="handleChaptersTabUpdate"
         />
         <MdTextField
           v-if="chaptersSheetTab === 'chapters' && chapters.length > 10"
@@ -997,190 +835,36 @@ defineExpose({
       </div>
     </template>
 
-    <!-- Single Mutually-Exclusive Responsive MdSheet -->
     <template #sheet>
-      <!-- Settings Sheet (Mode / Fit / Zoom / RTL Cover Offset / Webtoon Width / Eye-care) -->
-      <div v-if="activeSheet === 'settings'" class="space-y-5">
-        <div class="space-y-2">
-          <span class="text-label-medium block text-on-surface-variant">
-            {{ t('settings.defaultReaderMode') }}
-          </span>
-          <div class="grid grid-cols-2 gap-2">
-            <MdButton
-              v-for="opt in modeOptions"
-              :key="opt.value"
-              :variant="readerMode === opt.value ? 'tonal' : 'outlined'"
-              size="sm"
-              :icon="opt.icon"
-              @click="emit('update:readerMode', opt.value)"
-            >
-              {{ opt.label }}
-            </MdButton>
-          </div>
-        </div>
+      <ComicReaderSettingsSheet
+        v-if="activeSheet === 'settings'"
+        :reader-mode="readerMode"
+        :fit-mode="fitMode"
+        :zoom-percent="zoomPercent"
+        :offset-cover-page="offsetCoverPage"
+        :webtoon-width="webtoonWidth"
+        :dim-images="dimImages"
+        @update:reader-mode="emit('update:readerMode', $event)"
+        @update:fit-mode="emit('update:fitMode', $event)"
+        @adjust-zoom="adjustZoom"
+        @reset-zoom="resetZoom"
+        @update:offset-cover-page="emit('update:offsetCoverPage', $event)"
+        @update:webtoon-width="emit('update:webtoonWidth', $event)"
+        @commit-webtoon-width="emit('commit-webtoon-width', $event)"
+        @update:dim-images="emit('update:dimImages', $event)"
+      />
 
-        <div v-if="readerMode !== 'webtoon'" class="space-y-2">
-          <span class="text-label-medium block text-on-surface-variant">
-            {{ t('settings.defaultFitMode') }}
-          </span>
-          <MdSegmentedButton
-            :model-value="fitMode"
-            :options="fitOptions"
-            size="sm"
-            full-width
-            :show-check="false"
-            @update:model-value="emit('update:fitMode', $event)"
-          />
-        </div>
-
-        <div class="space-y-2">
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('reader.zoomLabel') }}
-            </span>
-            <MdButton
-              variant="text"
-              size="sm"
-              :disabled="zoomPercent === 100"
-              @click="resetZoom"
-            >
-              {{ t('reader.zoomReset') }}
-            </MdButton>
-          </div>
-          <div class="flex items-center justify-between gap-2 rounded-corner-md bg-surface-container-low px-3 py-1.5">
-            <MdIconButton
-              size="sm"
-              variant="standard"
-              :icon="LuZoomOut"
-              :disabled="zoomPercent <= 50"
-              :aria-label="t('reader.zoomOut')"
-              @click="adjustZoom(-10)"
-            />
-            <button
-              type="button"
-              class="text-label-large cursor-pointer rounded-corner-full px-3 py-1 font-mono tabular-nums text-on-surface hover:bg-surface-container-high"
-              :title="t('reader.zoomReset')"
-              @click="resetZoom"
-            >
-              {{ zoomPercent }}%
-            </button>
-            <MdIconButton
-              size="sm"
-              variant="standard"
-              :icon="LuZoomIn"
-              :disabled="zoomPercent >= 200"
-              :aria-label="t('reader.zoomIn')"
-              @click="adjustZoom(10)"
-            />
-          </div>
-        </div>
-
-        <div v-if="readerMode === 'rtl_double' || readerMode === 'ltr_double'">
-          <AppCheckbox
-            :model-value="offsetCoverPage"
-            :label="t('reader.offsetCover')"
-            @update:model-value="emit('update:offsetCoverPage', $event)"
-          />
-        </div>
-
-        <div v-if="readerMode === 'webtoon'" class="space-y-2">
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('reader.webtoonWidth') }}
-            </span>
-            <span class="text-label-medium font-mono tabular-nums text-on-surface">
-              {{ webtoonWidth }} px
-            </span>
-          </div>
-          <AppSlider
-            :model-value="webtoonWidth"
-            :min="520"
-            :max="1400"
-            :step="20"
-            :aria-label="t('reader.webtoonWidth')"
-            @update:model-value="emit('update:webtoonWidth', $event)"
-            @change="emit('commit-webtoon-width', $event)"
-          />
-        </div>
-
-        <div class="flex items-center justify-between gap-3 rounded-corner-md bg-surface-container-low px-3.5 py-2.5">
-          <div class="flex items-center gap-2 text-body-medium text-on-surface">
-            <LuEye class="h-4 w-4 text-primary" aria-hidden="true" />
-            <span>{{ t('reader.eyeCareDim') }}</span>
-          </div>
-          <MdSwitch
-            :model-value="dimImages"
-            :aria-label="t('reader.dimToggleAria')"
-            @update:model-value="emit('update:dimImages', $event)"
-          />
-        </div>
-
-        <p class="text-body-small border-t border-outline-variant pt-3 text-on-surface-variant">
-          {{ t('reader.shortcutsHint') }}
-        </p>
-      </div>
-
-      <!-- Chapters & Bookmarks Sheet -->
-      <div v-else-if="activeSheet === 'chapters'" ref="chaptersListRef" class="space-y-1">
-        <template v-if="chaptersSheetTab === 'bookmarks'">
-          <MdEmptyState
-            v-if="sortedBookmarks.length === 0"
-            compact
-            :icon="LuBookmark"
-            :title="t('reader.noChapterBookmarks')"
-          />
-          <div
-            v-for="bm in sortedBookmarks"
-            :key="bm.id"
-            class="flex items-center gap-2 rounded-corner-md px-2 py-1 hover:bg-surface-container-high"
-          >
-            <button
-              type="button"
-              class="min-w-0 flex-1 cursor-pointer py-1.5 text-left outline-none"
-              @click="jumpToPage(bm.page)"
-            >
-              <div class="text-title-small truncate text-on-surface">
-                {{ t('reader.bookmarkPageLabel', { page: bm.page }) }}
-              </div>
-              <p v-if="bm.note || bm.title" class="text-body-small truncate text-on-surface-variant">
-                {{ bm.note || bm.title }}
-              </p>
-            </button>
-            <MdIconButton
-              size="sm"
-              variant="standard"
-              :icon="LuTrash2"
-              :aria-label="t('common.delete')"
-              @click="emit('delete-bookmark', bm.id)"
-            />
-          </div>
-        </template>
-
-        <template v-else>
-          <button
-            v-for="ch in filteredChapters"
-            :key="ch.key"
-            type="button"
-            :disabled="ch.disabled"
-            :data-active-chapter="ch.key === chapterKey ? 'true' : undefined"
-            class="md-state text-body-medium flex w-full cursor-pointer items-center justify-between gap-2 rounded-corner-md px-3 py-2.5 text-left transition-colors duration-150 disabled:cursor-default disabled:opacity-45"
-            :class="
-              ch.key === chapterKey
-                ? 'bg-secondary-container text-on-secondary-container'
-                : 'text-on-surface hover:bg-surface-container-high'
-            "
-            @click="handleSelectChapter(ch.key)"
-          >
-            <span class="truncate">{{ ch.label }}</span>
-            <span
-              v-if="ch.metaLabel"
-              class="text-label-small shrink-0 text-on-surface-variant"
-            >
-              {{ ch.metaLabel }}
-            </span>
-          </button>
-        </template>
-      </div>
+      <ComicReaderChaptersSheet
+        v-else-if="activeSheet === 'chapters'"
+        :tab="chaptersSheetTab"
+        :chapter-key="chapterKey"
+        :chapters="chapters"
+        :bookmarks="bookmarks"
+        :filter-query="chapterFilter"
+        @select-chapter="handleSelectChapter"
+        @jump-to-page="jumpToPage"
+        @delete-bookmark="emit('delete-bookmark', $event)"
+      />
     </template>
   </ImmersiveMediaTemplate>
 </template>
