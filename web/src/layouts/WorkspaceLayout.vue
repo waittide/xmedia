@@ -3,12 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
-  LuBookOpen,
-  LuClapperboard,
-  LuDisc3,
+  LuCheck,
+  LuChevronDown,
   LuHistory,
   LuHome,
-  LuLayers,
   LuLibrary,
   LuListChecks,
   LuLogOut,
@@ -114,12 +112,22 @@ function onMainScroll(ev: Event): void {
 
 const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
 
+/**
+ * On `/<domain>/library` mobile (<600px), `DomainLibraryTemplate` owns the single
+ * horizontal tab bar (`All | Continue | Favorites | Collections`). Hiding the shell
+ * horizontal tab bar on `<600px` for library list pages prevents double stacked tab bars,
+ * while a compact section menu in the mobile Top App Bar preserves 1-tap sub-navigation.
+ */
+const isMobileLibrarySubroute = computed(
+  () => !isSettingsRoute.value && route.path === `/${domainStore.activeDomain}/library`,
+)
+
 const domainTabs = computed<DomainNavTab[]>(() => {
   const all: DomainNavTab[] = [
-    { kind: 'book', label: t('app.domains.book'), icon: LuBookOpen },
-    { kind: 'comic', label: t('app.domains.comic'), icon: LuLayers },
-    { kind: 'music', label: t('app.domains.music'), icon: LuDisc3 },
-    { kind: 'video', label: t('app.domains.video'), icon: LuClapperboard },
+    { kind: 'book', label: t('app.domains.book') },
+    { kind: 'comic', label: t('app.domains.comic') },
+    { kind: 'music', label: t('app.domains.music') },
+    { kind: 'video', label: t('app.domains.video') },
   ]
   return all.filter((item) => authStore.hasModule(item.kind))
 })
@@ -169,6 +177,10 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
   ]
 })
 
+const activeSecondaryTab = computed<SecondaryTab | null>(
+  () => secondaryTabs.value.find((tab) => tab.active) ?? secondaryTabs.value[0] ?? null,
+)
+
 const topBarTitle = computed(() =>
   isSettingsRoute.value ? t('settings.title') : t(`app.domains.${domainStore.activeDomain}`),
 )
@@ -194,7 +206,6 @@ function navigateTab(tab: SecondaryTab): void {
   void router.push(tab.to)
 }
 
-// Drag-and-drop file/folder upload anywhere in the workspace (admins only)
 function onDragEnter(ev: DragEvent): void {
   if (!authStore.isAdmin) return
   if (!ev.dataTransfer?.types.includes('Files')) return
@@ -214,7 +225,6 @@ async function onDropFiles(ev: DragEvent): Promise<void> {
   }
 }
 
-// Background task counts for subtle avatar badge & account menu entry
 const globalActiveTaskCount = computed(() => {
   const activeScans = eventsStore.scanTaskList.filter((sc) => sc.status === 'running').length
   const activeUploads = uploadStore.tasks.filter(
@@ -235,11 +245,13 @@ function openTasksDrawer(): void {
   }
 }
 
-const themeModeOptions = computed<Array<{ value: ThemeMode; label: string; icon: Component }>>(() => [
-  { value: 'system', label: t('theme.system'), icon: LuMonitor },
-  { value: 'light', label: t('theme.light'), icon: LuSun },
-  { value: 'dark', label: t('theme.dark'), icon: LuMoon },
-])
+const themeModeOptions = computed<Array<{ value: ThemeMode; label: string; icon: Component }>>(
+  () => [
+    { value: 'system', label: t('theme.system'), icon: LuMonitor },
+    { value: 'light', label: t('theme.light'), icon: LuSun },
+    { value: 'dark', label: t('theme.dark'), icon: LuMoon },
+  ],
+)
 
 const userInitials = computed(() => {
   const label = authStore.user?.display_name || authStore.user?.username || 'U'
@@ -314,15 +326,50 @@ onBeforeUnmount(() => {
       @switch-domain="switchDomain"
     />
 
-    <!-- Top Region: Minimal MD3 Top App Bar + Domain Primary Tabs -->
+    <!-- Top Region: Minimal MD3 Top App Bar + Domain Sub-Navigation -->
     <div
       class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-colors duration-150 ease-standard select-none sm:col-start-2"
       :class="isContentScrolled ? 'bg-surface-container' : 'bg-surface'"
     >
       <header class="flex h-14 items-center justify-between gap-3 px-4 sm:h-16 md:px-6">
-        <h1 class="text-title-large shrink-0 truncate text-on-surface">
-          {{ topBarTitle }}
-        </h1>
+        <div class="flex min-w-0 items-center gap-2">
+          <h1 class="text-title-large shrink-0 truncate text-on-surface">
+            {{ topBarTitle }}
+          </h1>
+
+          <!-- Mobile (<600px) Sub-Navigation Switcher when shell tab bar is collapsed/suppressed -->
+          <MdMenu
+            v-if="activeSecondaryTab && (isMobileLibrarySubroute || mobileSecondaryCollapsed)"
+            class="sm:hidden"
+            placement="bottom-start"
+            :min-width="180"
+            :aria-label="t('nav.navigation')"
+          >
+            <template #trigger="{ toggle, triggerAttrs }">
+              <button
+                type="button"
+                v-bind="triggerAttrs"
+                class="md-state md-touch-target text-label-large inline-flex h-8 cursor-pointer items-center gap-1 rounded-corner-full bg-secondary-container px-3 text-on-secondary-container"
+                @click="toggle"
+              >
+                <span class="truncate">{{ activeSecondaryTab.label }}</span>
+                <LuChevronDown class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              </button>
+            </template>
+
+            <MdMenuItem
+              v-for="tab in secondaryTabs"
+              :key="`menu-${tab.key}`"
+              :icon="tab.icon"
+              :label="tab.label"
+              :to="tab.to"
+            >
+              <template v-if="tab.active" #trailing>
+                <LuCheck class="h-4 w-4 text-primary" aria-hidden="true" />
+              </template>
+            </MdMenuItem>
+          </MdMenu>
+        </div>
 
         <!-- Desktop Single Search Entry (opens unified SearchView) -->
         <button
@@ -421,7 +468,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="mx-1.5 my-1.5 border-t border-outline-variant/60" />
+            <hr class="mx-1.5 my-1.5 border-outline-variant" />
 
             <MdMenuItem
               :icon="LuListChecks"
@@ -447,15 +494,18 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <!-- Domain Secondary Navigation: MD3 Primary Tabs (auto-collapses on downward scroll on <600px) -->
+      <!-- Domain Sub-Navigation:
+           - >=600px (sm:): Authentic MD3 64dp (h-16) stacked Primary Tabs (24dp icon + label + 3dp rounded-top content indicator)
+           - <600px: Single 48dp (h-12) Secondary Tab bar on non-library pages; hidden on /:domain/library so mobile never stacks two horizontal tab bars -->
       <div
         v-if="secondaryTabs.length > 0"
-        class="grid transition-[grid-template-rows,opacity] duration-200 ease-standard sm:block sm:opacity-100"
-        :class="
+        class="transition-[grid-template-rows,opacity] duration-200 ease-standard sm:block sm:opacity-100"
+        :class="[
+          isMobileLibrarySubroute ? 'hidden sm:block' : 'grid',
           mobileSecondaryCollapsed
             ? 'pointer-events-none grid-rows-[0fr] opacity-0 sm:pointer-events-auto'
-            : 'grid-rows-[1fr] opacity-100'
-        "
+            : 'grid-rows-[1fr] opacity-100',
+        ]"
       >
         <div class="min-h-0 overflow-hidden sm:overflow-visible">
           <nav
@@ -468,14 +518,17 @@ onBeforeUnmount(() => {
               type="button"
               :data-nav="tab.key"
               :aria-current="tab.active ? 'page' : undefined"
-              class="md-state text-title-small relative inline-flex h-11 shrink-0 cursor-pointer items-center px-3.5 whitespace-nowrap transition-colors duration-150 ease-standard sm:h-12 sm:px-4"
+              class="md-state text-title-small relative inline-flex h-12 shrink-0 cursor-pointer items-center justify-center px-3.5 whitespace-nowrap transition-colors duration-150 ease-standard sm:h-16 sm:px-5"
               :class="
-                tab.active ? 'text-primary' : 'text-on-surface-variant hover:text-on-surface'
+                tab.active
+                  ? 'text-on-surface sm:text-primary'
+                  : 'text-on-surface-variant hover:text-on-surface'
               "
               @click="navigateTab(tab)"
             >
-              <span class="relative inline-flex h-full items-center gap-2">
-                <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+              <!-- >=600px: 64dp Stacked Primary Tab (24dp icon above label + content-width 3dp rounded-top indicator) -->
+              <span class="relative hidden h-full flex-col items-center justify-center gap-1 sm:inline-flex">
+                <component :is="tab.icon" class="h-6 w-6 shrink-0" aria-hidden="true" />
                 <span>{{ tab.label }}</span>
                 <span
                   v-if="tab.active"
@@ -483,6 +536,17 @@ onBeforeUnmount(() => {
                   class="pointer-events-none absolute right-0 bottom-0 left-0 mx-auto h-[3px] min-w-6 rounded-t-[3px] bg-primary"
                 />
               </span>
+
+              <!-- <600px: 48dp Inline Secondary Tab (18dp icon + label + full-tab 2dp indicator) -->
+              <span class="inline-flex h-full items-center gap-2 sm:hidden">
+                <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+                <span>{{ tab.label }}</span>
+              </span>
+              <span
+                v-if="tab.active"
+                aria-hidden="true"
+                class="pointer-events-none absolute right-0 bottom-0 left-0 h-[2px] bg-primary sm:hidden"
+              />
             </button>
           </nav>
         </div>

@@ -17,6 +17,7 @@ export type { MdChipVariant } from './MdChip.vue'
 export { default as MdListItem } from './MdListItem.vue'
 export type { MdListItemLines } from './MdListItem.vue'
 
+export { default as MdDomainIcons } from './MdDomainIcons.vue'
 export { default as MdEmptyState } from './MdEmptyState.vue'
 
 export { default as MdSkeleton } from './MdSkeleton.vue'

@@ -159,6 +159,7 @@ const doneLabel = computed(() => t('common.done'))
 const hasFilterSheet = computed(() => Boolean(slots['filter-sheet']))
 const hasToolbarRow = computed(
   () =>
+    props.showScopeBar ||
     props.showSearch ||
     Boolean(slots['toolbar-chips']) ||
     hasFilterSheet.value ||
@@ -211,8 +212,11 @@ function handleSearchClear(): void {
 
 <template>
   <div class="mx-auto w-full space-y-2.5 sm:space-y-4" :class="maxWidthClass">
-    <!-- Row 1: Compact title + always-visible Local/Online[/Remote] SourceScopeBar -->
-    <header class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+    <!-- Row 1: Title + >=600px SourceScopeBar (hidden on <600px when header-trailing is empty so mobile stays compact) -->
+    <header
+      class="items-center justify-between gap-2 sm:flex sm:flex-wrap sm:gap-3"
+      :class="$slots['header-trailing'] ? 'flex flex-wrap' : 'hidden sm:flex'"
+    >
       <div class="flex min-w-0 items-baseline gap-2">
         <h1 class="text-title-large sm:text-headline-small truncate text-on-surface">
           {{ resolvedTitle }}
@@ -228,6 +232,7 @@ function handleSearchClear(): void {
       <div class="no-scrollbar flex max-w-full items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:gap-2">
         <SourceScopeBar
           v-if="showScopeBar"
+          class="hidden sm:inline-flex"
           :model-value="scope"
           :domain="domain"
           :sync-url="syncScopeUrl"
@@ -239,7 +244,7 @@ function handleSearchClear(): void {
       </div>
     </header>
 
-    <!-- Optional Primary Tabs (replaces stacked SegmentedButtons) -->
+    <!-- Single Tab Bar on Mobile (<600px) / Content Tabs on Desktop -->
     <MdTabs
       v-if="tabs.length > 1"
       :model-value="activeTab"
@@ -248,7 +253,7 @@ function handleSearchClear(): void {
       @update:model-value="emit('update:activeTab', $event)"
     />
 
-    <!-- Row 2: Single compact control bar (mobile search icon toggle + inline chips + trailing) -->
+    <!-- Single Compact Control Bar (mobile search toggle + consolidated scope chip menu + filter chips + trailing) -->
     <div v-if="hasToolbarRow" class="flex flex-wrap items-center gap-2">
       <MdIconButton
         v-if="showSearch && !isMobileSearchExpanded"
@@ -291,9 +296,19 @@ function handleSearchClear(): void {
       </form>
 
       <div
-        v-if="$slots['toolbar-chips'] || hasFilterSheet"
+        v-if="showScopeBar || $slots['toolbar-chips'] || hasFilterSheet"
         class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 sm:gap-2"
       >
+        <SourceScopeBar
+          v-if="showScopeBar"
+          mode="chip-menu"
+          class="sm:hidden"
+          :model-value="scope"
+          :domain="domain"
+          :sync-url="syncScopeUrl"
+          :show-remote="showRemoteScope"
+          @update:model-value="handleScopeUpdate"
+        />
         <MdChip
           v-if="hasFilterSheet"
           variant="filter"

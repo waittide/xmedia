@@ -2,13 +2,14 @@
 import type { Component } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { MdDomainIcons } from '@/components/ui'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 
 export interface DomainNavTab {
   kind: MediaKind
   label: string
-  icon: Component
+  icon?: Component
 }
 
 defineProps<{
@@ -45,7 +46,7 @@ const themeStore = useThemeStore()
         />
       </RouterLink>
 
-      <!-- Top-level 4-domain destinations -->
+      <!-- Top-level 4-domain destinations with 24dp filled/outlined MD3 icons -->
       <button
         v-for="tab in domainTabs"
         :key="tab.kind"
@@ -59,11 +60,15 @@ const themeStore = useThemeStore()
           class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             !isSettingsRoute && activeDomain === tab.kind
-              ? 'bg-secondary-container text-on-secondary-container [&_svg]:stroke-[2.25]'
-              : 'text-on-surface-variant group-hover:text-on-surface [&_svg]:stroke-[1.75]'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : 'text-on-surface-variant group-hover:text-on-surface'
           "
         >
-          <component :is="tab.icon" class="h-6 w-6 shrink-0" aria-hidden="true" />
+          <MdDomainIcons
+            :kind="tab.kind"
+            :active="!isSettingsRoute && activeDomain === tab.kind"
+            class="h-6 w-6 shrink-0"
+          />
         </span>
         <span
           class="text-label-medium max-w-[72px] truncate"

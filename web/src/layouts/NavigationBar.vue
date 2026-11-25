@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { MdDomainIcons } from '@/components/ui'
 import type { MediaKind } from '@/types/api'
 import type { DomainNavTab } from './NavigationRail.vue'
 
@@ -40,11 +41,15 @@ const { t } = useI18n()
           class="md-state md-state-target flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             !isSettingsRoute && activeDomain === tab.kind
-              ? 'bg-secondary-container text-on-secondary-container [&_svg]:stroke-[2.25]'
-              : 'text-on-surface-variant group-hover:text-on-surface [&_svg]:stroke-[1.75]'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : 'text-on-surface-variant group-hover:text-on-surface'
           "
         >
-          <component :is="tab.icon" class="h-6 w-6 shrink-0" aria-hidden="true" />
+          <MdDomainIcons
+            :kind="tab.kind"
+            :active="!isSettingsRoute && activeDomain === tab.kind"
+            class="h-6 w-6 shrink-0"
+          />
         </span>
         <span
           class="text-label-medium max-w-full truncate px-1"

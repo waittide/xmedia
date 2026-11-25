@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuCloud, LuDatabase, LuGlobe, LuHardDrive } from 'vue-icons-plus/lu'
-import { MdSegmentedButton, type SegmentedOption } from '@/components/ui'
+import { LuCheck, LuChevronDown, LuCloud, LuDatabase, LuGlobe, LuHardDrive } from 'vue-icons-plus/lu'
+import {
+  MdChip,
+  MdMenu,
+  MdMenuItem,
+  MdSegmentedButton,
+  type SegmentedOption,
+} from '@/components/ui'
 import { useSourceFilter, type SourceScope } from '@/sources'
 import type { MediaKind } from '@/types/api'
 
@@ -18,6 +24,8 @@ const props = withDefaults(
     showPool?: boolean
     /** Show the remote OPDS/Subsonic segment. Defaults to `sourceFilter.hasRemoteSources` when `domain` is given. */
     showRemote?: boolean
+    /** Presentation mode: segmented bar (desktop) or compact filter chip menu (<600px toolbar). */
+    mode?: 'segmented' | 'chip-menu'
     size?: 'sm' | 'md'
     fullWidth?: boolean
     disabled?: boolean
@@ -33,6 +41,7 @@ const props = withDefaults(
     syncUrl: undefined,
     showPool: true,
     showRemote: undefined,
+    mode: 'segmented',
     size: 'sm',
     fullWidth: false,
     disabled: false,
@@ -104,6 +113,12 @@ const options = computed<readonly SegmentedOption<SourceScope>[]>(() => {
   return list
 })
 
+const activeOption = computed(
+  () => options.value.find((opt) => opt.value === activeScope.value) ?? options.value[0]!,
+)
+
+const activeIcon = computed<Component | undefined>(() => activeOption.value.icon)
+
 const resolvedAriaLabel = computed(
   () => props.ariaLabel || t('domainUi.scopeAriaLabel'),
 )
@@ -119,7 +134,47 @@ async function handleSelect(nextScope: SourceScope): Promise<void> {
 </script>
 
 <template>
-  <div data-scope-switch :data-scope="activeScope" class="inline-flex max-w-full">
+  <!-- Compact <600px Toolbar Scope Chip Menu (eliminates separate SourceScopeBar row on mobile) -->
+  <div
+    v-if="mode === 'chip-menu'"
+    data-scope-switch
+    :data-scope="activeScope"
+    class="inline-flex shrink-0"
+  >
+    <MdMenu placement="bottom-start" :min-width="168" :aria-label="resolvedAriaLabel">
+      <template #trigger="{ toggle, triggerAttrs }">
+        <MdChip
+          v-bind="triggerAttrs"
+          variant="filter"
+          selected
+          hide-check
+          :disabled="disabled"
+          :icon="activeIcon"
+          @click="toggle"
+        >
+          <span class="inline-flex items-center gap-1">
+            <span>{{ activeOption.label }}</span>
+            <LuChevronDown class="h-3.5 w-3.5 shrink-0 opacity-75" aria-hidden="true" />
+          </span>
+        </MdChip>
+      </template>
+
+      <MdMenuItem
+        v-for="opt in options"
+        :key="opt.value"
+        :icon="opt.icon"
+        :label="opt.label"
+        @select="handleSelect(opt.value)"
+      >
+        <template v-if="opt.value === activeScope" #trailing>
+          <LuCheck class="h-4 w-4 text-primary" aria-hidden="true" />
+        </template>
+      </MdMenuItem>
+    </MdMenu>
+  </div>
+
+  <!-- Standard >=600px Segmented Scope Switcher -->
+  <div v-else data-scope-switch :data-scope="activeScope" class="inline-flex max-w-full">
     <MdSegmentedButton
       :model-value="activeScope"
       :options="options"
