@@ -1,37 +1,26 @@
 <script setup lang="ts">
-import { computed, reactive, ref, toRef, watch } from 'vue'
+import { computed, reactive, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import {
-  LuChevronDown,
-  LuChevronUp,
-  LuCode2,
-  LuCompass,
-  LuFilm,
-  LuFolderTree,
-  LuInfo,
-  LuPlay,
-  LuSearch,
-} from 'vue-icons-plus/lu'
 import OnlineSourceEditShell from '@/components/online-sources/OnlineSourceEditShell.vue'
-import RuleFieldsSection from '@/components/online-sources/RuleFieldsSection.vue'
 import {
   hasAnyRule,
   numVal,
   pickFirstString,
   useOnlineSourceEdit,
-  type EditTabItem,
 } from '@/components/online-sources/useOnlineSourceEdit'
-import { MdSelect, MdSwitch, type SelectOption } from '@/components/ui'
+import { MdSelect, MdSwitch, MdTextField, type SelectOption } from '@/components/ui'
+import SourceAdvancedSection from '@/domains/shared/source-editor/SourceAdvancedSection.vue'
+import SourceBasicSection from '@/domains/shared/source-editor/SourceBasicSection.vue'
+import SourceRuleStagesAccordion from '@/domains/shared/source-editor/SourceRuleStagesAccordion.vue'
+import { buildSourceEditTabs, type RuleStageItem } from '@/domains/shared/source-editor/types'
+import { ensureVideoLocale, useVideoI18n } from '../i18n'
 import { videoSourceAdapter, type VideoSourceSummaryDto } from '../onlineApi'
 import {
   buildMergedVideoSourceObject,
-  CATEGORIES_RULE_FIELDS,
+  buildVideoRuleFields,
   createDefaultFormState,
   createDefaultKeyMap,
-  DETAIL_RULE_FIELDS,
   hydrateVideoSourceForm,
-  PLAY_RULE_FIELDS,
-  SEARCH_RULE_FIELDS,
   type VideoSourceEditTab,
   type VideoSourceSnapshot,
 } from '../videoSourceSchema'
@@ -48,21 +37,28 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { t: vt } = useVideoI18n()
+
+void ensureVideoLocale()
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) void ensureVideoLocale()
+  },
+)
 
 const formatOptions = computed<SelectOption[]>(() => [
   { value: 'applecms_v10', label: t('onlineSources.edit.formatApplecms') },
   { value: 'rule', label: t('onlineSources.edit.formatRule') },
 ])
 
+const localizedRules = computed(() => buildVideoRuleFields(vt))
 const keyMap = reactive(createDefaultKeyMap())
 const form = reactive(createDefaultFormState())
-const advancedNetworkOpen = ref(false)
-
 let initialSnapshot: VideoSourceSnapshot | null = null
 
 function clearFormState(): void {
   initialSnapshot = null
-  advancedNetworkOpen.value = false
   Object.assign(keyMap, createDefaultKeyMap())
   Object.assign(form, createDefaultFormState())
 }
@@ -97,12 +93,7 @@ const {
   clearFormState,
   hydrateFormFromObject,
   buildMergedObject: (): Record<string, unknown> =>
-    buildMergedVideoSourceObject(
-      rawBaseObj.value as Record<string, unknown>,
-      form,
-      keyMap,
-      initialSnapshot,
-    ),
+    buildMergedVideoSourceObject(rawBaseObj.value, form, keyMap, initialSnapshot),
   validateForm: () => {
     if (!form.sourceName.trim() && !form.sourceUrl.trim()) {
       return t('onlineSources.edit.nameAndUrlRequired')
@@ -126,7 +117,91 @@ const {
 const isApplecms = computed(() => form.sourceFormat === 'applecms_v10')
 const domainLabel = computed(() => t('onlineSources.domainLabel.video'))
 
-const hasAdvancedNetworkValues = computed(() =>
+const ruleStages = computed<RuleStageItem[]>(() => [
+  {
+    id: 'categories',
+    title: vt('sourceEditor.stageCategories'),
+    jsonKey: 'ruleCategories',
+    fields: localizedRules.value.categories,
+    modelValue: form.ruleCategories,
+    urlValue: form.categoriesUrl,
+    urlLabel: vt('sourceEditor.categoriesUrlLabel'),
+    urlJsonKey: keyMap.categoriesUrlKey,
+    onUpdateUrl: (val) => {
+      form.categoriesUrl = val
+    },
+    onUpdateRules: (val) => {
+      form.ruleCategories = val
+    },
+  },
+  {
+    id: 'search',
+    title: vt('sourceEditor.stageSearch'),
+    jsonKey: 'ruleSearch',
+    fields: localizedRules.value.search,
+    modelValue: form.ruleSearch,
+    urlValue: form.searchUrl,
+    urlLabel: vt('sourceEditor.searchUrlLabel'),
+    urlJsonKey: 'searchUrl',
+    onUpdateUrl: (val) => {
+      form.searchUrl = val
+    },
+    onUpdateRules: (val) => {
+      form.ruleSearch = val
+    },
+  },
+  {
+    id: 'explore',
+    title: vt('sourceEditor.stageExplore'),
+    jsonKey: 'ruleExplore',
+    fields: localizedRules.value.search,
+    modelValue: form.ruleExplore,
+    urlValue: form.exploreUrl,
+    urlLabel: vt('sourceEditor.exploreUrlLabel'),
+    urlJsonKey: keyMap.exploreUrlKey,
+    onUpdateUrl: (val) => {
+      form.exploreUrl = val
+    },
+    onUpdateRules: (val) => {
+      form.ruleExplore = val
+    },
+  },
+  {
+    id: 'detail',
+    title: vt('sourceEditor.stageDetail'),
+    jsonKey: 'ruleDetail',
+    fields: localizedRules.value.detail,
+    modelValue: form.ruleDetail,
+    onUpdateRules: (val) => {
+      form.ruleDetail = val
+    },
+  },
+  {
+    id: 'play',
+    title: vt('sourceEditor.stagePlay'),
+    jsonKey: 'rulePlay',
+    fields: localizedRules.value.play,
+    modelValue: form.rulePlay,
+    onUpdateRules: (val) => {
+      form.rulePlay = val
+    },
+  },
+])
+
+const hasRulesConfigured = computed(() =>
+  Boolean(
+    form.categoriesUrl.trim() ||
+      form.searchUrl.trim() ||
+      form.exploreUrl.trim() ||
+      hasAnyRule(form.ruleCategories) ||
+      hasAnyRule(form.ruleSearch) ||
+      hasAnyRule(form.ruleExplore) ||
+      hasAnyRule(form.ruleDetail) ||
+      hasAnyRule(form.rulePlay),
+  ),
+)
+
+const hasAdvancedConfigured = computed(() =>
   Boolean(
     form.concurrentRate.trim() ||
       form.header.trim() ||
@@ -139,63 +214,21 @@ const hasAdvancedNetworkValues = computed(() =>
   ),
 )
 
-// Hide inapplicable custom rule tabs when source format is AppleCMS v10 (V-19)
-const tabItems = computed<EditTabItem<VideoSourceEditTab>[]>(() => {
-  const basicTab: EditTabItem<VideoSourceEditTab> = {
-    id: 'basic',
-    label: t('onlineSources.edit.tabBasic'),
-    icon: LuInfo,
-    activeDot: false,
-  }
-  const jsonTab: EditTabItem<VideoSourceEditTab> = {
-    id: 'json',
-    label: t('onlineSources.edit.tabJson'),
-    icon: LuCode2,
-    activeDot: false,
-  }
-
-  if (isApplecms.value) {
-    return [basicTab, jsonTab]
-  }
-
-  return [
-    basicTab,
-    {
-      id: 'categories',
-      label: t('onlineSources.edit.tabCategories'),
-      icon: LuFolderTree,
-      activeDot: Boolean(form.categoriesUrl.trim() || hasAnyRule(form.ruleCategories)),
-    },
-    {
-      id: 'search',
-      label: t('onlineSources.edit.tabSearch'),
-      icon: LuSearch,
-      activeDot: Boolean(form.searchUrl.trim() || hasAnyRule(form.ruleSearch)),
-    },
-    {
-      id: 'explore',
-      label: t('onlineSources.edit.tabExplore'),
-      icon: LuCompass,
-      activeDot: Boolean(form.exploreUrl.trim() || hasAnyRule(form.ruleExplore)),
-    },
-    {
-      id: 'detail',
-      label: t('onlineSources.edit.tabDetail'),
-      icon: LuFilm,
-      activeDot: hasAnyRule(form.ruleDetail),
-    },
-    {
-      id: 'play',
-      label: t('onlineSources.edit.tabPlay'),
-      icon: LuPlay,
-      activeDot: hasAnyRule(form.rulePlay),
-    },
-    jsonTab,
-  ]
-})
+// Hide custom rule tab when source format is AppleCMS v10 (V-19)
+const tabItems = computed(() =>
+  buildSourceEditTabs({
+    basicLabel: t('onlineSources.edit.tabBasic'),
+    rulesLabel: vt('sourceEditor.tabRules'),
+    advancedLabel: vt('sourceEditor.tabAdvanced'),
+    jsonLabel: t('onlineSources.edit.tabJson'),
+    showRules: !isApplecms.value,
+    hasRulesConfigured: hasRulesConfigured.value,
+    hasAdvancedConfigured: hasAdvancedConfigured.value,
+  }),
+)
 
 watch(isApplecms, (applecms) => {
-  if (applecms && activeTab.value !== 'basic' && activeTab.value !== 'json') {
+  if (applecms && activeTab.value === 'rules') {
     switchTab('basic')
   }
 })
@@ -204,7 +237,12 @@ watch(isApplecms, (applecms) => {
 <template>
   <OnlineSourceEditShell
     :open="open"
-    :title="t('onlineSources.edit.title', { domain: domainLabel, name: form.sourceName || source?.name || '' })"
+    :title="
+      t('onlineSources.edit.title', {
+        domain: domainLabel,
+        name: form.sourceName || source?.name || '',
+      })
+    "
     :subtitle="form.sourceUrl || source?.source_url"
     :domain-label="domainLabel"
     :tabs="tabItems"
@@ -224,94 +262,37 @@ watch(isApplecms, (applecms) => {
     @save="saveSource"
   >
     <template v-if="activeTab === 'basic'">
-      <!-- Core Basic Fields (concise, no raw JSON key clutter) -->
-      <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4">
-        <h4 class="text-title-small text-on-surface">
-          {{ t('onlineSources.edit.basicSectionTitle') }}
-        </h4>
-
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.nameLabel') }}
-            </span>
-            <input
-              v-model="form.sourceName"
-              type="text"
-              class="text-body-medium h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.groupLabel') }}
-            </span>
-            <input
-              v-model="form.sourceGroup"
-              name="group_name"
-              type="text"
-              :aria-label="t('onlineSources.edit.groupLabel')"
-              :placeholder="t('onlineSources.edit.groupPlaceholder')"
-              class="text-body-medium h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1 sm:col-span-2">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.urlLabel') }}
-            </span>
-            <input
-              v-model="form.sourceUrl"
-              type="text"
-              :placeholder="t('onlineSources.edit.urlPlaceholder')"
-              class="text-body-small h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
+      <SourceBasicSection
+        v-model:source-name="form.sourceName"
+        v-model:source-group="form.sourceGroup"
+        v-model:source-url="form.sourceUrl"
+        v-model:weight="form.weight"
+        v-model:source-comment="form.sourceComment"
+        :name-json-key="keyMap.nameKey"
+        :group-json-key="keyMap.groupKey"
+        :url-json-key="keyMap.urlKey"
+        :comment-json-key="keyMap.commentKey"
+      >
+        <template #extra-fields>
           <div class="space-y-1">
-            <span class="text-label-medium block text-on-surface-variant">
+            <span class="text-label-medium block text-on-surface-variant" :title="keyMap.formatKey">
               {{ t('onlineSources.edit.sourceFormatLabel') }}
             </span>
             <MdSelect v-model="form.sourceFormat" :options="formatOptions" size="sm" />
+            <p class="text-body-small px-1 text-on-surface-variant">{{ keyMap.formatKey }}</p>
           </div>
 
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.checkKeywordLabel') }}
-            </span>
-            <input
-              v-model="form.checkKeyword"
-              type="text"
-              :placeholder="t('onlineSources.edit.checkKeywordPlaceholder')"
-              class="text-body-medium h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
+          <MdTextField
+            v-model="form.checkKeyword"
+            size="sm"
+            :label="t('onlineSources.edit.checkKeywordLabel')"
+            :placeholder="t('onlineSources.edit.checkKeywordPlaceholder')"
+            :supporting-text="keyMap.checkKeywordKey"
+            :title="keyMap.checkKeywordKey"
+          />
+        </template>
 
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.weightLabel') }}
-            </span>
-            <input
-              v-model.number="form.weight"
-              type="number"
-              class="text-body-small h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1 sm:col-span-2">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.commentLabel') }}
-            </span>
-            <textarea
-              v-model="form.sourceComment"
-              rows="2"
-              :placeholder="t('onlineSources.edit.commentPlaceholder')"
-              class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-        </div>
-
-        <div class="flex flex-wrap items-center gap-x-6 gap-y-2.5 border-t border-outline-variant/50 pt-3">
+        <template #switches>
           <MdSwitch v-model="form.enabled" :label="t('onlineSources.edit.enabledSwitch')" />
           <MdSwitch
             v-model="form.enabledExplore"
@@ -325,265 +306,64 @@ watch(isApplecms, (applecms) => {
             v-model="form.enabledCookieJar"
             :label="t('onlineSources.edit.enabledCookieJarSwitch')"
           />
-        </div>
-      </section>
+        </template>
+      </SourceBasicSection>
 
-      <!-- AppleCMS v10 Config -->
       <section
         v-if="isApplecms"
-        class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4"
+        class="flex flex-col gap-3.5 rounded-corner-lg bg-surface-container p-4 sm:p-5"
       >
         <h4 class="text-title-small text-on-surface">
           {{ t('onlineSources.edit.applecmsSectionTitle') }}
         </h4>
-        <div class="grid grid-cols-1 gap-3">
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.apiUrlLabel') }}
-            </span>
-            <input
-              v-model="form.apiUrl"
-              type="text"
-              :placeholder="t('onlineSources.edit.apiUrlPlaceholder')"
-              class="text-body-small h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.preferredPlayFromLabel') }}
-            </span>
-            <input
-              v-model="form.preferredPlayFrom"
-              type="text"
-              :placeholder="t('onlineSources.edit.preferredPlayFromPlaceholder')"
-              class="text-body-small h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.playUrlFilterRegexLabel') }}
-            </span>
-            <input
-              v-model="form.playUrlFilterRegex"
-              type="text"
-              spellcheck="false"
-              class="text-body-small h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-        </div>
-      </section>
-
-      <!-- Collapsible Advanced Network, Auth & Scripts Section (V-19) -->
-      <section class="rounded-corner-lg bg-surface-container p-4">
-        <button
-          type="button"
-          :aria-expanded="advancedNetworkOpen"
-          class="md-state flex w-full cursor-pointer items-center justify-between gap-2 rounded-corner-sm py-1 text-left"
-          @click="advancedNetworkOpen = !advancedNetworkOpen"
-        >
-          <span class="flex items-center gap-2">
-            <span class="text-title-small text-on-surface">
-              {{ t('onlineSources.edit.networkSectionTitle') }}
-            </span>
-            <span
-              v-if="hasAdvancedNetworkValues"
-              class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-primary-container px-2 py-0.5 text-on-primary-container"
-            >
-              <span class="h-1.5 w-1.5 rounded-corner-full bg-primary" aria-hidden="true" />
-              {{ t('common.configured') }}
-            </span>
-          </span>
-          <LuChevronUp
-            v-if="advancedNetworkOpen"
-            class="h-4 w-4 text-on-surface-variant"
-            aria-hidden="true"
+        <div class="grid grid-cols-1 gap-3.5">
+          <MdTextField
+            v-model="form.apiUrl"
+            size="sm"
+            :label="t('onlineSources.edit.apiUrlLabel')"
+            :placeholder="t('onlineSources.edit.apiUrlPlaceholder')"
+            :supporting-text="keyMap.apiUrlKey"
+            :title="keyMap.apiUrlKey"
+            class="font-mono"
           />
-          <LuChevronDown
-            v-else
-            class="h-4 w-4 text-on-surface-variant"
-            aria-hidden="true"
+
+          <MdTextField
+            v-model="form.preferredPlayFrom"
+            size="sm"
+            :label="t('onlineSources.edit.preferredPlayFromLabel')"
+            :placeholder="t('onlineSources.edit.preferredPlayFromPlaceholder')"
+            supporting-text="preferredPlayFrom"
+            title="preferredPlayFrom"
+            class="font-mono"
           />
-        </button>
 
-        <div v-if="advancedNetworkOpen" class="mt-3 grid grid-cols-1 gap-3 border-t border-outline-variant/50 pt-3">
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.concurrentRateLabel') }}
-            </span>
-            <input
-              v-model="form.concurrentRate"
-              type="text"
-              :placeholder="t('onlineSources.edit.concurrentRatePlaceholder')"
-              class="text-body-small h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.headerLabel') }}
-            </span>
-            <textarea
-              v-model="form.header"
-              rows="2"
-              spellcheck="false"
-              :placeholder="t('onlineSources.edit.headerPlaceholder')"
-              class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.mediaHeaderLabel') }}
-            </span>
-            <textarea
-              v-model="form.mediaHeader"
-              rows="2"
-              spellcheck="false"
-              :placeholder="t('onlineSources.edit.headerPlaceholder')"
-              class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.loginUrlLabel') }}
-            </span>
-            <textarea
-              v-model="form.loginUrl"
-              rows="2"
-              spellcheck="false"
-              class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.loginUiLabel') }}
-            </span>
-            <textarea
-              v-model="form.loginUi"
-              rows="3"
-              spellcheck="false"
-              class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.loginCheckJsLabel') }}
-            </span>
-            <textarea
-              v-model="form.loginCheckJs"
-              rows="2"
-              spellcheck="false"
-              class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.jsLibLabel') }}
-            </span>
-            <textarea
-              v-model="form.jsLib"
-              rows="3"
-              spellcheck="false"
-              class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('onlineSources.edit.variableLabel') }}
-            </span>
-            <input
-              v-model="variableText"
-              type="text"
-              spellcheck="false"
-              :placeholder="t('onlineSources.edit.variablePlaceholder')"
-              class="text-body-small h-9 w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
+          <MdTextField
+            v-model="form.playUrlFilterRegex"
+            size="sm"
+            :label="t('onlineSources.edit.playUrlFilterRegexLabel')"
+            supporting-text="playUrlFilterRegex"
+            title="playUrlFilterRegex"
+            class="font-mono"
+          />
         </div>
       </section>
     </template>
 
-    <template v-else-if="activeTab === 'categories'">
-      <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4">
-        <h4 class="text-title-small text-on-surface">
-          {{ t('onlineSources.edit.categoriesUrlLabel') }}
-        </h4>
-        <textarea
-          v-model="form.categoriesUrl"
-          rows="3"
-          spellcheck="false"
-          class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-        />
-      </section>
+    <SourceRuleStagesAccordion v-else-if="activeTab === 'rules'" :stages="ruleStages" />
 
-      <RuleFieldsSection
-        v-model="form.ruleCategories"
-        title="ruleCategories"
-        :fields="CATEGORIES_RULE_FIELDS"
-      />
-    </template>
-
-    <template v-else-if="activeTab === 'search'">
-      <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4">
-        <h4 class="text-title-small text-on-surface">
-          {{ t('onlineSources.edit.searchUrlLabel') }}
-        </h4>
-        <textarea
-          v-model="form.searchUrl"
-          rows="3"
-          spellcheck="false"
-          class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-        />
-      </section>
-
-      <RuleFieldsSection
-        v-model="form.ruleSearch"
-        title="ruleSearch"
-        :fields="SEARCH_RULE_FIELDS"
-      />
-    </template>
-
-    <template v-else-if="activeTab === 'explore'">
-      <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4">
-        <h4 class="text-title-small text-on-surface">
-          {{ t('onlineSources.edit.exploreUrlLabel') }}
-        </h4>
-        <textarea
-          v-model="form.exploreUrl"
-          rows="3"
-          spellcheck="false"
-          class="text-body-small w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-        />
-      </section>
-
-      <RuleFieldsSection
-        v-model="form.ruleExplore"
-        title="ruleExplore"
-        :fields="SEARCH_RULE_FIELDS"
-      />
-    </template>
-
-    <template v-else-if="activeTab === 'detail'">
-      <RuleFieldsSection
-        v-model="form.ruleDetail"
-        title="ruleDetail"
-        :fields="DETAIL_RULE_FIELDS"
-      />
-    </template>
-
-    <template v-else-if="activeTab === 'play'">
-      <RuleFieldsSection
-        v-model="form.rulePlay"
-        title="rulePlay"
-        :fields="PLAY_RULE_FIELDS"
-      />
-    </template>
+    <SourceAdvancedSection
+      v-else-if="activeTab === 'advanced'"
+      v-model:concurrent-rate="form.concurrentRate"
+      v-model:header="form.header"
+      v-model:secondary-header="form.mediaHeader"
+      v-model:login-url="form.loginUrl"
+      v-model:login-ui="form.loginUi"
+      v-model:login-check-js="form.loginCheckJs"
+      v-model:js-lib="form.jsLib"
+      v-model:variable-text="variableText"
+      has-secondary-header
+      :secondary-header-label="t('onlineSources.edit.mediaHeaderLabel')"
+      :secondary-header-json-key="keyMap.mediaHeaderKey"
+    />
   </OnlineSourceEditShell>
 </template>

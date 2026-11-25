@@ -9,16 +9,10 @@ import {
   readRuleMap,
   strVal,
 } from '@/components/online-sources/useOnlineSourceEdit'
+import type { SourceEditFourTab } from '@/domains/shared/source-editor/types'
 import type { VideoSourceSummaryDto } from './onlineApi'
 
-export type VideoSourceEditTab =
-  | 'basic'
-  | 'categories'
-  | 'search'
-  | 'explore'
-  | 'detail'
-  | 'play'
-  | 'json'
+export type VideoSourceEditTab = SourceEditFourTab
 
 export const CATEGORIES_ALIASES: Record<string, readonly string[]> = {
   list: ['bookList'],
@@ -45,49 +39,82 @@ export const DETAIL_ALIASES: Record<string, readonly string[]> = {
 }
 
 export const CATEGORIES_RULE_FIELDS: RuleFieldDef[] = [
-  { key: 'list', label: 'list', fullWidth: true },
-  { key: 'id', label: 'id' },
-  { key: 'name', label: 'name / title' },
+  { key: 'list', label: 'list', placeholder: 'list / bookList', fullWidth: true },
+  { key: 'id', label: 'id', placeholder: 'id' },
+  { key: 'name', label: 'name', placeholder: 'name / title' },
 ]
 
 export const SEARCH_RULE_FIELDS: RuleFieldDef[] = [
-  { key: 'list', label: 'list', fullWidth: true },
-  { key: 'vodId', label: 'vodId' },
-  { key: 'name', label: 'name / title' },
-  { key: 'coverUrl', label: 'coverUrl', fullWidth: true },
-  { key: 'remarks', label: 'remarks' },
-  { key: 'year', label: 'year' },
-  { key: 'area', label: 'area' },
-  { key: 'typeName', label: 'typeName' },
-  { key: 'detailUrl', label: 'detailUrl', fullWidth: true },
+  { key: 'list', label: 'list', placeholder: 'list / bookList', fullWidth: true },
+  { key: 'vodId', label: 'vodId', placeholder: 'vodId / id' },
+  { key: 'name', label: 'name', placeholder: 'name / title' },
+  { key: 'coverUrl', label: 'coverUrl', placeholder: 'coverUrl / posterUrl', fullWidth: true },
+  { key: 'remarks', label: 'remarks', placeholder: 'remarks' },
+  { key: 'year', label: 'year', placeholder: 'year' },
+  { key: 'area', label: 'area', placeholder: 'area' },
+  { key: 'typeName', label: 'typeName', placeholder: 'typeName / category' },
+  { key: 'detailUrl', label: 'detailUrl', placeholder: 'detailUrl / bookUrl', fullWidth: true },
 ]
 
 export const DETAIL_RULE_FIELDS: RuleFieldDef[] = [
-  { key: 'requestUrl', label: 'requestUrl', fullWidth: true },
-  { key: 'init', label: 'init', multiline: true, rows: 2, fullWidth: true },
-  { key: 'name', label: 'name / title' },
-  { key: 'coverUrl', label: 'coverUrl', fullWidth: true },
-  { key: 'year', label: 'year' },
-  { key: 'area', label: 'area' },
-  { key: 'actors', label: 'actors' },
-  { key: 'director', label: 'director' },
-  { key: 'remarks', label: 'remarks' },
-  { key: 'playGroups', label: 'playGroups', fullWidth: true },
-  { key: 'groupName', label: 'groupName' },
-  { key: 'episodes', label: 'episodes', multiline: true, rows: 2, fullWidth: true },
-  { key: 'episodeName', label: 'episodeName' },
-  { key: 'episodeUrl', label: 'episodeUrl' },
-  { key: 'playUrl', label: 'playUrl', fullWidth: true },
-  { key: 'intro', label: 'intro', multiline: true, rows: 3, fullWidth: true },
+  { key: 'requestUrl', label: 'requestUrl', placeholder: 'requestUrl', fullWidth: true },
+  { key: 'init', label: 'init', placeholder: 'init', multiline: true, rows: 2, fullWidth: true },
+  { key: 'name', label: 'name', placeholder: 'name / title' },
+  { key: 'coverUrl', label: 'coverUrl', placeholder: 'coverUrl / posterUrl', fullWidth: true },
+  { key: 'year', label: 'year', placeholder: 'year' },
+  { key: 'area', label: 'area', placeholder: 'area' },
+  { key: 'actors', label: 'actors', placeholder: 'actors' },
+  { key: 'director', label: 'director', placeholder: 'director' },
+  { key: 'remarks', label: 'remarks', placeholder: 'remarks' },
+  { key: 'playGroups', label: 'playGroups', placeholder: 'playGroups / groups', fullWidth: true },
+  { key: 'groupName', label: 'groupName', placeholder: 'groupName' },
+  {
+    key: 'episodes',
+    label: 'episodes',
+    placeholder: 'episodes / chapterList',
+    multiline: true,
+    rows: 2,
+    fullWidth: true,
+  },
+  { key: 'episodeName', label: 'episodeName', placeholder: 'episodeName / chapterName' },
+  { key: 'episodeUrl', label: 'episodeUrl', placeholder: 'episodeUrl / chapterUrl' },
+  { key: 'playUrl', label: 'playUrl', placeholder: 'playUrl', fullWidth: true },
+  { key: 'intro', label: 'intro', placeholder: 'intro', multiline: true, rows: 3, fullWidth: true },
 ]
 
 export const PLAY_RULE_FIELDS: RuleFieldDef[] = [
-  { key: 'requestUrl', label: 'requestUrl', fullWidth: true },
-  { key: 'streamUrl', label: 'streamUrl', fullWidth: true },
+  { key: 'requestUrl', label: 'requestUrl', placeholder: 'requestUrl', fullWidth: true },
+  { key: 'streamUrl', label: 'streamUrl', placeholder: 'streamUrl', fullWidth: true },
   { key: 'streamType', label: 'streamType', placeholder: 'hls | mp4 | auto' },
-  { key: 'headers', label: 'headers', multiline: true, rows: 2, fullWidth: true },
-  { key: 'subtitles', label: 'subtitles', multiline: true, rows: 2, fullWidth: true },
+  { key: 'headers', label: 'headers', placeholder: 'headers', multiline: true, rows: 2, fullWidth: true },
+  {
+    key: 'subtitles',
+    label: 'subtitles',
+    placeholder: 'subtitles',
+    multiline: true,
+    rows: 2,
+    fullWidth: true,
+  },
 ]
+
+function localizeRuleDefs(
+  defs: readonly RuleFieldDef[],
+  translate: (key: string) => string,
+): RuleFieldDef[] {
+  return defs.map((d) => ({
+    ...d,
+    label: translate(`sourceEditor.fields.${d.key}`),
+  }))
+}
+
+export function buildVideoRuleFields(translate: (key: string) => string) {
+  return {
+    categories: localizeRuleDefs(CATEGORIES_RULE_FIELDS, translate),
+    search: localizeRuleDefs(SEARCH_RULE_FIELDS, translate),
+    detail: localizeRuleDefs(DETAIL_RULE_FIELDS, translate),
+    play: localizeRuleDefs(PLAY_RULE_FIELDS, translate),
+  }
+}
 
 export interface VideoSourceKeyMap {
   nameKey: string

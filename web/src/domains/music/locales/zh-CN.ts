@@ -262,6 +262,10 @@ export default {
     trackCachedToast: '「{title}」已离线缓存到本地',
   },
   sourceEditor: {
+    tabRules: '规则',
+    tabAdvanced: '高级',
+    searchUrlLabel: '搜索请求地址',
+    exploreUrlLabel: '发现请求地址',
     advancedSectionTitle: '高级网络、登录与脚本',
     advancedConfiguredCount: '已配置 {count} 项',
     sectionSearch: '搜索解析规则',

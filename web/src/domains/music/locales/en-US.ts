@@ -262,6 +262,10 @@ export default {
     trackCachedToast: 'Cached "{title}" offline',
   },
   sourceEditor: {
+    tabRules: 'Rules',
+    tabAdvanced: 'Advanced',
+    searchUrlLabel: 'Search Request URL',
+    exploreUrlLabel: 'Explore Request URL',
     advancedSectionTitle: 'Advanced Network, Auth & Scripts',
     advancedConfiguredCount: '{count} configured',
     sectionSearch: 'Search Parsing Rules',
