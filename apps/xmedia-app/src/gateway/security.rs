@@ -18,7 +18,6 @@ use crate::opds_client::same_origin_redirect_policy;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(45);
-const LOCAL_UPLOAD_READ_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn is_blocked_metadata_or_link_local(ip: IpAddr) -> bool {
     match ip {
@@ -92,16 +91,6 @@ pub(super) fn build_remote_http_client(
         .dns_resolver(Arc::new(NoMetadataResolver))
         .redirect(same_origin_redirect_policy())
         .danger_accept_invalid_certs(allow_insecure_tls)
-        .build()?;
-    Ok(client)
-}
-
-pub(super) fn build_local_upload_http_client() -> anyhow::Result<reqwest::Client> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(LOCAL_UPLOAD_READ_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     Ok(client)
 }

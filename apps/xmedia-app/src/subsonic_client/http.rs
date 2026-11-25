@@ -18,12 +18,13 @@ use super::{
     SubsonicAlbumDto, SubsonicClient, SubsonicError, SubsonicSearchResultDto, SubsonicTestResult,
     TEST_TIMEOUT,
 };
+use crate::local_engine::LocalMediaImporter;
 use crate::opds_client::{
     MAX_IMAGE_BYTES, MAX_METADATA_BYTES, ReadLimitError, RemoteImportResultDto, SniffImageError,
     apply_proxy_security_headers, build_sniffed_raster_image_response,
     is_disallowed_non_raster_header, is_safe_raster_image_content_type, read_response_text_limited,
 };
-use crate::remote_common::{stream_response_to_temp_file, upload_temp_file_to_local};
+use crate::remote_common::{read_temp_file_bytes, stream_response_to_temp_file};
 use crate::remote_sources::{RemoteSource, normalize_remote_url};
 
 impl SubsonicClient {
@@ -493,8 +494,7 @@ impl SubsonicClient {
         source: &RemoteSource,
         song_id: &str,
         filename_hint: Option<&str>,
-        local_gateway_url: &str,
-        local_token: &str,
+        importer: &dyn LocalMediaImporter,
     ) -> Result<RemoteImportResultDto, SubsonicError> {
         let _import_permit = self
             .import_semaphore
@@ -586,42 +586,25 @@ impl SubsonicClient {
             song_id,
         );
 
-        let upload_url = format!("{local_gateway_url}/api/v1/music/tracks/upload");
-        let resp_json = upload_temp_file_to_local(
-            &self.local_upload,
-            &temp_file,
-            &filename,
-            &upload_url,
-            local_token,
-            "music",
-        )
-        .await?;
+        let data = read_temp_file_bytes(&temp_file, "Subsonic audio").await?;
+        drop(temp_file);
 
-        let first = resp_json
-            .get("uploaded_tracks")
-            .and_then(Value::as_array)
-            .and_then(|arr| arr.first())
-            .ok_or_else(|| {
-                SubsonicError::Internal(
-                    "Local music upload succeeded but returned no uploaded tracks".into(),
-                )
-            })?;
-
-        let imported_id = first
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let title = first
-            .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or(song_meta_title)
-            .unwrap_or(filename);
+        let imported = importer.import_track(filename.clone(), data).await?;
+        let title = if !imported.title.trim().is_empty() && imported.title != filename {
+            imported.title
+        } else {
+            song_meta_title.unwrap_or_else(|| {
+                if imported.title.trim().is_empty() {
+                    filename
+                } else {
+                    imported.title
+                }
+            })
+        };
 
         Ok(RemoteImportResultDto {
             media_kind: "music".to_string(),
-            imported_id,
+            imported_id: imported.id,
             title,
         })
     }

@@ -107,7 +107,6 @@ pub type OpdsError = crate::remote_common::RemoteClientError;
 pub struct OpdsClient {
     pub(super) secure: reqwest::Client,
     pub(super) insecure: reqwest::Client,
-    pub(super) local_upload: reqwest::Client,
     pub(super) import_semaphore: Arc<Semaphore>,
     pub(super) temp_dir: PathBuf,
 }
@@ -116,14 +115,12 @@ impl OpdsClient {
     pub fn new(
         secure: reqwest::Client,
         insecure: reqwest::Client,
-        local_upload: reqwest::Client,
         import_semaphore: Arc<Semaphore>,
         temp_dir: PathBuf,
     ) -> Self {
         Self {
             secure,
             insecure,
-            local_upload,
             import_semaphore,
             temp_dir,
         }

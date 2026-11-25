@@ -1,12 +1,19 @@
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
-use axum::http::HeaderValue;
+use axum::body::{Body, to_bytes};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tower_service::Service;
 use uuid::Uuid;
 use xmedia::{XMediaApp, XMediaConfig};
 use xmedia_core::application::auth::AuthService;
@@ -16,9 +23,41 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{AUTH_COOKIE_NAME, configure_temp_dir};
 use xmedia_core::infra::events::BroadcastEventHub;
 
+use crate::remote_common::RemoteClientError;
+
 pub const LOCAL_ADMIN_USERNAME: &str = "local";
 pub const LOCAL_ADMIN_DISPLAY_NAME: &str = "Local";
 pub const LOCAL_JWT_TTL_SECS: u64 = 30 * 86_400;
+
+pub type BoxImportFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalImportedMedia {
+    pub id: String,
+    pub title: String,
+}
+
+/// Direct in-process port for importing downloaded remote OPDS/Subsonic media into the
+/// standalone local library without issuing loopback TCP HTTP requests.
+pub trait LocalMediaImporter: Send + Sync {
+    fn import_book<'a>(
+        &'a self,
+        filename: String,
+        data: Bytes,
+    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>>;
+
+    fn import_comic<'a>(
+        &'a self,
+        filename: String,
+        data: Bytes,
+    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>>;
+
+    fn import_track<'a>(
+        &'a self,
+        filename: String,
+        data: Bytes,
+    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>>;
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalIdentity {
@@ -81,6 +120,7 @@ pub struct LocalEngine {
     pub data_dir: PathBuf,
     pub temp_dir: PathBuf,
     identity: LocalIdentity,
+    router: Router,
 }
 
 impl LocalEngine {
@@ -161,6 +201,7 @@ impl LocalEngine {
             );
         }
 
+        let router = app.router.clone();
         let engine = Self {
             auth: app.auth,
             libraries: app.libraries,
@@ -169,6 +210,7 @@ impl LocalEngine {
             data_dir,
             temp_dir,
             identity,
+            router,
         };
 
         Ok((engine, app.router))
@@ -191,6 +233,189 @@ impl LocalEngine {
     pub fn secret_encryption_key(&self) -> [u8; 32] {
         self.identity.derive_secret_encryption_key()
     }
+
+    async fn dispatch_in_process_import(
+        &self,
+        route_path: &str,
+        filename: &str,
+        data: Bytes,
+        label: &str,
+    ) -> Result<Value, RemoteClientError> {
+        let session = self
+            .issue_auto_session()
+            .await
+            .map_err(|e| RemoteClientError::Internal(format!("Local auth session failed: {e}")))?;
+
+        let boundary = format!("xmedia-inproc-{}", Uuid::new_v4().simple());
+        let body = build_multipart_file_body(&boundary, filename, &data);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(route_path)
+            .header(AUTHORIZATION, format!("Bearer {}", session.token))
+            .header(CONTENT_TYPE, content_type)
+            .body(Body::from(body))
+            .map_err(|e| {
+                RemoteClientError::Internal(format!("Failed building local {label} request: {e}"))
+            })?;
+
+        let mut svc = self.router.clone();
+        let resp = Service::call(&mut svc, req)
+            .await
+            .map_err(|err| match err {})?;
+        let status = resp.status();
+        let body_bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024)
+            .await
+            .map_err(|e| {
+                RemoteClientError::Internal(format!("Failed reading local {label} response: {e}"))
+            })?;
+        let parsed_json: Option<Value> = serde_json::from_slice(&body_bytes).ok();
+
+        if !status.is_success() {
+            let msg = parsed_json
+                .as_ref()
+                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let snippet = String::from_utf8_lossy(&body_bytes);
+                    let trimmed = snippet.trim();
+                    if trimmed.is_empty() {
+                        format!("Local library rejected imported {label}")
+                    } else {
+                        trimmed.chars().take(200).collect()
+                    }
+                });
+            if status == StatusCode::PAYLOAD_TOO_LARGE {
+                return Err(RemoteClientError::TooLarge(format!(
+                    "Local {label} import rejected (HTTP 413): {msg}"
+                )));
+            }
+            return Err(RemoteClientError::Upstream(format!(
+                "Local {label} import failed (HTTP {}): {msg}",
+                status.as_u16()
+            )));
+        }
+
+        parsed_json.ok_or_else(|| {
+            RemoteClientError::Internal(format!(
+                "Local {label} import succeeded but returned invalid JSON"
+            ))
+        })
+    }
+}
+
+impl LocalMediaImporter for LocalEngine {
+    fn import_book<'a>(
+        &'a self,
+        filename: String,
+        data: Bytes,
+    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>> {
+        Box::pin(async move {
+            let resp_json = self
+                .dispatch_in_process_import("/api/v1/book/books/upload", &filename, data, "book")
+                .await?;
+            let first = resp_json
+                .get("uploaded")
+                .and_then(Value::as_array)
+                .and_then(|arr| arr.first())
+                .ok_or_else(|| {
+                    RemoteClientError::Internal(
+                        "Local book import returned empty uploaded array".into(),
+                    )
+                })?;
+            let id = first
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let title = first
+                .pointer("/metadata/title")
+                .and_then(Value::as_str)
+                .unwrap_or(&filename)
+                .to_string();
+            Ok(LocalImportedMedia { id, title })
+        })
+    }
+
+    fn import_comic<'a>(
+        &'a self,
+        filename: String,
+        data: Bytes,
+    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>> {
+        Box::pin(async move {
+            let resp_json = self
+                .dispatch_in_process_import("/api/v1/comic/upload", &filename, data, "comic")
+                .await?;
+            let first = resp_json
+                .get("uploaded")
+                .and_then(Value::as_array)
+                .and_then(|arr| arr.first())
+                .ok_or_else(|| {
+                    RemoteClientError::Internal(
+                        "Local comic import returned empty uploaded array".into(),
+                    )
+                })?;
+            let id = first
+                .get("series_id")
+                .or_else(|| first.get("chapter_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let title = first
+                .get("series_title")
+                .or_else(|| first.get("chapter_title"))
+                .and_then(Value::as_str)
+                .unwrap_or(&filename)
+                .to_string();
+            Ok(LocalImportedMedia { id, title })
+        })
+    }
+
+    fn import_track<'a>(
+        &'a self,
+        filename: String,
+        data: Bytes,
+    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>> {
+        Box::pin(async move {
+            let resp_json = self
+                .dispatch_in_process_import("/api/v1/music/tracks/upload", &filename, data, "music")
+                .await?;
+            let first = resp_json
+                .get("uploaded_tracks")
+                .and_then(Value::as_array)
+                .and_then(|arr| arr.first())
+                .ok_or_else(|| {
+                    RemoteClientError::Internal(
+                        "Local music import returned no uploaded tracks".into(),
+                    )
+                })?;
+            let id = first
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let title = first
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or(&filename)
+                .to_string();
+            Ok(LocalImportedMedia { id, title })
+        })
+    }
+}
+
+fn build_multipart_file_body(boundary: &str, filename: &str, data: &[u8]) -> Bytes {
+    let escaped_name = filename.replace(['\\', '"', '\r', '\n'], "_");
+    let header = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{escaped_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    );
+    let footer = format!("\r\n--{boundary}--\r\n");
+    let mut buf = Vec::with_capacity(header.len() + data.len() + footer.len());
+    buf.extend_from_slice(header.as_bytes());
+    buf.extend_from_slice(data);
+    buf.extend_from_slice(footer.as_bytes());
+    Bytes::from(buf)
 }
 
 fn discard_corrupt_identity(path: &Path, reason: &str) {
@@ -288,5 +513,23 @@ mod tests {
         let after_restart = restarted.issue_auto_session().await.unwrap();
         assert_eq!(after_restart.user.username, LOCAL_ADMIN_USERNAME);
         assert!(!after_restart.token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_media_importer_imports_book_in_process_without_tcp_server() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, _router) = LocalEngine::start(tmp.path().to_path_buf(), None)
+            .await
+            .unwrap();
+        let importer: &dyn LocalMediaImporter = &engine;
+        let imported = importer
+            .import_book(
+                "Sample Novel.txt".to_string(),
+                Bytes::from_static(b"Chapter 1\n\nHello in-process import!"),
+            )
+            .await
+            .unwrap();
+        assert!(!imported.id.is_empty());
+        assert_eq!(imported.title, "Sample Novel");
     }
 }

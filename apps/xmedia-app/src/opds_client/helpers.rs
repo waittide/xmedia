@@ -226,9 +226,14 @@ pub(super) fn detect_format_from_mime_or_href(media_type: &str, href: &str) -> O
         "application/epub+zip" | "application/epub" => return Some("epub".to_string()),
         "application/pdf" => return Some("pdf".to_string()),
         "text/plain" => return Some("txt".to_string()),
+        "application/x-mobipocket-ebook" => return Some("mobi".to_string()),
+        "application/vnd.amazon.ebook" => return Some("azw3".to_string()),
+        "application/x-fictionbook+xml" | "application/fb2+xml" => return Some("fb2".to_string()),
         "application/vnd.comicbook+zip" | "application/x-cbz" | "application/cbz" => {
             return Some("cbz".to_string());
         }
+        "application/vnd.comicbook-rar" | "application/x-cbr" => return Some("cbr".to_string()),
+        "application/x-cb7" => return Some("cb7".to_string()),
         "application/zip" | "application/x-zip-compressed" => return Some("zip".to_string()),
         _ => {}
     }
@@ -245,7 +250,12 @@ pub(super) fn detect_format_from_mime_or_href(media_type: &str, href: &str) -> O
         Some("epub") => Some("epub".to_string()),
         Some("pdf") => Some("pdf".to_string()),
         Some("txt") => Some("txt".to_string()),
+        Some("mobi") => Some("mobi".to_string()),
+        Some("azw3") => Some("azw3".to_string()),
+        Some("fb2") => Some("fb2".to_string()),
         Some("cbz") => Some("cbz".to_string()),
+        Some("cbr") => Some("cbr".to_string()),
+        Some("cb7") => Some("cb7".to_string()),
         Some("zip") => Some("zip".to_string()),
         _ => None,
     }
@@ -434,7 +444,12 @@ pub(super) fn resolve_import_filename_and_format(
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase())
-        .filter(|e| matches!(e.as_str(), "epub" | "pdf" | "txt" | "cbz" | "zip"));
+        .filter(|e| {
+            matches!(
+                e.as_str(),
+                "epub" | "pdf" | "txt" | "mobi" | "azw3" | "fb2" | "cbz" | "cbr" | "cb7" | "zip"
+            )
+        });
 
     let format = ext_from_name
         .clone()

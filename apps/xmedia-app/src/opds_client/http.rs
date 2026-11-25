@@ -10,7 +10,6 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
-use serde_json::Value;
 
 use super::helpers::{
     append_query_param, expand_search_template, resolve_import_filename_and_format,
@@ -21,7 +20,8 @@ use super::{
     MAX_IMAGE_BYTES, MAX_IMPORT_BYTES, MAX_METADATA_BYTES, MAX_REDIRECTS, OpdsClient, OpdsError,
     OpdsFeedDto, OpdsTestResult, REQUEST_TIMEOUT, RemoteImportResultDto, TEST_TIMEOUT,
 };
-use crate::remote_common::{stream_response_to_temp_file, upload_temp_file_to_local};
+use crate::local_engine::LocalMediaImporter;
+use crate::remote_common::{read_temp_file_bytes, stream_response_to_temp_file};
 use crate::remote_sources::{RemoteSource, is_same_origin, normalize_remote_url};
 
 pub(crate) fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
@@ -495,8 +495,7 @@ impl OpdsClient {
         source: &RemoteSource,
         download_url: &str,
         filename_hint: Option<&str>,
-        local_gateway_url: &str,
-        local_token: &str,
+        importer: &dyn LocalMediaImporter,
     ) -> Result<RemoteImportResultDto, OpdsError> {
         let _import_permit = self
             .import_semaphore
@@ -548,7 +547,7 @@ impl OpdsClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
 
-        // Validate format and destination route before streaming potentially large payloads to disk.
+        // Validate format before streaming potentially large payloads to disk.
         let (filename, format) = resolve_import_filename_and_format(
             filename_hint,
             content_disposition.as_deref(),
@@ -556,12 +555,9 @@ impl OpdsClient {
             &final_url,
         )?;
 
-        let (media_kind, upload_endpoint) = match format.as_str() {
-            "cbz" | "zip" => ("comic", format!("{local_gateway_url}/api/v1/comic/upload")),
-            "epub" | "pdf" | "txt" => (
-                "book",
-                format!("{local_gateway_url}/api/v1/book/books/upload"),
-            ),
+        let media_kind = match format.as_str() {
+            "cbz" | "zip" | "cbr" | "cb7" => "comic",
+            "epub" | "pdf" | "txt" | "mobi" | "azw3" | "fb2" => "book",
             other => {
                 return Err(OpdsError::Unsupported(format!(
                     "Unsupported OPDS import format '{other}'"
@@ -577,58 +573,23 @@ impl OpdsClient {
             "OPDS download",
         )
         .await?;
+        let data = read_temp_file_bytes(&temp_guard, "OPDS download").await?;
+        drop(temp_guard);
 
-        let resp_json = upload_temp_file_to_local(
-            &self.local_upload,
-            &temp_guard,
-            &filename,
-            &upload_endpoint,
-            local_token,
-            "OPDS",
-        )
-        .await?;
-
-        let first = resp_json
-            .get("uploaded")
-            .and_then(Value::as_array)
-            .and_then(|arr| arr.first())
-            .ok_or_else(|| {
-                OpdsError::Internal(
-                    "Local upload succeeded but returned empty uploaded array".into(),
-                )
-            })?;
-
-        let (imported_id, title) = if media_kind == "comic" {
-            let id = first
-                .get("series_id")
-                .or_else(|| first.get("chapter_id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let title = first
-                .get("series_title")
-                .or_else(|| first.get("chapter_title"))
-                .and_then(Value::as_str)
-                .unwrap_or(&filename)
-                .to_string();
-            (id, title)
+        let imported = if media_kind == "comic" {
+            importer.import_comic(filename.clone(), data).await?
         } else {
-            let id = first
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let title = first
-                .pointer("/metadata/title")
-                .and_then(Value::as_str)
-                .unwrap_or(&filename)
-                .to_string();
-            (id, title)
+            importer.import_book(filename.clone(), data).await?
+        };
+        let title = if imported.title.trim().is_empty() {
+            filename
+        } else {
+            imported.title
         };
 
         Ok(RemoteImportResultDto {
             media_kind: media_kind.to_string(),
-            imported_id,
+            imported_id: imported.id,
             title,
         })
     }

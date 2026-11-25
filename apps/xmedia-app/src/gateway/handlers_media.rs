@@ -63,26 +63,13 @@ pub(super) async fn opds_import(
         Err(err) => return err.into_response(),
     };
 
-    let session = match state.local_engine.issue_auto_session().await {
-        Ok(s) => s,
-        Err(err) => {
-            tracing::error!(error = %err, "failed to issue local session for import");
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "auto_session_failed",
-                "Failed to issue local session",
-            );
-        }
-    };
-
     match state
         .opds
         .import_to_local(
             &source,
             &input.url,
             input.filename.as_deref(),
-            &state.local_gateway_url,
-            &session.token,
+            &state.local_engine,
         )
         .await
     {
@@ -225,26 +212,13 @@ pub(super) async fn subsonic_import_song(
         }
     };
 
-    let session = match state.local_engine.issue_auto_session().await {
-        Ok(s) => s,
-        Err(err) => {
-            tracing::error!(error = %err, "failed to issue local session for import");
-            return app_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "auto_session_failed",
-                "Failed to issue local session",
-            );
-        }
-    };
-
     match state
         .subsonic
         .import_song_to_local(
             &source,
             &song_id,
             input.filename.as_deref(),
-            &state.local_gateway_url,
-            &session.token,
+            &state.local_engine,
         )
         .await
     {

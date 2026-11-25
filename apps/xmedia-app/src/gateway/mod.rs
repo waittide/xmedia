@@ -42,7 +42,6 @@ pub struct StandaloneGatewayState {
     pub app_icon: AppIconStore,
     pub opds: OpdsClient,
     pub subsonic: SubsonicClient,
-    pub local_gateway_url: String,
     pub expected_port: u16,
 }
 
@@ -51,24 +50,20 @@ impl StandaloneGatewayState {
         local_engine: LocalEngine,
         sources: SharedRemoteSourceStore,
         app_icon: AppIconStore,
-        local_gateway_url: String,
         expected_port: u16,
     ) -> anyhow::Result<Self> {
         let secure = security::build_remote_http_client(false)?;
         let insecure = security::build_remote_http_client(true)?;
-        let local_upload = security::build_local_upload_http_client()?;
         let import_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_IMPORTS));
         let opds = OpdsClient::new(
             secure.clone(),
             insecure.clone(),
-            local_upload.clone(),
             import_semaphore.clone(),
             local_engine.temp_dir.clone(),
         );
         let subsonic = SubsonicClient::new(
             secure,
             insecure,
-            local_upload,
             import_semaphore,
             local_engine.temp_dir.clone(),
         );
@@ -79,7 +74,6 @@ impl StandaloneGatewayState {
             app_icon,
             opds,
             subsonic,
-            local_gateway_url,
             expected_port,
         })
     }
@@ -247,13 +241,8 @@ pub async fn start_gateway_with_icon_applier(
     let addr = listener.local_addr()?;
     let url = format_gateway_url(addr);
 
-    let state = StandaloneGatewayState::new(
-        local_engine.clone(),
-        sources,
-        app_icon.clone(),
-        url.clone(),
-        addr.port(),
-    )?;
+    let state =
+        StandaloneGatewayState::new(local_engine.clone(), sources, app_icon.clone(), addr.port())?;
     let router = build_gateway_router(state, xmedia_router);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -317,8 +306,7 @@ pub async fn run_gateway_forever(
     let addr = listener.local_addr()?;
     let url = format_gateway_url(addr);
 
-    let state =
-        StandaloneGatewayState::new(local_engine, sources, app_icon, url.clone(), addr.port())?;
+    let state = StandaloneGatewayState::new(local_engine, sources, app_icon, addr.port())?;
     let router = build_gateway_router(state, xmedia_router);
 
     tracing::info!(%url, "XMedia standalone local loopback gateway listening");

@@ -8498,6 +8498,7 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "tokio",
+ "tower-service",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -8584,6 +8585,29 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "xmedia-formats",
+]
+
+[[package]]
+name = "xmedia-formats"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "blake3",
+ "chardetng",
+ "encoding_rs",
+ "hex",
+ "image",
+ "jiff 0.2.46",
+ "lofty",
+ "lopdf",
+ "quick-xml",
+ "regex",
+ "serde",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "uuid",
+ "zip",
 ]
 
 [[package]]
@@ -8612,9 +8636,13 @@ dependencies = [
 name = "xmedia-source"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
  "base64 0.23.1",
+ "bytes",
  "chardetng",
  "encoding_rs",
+ "futures-core",
  "hex",
  "jiff 0.2.46",
  "md-5",
