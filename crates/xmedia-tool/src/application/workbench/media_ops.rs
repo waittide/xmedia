@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -9,26 +10,15 @@ use super::MediaWorkbenchService;
 use crate::domain::media::{
     ComicMetaPatch, MediaFileDetail, MediaMetadataPatch, MusicMetaPatch, VideoMetaPatch,
 };
+use crate::domain::ops::{
+    BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, BatchMusicAlbumSyncInput,
+    BatchMusicAlbumSyncReportDto, BatchRemapEpisodesInput, BatchRemapEpisodesReportDto,
+    ComicImageReencodeFormat, ComicOptimizeReportDto, ComicPagesSnapshotDto, CueSplitReportDto,
+    ExtractSubtitleReportDto, MergeComicsReportDto, MusicCoverOptimizeReportDto,
+    MusicLyricsToolInput, MusicLyricsToolReportDto, ProcessSubtitleInput, ProcessSubtitleReportDto,
+    ReplayGainReportDto, SaveComicPageInput, VideoSubtitleInfoDto,
+};
 use crate::domain::workspace::{RootId, path_to_slash};
-use crate::infra::inspectors::comic_ops::{
-    BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
-    ComicOptimizeReportDto, ComicPagesSnapshotDto, MergeComicsReportDto, SaveComicPageInput,
-    list_comic_pages, merge_comics_to_cbz, optimize_comic_cbz, read_comic_page_image,
-    save_comic_pages,
-};
-use crate::infra::inspectors::music_ops::{
-    BatchMusicAlbumSyncInput, BatchMusicAlbumSyncReportDto, CueSplitReportDto,
-    MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
-    ReplayGainReportDto, apply_replaygain_batch, optimize_music_cover, process_music_lyrics,
-    split_cue_album,
-};
-use crate::infra::inspectors::video::{read_base_video_meta, render_season_nfo_xml_preserving};
-use crate::infra::inspectors::video_ops::{
-    BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
-    ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
-    extract_embedded_subtitle, list_video_subtitles, process_video_subtitle,
-};
-use crate::infra::workspace_fs::{resolve_existing_in_root, resolve_target_in_root};
 
 impl MediaWorkbenchService {
     pub async fn get_comic_pages(
@@ -40,7 +30,8 @@ impl MediaWorkbenchService {
             .resolve_media_file(root_id, rel_path, Some(MediaKind::Comic))
             .await?;
         let abs = sandbox.abs_path;
-        tokio::task::spawn_blocking(move || list_comic_pages(&abs))
+        let toolbox = Arc::clone(&self.toolbox);
+        tokio::task::spawn_blocking(move || toolbox.list_comic_pages(&abs))
             .await
             .map_err(|e| DomainError::Storage(format!("list comic pages task failed: {e}")))?
     }
@@ -57,7 +48,8 @@ impl MediaWorkbenchService {
             .await?;
         let abs = sandbox.abs_path;
         let entry = entry_name.to_string();
-        tokio::task::spawn_blocking(move || read_comic_page_image(&abs, &entry, max_width))
+        let toolbox = Arc::clone(&self.toolbox);
+        tokio::task::spawn_blocking(move || toolbox.read_comic_page_image(&abs, &entry, max_width))
             .await
             .map_err(|e| DomainError::Storage(format!("read comic page task failed: {e}")))?
     }
@@ -75,8 +67,9 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Comic))
             .await?;
         let abs = sandbox.abs_path;
+        let toolbox = Arc::clone(&self.toolbox);
         let report = tokio::task::spawn_blocking(move || {
-            save_comic_pages(&abs, &pages, reencode, jpeg_quality, max_width)
+            toolbox.save_comic_pages(&abs, &pages, reencode, jpeg_quality, max_width)
         })
         .await
         .map_err(|e| DomainError::Storage(format!("save comic pages task failed: {e}")))??;
@@ -98,8 +91,9 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Comic))
             .await?;
         let abs = sandbox.abs_path;
+        let toolbox = Arc::clone(&self.toolbox);
         let report = tokio::task::spawn_blocking(move || {
-            optimize_comic_cbz(&abs, reencode, jpeg_quality, max_width)
+            toolbox.optimize_comic_cbz(&abs, reencode, jpeg_quality, max_width)
         })
         .await
         .map_err(|e| DomainError::Storage(format!("optimize comic task failed: {e}")))??;
@@ -122,7 +116,7 @@ impl MediaWorkbenchService {
         root.ensure_writable()?;
         let mut abs_sources = Vec::with_capacity(source_paths.len());
         for rel in &source_paths {
-            let sb = resolve_existing_in_root(&root, rel)?;
+            let sb = self.fs.resolve_existing_in_root(&root, rel)?;
             abs_sources.push(sb.abs_path);
         }
         let target_rel = if output_rel_path.to_ascii_lowercase().ends_with(".cbz") {
@@ -130,7 +124,7 @@ impl MediaWorkbenchService {
         } else {
             format!("{output_rel_path}.cbz")
         };
-        let target_abs = resolve_target_in_root(&root, &target_rel)?;
+        let target_abs = self.fs.resolve_target_in_root(&root, &target_rel)?;
         if let Some(parent) = target_abs.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 DomainError::Storage(format!("create merge output dir failed: {e}"))
@@ -141,8 +135,16 @@ impl MediaWorkbenchService {
             .map(path_to_slash)
             .unwrap_or_else(|_| target_rel.clone());
         let report_rel = target_rel_slash.clone();
+        let toolbox = Arc::clone(&self.toolbox);
         let report = tokio::task::spawn_blocking(move || {
-            merge_comics_to_cbz(&abs_sources, &target_abs, report_rel, series, title, volume)
+            toolbox.merge_comics_to_cbz(
+                &abs_sources,
+                &target_abs,
+                report_rel,
+                series,
+                title,
+                volume,
+            )
         })
         .await
         .map_err(|e| DomainError::Storage(format!("merge comics task failed: {e}")))??;
@@ -226,9 +228,13 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Music))
             .await?;
         let abs = sandbox.abs_path;
-        let report = tokio::task::spawn_blocking(move || process_music_lyrics(&abs, &input))
-            .await
-            .map_err(|e| DomainError::Storage(format!("music lyrics tool task failed: {e}")))??;
+        let toolbox = Arc::clone(&self.toolbox);
+        let report =
+            tokio::task::spawn_blocking(move || toolbox.process_music_lyrics(&abs, &input))
+                .await
+                .map_err(|e| {
+                    DomainError::Storage(format!("music lyrics tool task failed: {e}"))
+                })??;
         let detail = self
             .inspect_file(root_id, rel_path, Some(MediaKind::Music))
             .await?;
@@ -246,8 +252,9 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Music))
             .await?;
         let abs = sandbox.abs_path;
+        let toolbox = Arc::clone(&self.toolbox);
         let report = tokio::task::spawn_blocking(move || {
-            optimize_music_cover(&abs, max_dimension, jpeg_quality)
+            toolbox.optimize_music_cover(&abs, max_dimension, jpeg_quality)
         })
         .await
         .map_err(|e| DomainError::Storage(format!("optimize music cover task failed: {e}")))??;
@@ -266,14 +273,15 @@ impl MediaWorkbenchService {
         root.ensure_writable()?;
         let mut resolved = Vec::with_capacity(paths.len());
         for rel in paths {
-            if let Ok(sb) = resolve_existing_in_root(&root, &rel)
+            if let Ok(sb) = self.fs.resolve_existing_in_root(&root, &rel)
                 && sb.abs_path.is_file()
             {
                 resolved.push((sb.rel_slash_string(), sb.abs_path));
             }
         }
         let ffmpeg_bin = self.ffmpeg.ffmpeg_bin().to_string();
-        tokio::task::spawn_blocking(move || apply_replaygain_batch(&resolved, &ffmpeg_bin))
+        let toolbox = Arc::clone(&self.toolbox);
+        tokio::task::spawn_blocking(move || toolbox.apply_replaygain_batch(&resolved, &ffmpeg_bin))
             .await
             .map_err(|e| DomainError::Storage(format!("replaygain task failed: {e}")))?
     }
@@ -285,10 +293,11 @@ impl MediaWorkbenchService {
     ) -> DomainResult<CueSplitReportDto> {
         let root = self.settings.find_root(root_id).await?;
         root.ensure_writable()?;
-        let sb = resolve_existing_in_root(&root, rel_path)?;
+        let sb = self.fs.resolve_existing_in_root(&root, rel_path)?;
         let abs = sb.abs_path;
         let ffmpeg_bin = self.ffmpeg.ffmpeg_bin().to_string();
-        tokio::task::spawn_blocking(move || split_cue_album(&abs, &ffmpeg_bin))
+        let toolbox = Arc::clone(&self.toolbox);
+        tokio::task::spawn_blocking(move || toolbox.split_cue_album(&abs, &ffmpeg_bin))
             .await
             .map_err(|e| DomainError::Storage(format!("split cue task failed: {e}")))?
     }
@@ -361,7 +370,8 @@ impl MediaWorkbenchService {
             .resolve_media_file(root_id, rel_path, Some(MediaKind::Video))
             .await?;
         let abs = sandbox.abs_path;
-        tokio::task::spawn_blocking(move || list_video_subtitles(&abs))
+        let toolbox = Arc::clone(&self.toolbox);
+        tokio::task::spawn_blocking(move || toolbox.list_video_subtitles(&abs))
             .await
             .map_err(|e| DomainError::Storage(format!("list video subtitles task failed: {e}")))?
     }
@@ -376,9 +386,13 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Video))
             .await?;
         let abs = sandbox.abs_path;
-        let report = tokio::task::spawn_blocking(move || process_video_subtitle(&abs, &input))
-            .await
-            .map_err(|e| DomainError::Storage(format!("process subtitle task failed: {e}")))??;
+        let toolbox = Arc::clone(&self.toolbox);
+        let report =
+            tokio::task::spawn_blocking(move || toolbox.process_video_subtitle(&abs, &input))
+                .await
+                .map_err(|e| {
+                    DomainError::Storage(format!("process subtitle task failed: {e}"))
+                })??;
         let detail = self
             .inspect_file(root_id, rel_path, Some(MediaKind::Video))
             .await?;
@@ -398,8 +412,9 @@ impl MediaWorkbenchService {
             .await?;
         let abs = sandbox.abs_path;
         let ffmpeg_bin = self.ffmpeg.ffmpeg_bin().to_string();
+        let toolbox = Arc::clone(&self.toolbox);
         let report = tokio::task::spawn_blocking(move || {
-            extract_embedded_subtitle(
+            toolbox.extract_embedded_subtitle(
                 &abs,
                 stream_index,
                 language_tag.as_deref(),
@@ -429,14 +444,14 @@ impl MediaWorkbenchService {
         let mut written_season_dirs: HashSet<PathBuf> = HashSet::new();
 
         for (idx, rel_path) in paths.iter().enumerate() {
-            let sb = match resolve_existing_in_root(&root, rel_path) {
+            let sb = match self.fs.resolve_existing_in_root(&root, rel_path) {
                 Ok(sb) => sb,
                 Err(_) => {
                     failed_paths.push(rel_path.clone());
                     continue;
                 }
             };
-            let base = read_base_video_meta(&sb.abs_path);
+            let base = self.toolbox.read_base_video_meta(&sb.abs_path);
             let new_ep = if input.mode == "absolute_offset" {
                 let cur = base.episode_number.unwrap_or((idx + 1) as u32) as i32;
                 (cur + input.episode_offset).max(1) as u32
@@ -468,7 +483,7 @@ impl MediaWorkbenchService {
                     {
                         let season_nfo_path = parent.join("season.nfo");
                         let prev_season = std::fs::read(&season_nfo_path).ok();
-                        let nfo = render_season_nfo_xml_preserving(
+                        let nfo = self.toolbox.render_season_nfo_xml(
                             season_num,
                             None,
                             base.year,
@@ -477,11 +492,10 @@ impl MediaWorkbenchService {
                             base.bangumi_id.as_deref(),
                             prev_season.as_deref(),
                         );
-                        if crate::infra::atomic_fs::atomic_write_bytes(
-                            &season_nfo_path,
-                            nfo.as_bytes(),
-                        )
-                        .is_ok()
+                        if self
+                            .fs
+                            .atomic_write_bytes(&season_nfo_path, nfo.as_bytes())
+                            .is_ok()
                         {
                             written_season_dirs.insert(parent.to_path_buf());
                         }

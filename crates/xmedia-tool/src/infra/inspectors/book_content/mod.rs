@@ -9,14 +9,17 @@ mod tests;
 use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
-use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_formats::decode_text_smart;
 
-use crate::infra::inspectors::book::read_book_meta_any;
-use crate::infra::inspectors::zh_text::{
+pub use crate::domain::ops::{
+    BookContentDocumentDto, ChapterEditMode, EditableBookChapterDto, InsertedEpubImageDto,
+    PolishBookReportDto, SaveBookChapterInput, TransformBookContentResultDto,
+};
+use crate::domain::zh_text::{
     BookTextTransformOptions, apply_text_transforms_to_chapter, rewrite_css_vertical_to_horizontal,
 };
+use crate::infra::inspectors::book::read_book_meta_any;
 
 pub use epub_io::read_epub_internal_asset;
 pub(crate) use epub_io::{
@@ -61,71 +64,6 @@ p {
   object-fit: contain;
 }
 "#;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ChapterEditMode {
-    #[default]
-    Plain,
-    Xhtml,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EditableBookChapterDto {
-    pub id: String,
-    pub title: String,
-    /// `0` = Volume / Top-level chapter, `1` = Sub-chapter nested under preceding `0`
-    pub level: u8,
-    pub plain_text: String,
-    pub xhtml_body: String,
-    pub has_rich_media: bool,
-    pub source_href: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BookContentDocumentDto {
-    pub format: String,
-    pub title: String,
-    pub authors: Vec<String>,
-    #[serde(default)]
-    pub stylesheets: Vec<String>,
-    pub chapters: Vec<EditableBookChapterDto>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SaveBookChapterInput {
-    pub title: String,
-    #[serde(default)]
-    pub level: u8,
-    #[serde(default)]
-    pub mode: ChapterEditMode,
-    #[serde(default)]
-    pub plain_text: String,
-    #[serde(default)]
-    pub xhtml_body: String,
-    #[serde(default)]
-    pub source_href: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransformBookContentResultDto {
-    pub chapters: Vec<EditableBookChapterDto>,
-    pub stylesheets: Vec<String>,
-    pub changed_chapters: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InsertedEpubImageDto {
-    pub asset_path: String,
-    pub chapter_rel_href: String,
-    pub mime_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolishBookReportDto {
-    pub jacket_updated: bool,
-    pub removed_orphan_files: usize,
-}
 
 const USER_REGEX_SIZE_LIMIT: usize = 2 * 1024 * 1024;
 

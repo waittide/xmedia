@@ -12,6 +12,7 @@ use crate::application::auth::ToolAuthService;
 use crate::application::scraping::ScrapingOrchestratorService;
 use crate::application::settings::ToolSettingsService;
 use crate::application::workbench::MediaWorkbenchService;
+use crate::domain::ports::HttpWebhookPort;
 
 #[derive(Clone, Debug, Default)]
 pub struct ToolRequestSecurityPolicy {
@@ -49,6 +50,7 @@ pub struct ToolHttpState {
     pub settings: ToolSettingsService,
     pub workbench: MediaWorkbenchService,
     pub scraping: ScrapingOrchestratorService,
+    pub webhook: Arc<dyn HttpWebhookPort>,
     pub ffmpeg: FfmpegToolkit,
     pub external_web_dir: Option<PathBuf>,
     pub security: ToolRequestSecurityPolicy,

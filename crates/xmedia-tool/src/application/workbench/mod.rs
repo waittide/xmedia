@@ -3,6 +3,7 @@ mod browse;
 mod media_ops;
 mod metadata;
 mod rename;
+mod rename_exec;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,10 +21,11 @@ use crate::application::batch_metadata::MetadataHistoryBatchDto;
 use crate::application::settings::ToolSettingsService;
 use crate::domain::config::RenameTemplates;
 use crate::domain::media::{MediaFileEntry, MediaMetadataPayload, RenameConflictPolicy};
-use crate::domain::ports::MediaInspectorPort;
+use crate::domain::ports::{
+    HttpWebhookPort, MediaInspectorPort, MediaToolboxPort, WorkspaceFsPort,
+};
 use crate::domain::template::render_template_target;
 use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
-use crate::infra::workspace_fs::resolve_existing_in_root;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkbenchProgress {
@@ -77,6 +79,9 @@ pub struct UndoRenameReportDto {
 pub struct MediaWorkbenchService {
     pub(super) settings: ToolSettingsService,
     pub(super) inspectors: Vec<Arc<dyn MediaInspectorPort>>,
+    pub(super) fs: Arc<dyn WorkspaceFsPort>,
+    pub(super) toolbox: Arc<dyn MediaToolboxPort>,
+    pub(super) webhook: Arc<dyn HttpWebhookPort>,
     pub(super) ffmpeg: FfmpegToolkit,
     pub(super) rename_history: Arc<RwLock<Vec<RenameHistoryBatchDto>>>,
     pub(super) metadata_history: Arc<RwLock<Vec<MetadataHistoryBatchDto>>>,
@@ -87,16 +92,34 @@ impl MediaWorkbenchService {
     pub fn new(
         settings: ToolSettingsService,
         inspectors: Vec<Arc<dyn MediaInspectorPort>>,
+        fs: Arc<dyn WorkspaceFsPort>,
+        toolbox: Arc<dyn MediaToolboxPort>,
+        webhook: Arc<dyn HttpWebhookPort>,
         ffmpeg: FfmpegToolkit,
     ) -> Self {
         Self {
             settings,
             inspectors,
+            fs,
+            toolbox,
+            webhook,
             ffmpeg,
             rename_history: Arc::new(RwLock::new(Vec::new())),
             metadata_history: Arc::new(RwLock::new(Vec::new())),
             root_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn fs(&self) -> &Arc<dyn WorkspaceFsPort> {
+        &self.fs
+    }
+
+    pub fn toolbox(&self) -> &Arc<dyn MediaToolboxPort> {
+        &self.toolbox
+    }
+
+    pub fn webhook(&self) -> &Arc<dyn HttpWebhookPort> {
+        &self.webhook
     }
 
     pub(crate) fn root_write_lock(&self, root_id: RootId) -> Arc<tokio::sync::Mutex<()>> {
@@ -166,7 +189,7 @@ impl MediaWorkbenchService {
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<(ManagedRoot, SandboxPath, Arc<dyn MediaInspectorPort>)> {
         let root = self.settings.find_root(root_id).await?;
-        let sandbox = resolve_existing_in_root(&root, rel_path)?;
+        let sandbox = self.fs.resolve_existing_in_root(&root, rel_path)?;
         let effective_pref = preferred_kind.or(root.default_kind);
         if !sandbox.abs_path.is_file() && !sandbox.abs_path.is_dir() {
             return Err(DomainError::Validation(format!(

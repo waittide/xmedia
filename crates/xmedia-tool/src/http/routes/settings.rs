@@ -9,9 +9,7 @@ use xmedia_core::http::ApiResult;
 
 use crate::application::inbox::{InboxScanReportDto, scan_and_import_inbox};
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
-use crate::application::webhook::{
-    WebhookTestReportDto, test_xmedia_webhook, trigger_xmedia_rescan,
-};
+use crate::domain::ops::WebhookTestReportDto;
 use crate::domain::workspace::{ManagedRoot, RootId};
 use crate::http::ToolHttpState;
 
@@ -85,7 +83,7 @@ async fn test_webhook_route(
     State(state): State<ToolHttpState>,
 ) -> ApiResult<Json<WebhookTestReportDto>> {
     let settings = state.settings.get_raw().await?;
-    let report = test_xmedia_webhook(&settings.xmedia_webhook).await?;
+    let report = state.webhook.test_webhook(&settings.xmedia_webhook).await?;
     Ok(Json(report))
 }
 
@@ -109,7 +107,10 @@ async fn trigger_webhook_route(
                 .map(|r| r.path.clone())
         })
     });
-    let report = trigger_xmedia_rescan(&settings.xmedia_webhook, root_path.as_deref()).await?;
+    let report = state
+        .webhook
+        .trigger_rescan(&settings.xmedia_webhook, root_path.as_deref())
+        .await?;
     Ok(Json(report))
 }
 

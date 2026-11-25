@@ -14,10 +14,6 @@ use crate::domain::media::{
 };
 use crate::domain::ports::MediaInspectorPort;
 use crate::domain::workspace::{RootId, path_to_slash};
-use crate::infra::atomic_fs::{
-    cleanup_empty_parent_dirs, find_companion_sidecars, is_shared_dir_sidecar_name,
-};
-use crate::infra::workspace_fs::resolve_existing_in_root;
 
 impl MediaWorkbenchService {
     pub async fn browse_directory(
@@ -53,13 +49,14 @@ impl MediaWorkbenchService {
         let rel_path_owned = rel_path.to_string();
         let root_for_scan = root.clone();
         let inspectors = self.inspectors.clone();
+        let fs = Arc::clone(&self.fs);
         let effective_pref = domain_filter.or(root.default_kind);
 
         let (progress_tx, mut progress_rx) =
             tokio::sync::mpsc::unbounded_channel::<WorkbenchProgress>();
 
         let scan_handle = tokio::task::spawn_blocking(move || {
-            let dir_sandbox = resolve_existing_in_root(&root_for_scan, &rel_path_owned)?;
+            let dir_sandbox = fs.resolve_existing_in_root(&root_for_scan, &rel_path_owned)?;
             if !dir_sandbox.abs_path.is_dir() {
                 return Err(DomainError::Validation(format!(
                     "'{}' is not a directory",
@@ -372,6 +369,7 @@ impl MediaWorkbenchService {
         root.ensure_writable()?;
         let rel_paths_owned = rel_paths.to_vec();
         let inspectors = self.inspectors.clone();
+        let fs = Arc::clone(&self.fs);
 
         tokio::task::spawn_blocking(move || {
             let mut deleted_paths = Vec::new();
@@ -398,7 +396,7 @@ impl MediaWorkbenchService {
                 }) {
                     continue;
                 }
-                let sandbox = match resolve_existing_in_root(&root, trimmed) {
+                let sandbox = match fs.resolve_existing_in_root(&root, trimmed) {
                     Ok(sb) => sb,
                     Err(err) => {
                         failed.push(DeleteFileErrorDto {
@@ -446,7 +444,7 @@ impl MediaWorkbenchService {
 
                 let old_parent = sandbox.abs_path.parent().map(Path::to_path_buf);
                 let companions: Vec<PathBuf> = if delete_companions {
-                    find_companion_sidecars(&sandbox.abs_path)
+                    fs.find_companion_sidecars(&sandbox.abs_path)
                         .into_iter()
                         .map(|(p, _)| p)
                         .filter(|p| {
@@ -454,7 +452,7 @@ impl MediaWorkbenchService {
                             let is_shared = p
                                 .file_name()
                                 .and_then(|s| s.to_str())
-                                .is_some_and(is_shared_dir_sidecar_name);
+                                .is_some_and(|n| fs.is_shared_dir_sidecar_name(n));
                             !is_shared && !is_media_path(p)
                         })
                         .collect()
@@ -487,7 +485,7 @@ impl MediaWorkbenchService {
                         }
                     }
                     if let Some(ref prev_dir) = old_parent {
-                        cleanup_empty_parent_dirs(prev_dir, &root.path);
+                        fs.cleanup_empty_parent_dirs(prev_dir, &root.path);
                     }
                 }
             }

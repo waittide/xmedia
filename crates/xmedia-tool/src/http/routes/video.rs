@@ -6,13 +6,13 @@ use uuid::Uuid;
 use xmedia_core::http::ApiResult;
 
 use crate::domain::media::MediaFileDetail;
-use crate::domain::workspace::RootId;
-use crate::http::ToolHttpState;
-use crate::http::routes::FileTargetQuery;
-use crate::infra::inspectors::video_ops::{
+use crate::domain::ops::{
     BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
     ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
 };
+use crate::domain::workspace::RootId;
+use crate::http::ToolHttpState;
+use crate::http::routes::FileTargetQuery;
 
 pub(super) fn router() -> Router<ToolHttpState> {
     Router::new()

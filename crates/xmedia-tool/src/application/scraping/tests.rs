@@ -1,22 +1,14 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use xmedia_core::domain::error::DomainError;
-use xmedia_core::domain::library::MediaKind;
-
-use super::ScrapingOrchestratorService;
 use super::mapping::{
-    apply_video_locked_fields, compute_scrape_confidence, fallback_metadata_from_candidate,
-    filter_scraped_metadata_by_groups,
+    compute_scrape_confidence, fallback_metadata_from_candidate, filter_scraped_metadata_by_groups,
 };
-use crate::application::settings::ToolSettingsService;
-use crate::application::workbench::MediaWorkbenchService;
 use crate::domain::media::VideoMetaPatch;
+use crate::domain::media_patch::strip_video_locked_fields;
 use crate::domain::scraper::{
     AggregateScrapeResponse, MergedScrapedResult, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind,
     ScrapedMetadata,
 };
-use crate::infra::scrapers::http_client::validate_public_http_url;
 
 #[test]
 fn compute_confidence_rewards_exact_title_creator_and_year() {
@@ -152,35 +144,6 @@ fn fallback_metadata_recognizes_qq_migu_and_17k_provider_ids() {
 }
 
 #[test]
-fn validate_public_http_url_blocks_private_cgnat_and_ipv6_ranges() {
-    for blocked in [
-        "http://127.0.0.1/a.jpg",
-        "http://localhost/a.jpg",
-        "http://foo.local/a.jpg",
-        "http://10.0.0.1/a.jpg",
-        "http://172.16.0.1/a.jpg",
-        "http://172.31.255.1/a.jpg",
-        "http://192.168.0.1/a.jpg",
-        "http://169.254.169.254/latest/meta-data/",
-        "http://100.64.0.1/a.jpg",
-        "http://0.0.0.0/a.jpg",
-        "http://[::1]/a.jpg",
-        "http://[fc00::1]/a.jpg",
-        "http://[fe80::1]/a.jpg",
-        "http://[::ffff:127.0.0.1]/a.jpg",
-        "http://[::ffff:172.16.1.1]/a.jpg",
-        "file:///etc/passwd",
-        "https://user:pass@1.1.1.1/a.jpg",
-    ] {
-        assert!(
-            validate_public_http_url(blocked).is_err(),
-            "expected {blocked} to be rejected"
-        );
-    }
-    assert!(validate_public_http_url("https://1.1.1.1/cover.jpg").is_ok());
-}
-
-#[test]
 fn apply_video_locked_fields_strips_locked_metadata_and_cover() {
     let mut vp = VideoMetaPatch {
         title: Some("New Title".into()),
@@ -190,7 +153,7 @@ fn apply_video_locked_fields_strips_locked_metadata_and_cover() {
         ..Default::default()
     };
     let mut apply_cover = true;
-    apply_video_locked_fields(
+    strip_video_locked_fields(
         &mut vp,
         &["title".into(), "overview".into(), "poster".into()],
         &mut apply_cover,
@@ -200,55 +163,4 @@ fn apply_video_locked_fields_strips_locked_metadata_and_cover() {
     assert_eq!(vp.genres, Some(vec!["Action".into()]));
     assert_eq!(vp.year, Some(2025));
     assert!(!apply_cover);
-}
-
-#[tokio::test]
-async fn apply_video_jellyfin_archive_enforces_read_only_root() {
-    use crate::infra::config_store::JsonFileConfigRepository;
-    use crate::infra::inspectors::build_default_inspectors;
-
-    let tmp = tempfile::tempdir().unwrap();
-    let video_dir = tmp.path().join("videos");
-    std::fs::create_dir_all(&video_dir).unwrap();
-    std::fs::write(video_dir.join("Movie (2024).mkv"), b"dummy").unwrap();
-
-    let repo = Arc::new(
-        JsonFileConfigRepository::load_or_init(tmp.path().join("tool-config.json"), &[]).unwrap(),
-    );
-    let settings = ToolSettingsService::new(repo);
-    let root = settings
-        .add_root_with_options(
-            "ReadOnly".into(),
-            video_dir.to_string_lossy().into_owned(),
-            Some(MediaKind::Video),
-            true,
-        )
-        .await
-        .unwrap();
-    let ffmpeg = xmedia_core::infra::ffmpeg::FfmpegToolkit::from_ffmpeg_bin("ffmpeg");
-    let workbench = MediaWorkbenchService::new(
-        settings.clone(),
-        build_default_inspectors(ffmpeg.clone()),
-        ffmpeg,
-    );
-    let scraping = ScrapingOrchestratorService::new(settings, workbench, vec![]);
-
-    let err = scraping
-        .apply_to_file(
-            root.id,
-            "Movie (2024).mkv",
-            MediaKind::Video,
-            ScrapedMetadata {
-                title: Some("Movie".into()),
-                year: Some(2024),
-                ..Default::default()
-            },
-            false,
-            false,
-            Some(true),
-            false,
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(err, DomainError::Forbidden(_)));
 }

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -6,18 +7,13 @@ use xmedia_core::domain::library::MediaKind;
 
 use super::MediaWorkbenchService;
 use crate::domain::media::MediaFileDetail;
-use crate::domain::workspace::{RootId, path_to_slash};
-use crate::infra::inspectors::book_content::{
-    BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto, PolishBookReportDto,
-    SaveBookChapterInput, TransformBookContentResultDto, convert_txt_to_epub, insert_epub_image,
-    polish_epub_book, read_book_content, read_epub_internal_asset, resegment_txt_file,
-    save_book_content, transform_book_content_batch,
-};
-use crate::infra::inspectors::book_normalize::{
+use crate::domain::ops::{
+    BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto,
     NormalizeBookItemReportDto, NormalizeBookToEpubOptions, NormalizeBooksBatchReportDto,
-    normalize_book_to_epub,
+    PolishBookReportDto, SaveBookChapterInput, TransformBookContentResultDto,
 };
-use crate::infra::inspectors::zh_text::BookTextTransformOptions;
+use crate::domain::workspace::{RootId, path_to_slash};
+use crate::domain::zh_text::BookTextTransformOptions;
 
 impl MediaWorkbenchService {
     pub async fn read_epub_asset(
@@ -31,7 +27,8 @@ impl MediaWorkbenchService {
             .await?;
         let abs = sandbox.abs_path;
         let asset_owned = asset_path.to_string();
-        tokio::task::spawn_blocking(move || read_epub_internal_asset(&abs, &asset_owned))
+        let toolbox = Arc::clone(&self.toolbox);
+        tokio::task::spawn_blocking(move || toolbox.read_epub_internal_asset(&abs, &asset_owned))
             .await
             .map_err(|e| DomainError::Storage(format!("epub asset read task failed: {e}")))?
     }
@@ -45,7 +42,8 @@ impl MediaWorkbenchService {
             .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path;
-        tokio::task::spawn_blocking(move || read_book_content(&abs))
+        let toolbox = Arc::clone(&self.toolbox);
+        tokio::task::spawn_blocking(move || toolbox.read_book_content(&abs))
             .await
             .map_err(|e| DomainError::Storage(format!("book content read task failed: {e}")))?
     }
@@ -61,8 +59,9 @@ impl MediaWorkbenchService {
             .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path;
+        let toolbox = Arc::clone(&self.toolbox);
         tokio::task::spawn_blocking(move || {
-            resegment_txt_file(&abs, chapter_pattern.as_deref(), volume_pattern.as_deref())
+            toolbox.resegment_txt_file(&abs, chapter_pattern.as_deref(), volume_pattern.as_deref())
         })
         .await
         .map_err(|e| DomainError::Storage(format!("txt resegment task failed: {e}")))?
@@ -80,8 +79,9 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path.clone();
+        let toolbox = Arc::clone(&self.toolbox);
         tokio::task::spawn_blocking(move || {
-            save_book_content(
+            toolbox.save_book_content(
                 &abs,
                 &chapters,
                 stylesheets.as_deref(),
@@ -106,8 +106,9 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path.clone();
+        let toolbox = Arc::clone(&self.toolbox);
         let epub_abs = tokio::task::spawn_blocking(move || {
-            convert_txt_to_epub(
+            toolbox.convert_txt_to_epub(
                 &abs,
                 chapters.as_deref(),
                 stylesheets.as_deref(),
@@ -131,8 +132,9 @@ impl MediaWorkbenchService {
         stylesheets: Vec<String>,
         options: BookTextTransformOptions,
     ) -> DomainResult<TransformBookContentResultDto> {
+        let toolbox = Arc::clone(&self.toolbox);
         tokio::task::spawn_blocking(move || {
-            transform_book_content_batch(chapters, stylesheets, &options)
+            toolbox.transform_book_content_batch(chapters, stylesheets, &options)
         })
         .await
         .map_err(|e| DomainError::Storage(format!("book transform task failed: {e}")))?
@@ -150,8 +152,9 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path;
+        let toolbox = Arc::clone(&self.toolbox);
         tokio::task::spawn_blocking(move || {
-            insert_epub_image(
+            toolbox.insert_epub_image(
                 &abs,
                 chapter_source_href.as_deref(),
                 &bytes,
@@ -171,7 +174,8 @@ impl MediaWorkbenchService {
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path;
-        let report = tokio::task::spawn_blocking(move || polish_epub_book(&abs))
+        let toolbox = Arc::clone(&self.toolbox);
+        let report = tokio::task::spawn_blocking(move || toolbox.polish_epub_book(&abs))
             .await
             .map_err(|e| DomainError::Storage(format!("polish epub task failed: {e}")))??;
         let detail = self
@@ -231,11 +235,13 @@ impl MediaWorkbenchService {
             let abs = sandbox.abs_path;
             let root_path = root.path.clone();
             let opts_clone = options.clone();
-            let result =
-                tokio::task::spawn_blocking(move || normalize_book_to_epub(&abs, &opts_clone))
-                    .await
-                    .map_err(|e| DomainError::Storage(format!("normalize book task failed: {e}")))
-                    .and_then(|r| r);
+            let toolbox = Arc::clone(&self.toolbox);
+            let result = tokio::task::spawn_blocking(move || {
+                toolbox.normalize_book_to_epub(&abs, &opts_clone)
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("normalize book task failed: {e}")))
+            .and_then(|r| r);
 
             match result {
                 Ok(out) => {

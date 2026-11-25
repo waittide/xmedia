@@ -6,14 +6,14 @@ use uuid::Uuid;
 use xmedia_core::http::ApiResult;
 
 use crate::domain::media::MediaFileDetail;
-use crate::domain::workspace::RootId;
-use crate::http::ToolHttpState;
-use crate::http::routes::default_jpeg_quality;
-use crate::infra::inspectors::music_ops::{
+use crate::domain::ops::{
     BatchMusicAlbumSyncInput, BatchMusicAlbumSyncReportDto, CueSplitReportDto,
     MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
     ReplayGainReportDto,
 };
+use crate::domain::workspace::RootId;
+use crate::http::ToolHttpState;
+use crate::http::routes::default_jpeg_quality;
 
 pub(super) fn router() -> Router<ToolHttpState> {
     Router::new()

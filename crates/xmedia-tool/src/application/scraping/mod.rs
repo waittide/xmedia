@@ -1,4 +1,5 @@
 mod apply;
+mod apply_video;
 mod artwork;
 mod mapping;
 mod search;
@@ -11,8 +12,8 @@ use xmedia_core::domain::error::DomainResult;
 
 use crate::application::settings::ToolSettingsService;
 use crate::application::workbench::MediaWorkbenchService;
-use crate::domain::ports::ScraperProviderPort;
-use crate::infra::scrape_cache::{ScrapeCacheStatsDto, ScrapeMetadataCache};
+use crate::domain::ops::ScrapeCacheStatsDto;
+use crate::domain::ports::{ScrapeCachePort, ScraperProviderPort, ScraperTransportPort};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DryRunScrapeItemDto {
@@ -83,15 +84,13 @@ pub struct AutoScrapeResultDto {
 }
 
 /// Application service orchestrating pluggable `ScraperProviderPort` adapters.
-///
-/// Providers are registered dynamically via `register_provider` or `new(...)`, making
-/// new metadata/lyrics/artwork scrapers effortless to add without touching application logic.
 #[derive(Clone)]
 pub struct ScrapingOrchestratorService {
     pub(super) settings: ToolSettingsService,
     pub(super) workbench: MediaWorkbenchService,
     pub(super) providers: Arc<Vec<Arc<dyn ScraperProviderPort>>>,
-    pub(super) cache: ScrapeMetadataCache,
+    pub(super) cache: Arc<dyn ScrapeCachePort>,
+    pub(super) transport: Arc<dyn ScraperTransportPort>,
     pub(super) allow_private_artwork_ips: bool,
 }
 
@@ -100,21 +99,15 @@ impl ScrapingOrchestratorService {
         settings: ToolSettingsService,
         workbench: MediaWorkbenchService,
         providers: Vec<Arc<dyn ScraperProviderPort>>,
-    ) -> Self {
-        Self::with_cache_dir(settings, workbench, providers, None)
-    }
-
-    pub fn with_cache_dir(
-        settings: ToolSettingsService,
-        workbench: MediaWorkbenchService,
-        providers: Vec<Arc<dyn ScraperProviderPort>>,
-        cache_dir: Option<std::path::PathBuf>,
+        cache: Arc<dyn ScrapeCachePort>,
+        transport: Arc<dyn ScraperTransportPort>,
     ) -> Self {
         Self {
             settings,
             workbench,
             providers: Arc::new(providers),
-            cache: ScrapeMetadataCache::new(cache_dir),
+            cache,
+            transport,
             allow_private_artwork_ips: false,
         }
     }

@@ -9,108 +9,20 @@ use std::path::Path;
 use image::GenericImageView;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use serde::{Deserialize, Serialize};
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_formats::comic::probe_comic_pages;
 use xmedia_formats::sniff_image_mime;
 use zip::ZipArchive;
 
+pub use crate::domain::ops::{
+    BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
+    ComicOptimizeReportDto, ComicPageInfoDto, ComicPagesSnapshotDto, MergeComicsReportDto,
+    SaveComicPageInput,
+};
 use crate::infra::inspectors::map_format_err;
 
 pub use archive::{merge_comics_to_cbz, optimize_comic_cbz, save_comic_pages};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComicPageInfoDto {
-    pub index: usize,
-    pub entry_name: String,
-    pub file_size: u64,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    /// ComicInfo.xml PageType: "Story" | "FrontCover" | "InnerCover" | "BackCover" | "Advertisement" | "Deleted"
-    pub page_type: String,
-    pub double_page: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComicPagesSnapshotDto {
-    pub format: String,
-    pub total_pages: usize,
-    pub total_size_bytes: u64,
-    pub pages: Vec<ComicPageInfoDto>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SaveComicPageInput {
-    pub entry_name: String,
-    #[serde(default = "default_page_type")]
-    pub page_type: String,
-    #[serde(default)]
-    pub double_page: bool,
-}
-
-fn default_page_type() -> String {
-    "Story".to_string()
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ComicImageReencodeFormat {
-    #[default]
-    Keep,
-    Jpeg,
-    Webp,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComicOptimizeReportDto {
-    pub before_bytes: u64,
-    pub after_bytes: u64,
-    pub page_count: usize,
-    pub reencoded_pages: usize,
-    pub removed_junk_entries: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MergeComicsReportDto {
-    pub output_rel_path: String,
-    pub source_count: usize,
-    pub total_pages: usize,
-    pub output_bytes: u64,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct BatchComicSeriesSyncInput {
-    pub series: Option<String>,
-    pub series_group: Option<String>,
-    pub writers: Option<Vec<String>>,
-    pub pencillers: Option<Vec<String>>,
-    pub publisher: Option<String>,
-    pub genres: Option<Vec<String>>,
-    pub tags: Option<Vec<String>>,
-    pub reading_direction: Option<String>,
-    /// Optional sequential numbering mode: "none" | "chapter" | "volume"
-    #[serde(default)]
-    pub numbering_mode: String,
-    #[serde(default = "default_start_index")]
-    pub start_index: i32,
-    #[serde(default = "default_pad_width")]
-    pub pad_width: usize,
-}
-
-fn default_start_index() -> i32 {
-    1
-}
-
-fn default_pad_width() -> usize {
-    2
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchComicSeriesSyncReportDto {
-    pub updated_count: usize,
-    pub failed_paths: Vec<String>,
-}
 
 pub fn list_comic_pages(path: &Path) -> DomainResult<ComicPagesSnapshotDto> {
     let format = if path.is_dir() {

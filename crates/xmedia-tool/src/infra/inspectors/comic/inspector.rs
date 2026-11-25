@@ -164,66 +164,7 @@ pub(crate) fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
 }
 
 fn apply_comic_patch_fields(meta: &mut ComicFileMeta, cp: ComicMetaPatch) {
-    if let Some(series) = cp.series {
-        meta.series = (!series.trim().is_empty()).then(|| series.trim().to_string());
-    }
-    if let Some(sg) = cp.series_group {
-        meta.series_group = (!sg.trim().is_empty()).then(|| sg.trim().to_string());
-    }
-    if let Some(title) = cp.title {
-        meta.title = (!title.trim().is_empty()).then(|| title.trim().to_string());
-    }
-    if let Some(num) = cp.number {
-        meta.number = (!num.trim().is_empty()).then(|| num.trim().to_string());
-    }
-    if let Some(vol) = cp.volume {
-        meta.volume = (vol.is_finite() && vol >= 0.0).then_some(vol);
-    }
-    if let Some(sum) = cp.summary {
-        meta.summary = (!sum.trim().is_empty()).then(|| sum.trim().to_string());
-    }
-    if let Some(w) = cp.writers {
-        meta.writers = w
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Some(pen) = cp.pencillers {
-        meta.pencillers = pen
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Some(pub_name) = cp.publisher {
-        meta.publisher = (!pub_name.trim().is_empty()).then(|| pub_name.trim().to_string());
-    }
-    if let Some(g) = cp.genres {
-        meta.genres = g
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Some(tg) = cp.tags {
-        meta.tags = tg
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if cp.year.is_some() {
-        meta.year = cp.year.filter(|&y| y > 0);
-    }
-    if let Some(lang) = cp.language_iso {
-        meta.language_iso = (!lang.trim().is_empty()).then(|| lang.trim().to_string());
-    }
-    if let Some(dir) = cp.reading_direction
-        && !dir.trim().is_empty()
-    {
-        meta.reading_direction = dir.trim().to_ascii_lowercase();
-    }
+    meta.apply_patch(cp);
 }
 
 fn rewrite_zip_with_replacements(

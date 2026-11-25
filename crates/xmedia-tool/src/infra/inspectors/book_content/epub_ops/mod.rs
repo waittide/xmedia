@@ -10,8 +10,8 @@ use quick_xml::escape::escape;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use zip::ZipArchive;
 
+use crate::domain::zh_text::rewrite_css_vertical_to_horizontal;
 use crate::infra::inspectors::book::{normalize_zip_rel, read_book_meta_any, rewrite_epub_entries};
-use crate::infra::inspectors::zh_text::rewrite_css_vertical_to_horizontal;
 
 use super::epub_io::{
     ManifestNode, is_cover_wrapper_doc, is_nav_manifest_node, parse_epub_structure,

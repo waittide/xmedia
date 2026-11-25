@@ -6,8 +6,8 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::domain::media::{BookMetaPatch, MediaMetadataPatch};
 use crate::domain::ports::MediaInspectorPort;
+use crate::domain::zh_text::{BookTextTransformOptions, ZhConvertDirection};
 use crate::infra::inspectors::book::{EpubBookInspector, read_book_meta_any};
-use crate::infra::inspectors::zh_text::BookTextTransformOptions;
 
 use super::*;
 
@@ -176,7 +176,7 @@ async fn txt_segmentation_convert_to_epub_and_dual_mode_epub_edit_roundtrip() {
         before_tf.chapters,
         before_tf.stylesheets,
         &BookTextTransformOptions {
-            zh_direction: Some(crate::infra::inspectors::zh_text::ZhConvertDirection::T2s),
+            zh_direction: Some(ZhConvertDirection::T2s),
             vertical_to_horizontal: true,
             ..Default::default()
         },

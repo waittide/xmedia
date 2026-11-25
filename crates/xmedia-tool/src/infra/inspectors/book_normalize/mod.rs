@@ -8,127 +8,17 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::media::BookFileMeta;
+pub use crate::domain::ops::{
+    BookImageCompressFormat, NormalizeBookItemReportDto, NormalizeBookOutcome,
+    NormalizeBookToEpubOptions, NormalizeBooksBatchReportDto,
+};
 use crate::infra::inspectors::book_content::{
     FreshEpubBuildOptions, FreshEpubChapter, FreshEpubImage, write_fresh_epub_package,
 };
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_max_image_dim() -> Option<u32> {
-    Some(1600)
-}
-
-fn default_image_quality() -> u8 {
-    82
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BookImageCompressFormat {
-    #[default]
-    Webp,
-    Jpeg,
-    Keep,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NormalizeBookToEpubOptions {
-    /// Keep original source file (default: true).
-    /// - For TXT/PDF: keeps source `.txt`/`.pdf` alongside newly created `.epub`.
-    /// - For EPUB: backs up original to `<stem>.orig.epub` and writes normalized EPUB to `<stem>.epub`.
-    #[serde(default = "default_true")]
-    pub keep_source: bool,
-    /// Compress cover & embedded illustrations.
-    #[serde(default = "default_true")]
-    pub compress_images: bool,
-    /// Target format for compressed images: "webp" (default) | "jpeg" | "keep".
-    #[serde(default)]
-    pub image_format: BookImageCompressFormat,
-    /// Maximum longest dimension in pixels (e.g. 1600; None or < 320 disables resize).
-    #[serde(default = "default_max_image_dim")]
-    pub max_image_dimension: Option<u32>,
-    /// Quality for lossy JPEG compression/fallback (50..=95, default 82).
-    #[serde(default = "default_image_quality")]
-    pub image_quality: u8,
-    /// Insert or refresh standardized book jacket page (`xmedia_jacket.xhtml`).
-    #[serde(default = "default_true")]
-    pub generate_jacket: bool,
-    /// Remove unreferenced orphan files & OS junk (`__MACOSX`, `.DS_Store`, `Thumbs.db`).
-    #[serde(default = "default_true")]
-    pub remove_orphans: bool,
-    /// For scanned/image-only PDFs without extractable text, convert page images into image-page EPUB.
-    #[serde(default = "default_true")]
-    pub pdf_scanned_fallback: bool,
-    /// Skip EPUBs already tagged with `xmedia:normalized` and `.orig.epub` backup files (default: true).
-    #[serde(default = "default_true")]
-    pub skip_normalized: bool,
-}
-
-impl Default for NormalizeBookToEpubOptions {
-    fn default() -> Self {
-        Self {
-            keep_source: true,
-            compress_images: true,
-            image_format: BookImageCompressFormat::Webp,
-            max_image_dimension: default_max_image_dim(),
-            image_quality: default_image_quality(),
-            generate_jacket: true,
-            remove_orphans: true,
-            pdf_scanned_fallback: true,
-            skip_normalized: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct NormalizeBookOutcome {
-    pub output_path: PathBuf,
-    pub backup_path: Option<PathBuf>,
-    pub source_format: String,
-    pub before_bytes: u64,
-    pub after_bytes: u64,
-    pub chapter_count: usize,
-    pub compressed_images: usize,
-    pub removed_orphans: usize,
-    pub deleted_source: bool,
-    pub skipped: bool,
-    pub skip_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct NormalizeBookItemReportDto {
-    pub source_rel_path: String,
-    pub output_rel_path: Option<String>,
-    pub backup_rel_path: Option<String>,
-    pub source_format: String,
-    pub before_bytes: u64,
-    pub after_bytes: u64,
-    pub chapter_count: usize,
-    pub compressed_images: usize,
-    pub removed_orphans: usize,
-    pub deleted_source: bool,
-    pub skipped: bool,
-    pub skip_reason: Option<String>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct NormalizeBooksBatchReportDto {
-    pub total: usize,
-    pub succeeded: usize,
-    pub skipped: usize,
-    pub failed: usize,
-    pub total_before_bytes: u64,
-    pub total_after_bytes: u64,
-    pub items: Vec<NormalizeBookItemReportDto>,
-}
 
 /// Returns true if the filename matches an original EPUB backup produced by normalization
 /// (e.g. `book.orig.epub` or `book.orig.2.epub`).

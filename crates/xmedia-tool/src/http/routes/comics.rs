@@ -8,13 +8,13 @@ use uuid::Uuid;
 use xmedia_core::http::ApiResult;
 
 use crate::domain::media::MediaFileDetail;
-use crate::domain::workspace::RootId;
-use crate::http::ToolHttpState;
-use crate::http::routes::{FileTargetQuery, apply_sandboxed_asset_headers, default_jpeg_quality};
-use crate::infra::inspectors::comic_ops::{
+use crate::domain::ops::{
     BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
     ComicOptimizeReportDto, ComicPagesSnapshotDto, MergeComicsReportDto, SaveComicPageInput,
 };
+use crate::domain::workspace::RootId;
+use crate::http::ToolHttpState;
+use crate::http::routes::{FileTargetQuery, apply_sandboxed_asset_headers, default_jpeg_quality};
 
 pub(super) fn router() -> Router<ToolHttpState> {
     Router::new()

@@ -11,7 +11,7 @@ pub(crate) use xmedia_formats::video::{
 
 use super::artwork::{find_clearlogo_path, find_fanart_path, find_poster_path, find_thumb_path};
 use super::filename::{guess_video_from_path, list_sidecar_subtitles};
-use crate::domain::media::{VideoFileMeta, VideoMetaPatch};
+use crate::domain::media::VideoFileMeta;
 
 fn file_meta_to_nfo_meta(meta: &VideoFileMeta) -> VideoNfoMeta {
     VideoNfoMeta {
@@ -236,88 +236,6 @@ pub(crate) fn read_base_video_meta(path: &Path) -> VideoFileMeta {
     }
 
     meta
-}
-
-pub(crate) fn apply_video_patch_onto(meta: &mut VideoFileMeta, vp: VideoMetaPatch) {
-    if let Some(is_ep) = vp.is_episode {
-        meta.is_episode = is_ep;
-    }
-    if let Some(title) = vp.title
-        && !title.trim().is_empty()
-    {
-        meta.title = title.trim().to_string();
-    }
-    if let Some(orig) = vp.original_title {
-        meta.original_title = (!orig.trim().is_empty()).then(|| orig.trim().to_string());
-    }
-    if let Some(show) = vp.show_title {
-        meta.show_title = (!show.trim().is_empty()).then(|| show.trim().to_string());
-    }
-    if let Some(s) = vp.season_number {
-        meta.season_number = if s < 0 { None } else { Some(s as u32) };
-    }
-    if vp.episode_number.is_some() {
-        meta.episode_number = vp.episode_number.filter(|&n| n > 0);
-    }
-    if vp.year.is_some() {
-        meta.year = vp.year.filter(|&y| y > 0);
-    }
-    if vp.rating.is_some() {
-        meta.rating = vp.rating.filter(|&r| r > 0.0);
-    }
-    if let Some(summary) = vp.summary {
-        meta.summary = (!summary.trim().is_empty()).then(|| summary.trim().to_string());
-    }
-    if let Some(genres) = vp.genres {
-        meta.genres = genres
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Some(tags) = vp.tags {
-        meta.tags = tags
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Some(actors) = vp.actors {
-        meta.actors = actors
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Some(directors) = vp.directors {
-        meta.directors = directors
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Some(studio) = vp.studio {
-        meta.studio = (!studio.trim().is_empty()).then(|| studio.trim().to_string());
-    }
-    if let Some(tmdb) = vp.tmdb_id {
-        meta.tmdb_id = (!tmdb.trim().is_empty()).then(|| tmdb.trim().to_string());
-    }
-    if let Some(bgm) = vp.bangumi_id {
-        meta.bangumi_id = (!bgm.trim().is_empty()).then(|| bgm.trim().to_string());
-    }
-    if let Some(set_name) = vp.collection_set {
-        meta.collection_set = (!set_name.trim().is_empty()).then(|| set_name.trim().to_string());
-    }
-    if let Some(locks) = vp.locked_fields {
-        let mut clean = Vec::new();
-        for f in locks {
-            let low = f.trim().to_ascii_lowercase();
-            if !low.is_empty() && !clean.contains(&low) {
-                clean.push(low);
-            }
-        }
-        meta.locked_fields = clean;
-    }
 }
 
 #[cfg(test)]

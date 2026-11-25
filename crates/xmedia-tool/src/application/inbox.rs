@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
@@ -7,11 +8,8 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::application::scraping::{AutoScrapeOptions, ScrapingOrchestratorService};
 use crate::application::settings::ToolSettingsService;
-use crate::application::webhook::notify_xmedia_rescan;
 use crate::application::workbench::MediaWorkbenchService;
 use crate::domain::workspace::path_to_slash;
-use crate::infra::atomic_fs::cleanup_empty_parent_dirs;
-use crate::infra::workspace_fs::resolve_target_in_root;
 
 const INCOMPLETE_DOWNLOAD_SUFFIXES: &[&str] = &[
     ".part",
@@ -164,7 +162,10 @@ pub async fn scan_and_import_inbox(
     let mut failed_count = 0usize;
 
     for (src_abs, src_rel) in candidates {
-        let target_abs = match resolve_target_in_root(&target_root, &src_rel) {
+        let target_abs = match workbench
+            .fs()
+            .resolve_target_in_root(&target_root, &src_rel)
+        {
             Ok(p) => p,
             Err(e) => {
                 failed_count += 1;
@@ -196,7 +197,7 @@ pub async fn scan_and_import_inbox(
                 if inbox_cfg.delete_source
                     && let Some(ref p) = src_parent
                 {
-                    cleanup_empty_parent_dirs(p, &inbox_dir);
+                    workbench.fs().cleanup_empty_parent_dirs(p, &inbox_dir);
                 }
 
                 let mut final_rel = src_rel.clone();
@@ -253,8 +254,9 @@ pub async fn scan_and_import_inbox(
     if imported_count > 0 && settings.xmedia_webhook.notify_on_inbox {
         let webhook_cfg = settings.xmedia_webhook.clone();
         let root_path = target_root.path.clone();
+        let webhook = Arc::clone(workbench.webhook());
         tokio::spawn(async move {
-            notify_xmedia_rescan(&webhook_cfg, &root_path).await;
+            webhook.notify_rescan(&webhook_cfg, &root_path).await;
         });
     }
 

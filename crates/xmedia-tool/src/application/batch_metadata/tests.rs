@@ -1,7 +1,7 @@
 use xmedia_core::domain::library::MediaKind;
 
 use crate::domain::media::{BookFileMeta, MediaMetadataPatch, MediaMetadataPayload, MusicFileMeta};
-use crate::infra::inspectors::zh_text::ZhConvertDirection;
+use crate::domain::zh_text::ZhConvertDirection;
 
 use super::{
     BatchMetadataEditInput, BatchTextReplaceRule, build_batch_patch_for_payload,

@@ -4,7 +4,7 @@ use std::sync::{LazyLock, Mutex};
 use regex::Regex;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
-use crate::infra::inspectors::zh_text::{ZhConvertDirection, convert_zh_plain};
+use crate::domain::zh_text::{ZhConvertDirection, convert_zh_plain};
 
 use super::BatchTextReplaceRule;
 

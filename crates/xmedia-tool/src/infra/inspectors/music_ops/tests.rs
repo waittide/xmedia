@@ -2,7 +2,7 @@ use xmedia_core::domain::error::DomainError;
 use xmedia_formats::music::probe_audio_path;
 
 use super::*;
-use crate::infra::inspectors::zh_text::ZhConvertDirection;
+use crate::domain::zh_text::ZhConvertDirection;
 
 #[test]
 fn lrc_transform_shifts_timestamps_strips_credits_and_converts_zh() {

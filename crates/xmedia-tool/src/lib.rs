@@ -21,14 +21,22 @@ use crate::application::auth::ToolAuthService;
 use crate::application::scraping::ScrapingOrchestratorService;
 use crate::application::settings::ToolSettingsService;
 use crate::application::workbench::MediaWorkbenchService;
-use crate::domain::ports::ScraperProviderPort;
+use crate::domain::ports::{
+    HttpWebhookPort, MediaToolboxPort, ScrapeCachePort, ScraperProviderPort, ScraperTransportPort,
+    WorkspaceFsPort,
+};
 use crate::http::auth::guard_tool_http_request;
 use crate::http::routes::tool_api_router;
 use crate::http::static_files::serve_tool_spa;
 use crate::http::{ToolHttpState, ToolRequestSecurityPolicy};
 use crate::infra::config_store::JsonFileConfigRepository;
 use crate::infra::inspectors::build_default_inspectors;
+use crate::infra::inspectors::toolbox::DefaultMediaToolbox;
+use crate::infra::scrape_cache::ScrapeMetadataCache;
+use crate::infra::scrapers::artwork_downloader::ReqwestScraperTransport;
 use crate::infra::scrapers::build_default_scraper_providers;
+use crate::infra::webhook_client::ReqwestWebhookClient;
+use crate::infra::workspace_fs::LocalWorkspaceFs;
 
 #[derive(Debug, Clone)]
 pub struct XMediaToolConfig {
@@ -126,25 +134,38 @@ impl XMediaToolApp {
             )
         })?;
 
+        let workspace_fs: Arc<dyn WorkspaceFsPort> = Arc::new(LocalWorkspaceFs);
+        let toolbox: Arc<dyn MediaToolboxPort> = Arc::new(DefaultMediaToolbox);
+        let webhook: Arc<dyn HttpWebhookPort> = Arc::new(ReqwestWebhookClient);
+        let scrape_cache: Arc<dyn ScrapeCachePort> = Arc::new(ScrapeMetadataCache::new(Some(
+            cfg.data_dir.join("scrape-cache"),
+        )));
+        let scraper_transport: Arc<dyn ScraperTransportPort> = Arc::new(ReqwestScraperTransport);
+
         let config_file = cfg.data_dir.join("tool-config.json");
         let config_repo = Arc::new(
             JsonFileConfigRepository::load_or_init(config_file, &cfg.initial_roots)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?,
         );
-        let settings = ToolSettingsService::new(config_repo).with_sandbox_policy(
-            Some(cfg.data_dir.clone()),
-            &cfg.initial_roots,
-            lock_roots,
-        );
+        let settings = ToolSettingsService::new(config_repo, Arc::clone(&workspace_fs))
+            .with_sandbox_policy(Some(cfg.data_dir.clone()), &cfg.initial_roots, lock_roots);
 
         let ffmpeg = FfmpegToolkit::from_ffmpeg_bin(&cfg.ffmpeg_bin);
         let inspectors = build_default_inspectors(ffmpeg.clone());
-        let workbench = MediaWorkbenchService::new(settings.clone(), inspectors, ffmpeg.clone());
-        let scraping = ScrapingOrchestratorService::with_cache_dir(
+        let workbench = MediaWorkbenchService::new(
+            settings.clone(),
+            inspectors,
+            workspace_fs,
+            toolbox,
+            Arc::clone(&webhook),
+            ffmpeg.clone(),
+        );
+        let scraping = ScrapingOrchestratorService::new(
             settings.clone(),
             workbench.clone(),
             providers,
-            Some(cfg.data_dir.join("scrape-cache")),
+            scrape_cache,
+            scraper_transport,
         );
         let auth = ToolAuthService::new(cfg.password);
         let security = ToolRequestSecurityPolicy::new(bind_addr, cors_allow_origins);
@@ -154,6 +175,7 @@ impl XMediaToolApp {
             settings: settings.clone(),
             workbench: workbench.clone(),
             scraping: scraping.clone(),
+            webhook,
             ffmpeg,
             external_web_dir: cfg.external_web_dir,
             security,

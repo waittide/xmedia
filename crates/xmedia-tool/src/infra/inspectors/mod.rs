@@ -6,9 +6,9 @@ pub mod comic_ops;
 pub mod music;
 pub mod music_ops;
 pub mod process;
+pub mod toolbox;
 pub mod video;
 pub mod video_ops;
-pub mod zh_text;
 
 use std::sync::Arc;
 

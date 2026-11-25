@@ -8,7 +8,6 @@ use std::sync::LazyLock;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_formats::music::{
     AudioMetaPatch, apply_audio_patch_in_place, probe_audio_path, read_embedded_cover_from_path,
@@ -16,9 +15,14 @@ use xmedia_formats::music::{
     write_replaygain_in_place,
 };
 
+pub use crate::domain::ops::{
+    BatchMusicAlbumSyncInput, BatchMusicAlbumSyncReportDto, CueSplitReportDto,
+    MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
+    ReplayGainReportDto, ReplayGainTrackResultDto,
+};
+use crate::domain::zh_text::{ZhConvertDirection, convert_zh_plain};
 use crate::infra::atomic_fs::{atomic_mutate_copy, atomic_write_bytes};
 use crate::infra::inspectors::map_format_err;
-use crate::infra::inspectors::zh_text::{ZhConvertDirection, convert_zh_plain};
 
 #[cfg(test)]
 pub(crate) use cue::parse_cue_sheet;
@@ -31,91 +35,6 @@ static RE_EBUR128_INTEGRATED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"I:\s*(-?\d+(?:\.\d+)?)\s*LUFS").expect("valid ebur128 I regex"));
 static RE_EBUR128_PEAK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS").expect("valid peak regex"));
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct MusicLyricsToolInput {
-    /// Positive delays lyrics, negative advances lyrics (milliseconds)
-    #[serde(default)]
-    pub offset_ms: i64,
-    #[serde(default)]
-    pub strip_credit_noise: bool,
-    #[serde(default)]
-    pub zh_direction: Option<ZhConvertDirection>,
-    /// "none" | "sidecar_to_embedded" | "embedded_to_sidecar" | "both"
-    #[serde(default = "default_sync_mode")]
-    pub sync_mode: String,
-    /// Optional explicit lyrics text override (e.g. edited in modal)
-    pub custom_text: Option<String>,
-}
-
-fn default_sync_mode() -> String {
-    "both".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MusicLyricsToolReportDto {
-    pub updated_embedded: bool,
-    pub updated_sidecar: bool,
-    pub removed_lines: usize,
-    pub final_lyrics: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MusicCoverOptimizeReportDto {
-    pub had_cover: bool,
-    pub optimized: bool,
-    pub before_bytes: u64,
-    pub after_bytes: u64,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReplayGainTrackResultDto {
-    pub rel_path: String,
-    pub track_gain_db: f64,
-    pub track_peak: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReplayGainReportDto {
-    pub processed: usize,
-    pub album_gain_db: Option<f64>,
-    pub album_peak: Option<f64>,
-    pub tracks: Vec<ReplayGainTrackResultDto>,
-    pub failed_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct BatchMusicAlbumSyncInput {
-    pub album: Option<String>,
-    pub album_artist: Option<String>,
-    pub artist: Option<String>,
-    pub year: Option<i32>,
-    pub genre: Option<String>,
-    pub disc_number: Option<u32>,
-    #[serde(default)]
-    pub auto_number_tracks: bool,
-    #[serde(default = "default_track_start")]
-    pub start_track: u32,
-}
-
-fn default_track_start() -> u32 {
-    1
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchMusicAlbumSyncReportDto {
-    pub updated_count: usize,
-    pub failed_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CueSplitReportDto {
-    pub created_files: Vec<String>,
-    pub album_title: Option<String>,
-    pub album_artist: Option<String>,
-}
 
 /// Pure LRC/lyrics text processor: timestamp shifting, credit noise stripping, and Zh T2S/S2T conversion.
 pub fn transform_lrc_text(

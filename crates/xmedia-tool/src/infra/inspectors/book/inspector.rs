@@ -123,71 +123,9 @@ impl MediaInspectorPort for EpubBookInspector {
         let bp_cloned: BookMetaPatch = bp.clone();
 
         let updated = tokio::task::spawn_blocking(move || -> DomainResult<BookFileMeta> {
-            let apply_patch = |meta: &mut BookFileMeta, patch: BookMetaPatch| {
-                if let Some(title) = patch.title
-                    && !title.trim().is_empty()
-                {
-                    meta.title = title.trim().to_string();
-                }
-                if let Some(authors) = patch.authors {
-                    meta.authors = authors
-                        .into_iter()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
-                if let Some(series) = patch.series {
-                    meta.series = (!series.trim().is_empty()).then(|| series.trim().to_string());
-                }
-                if let Some(subseries) = patch.subseries {
-                    meta.subseries =
-                        (!subseries.trim().is_empty()).then(|| subseries.trim().to_string());
-                }
-                if let Some(idx) = patch.series_index {
-                    meta.series_index = (!idx.trim().is_empty()).then(|| idx.trim().to_string());
-                }
-                if let Some(rating) = patch.rating {
-                    meta.rating = (rating.is_finite() && rating >= 0.0).then_some(rating);
-                }
-                if let Some(desc) = patch.description {
-                    meta.description = (!desc.trim().is_empty()).then(|| desc.trim().to_string());
-                }
-                if let Some(pub_name) = patch.publisher {
-                    meta.publisher =
-                        (!pub_name.trim().is_empty()).then(|| pub_name.trim().to_string());
-                }
-                if let Some(pub_at) = patch.published_at {
-                    meta.published_at =
-                        (!pub_at.trim().is_empty()).then(|| pub_at.trim().to_string());
-                }
-                if let Some(lang) = patch.language {
-                    meta.language = (!lang.trim().is_empty()).then(|| lang.trim().to_string());
-                }
-                if let Some(isbn) = patch.isbn {
-                    meta.isbn = (!isbn.trim().is_empty()).then(|| isbn.trim().to_string());
-                }
-                if let Some(tags) = patch.tags {
-                    meta.tags = tags
-                        .into_iter()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
-                if let Some(locked) = patch.locked_fields {
-                    let mut deduped = Vec::new();
-                    for item in locked {
-                        let f = item.trim().to_ascii_lowercase();
-                        if !f.is_empty() && !deduped.contains(&f) {
-                            deduped.push(f);
-                        }
-                    }
-                    meta.locked_fields = deduped;
-                }
-            };
-
             if ext != "epub" {
                 let mut meta = read_book_meta_any(&p)?;
-                apply_patch(&mut meta, bp_cloned);
+                meta.apply_patch(bp_cloned);
                 let opf_path = preferred_write_opf_path(&p);
                 let xml = if opf_path.is_file()
                     && let Ok(existing) = std::fs::read_to_string(&opf_path)
@@ -202,7 +140,7 @@ impl MediaInspectorPort for EpubBookInspector {
 
             let parsed = parse_epub_archive(&p)?;
             let mut meta = read_book_meta_any(&p)?;
-            apply_patch(&mut meta, bp_cloned);
+            meta.apply_patch(bp_cloned);
 
             let src_file = File::open(&p)
                 .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;

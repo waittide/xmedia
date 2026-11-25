@@ -1,4 +1,5 @@
 pub mod anilist;
+pub mod artwork_downloader;
 pub mod bangumi;
 pub mod ciweimao;
 pub mod cn_music_common;

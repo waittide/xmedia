@@ -9,9 +9,9 @@ use xmedia_tool::domain::media::{
     BookMetaPatch, ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch,
     RenameConflictPolicy, RenamePlanItem, VideoMetaPatch,
 };
-use xmedia_tool::infra::inspectors::comic_ops::BatchComicSeriesSyncInput;
-use xmedia_tool::infra::inspectors::music_ops::BatchMusicAlbumSyncInput;
-use xmedia_tool::infra::inspectors::video_ops::BatchRemapEpisodesInput;
+use xmedia_tool::domain::ops::{
+    BatchComicSeriesSyncInput, BatchMusicAlbumSyncInput, BatchRemapEpisodesInput,
+};
 use xmedia_tool::{XMediaToolApp, XMediaToolConfig};
 use zip::CompressionMethod;
 
@@ -976,4 +976,53 @@ async fn upload_artwork_http_prefers_magic_bytes_over_spoofed_content_type() {
     assert_eq!(res.status(), StatusCode::OK);
     assert!(root.join("sample.png").is_file());
     assert!(!root.join("sample.jpg").exists());
+}
+
+#[tokio::test]
+async fn apply_video_jellyfin_archive_enforces_read_only_root() {
+    let tmp = TempDir::new().unwrap();
+    let video_dir = tmp.path().join("videos");
+    std::fs::create_dir_all(&video_dir).unwrap();
+    std::fs::write(video_dir.join("Movie (2024).mkv"), b"dummy").unwrap();
+
+    let app = XMediaToolApp::init(XMediaToolConfig {
+        data_dir: tmp.path().join("data"),
+        initial_roots: Vec::new(),
+        password: None,
+        ffmpeg_bin: "__missing_ffmpeg__".into(),
+        external_web_dir: None,
+    })
+    .await
+    .unwrap();
+
+    let root = app
+        .settings
+        .add_root_with_options(
+            "ReadOnly".into(),
+            video_dir.to_string_lossy().into_owned(),
+            Some(MediaKind::Video),
+            true,
+        )
+        .await
+        .unwrap();
+
+    let err = app
+        .scraping
+        .apply_to_file(
+            root.id,
+            "Movie (2024).mkv",
+            MediaKind::Video,
+            xmedia_tool::domain::scraper::ScrapedMetadata {
+                title: Some("Movie".into()),
+                year: Some(2024),
+                ..Default::default()
+            },
+            false,
+            false,
+            Some(true),
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DomainError::Forbidden(_)));
 }

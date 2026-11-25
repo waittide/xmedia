@@ -10,9 +10,8 @@ use crate::domain::config::{
     InboxConfig, ProviderConfigOverride, ProviderCredentials, RenameTemplates, ScraperPriorities,
     ToolSettings,
 };
-use crate::domain::ports::ConfigRepositoryPort;
+use crate::domain::ports::{ConfigRepositoryPort, WorkspaceFsPort};
 use crate::domain::workspace::{ManagedRoot, RootId};
-use crate::infra::workspace_fs::{open_managed_root, paths_overlap, validate_safe_host_directory};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettingsDto {
@@ -64,6 +63,7 @@ pub struct UpdateSettingsInput {
 #[derive(Clone)]
 pub struct ToolSettingsService {
     repo: Arc<dyn ConfigRepositoryPort>,
+    fs: Arc<dyn WorkspaceFsPort>,
     write_lock: Arc<tokio::sync::Mutex<()>>,
     data_dir: Option<PathBuf>,
     cli_root_prefixes: Arc<Vec<PathBuf>>,
@@ -71,14 +71,19 @@ pub struct ToolSettingsService {
 }
 
 impl ToolSettingsService {
-    pub fn new(repo: Arc<dyn ConfigRepositoryPort>) -> Self {
+    pub fn new(repo: Arc<dyn ConfigRepositoryPort>, fs: Arc<dyn WorkspaceFsPort>) -> Self {
         Self {
             repo,
+            fs,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
             data_dir: None,
             cli_root_prefixes: Arc::new(Vec::new()),
             roots_locked: false,
         }
+    }
+
+    pub fn fs(&self) -> &Arc<dyn WorkspaceFsPort> {
+        &self.fs
     }
 
     pub fn with_sandbox_policy(
@@ -111,17 +116,17 @@ impl ToolSettingsService {
                 "inbox_path is not a directory".into(),
             ));
         }
-        validate_safe_host_directory(&inbox_dir, "inbox")?;
+        self.fs.validate_safe_host_directory(&inbox_dir, "inbox")?;
         if let Some(ref data_dir) = self.data_dir
-            && paths_overlap(&inbox_dir, data_dir)
+            && self.fs.paths_overlap(&inbox_dir, data_dir)
         {
             return Err(DomainError::Validation(
                 "inbox directory cannot overlap xmedia-tool data directory".into(),
             ));
         }
         for r in roots {
-            if (target_root_id == Some(r.id) || paths_overlap(&inbox_dir, &r.path))
-                && paths_overlap(&inbox_dir, &r.path)
+            if (target_root_id == Some(r.id) || self.fs.paths_overlap(&inbox_dir, &r.path))
+                && self.fs.paths_overlap(&inbox_dir, &r.path)
             {
                 return Err(DomainError::Validation(
                     "inbox directory cannot be inside or contain a managed root directory".into(),
@@ -174,10 +179,12 @@ impl ToolSettingsService {
                 "managed roots are locked by CLI configuration".into(),
             ));
         }
-        let root = open_managed_root(name, PathBuf::from(path.trim()), default_kind)?
+        let root = self
+            .fs
+            .open_managed_root(name, std::path::Path::new(path.trim()), default_kind)?
             .with_read_only(read_only);
         if let Some(ref data_dir) = self.data_dir
-            && paths_overlap(&root.path, data_dir)
+            && self.fs.paths_overlap(&root.path, data_dir)
         {
             return Err(DomainError::Validation(
                 "managed root cannot overlap xmedia-tool data directory".into(),
@@ -419,15 +426,98 @@ fn mask_secret(raw: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use async_trait::async_trait;
+
     use super::*;
-    use crate::infra::config_store::JsonFileConfigRepository;
+    use crate::domain::workspace::SandboxPath;
+
+    #[derive(Default)]
+    struct InMemoryConfigRepo(tokio::sync::Mutex<ToolSettings>);
+
+    #[async_trait]
+    impl ConfigRepositoryPort for InMemoryConfigRepo {
+        async fn load(&self) -> DomainResult<ToolSettings> {
+            Ok(self.0.lock().await.clone())
+        }
+
+        async fn save(&self, settings: &ToolSettings) -> DomainResult<()> {
+            *self.0.lock().await = settings.clone();
+            Ok(())
+        }
+    }
+
+    struct StubWorkspaceFs;
+
+    impl WorkspaceFsPort for StubWorkspaceFs {
+        fn validate_safe_host_directory(&self, canonical: &Path, label: &str) -> DomainResult<()> {
+            if canonical.parent().is_none() || canonical.starts_with("/etc") {
+                return Err(DomainError::Validation(format!("blocked {label}")));
+            }
+            Ok(())
+        }
+
+        fn open_managed_root(
+            &self,
+            name: String,
+            raw_path: &Path,
+            default_kind: Option<MediaKind>,
+        ) -> DomainResult<ManagedRoot> {
+            let canonical = std::fs::canonicalize(raw_path)
+                .map_err(|e| DomainError::Validation(e.to_string()))?;
+            self.validate_safe_host_directory(&canonical, "root")?;
+            Ok(ManagedRoot::from_canonical(name, canonical, default_kind))
+        }
+
+        fn resolve_existing_in_root(
+            &self,
+            root: &ManagedRoot,
+            rel_path: &str,
+        ) -> DomainResult<SandboxPath> {
+            let p = root.path.join(rel_path).canonicalize().unwrap();
+            root.verify_canonical_child(p)
+        }
+
+        fn resolve_target_in_root(
+            &self,
+            root: &ManagedRoot,
+            rel_path: &str,
+        ) -> DomainResult<PathBuf> {
+            Ok(root.path.join(rel_path))
+        }
+
+        fn atomic_write_bytes(&self, target: &Path, bytes: &[u8]) -> DomainResult<()> {
+            std::fs::write(target, bytes).map_err(|e| DomainError::Storage(e.to_string()))
+        }
+
+        fn cleanup_empty_parent_dirs(&self, _start_dir: &Path, _stop_at_root: &Path) {}
+
+        fn find_companion_sidecars(&self, _media_file: &Path) -> Vec<(PathBuf, String)> {
+            Vec::new()
+        }
+
+        fn is_shared_dir_sidecar_name(&self, _file_name: &str) -> bool {
+            false
+        }
+
+        fn write_image_replacing_opposite_ext(
+            &self,
+            dir: &Path,
+            base_name: &str,
+            ext: &str,
+            bytes: &[u8],
+        ) -> DomainResult<()> {
+            let p = dir.join(format!("{base_name}.{ext}"));
+            std::fs::write(&p, bytes).map_err(|e| DomainError::Storage(e.to_string()))
+        }
+    }
 
     #[tokio::test]
     async fn concurrent_root_additions_do_not_lose_updates() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_path = tmp.path().join("tool-config.json");
-        let repo = Arc::new(JsonFileConfigRepository::load_or_init(cfg_path, &[]).unwrap());
-        let svc = ToolSettingsService::new(repo);
+        let repo = Arc::new(InMemoryConfigRepo::default());
+        let svc = ToolSettingsService::new(repo, Arc::new(StubWorkspaceFs));
 
         let mut dirs = Vec::new();
         for i in 0..6 {
@@ -468,12 +558,8 @@ mod tests {
         std::fs::create_dir_all(&sub_root).unwrap();
         std::fs::create_dir_all(&outside_dir).unwrap();
 
-        let cfg_path = data_dir.join("tool-config.json");
-        let repo = Arc::new(
-            JsonFileConfigRepository::load_or_init(cfg_path, std::slice::from_ref(&cli_root))
-                .unwrap(),
-        );
-        let svc = ToolSettingsService::new(repo).with_sandbox_policy(
+        let repo = Arc::new(InMemoryConfigRepo::default());
+        let svc = ToolSettingsService::new(repo, Arc::new(StubWorkspaceFs)).with_sandbox_policy(
             Some(data_dir.clone()),
             std::slice::from_ref(&cli_root),
             false,

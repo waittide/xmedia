@@ -3,7 +3,69 @@ use std::path::{Component, Path, PathBuf};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
+use crate::domain::ports::WorkspaceFsPort;
 use crate::domain::workspace::{ManagedRoot, SandboxPath, sanitize_relative_path};
+use crate::infra::atomic_fs::{
+    atomic_write_bytes, cleanup_empty_parent_dirs, find_companion_sidecars,
+    is_shared_dir_sidecar_name,
+};
+use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LocalWorkspaceFs;
+
+impl WorkspaceFsPort for LocalWorkspaceFs {
+    fn validate_safe_host_directory(&self, canonical: &Path, label: &str) -> DomainResult<()> {
+        validate_safe_host_directory(canonical, label)
+    }
+
+    fn open_managed_root(
+        &self,
+        name: String,
+        raw_path: &Path,
+        default_kind: Option<MediaKind>,
+    ) -> DomainResult<ManagedRoot> {
+        open_managed_root(name, raw_path, default_kind)
+    }
+
+    fn resolve_existing_in_root(
+        &self,
+        root: &ManagedRoot,
+        rel_path: &str,
+    ) -> DomainResult<SandboxPath> {
+        resolve_existing_in_root(root, rel_path)
+    }
+
+    fn resolve_target_in_root(&self, root: &ManagedRoot, rel_path: &str) -> DomainResult<PathBuf> {
+        resolve_target_in_root(root, rel_path)
+    }
+
+    fn atomic_write_bytes(&self, target: &Path, bytes: &[u8]) -> DomainResult<()> {
+        atomic_write_bytes(target, bytes)
+    }
+
+    fn cleanup_empty_parent_dirs(&self, start_dir: &Path, stop_at_root: &Path) {
+        cleanup_empty_parent_dirs(start_dir, stop_at_root);
+    }
+
+    fn find_companion_sidecars(&self, media_file: &Path) -> Vec<(PathBuf, String)> {
+        find_companion_sidecars(media_file)
+    }
+
+    fn is_shared_dir_sidecar_name(&self, file_name: &str) -> bool {
+        is_shared_dir_sidecar_name(file_name)
+    }
+
+    fn write_image_replacing_opposite_ext(
+        &self,
+        dir: &Path,
+        base_name: &str,
+        ext: &str,
+        bytes: &[u8],
+    ) -> DomainResult<()> {
+        write_image_replacing_opposite_ext(dir, base_name, ext, bytes)
+    }
+}
 
 pub fn paths_overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)

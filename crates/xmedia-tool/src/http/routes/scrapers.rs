@@ -10,6 +10,7 @@ use xmedia_core::http::ApiResult;
 
 use crate::application::scraping::{AutoScrapeOptions, AutoScrapeResultDto, DryRunScrapeItemDto};
 use crate::domain::media::MediaFileDetail;
+use crate::domain::ops::ScrapeCacheStatsDto;
 use crate::domain::scraper::{
     AggregateScrapeResponse, ProviderStatusDto, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind,
     ScrapedMetadata,
@@ -17,7 +18,6 @@ use crate::domain::scraper::{
 use crate::domain::workspace::RootId;
 use crate::http::ToolHttpState;
 use crate::http::routes::apply_sandboxed_asset_headers;
-use crate::infra::scrape_cache::ScrapeCacheStatsDto;
 
 pub(super) fn router() -> Router<ToolHttpState> {
     Router::new()

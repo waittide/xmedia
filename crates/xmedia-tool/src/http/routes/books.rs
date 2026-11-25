@@ -10,17 +10,15 @@ use xmedia_core::domain::error::DomainError;
 use xmedia_core::http::{ApiError, ApiResult};
 
 use crate::domain::media::MediaFileDetail;
-use crate::domain::workspace::RootId;
-use crate::http::ToolHttpState;
-use crate::http::routes::apply_sandboxed_asset_headers;
-use crate::infra::inspectors::book_content::{
-    BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto, SaveBookChapterInput,
+use crate::domain::ops::{
+    BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto,
+    NormalizeBookToEpubOptions, NormalizeBooksBatchReportDto, SaveBookChapterInput,
     TransformBookContentResultDto,
 };
-use crate::infra::inspectors::book_normalize::{
-    NormalizeBookToEpubOptions, NormalizeBooksBatchReportDto,
-};
-use crate::infra::inspectors::zh_text::BookTextTransformOptions;
+use crate::domain::workspace::RootId;
+use crate::domain::zh_text::BookTextTransformOptions;
+use crate::http::ToolHttpState;
+use crate::http::routes::apply_sandboxed_asset_headers;
 
 pub(super) fn router() -> Router<ToolHttpState> {
     Router::new()

@@ -13,8 +13,8 @@ use super::artwork::{
 };
 use super::filename::{VIDEO_EXTENSIONS, dir_has_single_video, is_season_dir};
 use super::nfo::{
-    apply_video_patch_onto, find_existing_nfo, find_show_nfo_for_episode, parse_nfo_into,
-    read_base_video_meta, render_season_nfo_xml_preserving, render_tvshow_nfo_xml_preserving,
+    find_existing_nfo, find_show_nfo_for_episode, parse_nfo_into, read_base_video_meta,
+    render_season_nfo_xml_preserving, render_tvshow_nfo_xml_preserving,
     render_video_nfo_xml_preserving,
 };
 use crate::domain::media::{
@@ -126,7 +126,7 @@ impl MediaInspectorPort for VideoNfoInspector {
 
         tokio::task::spawn_blocking(move || -> DomainResult<()> {
             let mut meta = read_base_video_meta(&p);
-            apply_video_patch_onto(&mut meta, vp_cloned);
+            meta.apply_patch(vp_cloned);
 
             let existing_source_nfo = find_existing_nfo(&p, meta.is_episode)
                 .or_else(|| find_existing_nfo(&p, !meta.is_episode));

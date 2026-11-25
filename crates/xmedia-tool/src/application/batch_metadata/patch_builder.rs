@@ -4,7 +4,7 @@ use crate::domain::media::{
     BookMetaPatch, ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch,
     VideoMetaPatch,
 };
-use crate::infra::inspectors::zh_text::ZhConvertDirection;
+use crate::domain::zh_text::ZhConvertDirection;
 
 use super::BatchMetadataEditInput;
 use super::replacer::{

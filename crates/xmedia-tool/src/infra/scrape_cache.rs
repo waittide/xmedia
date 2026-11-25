@@ -9,18 +9,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
+use crate::domain::ops::ScrapeCacheStatsDto;
+use crate::domain::ports::ScrapeCachePort;
 use crate::domain::scraper::{ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata};
 
 const DEFAULT_MAX_MEMORY_ENTRIES: usize = 2048;
 
 static TMP_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ScrapeCacheStatsDto {
-    pub total_entries: usize,
-    pub valid_entries: usize,
-    pub total_bytes: u64,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedEnvelope<T> {
@@ -360,6 +355,68 @@ impl ScrapeMetadataCache {
             removed = removed.max(disk_removed);
         }
         Ok(removed)
+    }
+}
+
+impl ScrapeCachePort for ScrapeMetadataCache {
+    fn get_search(
+        &self,
+        provider_id: &str,
+        query: &ScrapeQuery,
+        locale: &str,
+        ttl_ms: u64,
+    ) -> Option<Vec<ScrapeCandidate>> {
+        Self::get_search(self, provider_id, query, locale, ttl_ms)
+    }
+
+    fn put_search(
+        &self,
+        provider_id: &str,
+        query: &ScrapeQuery,
+        locale: &str,
+        ttl_ms: u64,
+        items: &[ScrapeCandidate],
+    ) {
+        Self::put_search(self, provider_id, query, locale, ttl_ms, items);
+    }
+
+    fn get_detail(
+        &self,
+        provider_id: &str,
+        target: ScrapeTargetKind,
+        external_id: &str,
+        locale: &str,
+        ttl_ms: u64,
+    ) -> Option<ScrapedMetadata> {
+        Self::get_detail(self, provider_id, target, external_id, locale, ttl_ms)
+    }
+
+    fn put_detail(
+        &self,
+        provider_id: &str,
+        target: ScrapeTargetKind,
+        external_id: &str,
+        locale: &str,
+        ttl_ms: u64,
+        detail: &ScrapedMetadata,
+    ) {
+        Self::put_detail(
+            self,
+            provider_id,
+            target,
+            external_id,
+            locale,
+            ttl_ms,
+            detail,
+        );
+    }
+
+    fn stats(&self, ttl_ms: u64) -> ScrapeCacheStatsDto {
+        Self::stats(self, ttl_ms)
+    }
+
+    fn clear(&self) -> DomainResult<usize> {
+        Self::clear(self)
     }
 }
 

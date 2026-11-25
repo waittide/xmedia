@@ -2,14 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_formats::decode_text_smart;
 use xmedia_formats::video::SubtitleFormatExt;
 pub use xmedia_formats::video::convert_subtitle_bytes_to_vtt;
 
+pub use crate::domain::ops::{
+    BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
+    ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
+};
+use crate::domain::zh_text::{ZhConvertDirection, convert_zh_plain};
 use crate::infra::atomic_fs::atomic_write_bytes;
-use crate::infra::inspectors::zh_text::{ZhConvertDirection, convert_zh_plain};
 
 static RE_SRT_TIMING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -24,77 +27,6 @@ static RE_ASS_DIALOGUE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid ass dialogue regex")
 });
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VideoSubtitleInfoDto {
-    pub filename: String,
-    pub extension: String,
-    pub file_size: u64,
-    pub detected_encoding: String,
-    pub is_utf8: bool,
-    pub language_tag: Option<String>,
-    pub forced: bool,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ProcessSubtitleInput {
-    pub subtitle_filename: String,
-    #[serde(default)]
-    pub convert_utf8: bool,
-    #[serde(default)]
-    pub offset_ms: i64,
-    #[serde(default)]
-    pub zh_direction: Option<ZhConvertDirection>,
-    /// Optional Jellyfin language tag to rename to, e.g. "zh-CN", "zh-TW", "en", "ja"
-    pub rename_language: Option<String>,
-    #[serde(default)]
-    pub forced: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessSubtitleReportDto {
-    pub original_filename: String,
-    pub final_filename: String,
-    pub original_encoding: String,
-    pub shifted_cues: usize,
-    pub converted_utf8: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractSubtitleReportDto {
-    pub created_filename: String,
-    pub file_size: u64,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct BatchRemapEpisodesInput {
-    pub show_title: Option<String>,
-    pub season_number: Option<u32>,
-    /// "sequential" | "absolute_offset"
-    #[serde(default = "default_remap_mode")]
-    pub mode: String,
-    #[serde(default = "default_one")]
-    pub start_episode: u32,
-    /// Used when mode == "absolute_offset": new_ep = old_ep + episode_offset (e.g. -24 for S02)
-    #[serde(default)]
-    pub episode_offset: i32,
-    #[serde(default)]
-    pub write_season_nfo: bool,
-}
-
-fn default_remap_mode() -> String {
-    "sequential".to_string()
-}
-
-fn default_one() -> u32 {
-    1
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchRemapEpisodesReportDto {
-    pub updated_count: usize,
-    pub failed_paths: Vec<String>,
-}
 
 fn detect_encoding_and_decode(bytes: &[u8]) -> (String, String, bool) {
     let stripped = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
