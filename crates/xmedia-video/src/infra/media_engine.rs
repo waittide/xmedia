@@ -1,10 +1,11 @@
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::process::Command;
-use tracing::debug;
+use tracing::{debug, warn};
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::application::ports::ByteChunkStream;
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -14,6 +15,58 @@ use xmedia_core::infra::stream::decode_text_smart;
 use crate::application::ports::{
     ProbedVideoInfo, VideoMediaEnginePort, VideoStreamTranscodeRequest, VideoTranscodeMode,
 };
+
+pub(crate) const SAFE_HLS_ALLOWED_EXTENSIONS: &str =
+    "ts,m4s,mp4,m4a,aac,mp3,ac3,eac3,vtt,bin,m3u8,key";
+pub(crate) const SAFE_HLS_PROTOCOL_WHITELIST: &str = "file,crypto";
+
+pub(crate) fn build_remux_local_hls_args(
+    local_playlist_path: &Path,
+    output_mp4_path: &Path,
+) -> Vec<OsString> {
+    vec![
+        "-y".into(),
+        "-v".into(),
+        "error".into(),
+        "-allowed_extensions".into(),
+        SAFE_HLS_ALLOWED_EXTENSIONS.into(),
+        "-protocol_whitelist".into(),
+        SAFE_HLS_PROTOCOL_WHITELIST.into(),
+        "-i".into(),
+        local_playlist_path.as_os_str().to_os_string(),
+        "-c".into(),
+        "copy".into(),
+        "-bsf:a".into(),
+        "aac_adtstoasc".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        "-f".into(),
+        "mp4".into(),
+        output_mp4_path.as_os_str().to_os_string(),
+    ]
+}
+
+pub(crate) fn sanitize_ffmpeg_remux_error(stderr: &str, exit_code: Option<i32>) -> String {
+    let lower = stderr.to_ascii_lowercase();
+    let reason = if lower.contains("protocol not on whitelist")
+        || lower.contains("not in allowed_extensions")
+    {
+        "安全策略拒绝了不受支持的协议或扩展名"
+    } else if lower.contains("invalid data found")
+        || lower.contains("error when loading first segment")
+        || lower.contains("moov atom not found")
+    {
+        "HLS 媒体分片数据损坏或编码不受支持"
+    } else if lower.contains("permission denied") || lower.contains("no such file") {
+        "读取本地 HLS 缓存分片失败"
+    } else {
+        "媒体流封装失败"
+    };
+    match exit_code {
+        Some(code) => format!("FFmpeg 封装 HLS 失败: {reason} (exit {code})"),
+        None => format!("FFmpeg 封装 HLS 失败: {reason}"),
+    }
+}
 
 #[derive(Clone)]
 pub struct FfmpegVideoEngine {
@@ -179,6 +232,7 @@ impl VideoMediaEnginePort for FfmpegVideoEngine {
         local_playlist_path: &Path,
         output_mp4_path: &Path,
     ) -> DomainResult<()> {
+        let args = build_remux_local_hls_args(local_playlist_path, output_mp4_path);
         let output = tokio::time::timeout(
             Duration::from_secs(900),
             Command::new(self.ffmpeg.ffmpeg_bin())
@@ -186,28 +240,7 @@ impl VideoMediaEnginePort for FfmpegVideoEngine {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
-                .args([
-                    "-y",
-                    "-v",
-                    "error",
-                    "-allowed_extensions",
-                    "ALL",
-                    "-protocol_whitelist",
-                    "file,crypto,data",
-                    "-i",
-                ])
-                .arg(local_playlist_path)
-                .args([
-                    "-c",
-                    "copy",
-                    "-bsf:a",
-                    "aac_adtstoasc",
-                    "-movflags",
-                    "+faststart",
-                    "-f",
-                    "mp4",
-                ])
-                .arg(output_mp4_path)
+                .args(args)
                 .output(),
         )
         .await
@@ -216,12 +249,14 @@ impl VideoMediaEnginePort for FfmpegVideoEngine {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let msg = stderr.trim();
-            return Err(DomainError::Storage(if msg.is_empty() {
-                format!("FFmpeg 封装 HLS 失败 (exit {})", output.status)
-            } else {
-                format!("FFmpeg 封装 HLS 失败: {msg}")
-            }));
+            warn!(
+                exit_code = ?output.status.code(),
+                "ffmpeg local hls remux failed"
+            );
+            return Err(DomainError::Storage(sanitize_ffmpeg_remux_error(
+                &stderr,
+                output.status.code(),
+            )));
         }
         Ok(())
     }
@@ -449,4 +484,45 @@ fn generate_svg_poster(title: &str) -> String {
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1e1e2e"/><stop offset="100%" stop-color="#313244"/></linearGradient></defs><rect width="640" height="360" fill="url(#g)"/><polygon points="295,140 295,220 365,180" fill="#89b4fa" opacity="0.85"/><text x="320" y="290" fill="#cdd6f4" font-family="system-ui,sans-serif" font-size="22" font-weight="600" text-anchor="middle">{escaped}</text></svg>"##
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remux_local_hls_args_disallow_all_extensions_and_data_protocol() {
+        let args: Vec<String> =
+            build_remux_local_hls_args(Path::new("/tmp/hls/index.m3u8"), Path::new("/tmp/out.mp4"))
+                .into_iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+
+        let ext_idx = args
+            .iter()
+            .position(|a| a == "-allowed_extensions")
+            .expect("must pass -allowed_extensions");
+        assert_eq!(
+            args[ext_idx + 1],
+            "ts,m4s,mp4,m4a,aac,mp3,ac3,eac3,vtt,bin,m3u8,key"
+        );
+        assert!(!args[ext_idx + 1].eq_ignore_ascii_case("ALL"));
+
+        let proto_idx = args
+            .iter()
+            .position(|a| a == "-protocol_whitelist")
+            .expect("must pass -protocol_whitelist");
+        assert_eq!(args[proto_idx + 1], "file,crypto");
+        assert!(!args[proto_idx + 1].contains("data"));
+    }
+
+    #[test]
+    fn sanitize_ffmpeg_remux_error_never_leaks_paths_or_file_contents() {
+        let leaked_stderr = "[hls @ 0x55a1] Error when loading first segment '/etc/passwd'\nroot:x:0:0:root:/root:/bin/bash\n/tmp/xmedia-hls-secret/index.m3u8: Invalid data found when processing input";
+        let sanitized = sanitize_ffmpeg_remux_error(leaked_stderr, Some(1));
+        assert!(!sanitized.contains("/etc/passwd"));
+        assert!(!sanitized.contains("root:x:0:0"));
+        assert!(!sanitized.contains("/tmp/xmedia-hls-secret"));
+        assert!(sanitized.contains("FFmpeg 封装 HLS 失败"));
+    }
 }

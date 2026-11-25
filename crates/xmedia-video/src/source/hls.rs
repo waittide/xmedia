@@ -1,17 +1,20 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use regex::Regex;
+use reqwest::header::{AUTHORIZATION, COOKIE, HeaderMap, LOCATION, PROXY_AUTHORIZATION};
 use tokio::sync::mpsc;
 use url::Url;
 use xmedia_core::application::ports::ByteChunkStream;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::stream::MpscByteStream;
 use xmedia_source::http::{
-    DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, SsrfSafeResolver, ssrf_redirect_policy,
+    DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, SsrfSafeResolver, is_restricted_ip,
+    ssrf_redirect_policy, validate_target_url, validate_target_url_static,
 };
 use xmedia_source::proxy::{
     MEDIA_PROLOG_SNIFF_MAX_BYTES, has_enough_media_sniff_bytes,
@@ -31,13 +34,16 @@ const MAX_CACHED_STREAMING_CLIENTS: usize = 16;
 struct StreamingClientKey {
     allow_private_ips: bool,
     proxy_url: Option<String>,
+    follow_redirects: bool,
 }
 
 static STREAMING_ASYNC_CLIENT_CACHE: LazyLock<Mutex<HashMap<StreamingClientKey, reqwest::Client>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-static RE_M3U8_URI_ATTR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)\b(URI=")([^"]*)(")"#).expect("valid m3u8 URI attr regex"));
+static RE_M3U8_URI_ATTR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\bURI\s*=\s*(?:"([^"]*)"|'([^']*)'|([^,\s"']+))"#)
+        .expect("valid m3u8 URI attr regex")
+});
 static RE_SRT_TIMESTAMP_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"^\s*((?:\d{1,3}:)?\d{2}:\d{2})[,.](\d{3})\s*-->\s*((?:\d{1,3}:)?\d{2}:\d{2})[,.](\d{3})(.*)$",
@@ -45,12 +51,104 @@ static RE_SRT_TIMESTAMP_LINE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("valid srt timestamp regex")
 });
 
-/// Builds or returns a pooled async `reqwest::Client` specifically for long-lived video streaming.
-/// Uses `connect_timeout` + per-chunk `read_timeout` WITHOUT a short total-body `.timeout(...)`
-/// so active MP4 / HLS playback is never killed mid-stream.
-pub fn get_or_build_streaming_async_client(
+/// Validates a streaming/HLS target URL including async DNS resolution (`tokio::net::lookup_host`)
+/// whenever `!allow_private_ips`, so proxied requests cannot bypass SSRF protections via DNS records.
+pub async fn validate_streaming_target_url(
+    raw_url: &str,
+    allow_private_ips: bool,
+) -> DomainResult<Url> {
+    validate_streaming_target_url_with_resolver(
+        raw_url,
+        allow_private_ips,
+        |host, port| async move {
+            let resolved: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+                .await
+                .map_err(|e| format!("安全策略拒绝未解析目标 '{host}': {e}"))?
+                .collect();
+            Ok(resolved)
+        },
+    )
+    .await
+}
+
+async fn validate_streaming_target_url_with_resolver<F, Fut>(
+    raw_url: &str,
+    allow_private_ips: bool,
+    resolve_fn: F,
+) -> DomainResult<Url>
+where
+    F: FnOnce(String, u16) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<SocketAddr>, String>>,
+{
+    let parsed = validate_target_url_static(raw_url.trim(), allow_private_ips)
+        .map_err(DomainError::Validation)?;
+    if allow_private_ips {
+        return Ok(parsed);
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| DomainError::Validation(format!("URL 缺少主机名: {raw_url}")))?;
+    let ip_candidate = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_end_matches('.');
+    if ip_candidate.parse::<IpAddr>().is_ok() {
+        return Ok(parsed);
+    }
+
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let resolved = resolve_fn(host.to_string(), port)
+        .await
+        .map_err(DomainError::Validation)?;
+    if resolved.is_empty() {
+        return Err(DomainError::Validation(format!(
+            "安全策略拒绝无 DNS 解析结果的目标 '{host}'"
+        )));
+    }
+    for addr in &resolved {
+        if is_restricted_ip(addr.ip()) {
+            return Err(DomainError::Validation(format!(
+                "安全策略拦截了目标 '{host}' 解析到的内网/保留地址 '{}'",
+                addr.ip()
+            )));
+        }
+    }
+    Ok(parsed)
+}
+
+fn proxy_dns_ssrf_redirect_policy(
+    allow_private_ips: bool,
+    max_hops: usize,
+) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= max_hops {
+            return attempt.error(std::io::Error::other(format!(
+                "重定向次数超过上限 ({max_hops})"
+            )));
+        }
+        if let Some(prev) = attempt.previous().last()
+            && prev.scheme().eq_ignore_ascii_case("https")
+            && attempt.url().scheme().eq_ignore_ascii_case("http")
+        {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "禁止从 HTTPS 降级重定向至 HTTP",
+            ));
+        }
+        if let Err(reason) = validate_target_url(attempt.url().as_str(), allow_private_ips) {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                reason,
+            ));
+        }
+        attempt.follow()
+    })
+}
+
+fn get_or_build_streaming_async_client_inner(
     allow_private_ips: bool,
     proxy_url: Option<&str>,
+    follow_redirects: bool,
 ) -> DomainResult<reqwest::Client> {
     let key = StreamingClientKey {
         allow_private_ips,
@@ -58,6 +156,7 @@ pub fn get_or_build_streaming_async_client(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        follow_redirects,
     };
     {
         let guard = STREAMING_ASYNC_CLIENT_CACHE
@@ -68,16 +167,21 @@ pub fn get_or_build_streaming_async_client(
         }
     }
 
+    let redirect_policy = if !follow_redirects {
+        reqwest::redirect::Policy::none()
+    } else if key.proxy_url.is_some() && !key.allow_private_ips {
+        proxy_dns_ssrf_redirect_policy(key.allow_private_ips, MAX_REDIRECT_HOPS)
+    } else {
+        ssrf_redirect_policy(key.allow_private_ips, MAX_REDIRECT_HOPS)
+    };
+
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(STREAM_CONNECT_TIMEOUT_SECS))
         .read_timeout(Duration::from_secs(STREAM_READ_TIMEOUT_SECS))
         .user_agent(DEFAULT_WEBVIEW_UA)
         .pool_max_idle_per_host(16)
         .pool_idle_timeout(Duration::from_secs(90))
-        .redirect(ssrf_redirect_policy(
-            key.allow_private_ips,
-            MAX_REDIRECT_HOPS,
-        ));
+        .redirect(redirect_policy);
     if let Some(ref proxy) = key.proxy_url {
         let p = reqwest::Proxy::all(proxy.as_str())
             .map_err(|e| DomainError::Storage(format!("代理配置无效: {e}")))?;
@@ -100,6 +204,96 @@ pub fn get_or_build_streaming_async_client(
         guard.clear();
     }
     Ok(guard.entry(key).or_insert(client).clone())
+}
+
+/// Builds or returns a pooled async `reqwest::Client` specifically for long-lived video streaming.
+/// Uses `connect_timeout` + per-chunk `read_timeout` WITHOUT a short total-body `.timeout(...)`
+/// so active MP4 / HLS playback is never killed mid-stream.
+pub fn get_or_build_streaming_async_client(
+    allow_private_ips: bool,
+    proxy_url: Option<&str>,
+) -> DomainResult<reqwest::Client> {
+    get_or_build_streaming_async_client_inner(allow_private_ips, proxy_url, true)
+}
+
+/// Performs an SSRF-safe async streaming `GET`, validating DNS records asynchronously via
+/// `validate_streaming_target_url` on the initial target and every redirect hop even when
+/// `proxy_url` is configured.
+pub async fn send_streaming_get(
+    raw_url: &str,
+    mut headers: HeaderMap,
+    allow_private_ips: bool,
+    proxy_url: Option<&str>,
+    err_prefix: &str,
+) -> DomainResult<reqwest::Response> {
+    let has_proxy = proxy_url.map(str::trim).is_some_and(|s| !s.is_empty());
+    let mut current_url = validate_streaming_target_url(raw_url, allow_private_ips).await?;
+
+    if !has_proxy || allow_private_ips {
+        let client = get_or_build_streaming_async_client_inner(allow_private_ips, proxy_url, true)?;
+        return client
+            .get(current_url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| DomainError::Validation(format!("{err_prefix}: {e}")));
+    }
+
+    let client = get_or_build_streaming_async_client_inner(allow_private_ips, proxy_url, false)?;
+    for hop in 0..=MAX_REDIRECT_HOPS {
+        let resp = client
+            .get(current_url.clone())
+            .headers(headers.clone())
+            .send()
+            .await
+            .map_err(|e| DomainError::Validation(format!("{err_prefix}: {e}")))?;
+
+        if !resp.status().is_redirection() {
+            return Ok(resp);
+        }
+        let Some(loc_val) = resp.headers().get(LOCATION) else {
+            return Ok(resp);
+        };
+        if hop >= MAX_REDIRECT_HOPS {
+            return Err(DomainError::Validation(format!(
+                "{err_prefix}: 重定向次数超过上限 ({MAX_REDIRECT_HOPS})"
+            )));
+        }
+        let loc_str = loc_val
+            .to_str()
+            .map_err(|_| DomainError::Validation(format!("{err_prefix}: 无效的重定向响应头")))?;
+        let next_url = current_url
+            .join(loc_str.trim())
+            .map_err(|e| DomainError::Validation(format!("{err_prefix}: 无效的重定向目标: {e}")))?;
+        if current_url.scheme().eq_ignore_ascii_case("https")
+            && next_url.scheme().eq_ignore_ascii_case("http")
+        {
+            return Err(DomainError::Validation(
+                "禁止从 HTTPS 降级重定向至 HTTP".into(),
+            ));
+        }
+        let validated_next =
+            validate_streaming_target_url(next_url.as_str(), allow_private_ips).await?;
+        if (
+            current_url.scheme(),
+            current_url.host_str(),
+            current_url.port_or_known_default(),
+        ) != (
+            validated_next.scheme(),
+            validated_next.host_str(),
+            validated_next.port_or_known_default(),
+        ) {
+            headers.remove(AUTHORIZATION);
+            headers.remove(COOKIE);
+            headers.remove(PROXY_AUTHORIZATION);
+            headers.remove("x-api-key");
+        }
+        current_url = validated_next;
+    }
+
+    Err(DomainError::Validation(format!(
+        "{err_prefix}: 重定向次数超过上限 ({MAX_REDIRECT_HOPS})"
+    )))
 }
 
 fn is_utf16_bom_prefix(buf: &[u8]) -> bool {
@@ -602,12 +796,15 @@ where
             if RE_M3U8_URI_ATTR.is_match(line_no_cr) {
                 let replaced =
                     RE_M3U8_URI_ATTR.replace_all(line_no_cr, |caps: &regex::Captures| {
-                        let prefix = &caps[1];
-                        let raw_uri = &caps[2];
-                        let suffix = &caps[3];
+                        let raw_uri = caps
+                            .get(1)
+                            .or_else(|| caps.get(2))
+                            .or_else(|| caps.get(3))
+                            .map(|m| m.as_str())
+                            .unwrap_or("");
                         if let Some(resolved) = resolve_m3u8_uri(raw_uri, base_url) {
                             let proxied = rewrite_uri(&resolved);
-                            format!("{prefix}{proxied}{suffix}")
+                            format!("URI=\"{proxied}\"")
                         } else {
                             caps[0].to_string()
                         }
@@ -629,4 +826,77 @@ where
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn validate_streaming_target_url_blocks_dns_rebinding_to_private_ip() {
+        let err = validate_streaming_target_url_with_resolver(
+            "https://rebind.example.com/live/index.m3u8",
+            false,
+            |_host, port| async move {
+                Ok(vec![SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                    port,
+                )])
+            },
+        )
+        .await
+        .expect_err("loopback DNS resolution must be blocked");
+        assert!(err.to_string().contains("内网/保留地址"));
+
+        let err_meta = validate_streaming_target_url_with_resolver(
+            "http://metadata.example.com/latest/meta-data",
+            false,
+            |_host, port| async move {
+                Ok(vec![SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+                    port,
+                )])
+            },
+        )
+        .await
+        .expect_err("link-local metadata IP must be blocked");
+        assert!(err_meta.to_string().contains("169.254.169.254"));
+    }
+
+    #[tokio::test]
+    async fn send_streaming_get_enforces_dns_ssrf_even_when_proxy_is_configured() {
+        let err = send_streaming_get(
+            "http://127.0.0.1:8080/secret.m3u8",
+            HeaderMap::new(),
+            false,
+            Some("http://127.0.0.1:7890"),
+            "拉取 HLS 失败",
+        )
+        .await
+        .expect_err("loopback literal IP must be blocked before proxy connect");
+        assert!(err.to_string().contains("内网/保留地址"));
+
+        let err_local_host = send_streaming_get(
+            "http://internal.localhost/secret.m3u8",
+            HeaderMap::new(),
+            false,
+            Some("http://127.0.0.1:7890"),
+            "拉取 HLS 失败",
+        )
+        .await
+        .expect_err("localhost subdomain must be blocked before proxy connect");
+        assert!(err_local_host.to_string().contains("本地主机"));
+    }
+
+    #[test]
+    fn rewrite_m3u8_playlist_handles_single_double_and_unquoted_uris() {
+        let base = Url::parse("https://cdn.example.com/hls/index.m3u8").unwrap();
+        let raw = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI='enc.key'\n#EXT-X-MAP:URI=init.mp4\n#EXTINF:4.0,\nseg0.ts\n";
+        let rewritten = rewrite_m3u8_playlist_with(raw, &base, |u| format!("PROXY({u})"));
+        assert!(rewritten.contains("URI=\"PROXY(https://cdn.example.com/hls/enc.key)\""));
+        assert!(rewritten.contains("URI=\"PROXY(https://cdn.example.com/hls/init.mp4)\""));
+        assert!(rewritten.contains("PROXY(https://cdn.example.com/hls/seg0.ts)"));
+    }
 }

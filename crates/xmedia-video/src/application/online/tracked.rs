@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use jiff::Timestamp;
-use regex::Regex;
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_TYPE, HeaderValue, USER_AGENT};
 use tokio::io::AsyncWriteExt;
 use url::Url;
@@ -14,9 +13,7 @@ use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::User;
-use xmedia_source::http::{
-    DEFAULT_WEBVIEW_UA, build_sanitized_headers, decode_response_bytes, validate_target_url_static,
-};
+use xmedia_source::http::{DEFAULT_WEBVIEW_UA, build_sanitized_headers, decode_response_bytes};
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, fetch_validated_image_bytes_with_config,
 };
@@ -29,9 +26,9 @@ use crate::domain::video::{
 };
 use crate::source::hls::{
     MAX_M3U8_BYTES, MAX_SUBTITLE_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url,
-    build_stream_proxy_url, build_subtitle_proxy_url, get_or_build_streaming_async_client,
-    is_forbidden_media_ct, is_hls_playlist_response, looks_like_html_bytes,
-    read_sniff_prefix_with_context, validate_and_normalize_subtitle_to_vtt,
+    build_stream_proxy_url, build_subtitle_proxy_url, is_forbidden_media_ct,
+    is_hls_playlist_response, looks_like_html_bytes, read_sniff_prefix_with_context,
+    send_streaming_get, validate_and_normalize_subtitle_to_vtt, validate_streaming_target_url,
 };
 use crate::source::model::{OnlineVideoPlayGroup, OnlineVideoPlayResult, VideoSourceSpec};
 
@@ -808,8 +805,8 @@ impl VideoOnlineService {
         source_id: Uuid,
         stream_url: &str,
     ) -> DomainResult<(TempFileGuard, VideoContainer)> {
-        let validated = validate_target_url_static(stream_url.trim(), self.allow_private_ips)
-            .map_err(DomainError::Validation)?;
+        let validated =
+            validate_streaming_target_url(stream_url.trim(), self.allow_private_ips).await?;
         let source_headers = self
             .resolve_internal_media_headers(Some(source_id), validated.as_str())
             .await;
@@ -819,16 +816,14 @@ impl VideoOnlineService {
         }
         header_map.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
 
-        let client = get_or_build_streaming_async_client(
+        let mut resp = send_streaming_get(
+            validated.as_str(),
+            header_map,
             self.allow_private_ips,
             self.http_config.proxy_url.as_deref(),
-        )?;
-        let mut resp = client
-            .get(validated)
-            .headers(header_map)
-            .send()
-            .await
-            .map_err(|e| DomainError::Validation(format!("拉取在线视频失败: {e}")))?;
+            "拉取在线视频失败",
+        )
+        .await?;
 
         if !resp.status().is_success() {
             return Err(DomainError::Validation(format!(
@@ -919,8 +914,8 @@ impl VideoOnlineService {
         source_id: Uuid,
         raw_url: &str,
     ) -> DomainResult<(String, Url)> {
-        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
-            .map_err(DomainError::Validation)?;
+        let validated =
+            validate_streaming_target_url(raw_url.trim(), self.allow_private_ips).await?;
         let source_headers = self
             .resolve_internal_media_headers(Some(source_id), validated.as_str())
             .await;
@@ -930,16 +925,14 @@ impl VideoOnlineService {
         }
         header_map.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
 
-        let client = get_or_build_streaming_async_client(
+        let mut resp = send_streaming_get(
+            validated.as_str(),
+            header_map,
             self.allow_private_ips,
             self.http_config.proxy_url.as_deref(),
-        )?;
-        let mut resp = client
-            .get(validated)
-            .headers(header_map)
-            .send()
-            .await
-            .map_err(|e| DomainError::Validation(format!("拉取 HLS 播放列表失败: {e}")))?;
+            "拉取 HLS 播放列表失败",
+        )
+        .await?;
         if !resp.status().is_success() {
             return Err(DomainError::Validation(format!(
                 "HLS 播放列表响应状态异常: {}",
@@ -983,8 +976,8 @@ impl VideoOnlineService {
         dest_path: &Path,
         total_bytes: &mut u64,
     ) -> DomainResult<()> {
-        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
-            .map_err(DomainError::Validation)?;
+        let validated =
+            validate_streaming_target_url(raw_url.trim(), self.allow_private_ips).await?;
         let source_headers = self
             .resolve_internal_media_headers(Some(source_id), validated.as_str())
             .await;
@@ -994,16 +987,14 @@ impl VideoOnlineService {
         }
         header_map.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
 
-        let client = get_or_build_streaming_async_client(
+        let mut resp = send_streaming_get(
+            validated.as_str(),
+            header_map,
             self.allow_private_ips,
             self.http_config.proxy_url.as_deref(),
-        )?;
-        let mut resp = client
-            .get(validated)
-            .headers(header_map)
-            .send()
-            .await
-            .map_err(|e| DomainError::Validation(format!("拉取 HLS 分片失败: {e}")))?;
+            "拉取 HLS 分片失败",
+        )
+        .await?;
         if !resp.status().is_success() {
             return Err(DomainError::Validation(format!(
                 "HLS 分片响应状态异常: {}",
@@ -1063,80 +1054,21 @@ impl VideoOnlineService {
         }
 
         let work_dir = TempDirGuard::new()?;
-        let re_uri_attr = Regex::new(r#"(?i)\b(URI=")([^"]*)(")"#).expect("valid m3u8 uri regex");
-
-        let mut total_bytes: u64 = 0;
-        let mut seg_idx: usize = 0;
-        let mut asset_idx: usize = 0;
-        let mut local_lines = Vec::new();
-
-        for raw_line in playlist_text.lines() {
-            let line = raw_line.trim_end_matches('\r');
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if trimmed.starts_with('#') {
-                if re_uri_attr.is_match(line) {
-                    let mut rewritten = String::with_capacity(line.len());
-                    let mut last_end = 0usize;
-                    for caps in re_uri_attr.captures_iter(line) {
-                        let m = caps.get(0).unwrap();
-                        rewritten.push_str(&line[last_end..m.start()]);
-                        let raw_uri = caps[2].trim();
-                        if let Ok(joined) = base_url.join(raw_uri)
-                            && matches!(joined.scheme(), "http" | "https")
-                        {
-                            asset_idx += 1;
-                            let fname = format!("asset_{asset_idx:05}.bin");
-                            let dest = work_dir.path().join(&fname);
-                            self.download_hls_asset_to_file(
-                                source_id,
-                                joined.as_str(),
-                                &dest,
-                                &mut total_bytes,
-                            )
-                            .await?;
-                            rewritten.push_str(&caps[1]);
-                            rewritten.push_str(&fname);
-                            rewritten.push_str(&caps[3]);
-                        } else {
-                            rewritten.push_str(m.as_str());
-                        }
-                        last_end = m.end();
-                    }
-                    rewritten.push_str(&line[last_end..]);
-                    local_lines.push(rewritten);
-                } else {
-                    local_lines.push(line.to_string());
+        let local_lines = stage_local_hls_playlist_with(
+            &playlist_text,
+            &base_url,
+            |resolved_url, local_fname, bytes_so_far| {
+                let dest = work_dir.path().join(&local_fname);
+                let url_owned = resolved_url.to_string();
+                async move {
+                    let mut running = bytes_so_far;
+                    self.download_hls_asset_to_file(source_id, &url_owned, &dest, &mut running)
+                        .await?;
+                    Ok(running)
                 }
-                continue;
-            }
-
-            let joined = base_url
-                .join(trimmed)
-                .map_err(|e| DomainError::Validation(format!("无效的 HLS 分片地址: {e}")))?;
-            seg_idx += 1;
-            if seg_idx > MAX_HLS_SEGMENTS {
-                return Err(DomainError::Validation("HLS 分片数量超过缓存上限".into()));
-            }
-            let ext = Path::new(joined.path())
-                .extension()
-                .and_then(|s| s.to_str())
-                .filter(|e| e.len() <= 6 && e.chars().all(|c| c.is_ascii_alphanumeric()))
-                .unwrap_or("ts");
-            let fname = format!("seg_{seg_idx:06}.{ext}");
-            let dest = work_dir.path().join(&fname);
-            self.download_hls_asset_to_file(source_id, joined.as_str(), &dest, &mut total_bytes)
-                .await?;
-            local_lines.push(fname);
-        }
-
-        if seg_idx == 0 {
-            return Err(DomainError::Validation(
-                "HLS 播放列表未包含可缓存分片".into(),
-            ));
-        }
+            },
+        )
+        .await?;
 
         let local_m3u8 = work_dir.path().join("index.m3u8");
         tokio::fs::write(&local_m3u8, local_lines.join("\n"))
@@ -1156,7 +1088,9 @@ impl VideoOnlineService {
         source_id: Uuid,
         raw_url: &str,
     ) -> Option<String> {
-        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips).ok()?;
+        let validated = validate_streaming_target_url(raw_url.trim(), self.allow_private_ips)
+            .await
+            .ok()?;
         let source_headers = self
             .resolve_internal_media_headers(Some(source_id), validated.as_str())
             .await;
@@ -1164,17 +1098,15 @@ impl VideoOnlineService {
         if !header_map.contains_key(USER_AGENT) {
             header_map.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_WEBVIEW_UA));
         }
-        let client = get_or_build_streaming_async_client(
+        let mut resp = send_streaming_get(
+            validated.as_str(),
+            header_map,
             self.allow_private_ips,
             self.http_config.proxy_url.as_deref(),
+            "拉取字幕失败",
         )
+        .await
         .ok()?;
-        let mut resp = client
-            .get(validated)
-            .headers(header_map)
-            .send()
-            .await
-            .ok()?;
         if !resp.status().is_success() {
             return None;
         }
@@ -1406,5 +1338,321 @@ impl VideoOnlineService {
             failed_count,
             errors,
         })
+    }
+}
+
+fn resolve_strict_http_hls_uri(raw_uri: &str, base_url: &Url) -> DomainResult<Url> {
+    let clean = raw_uri.trim();
+    if clean.is_empty() || clean.bytes().any(|b| b.is_ascii_control() || b == b'\\') {
+        return Err(DomainError::Validation("无效的 HLS URI".into()));
+    }
+    let lower = clean.to_ascii_lowercase();
+    if lower.starts_with("file:")
+        || lower.starts_with("data:")
+        || lower.starts_with("crypto:")
+        || lower.starts_with("subfile:")
+        || lower.starts_with("concat:")
+        || lower.starts_with("pipe:")
+        || lower.starts_with("fd:")
+    {
+        return Err(DomainError::Validation(
+            "安全策略拒绝非 HTTP(S) 的 HLS URI 协议".into(),
+        ));
+    }
+    let joined = base_url
+        .join(clean)
+        .map_err(|e| DomainError::Validation(format!("无效的 HLS URI: {e}")))?;
+    if !matches!(joined.scheme(), "http" | "https")
+        || joined.host_str().is_none_or(|h| h.is_empty())
+    {
+        return Err(DomainError::Validation(format!(
+            "安全策略仅允许 HTTP/HTTPS HLS URI，已拒绝协议: {}",
+            joined.scheme()
+        )));
+    }
+    Ok(joined)
+}
+
+async fn stage_local_hls_playlist_with<F, Fut>(
+    playlist_text: &str,
+    base_url: &Url,
+    mut fetch_to_local: F,
+) -> DomainResult<Vec<String>>
+where
+    F: FnMut(&Url, String, u64) -> Fut,
+    Fut: std::future::Future<Output = DomainResult<u64>>,
+{
+    let mut total_bytes: u64 = 0;
+    let mut seg_idx: usize = 0;
+    let mut asset_idx: usize = 0;
+    let mut local_lines = Vec::new();
+
+    for raw_line in playlist_text.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            let Some(prefix4) = trimmed.get(..4) else {
+                continue;
+            };
+            if !prefix4.eq_ignore_ascii_case("#EXT") {
+                // Drop pure comments so untrusted text never reaches local FFmpeg playlist.
+                continue;
+            }
+            if trimmed
+                .get(..13)
+                .is_some_and(|p| p.eq_ignore_ascii_case("#EXT-X-DEFINE"))
+            {
+                return Err(DomainError::Validation(
+                    "安全策略拒绝包含 #EXT-X-DEFINE 变量替换的 HLS 播放列表".into(),
+                ));
+            }
+            if trimmed
+                .get(..8)
+                .is_some_and(|p| p.eq_ignore_ascii_case("#EXTINF:"))
+            {
+                let rest = &trimmed[8..];
+                let dur = rest.split(',').next().unwrap_or(rest).trim();
+                local_lines.push(format!("#EXTINF:{dur},"));
+                continue;
+            }
+
+            let Some((tag_prefix, attr_str)) = trimmed.split_once(':') else {
+                if trimmed.to_ascii_lowercase().contains("uri") {
+                    return Err(DomainError::Validation(
+                        "HLS 标签包含无法解析的 URI 属性".into(),
+                    ));
+                }
+                local_lines.push(trimmed.to_string());
+                continue;
+            };
+
+            if !attr_str.contains('=') && !attr_str.to_ascii_lowercase().contains("uri") {
+                local_lines.push(trimmed.to_string());
+                continue;
+            }
+
+            let bytes = attr_str.as_bytes();
+            let len = bytes.len();
+            let mut idx = 0usize;
+            let mut out_attrs: Vec<String> = Vec::new();
+
+            while idx < len {
+                while idx < len && (bytes[idx].is_ascii_whitespace() || bytes[idx] == b',') {
+                    idx += 1;
+                }
+                if idx >= len {
+                    break;
+                }
+                let key_start = idx;
+                while idx < len
+                    && (bytes[idx].is_ascii_alphanumeric()
+                        || bytes[idx] == b'-'
+                        || bytes[idx] == b'_')
+                {
+                    idx += 1;
+                }
+                if idx == key_start {
+                    return Err(DomainError::Validation("HLS 标签属性名格式无效".into()));
+                }
+                let key = &attr_str[key_start..idx];
+                while idx < len && bytes[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if idx >= len || bytes[idx] != b'=' {
+                    return Err(DomainError::Validation(format!(
+                        "HLS 标签属性 {key} 缺少 '=' 号"
+                    )));
+                }
+                idx += 1;
+                while idx < len && bytes[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if idx >= len {
+                    return Err(DomainError::Validation(format!(
+                        "HLS 标签属性 {key} 值为空"
+                    )));
+                }
+
+                let (raw_val, was_quoted) = if bytes[idx] == b'"' || bytes[idx] == b'\'' {
+                    let quote = bytes[idx];
+                    let val_start = idx + 1;
+                    let Some(close_rel) = attr_str[val_start..].find(quote as char) else {
+                        return Err(DomainError::Validation(format!(
+                            "HLS 标签属性 {key} 引号未闭合"
+                        )));
+                    };
+                    let val = &attr_str[val_start..val_start + close_rel];
+                    idx = val_start + close_rel + 1;
+                    while idx < len && bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                    if idx < len && bytes[idx] != b',' {
+                        return Err(DomainError::Validation(format!(
+                            "HLS 标签属性 {key} 分隔符无效"
+                        )));
+                    }
+                    (val, true)
+                } else {
+                    let val_start = idx;
+                    while idx < len && bytes[idx] != b',' && !bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                    let val = &attr_str[val_start..idx];
+                    while idx < len && bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                    if idx < len && bytes[idx] != b',' {
+                        return Err(DomainError::Validation(format!(
+                            "HLS 标签属性 {key} 未加引号的值格式无效"
+                        )));
+                    }
+                    (val, false)
+                };
+
+                if key.eq_ignore_ascii_case("URI") {
+                    let joined = resolve_strict_http_hls_uri(raw_val, base_url)?;
+                    asset_idx += 1;
+                    let fname = format!("asset_{asset_idx:05}.bin");
+                    total_bytes = fetch_to_local(&joined, fname.clone(), total_bytes).await?;
+                    out_attrs.push(format!("URI=\"{fname}\""));
+                } else if was_quoted {
+                    if raw_val.contains('"') || raw_val.bytes().any(|b| b.is_ascii_control()) {
+                        return Err(DomainError::Validation(format!(
+                            "HLS 标签属性 {key} 包含非法字符"
+                        )));
+                    }
+                    out_attrs.push(format!("{key}=\"{raw_val}\""));
+                } else {
+                    if raw_val.is_empty()
+                        || raw_val
+                            .bytes()
+                            .any(|b| b.is_ascii_control() || b == b'"' || b == b'\'')
+                    {
+                        return Err(DomainError::Validation(format!(
+                            "HLS 标签属性 {key} 值无效"
+                        )));
+                    }
+                    out_attrs.push(format!("{key}={raw_val}"));
+                }
+            }
+
+            if out_attrs.is_empty() {
+                return Err(DomainError::Validation("HLS 标签属性列表为空".into()));
+            }
+            local_lines.push(format!("{}:{}", tag_prefix.trim(), out_attrs.join(",")));
+            continue;
+        }
+
+        let joined = resolve_strict_http_hls_uri(trimmed, base_url)?;
+        seg_idx += 1;
+        if seg_idx > MAX_HLS_SEGMENTS {
+            return Err(DomainError::Validation("HLS 分片数量超过缓存上限".into()));
+        }
+        let ext = Path::new(joined.path())
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .filter(|e| {
+                matches!(
+                    e.as_str(),
+                    "ts" | "m4s" | "mp4" | "m4a" | "aac" | "mp3" | "ac3" | "eac3" | "vtt" | "bin"
+                )
+            })
+            .unwrap_or_else(|| "ts".to_string());
+        let fname = format!("seg_{seg_idx:06}.{ext}");
+        total_bytes = fetch_to_local(&joined, fname.clone(), total_bytes).await?;
+        local_lines.push(fname);
+    }
+
+    if seg_idx == 0 {
+        return Err(DomainError::Validation(
+            "HLS 播放列表未包含可缓存分片".into(),
+        ));
+    }
+
+    Ok(local_lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stage_local_hls_playlist_rejects_file_data_and_malformed_uris() {
+        let base = Url::parse("https://cdn.example.com/hls/index.m3u8").unwrap();
+        let malicious_cases = [
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"file:///etc/passwd\"\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI='file:///etc/passwd'\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=file:///etc/passwd\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXT-X-MAP:URI=\"data:application/octet-stream;base64,AAAA\"\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"crypto:/etc/passwd\"\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"https://cdn.example.com/k.key\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXT-X-DEFINE:NAME=\"x\",VALUE=\"file:///etc/passwd\"\n#EXTINF:4.0,\nseg0.ts\n",
+            "#EXTM3U\n#EXTINF:4.0,\nfile:///etc/passwd\n",
+            "#EXTM3U\n#EXTINF:4.0,\ndata:video/mp2t;base64,AAAA\n",
+        ];
+
+        for playlist in malicious_cases {
+            let res =
+                stage_local_hls_playlist_with(playlist, &base, |_url, _fname, cur| async move {
+                    Ok(cur + 16)
+                })
+                .await;
+            assert!(
+                matches!(res, Err(DomainError::Validation(_))),
+                "expected Validation error for malicious playlist: {playlist}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_local_hls_playlist_rewrites_all_http_uri_forms() {
+        let base = Url::parse("https://cdn.example.com/hls/index.m3u8").unwrap();
+        let playlist = concat!(
+            "#EXTM3U\n",
+            "#EXT-X-VERSION:6\n",
+            "#EXT-X-TARGETDURATION:6\n",
+            "# arbitrary comment URI=file:///etc/passwd\n",
+            "#EXT-X-KEY:METHOD=AES-128,URI='keys/enc.key',IV=0x00000000000000000000000000000001\n",
+            "#EXT-X-MAP:URI=init.mp4\n",
+            "#EXTINF:5.500,Episode Title\n",
+            "https://cdn.example.com/hls/disguised_seg.png\n",
+            "#EXT-X-ENDLIST\n",
+        );
+
+        let mut downloaded = Vec::new();
+        let lines = stage_local_hls_playlist_with(playlist, &base, |url, fname, cur| {
+            downloaded.push((url.to_string(), fname));
+            async move { Ok(cur + 128) }
+        })
+        .await
+        .expect("valid HTTP HLS playlist should succeed");
+
+        assert_eq!(
+            downloaded,
+            vec![
+                (
+                    "https://cdn.example.com/hls/keys/enc.key".to_string(),
+                    "asset_00001.bin".to_string()
+                ),
+                (
+                    "https://cdn.example.com/hls/init.mp4".to_string(),
+                    "asset_00002.bin".to_string()
+                ),
+                (
+                    "https://cdn.example.com/hls/disguised_seg.png".to_string(),
+                    "seg_000001.ts".to_string()
+                ),
+            ]
+        );
+        let joined = lines.join("\n");
+        assert!(joined.contains("URI=\"asset_00001.bin\""));
+        assert!(joined.contains("URI=\"asset_00002.bin\""));
+        assert!(joined.contains("seg_000001.ts"));
+        assert!(!joined.contains("/etc/passwd"));
     }
 }

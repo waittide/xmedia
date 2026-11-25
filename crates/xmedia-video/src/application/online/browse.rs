@@ -9,7 +9,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 use xmedia_source::http::{
     DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, build_sanitized_headers, decode_response_bytes,
-    get_or_build_async_client, normalize_cookie_key, validate_target_url_static,
+    get_or_build_async_client, normalize_cookie_key,
 };
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, fetch_validated_image_bytes_with_config,
@@ -19,10 +19,10 @@ use xmedia_source::rate_limit::get_or_insert_rate_limiter;
 use crate::source::hls::{
     MAX_M3U8_BYTES, MAX_SUBTITLE_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url,
     build_poster_proxy_url, build_stream_proxy_url, build_subtitle_proxy_url,
-    get_or_build_streaming_async_client, infer_segment_content_type, is_forbidden_media_ct,
-    is_forbidden_subtitle_ct, is_hls_playlist_response, is_partial_hls_playlist_range_candidate,
-    looks_like_html_bytes, read_sniff_prefix_with_context, spawn_chunk_stream,
-    validate_and_normalize_subtitle_to_vtt,
+    infer_segment_content_type, is_forbidden_media_ct, is_forbidden_subtitle_ct,
+    is_hls_playlist_response, is_partial_hls_playlist_range_candidate, looks_like_html_bytes,
+    read_sniff_prefix_with_context, send_streaming_get, spawn_chunk_stream,
+    validate_and_normalize_subtitle_to_vtt, validate_streaming_target_url,
 };
 use crate::source::model::VideoSourceSpec;
 
@@ -699,8 +699,8 @@ impl VideoOnlineService {
         raw_url: &str,
         source_id: Option<Uuid>,
     ) -> DomainResult<String> {
-        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
-            .map_err(DomainError::Validation)?;
+        let validated =
+            validate_streaming_target_url(raw_url.trim(), self.allow_private_ips).await?;
         let source_headers = self
             .resolve_source_media_headers_with_cookies(actor, source_id, validated.as_str())
             .await?;
@@ -827,8 +827,6 @@ impl VideoOnlineService {
         source_headers: HashMap<String, String>,
         range_header: Option<&str>,
     ) -> DomainResult<ProxyStreamOutcome> {
-        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
-            .map_err(DomainError::Validation)?;
         let sanitized_range = validate_range_header(range_header)?;
 
         let mut header_map = build_sanitized_headers(&source_headers);
@@ -842,16 +840,14 @@ impl VideoOnlineService {
             header_map.insert(RANGE, hv);
         }
 
-        let client = get_or_build_streaming_async_client(
+        let mut resp = send_streaming_get(
+            raw_url.trim(),
+            header_map,
             self.allow_private_ips,
             self.http_config.proxy_url.as_deref(),
-        )?;
-        let mut resp = client
-            .get(validated)
-            .headers(header_map)
-            .send()
-            .await
-            .map_err(|e| DomainError::Validation(format!("拉取视频流失败: {e}")))?;
+            "拉取视频流失败",
+        )
+        .await?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
@@ -1002,8 +998,6 @@ impl VideoOnlineService {
     where
         F: FnMut(&str) -> String,
     {
-        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
-            .map_err(DomainError::Validation)?;
         let sanitized_range = validate_range_header(range_header)?;
 
         let mut header_map = build_sanitized_headers(&source_headers);
@@ -1011,11 +1005,6 @@ impl VideoOnlineService {
             header_map.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_WEBVIEW_UA));
         }
         header_map.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-
-        let client = get_or_build_streaming_async_client(
-            self.allow_private_ips,
-            self.http_config.proxy_url.as_deref(),
-        )?;
 
         let mut include_range = sanitized_range.is_some();
         let (
@@ -1037,12 +1026,14 @@ impl VideoOnlineService {
                 req_headers.insert(RANGE, hv);
             }
 
-            let mut resp = client
-                .get(validated.clone())
-                .headers(req_headers)
-                .send()
-                .await
-                .map_err(|e| DomainError::Validation(format!("拉取 HLS 资源失败: {e}")))?;
+            let mut resp = send_streaming_get(
+                raw_url.trim(),
+                req_headers,
+                self.allow_private_ips,
+                self.http_config.proxy_url.as_deref(),
+                "拉取 HLS 资源失败",
+            )
+            .await?;
 
             let status = resp.status();
             if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
