@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuArrowDown,
   LuArrowLeft,
@@ -11,15 +12,16 @@ import {
   LuDisc3,
   LuLayers,
   LuPanelLeft,
-  LuSearch,
   LuSlidersHorizontal,
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdMenu from '@/components/ui/MdMenu.vue'
 import MdMenuItem from '@/components/ui/MdMenuItem.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import { buildArtworkUrl } from '../../api'
 import { entryCompositeKey, isEntryComplete } from '../../completeness'
 import type { MediaFileDetail, MediaFileEntry } from '../../types'
@@ -51,15 +53,16 @@ const emit = defineEmits<{
   'update:autoSearchOnSwitch': [value: boolean]
 }>()
 
+const { t } = useI18n()
 const dropdownQuery = ref('')
 const dropdownFilter = ref<DropdownFilter>('all')
 
-const dropdownFilterOptions = [
-  { value: 'all' as const, label: '全部' },
-  { value: 'incomplete' as const, label: '未完善' },
-  { value: 'missing_cover' as const, label: '缺封面' },
-  { value: 'saved' as const, label: '已存' },
-]
+const dropdownFilterOptions = computed(() => [
+  { value: 'all' as const, label: t('tool.workbench.queue.tabAll') },
+  { value: 'incomplete' as const, label: t('tool.workbench.queue.tabIncomplete') },
+  { value: 'missing_cover' as const, label: t('tool.row.missingCover') },
+  { value: 'saved' as const, label: t('tool.workbench.queue.tabSaved') },
+])
 
 watch(
   () => props.showCompactQueueDropdown,
@@ -98,42 +101,42 @@ const savedSessionCount = computed(() => {
 
 <template>
   <div
-    class="relative z-20 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2"
+    class="relative z-20 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-outline-variant/50 bg-surface-container-low px-3.5 py-2"
   >
     <!-- Left: Exit & Sidebar Queue Toggle -->
     <div class="flex shrink-0 items-center gap-1.5">
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-tonal md-state"
-        @click="emit('exit')"
-      >
-        <LuArrowLeft class="h-3.5 w-3.5" />
-        <span>退出刮削</span>
-      </button>
+      <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="emit('exit')">
+        {{ t('tool.workbench.topBar.exitScrape') }}
+      </MdButton>
 
-      <button
-        type="button"
-        class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
-        :title="sidebarCollapsed ? '展开左侧队列列表' : '收起左侧队列列表（最大化三栏宽度）'"
-        :aria-label="sidebarCollapsed ? '展开左侧队列列表' : '收起左侧队列列表'"
+      <MdIconButton
+        size="sm"
+        class="hidden sm:inline-flex"
+        :icon="LuPanelLeft"
+        :tooltip="
+          sidebarCollapsed
+            ? t('tool.workbench.topBar.expandQueue')
+            : t('tool.workbench.topBar.collapseQueue')
+        "
+        :aria-label="
+          sidebarCollapsed
+            ? t('tool.workbench.topBar.expandQueue')
+            : t('tool.workbench.topBar.collapseQueue')
+        "
         @click="emit('toggleSidebar')"
-      >
-        <LuPanelLeft class="h-4 w-4" />
-      </button>
+      />
     </div>
 
     <!-- Center: Stepper + Current Entry Indicator -->
     <div class="relative flex min-w-0 flex-1 items-center justify-center gap-1.5">
-      <button
-        type="button"
+      <MdIconButton
+        size="sm"
         :disabled="!hasPrev"
-        class="md-icon-btn md-icon-btn-sm md-state !h-8 !w-8 shrink-0 disabled:opacity-35"
-        title="上一项 (Alt+↑)"
-        aria-label="上一项"
+        :icon="LuArrowUp"
+        :tooltip="t('tool.workbench.queue.prevItem')"
+        :aria-label="t('tool.workbench.queue.prevItem')"
         @click="emit('step', -1)"
-      >
-        <LuArrowUp class="h-4 w-4" />
-      </button>
+      />
 
       <MdMenu
         v-if="showCompactQueueDropdown"
@@ -141,35 +144,36 @@ const savedSessionCount = computed(() => {
         placement="bottom-start"
         :min-width="320"
         :max-width="440"
-        aria-label="快速切换队列条目"
+        :aria-label="t('tool.workbench.topBar.quickSwitchLabel', { count: entries.length })"
         @update:open="emit('update:queueDropdownOpen', $event)"
       >
         <template #trigger="{ open, toggle, triggerAttrs }">
           <button
             type="button"
             v-bind="triggerAttrs"
-            class="md-state flex h-8 max-w-[min(420px,55vw)] min-w-0 items-center gap-2 rounded-corner-full border border-outline-variant/70 bg-surface px-3 text-label-medium text-on-surface transition hover:border-primary"
-            title="点击展开队列并快速跳转"
+            class="md-state text-label-medium flex h-8 max-w-[min(420px,55vw)] min-w-0 cursor-pointer items-center gap-2 rounded-corner-full bg-surface px-3 text-on-surface transition hover:bg-surface-container-high"
+            :title="t('tool.workbench.topBar.quickSwitchTitle')"
             @click="toggle"
           >
             <span
               v-if="positionLabel"
-              class="shrink-0 rounded-corner-full bg-primary-container px-1.5 py-0.5 font-mono text-label-small text-on-primary-container"
+              class="text-label-small shrink-0 rounded-corner-full bg-primary-container px-1.5 py-0.5 font-mono text-on-primary-container"
             >
               {{ positionLabel }}
             </span>
             <span class="min-w-0 flex-1 truncate">
-              {{ detail?.entry.file_name || '未选择条目' }}
+              {{ detail?.entry.file_name || t('tool.workbench.topBar.noSelection') }}
             </span>
             <span
               v-if="isCurrentDirty"
-              class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-label-small text-on-warning-container"
+              class="text-label-small shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-on-warning-container"
             >
-              未保存
+              {{ t('tool.inspector.unsaved') }}
             </span>
             <LuChevronDown
               class="h-3.5 w-3.5 shrink-0 opacity-70 transition"
               :class="open ? 'rotate-180' : ''"
+              aria-hidden="true"
             />
           </button>
         </template>
@@ -179,26 +183,24 @@ const savedSessionCount = computed(() => {
             <div class="shrink-0 space-y-2 border-b border-outline-variant/45 p-2.5">
               <div class="flex items-center justify-between gap-2">
                 <span class="text-label-large text-on-surface">
-                  快速切换队列条目（{{ entries.length }} 项）
+                  {{ t('tool.workbench.topBar.quickSwitchLabel', { count: entries.length }) }}
                 </span>
                 <MdIconButton
                   size="sm"
                   :icon="LuX"
-                  aria-label="关闭队列切换菜单"
+                  :aria-label="t('tool.workbench.topBar.closeMenu')"
                   @click="close"
                 />
               </div>
 
-              <div class="flex h-8 items-center gap-1.5 rounded-corner-full bg-surface px-2.5">
-                <LuSearch class="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
-                <input
-                  v-model="dropdownQuery"
-                  type="text"
-                  aria-label="搜索队列条目"
-                  placeholder="搜索标题或文件名…"
-                  class="min-w-0 flex-1 bg-transparent text-body-small text-on-surface outline-none"
-                />
-              </div>
+              <MdTextField
+                v-model="dropdownQuery"
+                size="sm"
+                type="search"
+                clearable
+                :placeholder="t('tool.workbench.topBar.searchPlaceholder')"
+                :aria-label="t('tool.workbench.topBar.searchPlaceholder')"
+              />
 
               <MdSegmentedButton
                 v-model="dropdownFilter"
@@ -210,16 +212,16 @@ const savedSessionCount = computed(() => {
             <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-1.5">
               <div
                 v-if="dropdownEntries.length === 0"
-                class="py-8 text-center text-body-small text-on-surface-variant"
+                class="text-body-small py-8 text-center text-on-surface-variant"
               >
-                无匹配条目
+                {{ t('tool.workbench.queue.emptyFiltered') }}
               </div>
               <button
                 v-for="entry in dropdownEntries"
                 :key="entryCompositeKey(entry)"
                 type="button"
                 role="menuitem"
-                class="md-state flex w-full items-center gap-2.5 rounded-corner-md px-2.5 py-2 text-left transition"
+                class="md-state flex w-full cursor-pointer items-center gap-2.5 rounded-corner-md px-2.5 py-2 text-left transition"
                 :class="
                   detail && entryCompositeKey(detail.entry) === entryCompositeKey(entry)
                     ? 'bg-secondary-container text-on-secondary-container'
@@ -251,32 +253,32 @@ const savedSessionCount = computed(() => {
                     v-else
                     class="flex h-full w-full items-center justify-center text-on-surface-variant/50"
                   >
-                    <LuBookOpen v-if="entry.media_kind === 'book'" class="h-3.5 w-3.5" />
-                    <LuLayers v-else-if="entry.media_kind === 'comic'" class="h-3.5 w-3.5" />
-                    <LuDisc3 v-else-if="entry.media_kind === 'music'" class="h-3.5 w-3.5" />
-                    <LuClapperboard v-else class="h-3.5 w-3.5" />
+                    <LuBookOpen v-if="entry.media_kind === 'book'" class="h-3.5 w-3.5" aria-hidden="true" />
+                    <LuLayers v-else-if="entry.media_kind === 'comic'" class="h-3.5 w-3.5" aria-hidden="true" />
+                    <LuDisc3 v-else-if="entry.media_kind === 'music'" class="h-3.5 w-3.5" aria-hidden="true" />
+                    <LuClapperboard v-else class="h-3.5 w-3.5" aria-hidden="true" />
                   </div>
                 </div>
                 <div class="min-w-0 flex-1">
-                  <div class="truncate text-label-large">
+                  <div class="text-label-large truncate">
                     {{ entry.display_title || entry.file_name }}
                   </div>
-                  <div class="truncate font-mono text-label-small opacity-70">
+                  <div class="text-label-small truncate font-mono opacity-70">
                     {{ entry.file_name }}
                   </div>
                 </div>
                 <span
                   v-if="savedKeys.has(entryCompositeKey(entry))"
                   class="inline-flex shrink-0 items-center text-success"
-                  aria-label="本次会话已保存"
+                  :aria-label="t('tool.workbench.queue.sessionSaved')"
                 >
                   <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 <span
                   v-else-if="!entry.completeness.has_cover"
-                  class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-label-small text-on-warning-container"
+                  class="text-label-small shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-on-warning-container"
                 >
-                  缺封
+                  {{ t('tool.workbench.queue.badgeMissingCover') }}
                 </span>
               </button>
             </div>
@@ -286,66 +288,69 @@ const savedSessionCount = computed(() => {
 
       <div
         v-else
-        class="flex h-8 max-w-[min(440px,48vw)] min-w-0 items-center gap-2 rounded-corner-full bg-surface-container px-3 text-label-medium text-on-surface"
+        class="text-label-medium flex h-8 max-w-[min(440px,48vw)] min-w-0 items-center gap-2 rounded-corner-full bg-surface-container px-3 text-on-surface"
       >
         <span
           v-if="positionLabel"
-          class="shrink-0 rounded-corner-full bg-primary-container px-1.5 py-0.5 font-mono text-label-small text-on-primary-container"
+          class="text-label-small shrink-0 rounded-corner-full bg-primary-container px-1.5 py-0.5 font-mono text-on-primary-container"
         >
           {{ positionLabel }}
         </span>
         <span class="min-w-0 flex-1 truncate">
-          {{ detail?.entry.file_name || '未选择条目' }}
+          {{ detail?.entry.file_name || t('tool.workbench.topBar.noSelection') }}
         </span>
         <span
           v-if="isCurrentDirty"
-          class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-label-small text-on-warning-container"
+          class="text-label-small shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-on-warning-container"
         >
-          未保存
+          {{ t('tool.inspector.unsaved') }}
         </span>
       </div>
 
-      <button
-        type="button"
+      <MdIconButton
+        size="sm"
         :disabled="!hasNext"
-        class="md-icon-btn md-icon-btn-sm md-state shrink-0 disabled:opacity-35"
-        title="下一项 (Alt+↓)"
-        aria-label="下一项"
+        :icon="LuArrowDown"
+        :tooltip="t('tool.workbench.queue.nextItem')"
+        :aria-label="t('tool.workbench.queue.nextItem')"
         @click="emit('step', 1)"
-      >
-        <LuArrowDown class="h-4 w-4" />
-      </button>
+      />
     </div>
 
     <!-- Right: Session Saved Counter & Strategy Menu -->
     <div class="flex shrink-0 items-center gap-2">
       <span
-        class="hidden rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-label-small text-on-surface-variant sm:inline-flex"
+        class="text-label-small hidden rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-on-surface-variant sm:inline-flex"
       >
-        已存 {{ savedSessionCount }} / {{ entries.length }}
+        {{ t('tool.workbench.topBar.savedCounter', { saved: savedSessionCount, total: entries.length }) }}
       </span>
 
       <div class="hidden xl:inline-flex">
         <AppCheckbox
           :model-value="autoSearchOnSwitch"
-          label="切项自动搜"
+          :label="t('tool.workbench.topBar.autoSearchShort')"
           @update:model-value="emit('update:autoSearchOnSwitch', $event)"
         />
       </div>
 
-      <MdMenu placement="bottom-end" :min-width="210" aria-label="工作台选项" class="xl:hidden">
+      <MdMenu
+        placement="bottom-end"
+        :min-width="220"
+        :aria-label="t('tool.workbench.topBar.optionsMenu')"
+        class="xl:hidden"
+      >
         <template #trigger="{ toggle, triggerAttrs }">
           <MdIconButton
             size="sm"
             :icon="LuSlidersHorizontal"
-            aria-label="工作台选项"
-            tooltip="工作台选项"
+            :aria-label="t('tool.workbench.topBar.optionsMenu')"
+            :tooltip="t('tool.workbench.topBar.optionsMenu')"
             v-bind="triggerAttrs"
             @click="toggle"
           />
         </template>
         <MdMenuItem
-          label="切换条目时自动搜索"
+          :label="t('tool.workbench.topBar.autoSearchFull')"
           :selected="autoSearchOnSwitch"
           @select="emit('update:autoSearchOnSwitch', !autoSearchOnSwitch)"
         />

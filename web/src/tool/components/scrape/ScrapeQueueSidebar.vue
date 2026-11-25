@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuArrowDown,
   LuArrowLeft,
@@ -11,9 +12,11 @@ import {
   LuLayers,
   LuList,
   LuLoader2,
-  LuSearch,
-  LuX,
 } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
 import { buildArtworkUrl } from '../../api'
@@ -44,6 +47,7 @@ const emit = defineEmits<{
   step: [delta: -1 | 1]
 }>()
 
+const { t } = useI18n()
 const filter = ref<QueueFilter>('all')
 const query = ref('')
 const taskStore = useToolTaskStore()
@@ -81,6 +85,19 @@ const counts = computed(() => {
   }
 })
 
+const filterTabs = computed(() => [
+  { id: 'all' as const, label: `${t('tool.workbench.queue.tabAll')} ${counts.value.all}` },
+  {
+    id: 'incomplete' as const,
+    label: `${t('tool.workbench.queue.tabIncomplete')} ${counts.value.incomplete}`,
+  },
+  {
+    id: 'missing_cover' as const,
+    label: `${t('tool.workbench.queue.tabMissingCover')} ${counts.value.missingCover}`,
+  },
+  { id: 'saved' as const, label: `${t('tool.workbench.queue.tabSaved')} ${counts.value.saved}` },
+])
+
 const filteredEntries = computed(() => {
   const q = query.value.trim().toLowerCase()
   return props.entries.filter((e) => {
@@ -100,7 +117,7 @@ const filteredEntries = computed(() => {
   <Transition name="md-fade">
     <div
       v-if="mobileMenuOpen"
-      class="fixed inset-0 z-30 bg-[var(--md-sys-color-scrim)]/32 sm:hidden"
+      class="fixed inset-0 z-30 bg-scrim/32 sm:hidden"
       @click="emit('closeMobile')"
     />
   </Transition>
@@ -109,11 +126,11 @@ const filteredEntries = computed(() => {
     ref="asideRef"
     :role="mobileMenuOpen ? 'dialog' : undefined"
     :aria-modal="mobileMenuOpen ? 'true' : undefined"
-    aria-label="刮削队列"
-    class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none sm:static"
+    :aria-label="t('tool.workbench.queue.ariaLabel')"
+    class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-surface-container transition-[width,transform] duration-200 ease-standard select-none sm:static"
     :class="[
       mobileMenuOpen
-        ? 'w-72 translate-x-0 rounded-r-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-1)] sm:rounded-none sm:bg-[var(--md-sys-color-surface-container)] sm:shadow-none'
+        ? 'w-72 translate-x-0 rounded-r-corner-lg bg-surface-container-low shadow-elevation-1 sm:rounded-none sm:bg-surface-container sm:shadow-none'
         : '-translate-x-full sm:translate-x-0',
       collapsed ? 'sm:w-20' : 'sm:w-64',
     ]"
@@ -125,67 +142,61 @@ const filteredEntries = computed(() => {
     >
       <button
         type="button"
-        class="md-state group flex w-full flex-col items-center gap-1 rounded-2xl py-1 text-xs font-medium"
-        title="返回媒体列表"
-        aria-label="返回媒体列表"
+        class="md-state group flex w-full cursor-pointer flex-col items-center gap-1 rounded-corner-lg py-1 text-label-medium"
+        :title="t('tool.workbench.view.backToMedia')"
+        :aria-label="t('tool.workbench.view.backToMedia')"
         @click="emit('exit')"
       >
         <span
-          class="md-state flex h-8 w-14 items-center justify-center rounded-full bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)]"
+          class="md-state flex h-8 w-14 items-center justify-center rounded-corner-full bg-surface-container-high text-on-surface"
         >
-          <LuArrowLeft class="h-[18px] w-[18px]" />
+          <LuArrowLeft class="h-[18px] w-[18px]" aria-hidden="true" />
         </span>
-        <span class="truncate text-[var(--md-sys-color-on-surface-variant)]">返回</span>
+        <span class="truncate text-on-surface-variant">{{ t('tool.workbench.queue.backShort') }}</span>
       </button>
 
       <button
         type="button"
-        class="md-state group flex w-full flex-col items-center gap-1 rounded-2xl py-1 text-xs font-medium"
-        title="展开刮削队列列表"
-        aria-label="展开刮削队列列表"
+        class="md-state group flex w-full cursor-pointer flex-col items-center gap-1 rounded-corner-lg py-1 text-label-medium"
+        :title="t('tool.workbench.queue.expandQueue')"
+        :aria-label="t('tool.workbench.queue.expandQueue')"
         @click="emit('toggleCollapse')"
       >
         <span
-          class="md-state flex h-8 w-14 items-center justify-center rounded-full bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]"
+          class="md-state flex h-8 w-14 items-center justify-center rounded-corner-full bg-secondary-container text-on-secondary-container"
         >
-          <LuList class="h-[18px] w-[18px]" />
+          <LuList class="h-[18px] w-[18px]" aria-hidden="true" />
         </span>
-        <span class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">队列</span>
+        <span class="truncate text-on-surface">{{ t('tool.workbench.queue.queueShort') }}</span>
       </button>
 
-      <div class="my-1 h-px w-8 bg-[var(--md-sys-color-outline-variant)]/60" />
+      <div class="my-1 h-px w-8 bg-outline-variant/60" />
 
-      <button
-        type="button"
+      <MdIconButton
         :disabled="!hasPrev"
-        class="md-icon-btn md-state disabled:opacity-35"
-        title="上一项 (Alt+↑)"
-        aria-label="上一项"
+        :icon="LuArrowUp"
+        :tooltip="t('tool.workbench.queue.prevItem')"
+        :aria-label="t('tool.workbench.queue.prevItem')"
         @click="emit('step', -1)"
-      >
-        <LuArrowUp class="h-[18px] w-[18px]" />
-      </button>
+      />
 
-      <div class="text-center font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
+      <div class="text-label-small text-center font-mono text-on-surface-variant">
         <div>{{ activeIndex >= 0 ? activeIndex + 1 : '—' }}</div>
-        <div class="text-[9px] opacity-65">/ {{ entries.length }}</div>
+        <div class="opacity-65">/ {{ entries.length }}</div>
       </div>
 
-      <button
-        type="button"
+      <MdIconButton
         :disabled="!hasNext"
-        class="md-icon-btn md-state disabled:opacity-35"
-        title="下一项 (Alt+↓)"
-        aria-label="下一项"
+        :icon="LuArrowDown"
+        :tooltip="t('tool.workbench.queue.nextItem')"
+        :aria-label="t('tool.workbench.queue.nextItem')"
         @click="emit('step', 1)"
-      >
-        <LuArrowDown class="h-[18px] w-[18px]" />
-      </button>
+      />
 
       <div
         v-if="counts.saved > 0"
-        class="mt-auto rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
-        :title="`本次已保存 ${counts.saved} / ${counts.all} 项`"
+        class="text-label-small mt-auto rounded-corner-full bg-success-container px-2 py-0.5 font-mono text-on-success-container"
+        :title="t('tool.workbench.queue.savedProgress', { saved: counts.saved, total: counts.all })"
       >
         ✓ {{ counts.saved }}
       </div>
@@ -195,92 +206,67 @@ const filteredEntries = computed(() => {
     <div v-else class="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pt-2.5 pb-3">
       <!-- Top Return & Progress Header -->
       <div class="mb-2.5 flex items-center justify-between gap-2">
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
-          @click="emit('exit')"
-        >
-          <LuArrowLeft class="h-3.5 w-3.5" />
-          <span>返回列表</span>
-        </button>
+        <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="emit('exit')">
+          {{ t('tool.workbench.queue.backToList') }}
+        </MdButton>
 
         <span
-          class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
-          :title="`本次已保存 ${counts.saved} 项，共 ${counts.all} 项`"
+          class="text-label-small rounded-corner-full bg-surface-container-high px-2 py-0.5 font-mono text-on-surface-variant"
+          :title="t('tool.workbench.queue.savedProgress', { saved: counts.saved, total: counts.all })"
         >
           ✓ {{ counts.saved }} / {{ counts.all }}
         </span>
       </div>
 
       <!-- Queue Search Input -->
-      <div
-        class="mb-2 flex h-8 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5"
-      >
-        <LuSearch class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
-        <input
+      <div class="mb-2">
+        <MdTextField
           v-model="query"
-          type="text"
-          placeholder="筛选队列条目…"
-          class="min-w-0 flex-1 bg-transparent text-xs text-[var(--md-sys-color-on-surface)] outline-none placeholder:text-[var(--md-sys-color-on-surface-variant)]/70"
+          size="sm"
+          type="search"
+          clearable
+          :placeholder="t('tool.workbench.queue.filterPlaceholder')"
+          :aria-label="t('tool.workbench.queue.filterPlaceholder')"
         />
-        <button
-          v-if="query"
-          type="button"
-          class="text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-          aria-label="清空筛选"
-          @click="query = ''"
-        >
-          <LuX class="h-3 w-3" />
-        </button>
       </div>
 
-      <!-- Queue Filter Pills -->
+      <!-- Queue Filter Chips -->
       <div class="mb-2 flex flex-wrap gap-1">
-        <button
-          v-for="tab in [
-            { id: 'all' as const, label: '全部', count: counts.all },
-            { id: 'incomplete' as const, label: '未完善', count: counts.incomplete },
-            { id: 'missing_cover' as const, label: '缺封', count: counts.missingCover },
-            { id: 'saved' as const, label: '已存', count: counts.saved },
-          ]"
+        <MdChip
+          v-for="tab in filterTabs"
           :key="tab.id"
-          type="button"
-          class="rounded-full px-2 py-0.5 text-[10px] font-semibold transition"
-          :class="
-            filter === tab.id
-              ? 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
-              : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-          "
+          variant="filter"
+          hide-check
+          :label="tab.label"
+          :selected="filter === tab.id"
           @click="filter = tab.id"
-        >
-          {{ tab.label }} {{ tab.count }}
-        </button>
+        />
       </div>
 
       <!-- Scrollable Queue Entries -->
       <div class="min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
         <div
           v-if="filteredEntries.length === 0"
-          class="py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small py-10 text-center text-on-surface-variant"
         >
-          无匹配队列条目
+          {{ t('tool.workbench.queue.emptyFiltered') }}
         </div>
 
         <button
           v-for="entry in filteredEntries"
           :key="entryCompositeKey(entry)"
           type="button"
-          class="md-state flex w-full items-center gap-2.5 rounded-2xl px-2.5 py-2 text-left transition"
+          class="md-state flex w-full cursor-pointer items-center gap-2.5 rounded-corner-lg px-2.5 py-2 text-left transition"
           :class="
             activeKey === entryCompositeKey(entry)
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]/70'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : 'text-on-surface hover:bg-surface-container-high/70'
           "
           @click="emit('selectEntry', entry)"
         >
           <!-- Mini Thumbnail -->
           <div
-            class="relative shrink-0 overflow-hidden rounded-lg bg-[var(--md-sys-color-surface-container-high)]"
+            class="relative shrink-0 overflow-hidden rounded-corner-xs bg-surface-container-high"
             :class="entry.media_kind === 'music' ? 'h-9 w-9' : 'h-11 w-8'"
           >
             <img
@@ -301,40 +287,40 @@ const filteredEntries = computed(() => {
             />
             <div
               v-else
-              class="flex h-full w-full items-center justify-center text-[var(--md-sys-color-on-surface-variant)]/55"
+              class="flex h-full w-full items-center justify-center text-on-surface-variant/55"
             >
-              <LuBookOpen v-if="entry.media_kind === 'book'" class="h-3.5 w-3.5" />
-              <LuLayers v-else-if="entry.media_kind === 'comic'" class="h-3.5 w-3.5" />
-              <LuDisc3 v-else-if="entry.media_kind === 'music'" class="h-3.5 w-3.5" />
-              <LuClapperboard v-else class="h-3.5 w-3.5" />
+              <LuBookOpen v-if="entry.media_kind === 'book'" class="h-3.5 w-3.5" aria-hidden="true" />
+              <LuLayers v-else-if="entry.media_kind === 'comic'" class="h-3.5 w-3.5" aria-hidden="true" />
+              <LuDisc3 v-else-if="entry.media_kind === 'music'" class="h-3.5 w-3.5" aria-hidden="true" />
+              <LuClapperboard v-else class="h-3.5 w-3.5" aria-hidden="true" />
             </div>
           </div>
 
           <!-- Title & Status -->
           <div class="min-w-0 flex-1">
-            <div class="truncate text-xs font-semibold">
+            <div class="text-label-large truncate">
               {{ entry.display_title || entry.file_name }}
             </div>
-            <div class="mt-0.5 flex items-center gap-1.5 text-[10px] opacity-75">
+            <div class="text-label-small mt-0.5 flex items-center gap-1.5 opacity-75">
               <span class="truncate font-mono">{{ entry.file_name }}</span>
               <span
                 v-if="!savedKeys.has(entryCompositeKey(entry)) && entryTaskStatus(entry) === 'running'"
-                class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)] opacity-100"
+                class="inline-flex shrink-0 items-center gap-0.5 rounded-corner-full bg-primary-container px-1.5 py-0.5 text-on-primary-container opacity-100"
               >
-                <LuLoader2 class="h-2.5 w-2.5 animate-spin" />
-                <span>刮削中</span>
+                <LuLoader2 class="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+                <span>{{ t('tool.row.statusScraping') }}</span>
               </span>
               <span
                 v-else-if="!savedKeys.has(entryCompositeKey(entry)) && entryTaskStatus(entry) === 'unmatched'"
-                class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-warning-container)] opacity-100"
+                class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-on-warning-container opacity-100"
               >
-                未匹配
+                {{ t('tool.row.statusUnmatched') }}
               </span>
               <span
                 v-else-if="!savedKeys.has(entryCompositeKey(entry)) && entryTaskStatus(entry) === 'failed'"
-                class="shrink-0 rounded-full bg-[var(--md-sys-color-error-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-error-container)] opacity-100"
+                class="shrink-0 rounded-corner-full bg-error-container px-1.5 py-0.5 text-on-error-container opacity-100"
               >
-                失败
+                {{ t('tool.row.statusFailed') }}
               </span>
             </div>
           </div>
@@ -344,24 +330,22 @@ const filteredEntries = computed(() => {
             <span
               v-if="savedKeys.has(entryCompositeKey(entry))"
               class="inline-flex items-center gap-0.5 text-success"
-              title="本次会话已保存"
-              aria-label="本次会话已保存"
+              :title="t('tool.workbench.queue.sessionSaved')"
+              :aria-label="t('tool.workbench.queue.sessionSaved')"
             >
               <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
             </span>
             <span
               v-else-if="!entry.completeness.has_cover"
-              class="rounded-full bg-warning-container px-1.5 py-0.5 text-[10px] font-medium text-on-warning-container"
-              title="缺封面"
+              class="text-label-small rounded-corner-full bg-warning-container px-1.5 py-0.5 text-on-warning-container"
             >
-              缺封
+              {{ t('tool.workbench.queue.badgeMissingCover') }}
             </span>
             <span
               v-else-if="!isEntryComplete(entry)"
-              class="rounded-full bg-primary-container px-1.5 py-0.5 text-[10px] font-medium text-on-primary-container"
-              title="元数据待完善"
+              class="text-label-small rounded-corner-full bg-primary-container px-1.5 py-0.5 text-on-primary-container"
             >
-              待补
+              {{ t('tool.workbench.queue.badgeIncomplete') }}
             </span>
           </div>
         </button>

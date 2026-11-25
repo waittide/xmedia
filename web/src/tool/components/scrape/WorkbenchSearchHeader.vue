@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { LuCheck, LuKey, LuLoader2, LuSearch, LuSparkles } from 'vue-icons-plus/lu'
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { LuCheck, LuKey, LuSearch, LuSparkles } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import type { MediaFileDetail, ProviderStatusDto, ScrapeTargetKind } from '../../types'
 import type { ApplyFillMode } from '../inspector/useMetadataForm'
 
@@ -39,21 +44,23 @@ const emit = defineEmits<{
   'toggle-provider': [provider: ProviderStatusDto]
 }>()
 
-const fillModeOptions = [
-  { value: 'overwrite' as const, label: '覆盖' },
-  { value: 'fill_missing' as const, label: '仅补空' },
-]
+const { t } = useI18n()
+
+const fillModeOptions = computed(() => [
+  { value: 'overwrite' as const, label: t('tool.workbench.search.modeOverwrite') },
+  { value: 'fill_missing' as const, label: t('tool.workbench.search.modeFillMissing') },
+])
 </script>
 
 <template>
-  <div class="shrink-0 space-y-2.5 border-b border-[var(--md-sys-color-outline-variant)]/50 p-3">
+  <div class="shrink-0 space-y-2.5 border-b border-outline-variant/50 p-3">
     <div class="flex items-center justify-between gap-2">
-      <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-        <LuSparkles class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-        <span>在线候选源</span>
+      <div class="text-title-small flex items-center gap-1.5 text-on-surface">
+        <LuSparkles class="h-4 w-4 text-primary" aria-hidden="true" />
+        <span>{{ t('tool.workbench.search.heading') }}</span>
         <span
           v-if="candidatesCount > 0"
-          class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-label-small rounded-corner-full bg-surface-container-high px-1.5 py-0.5 text-on-surface-variant"
         >
           {{ candidatesCount }}
         </span>
@@ -76,72 +83,78 @@ const fillModeOptions = [
     />
 
     <!-- Search Inputs -->
-    <div class="flex gap-1.5">
-      <input
-        :value="keyword"
-        type="text"
-        :disabled="!detail"
-        placeholder="标题 / 关键词 / ID…"
-        class="md-input h-8 min-w-0 flex-1 text-xs disabled:opacity-50"
-        @input="emit('update:keyword', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
-      />
-      <button
-        type="button"
-        :disabled="!canSearch || searching"
-        class="md-btn md-btn-sm md-btn-filled md-state shrink-0"
+    <div class="flex items-center gap-1.5">
+      <div class="min-w-0 flex-1">
+        <MdTextField
+          :model-value="keyword"
+          size="sm"
+          :disabled="!detail"
+          :placeholder="t('tool.workbench.search.keywordPlaceholder')"
+          :aria-label="t('tool.workbench.search.keywordPlaceholder')"
+          @update:model-value="emit('update:keyword', $event)"
+          @enter="emit('search')"
+        />
+      </div>
+      <MdButton
+        variant="filled"
+        size="sm"
+        :icon="LuSearch"
+        :loading="searching"
+        :disabled="!canSearch"
         @click="emit('search')"
       >
-        <LuLoader2 v-if="searching" class="h-3.5 w-3.5 animate-spin" />
-        <LuSearch v-else class="h-3.5 w-3.5" />
-        <span>搜索</span>
-      </button>
+        {{ t('tool.common.search') }}
+      </MdButton>
     </div>
 
     <!-- Domain-Specific Secondary Query Inputs -->
     <div v-if="detail?.entry.media_kind === 'book'" class="grid grid-cols-2 gap-1.5">
-      <input
-        :value="artistOrAuthor"
-        type="text"
-        placeholder="作者 (可选)"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:artistOrAuthor', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+      <MdTextField
+        :model-value="artistOrAuthor"
+        size="sm"
+        :placeholder="t('tool.workbench.search.authorOptional')"
+        :aria-label="t('tool.workbench.search.authorOptional')"
+        @update:model-value="emit('update:artistOrAuthor', $event)"
+        @enter="emit('search')"
       />
-      <input
-        :value="isbn"
-        type="text"
-        placeholder="ISBN (可选)"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:isbn', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+      <MdTextField
+        :model-value="isbn"
+        size="sm"
+        :placeholder="t('tool.workbench.search.isbnOptional')"
+        :aria-label="t('tool.workbench.search.isbnOptional')"
+        @update:model-value="emit('update:isbn', $event)"
+        @enter="emit('search')"
       />
     </div>
 
     <div v-else-if="detail?.entry.media_kind === 'music'" class="grid grid-cols-5 gap-1.5">
-      <input
-        :value="artistOrAuthor"
-        type="text"
-        placeholder="歌手 (可选)"
-        class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:artistOrAuthor', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
-      />
-      <input
-        :value="albumOrSeries"
-        type="text"
-        placeholder="专辑 (可选)"
-        class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:albumOrSeries', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
-      />
-      <input
-        :value="yearInput"
-        type="text"
-        placeholder="年份"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:yearInput', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+      <div class="col-span-2">
+        <MdTextField
+          :model-value="artistOrAuthor"
+          size="sm"
+          :placeholder="t('tool.workbench.search.artistOptional')"
+          :aria-label="t('tool.workbench.search.artistOptional')"
+          @update:model-value="emit('update:artistOrAuthor', $event)"
+          @enter="emit('search')"
+        />
+      </div>
+      <div class="col-span-2">
+        <MdTextField
+          :model-value="albumOrSeries"
+          size="sm"
+          :placeholder="t('tool.workbench.search.albumOptional')"
+          :aria-label="t('tool.workbench.search.albumOptional')"
+          @update:model-value="emit('update:albumOrSeries', $event)"
+          @enter="emit('search')"
+        />
+      </div>
+      <MdTextField
+        :model-value="yearInput"
+        size="sm"
+        :placeholder="t('tool.workbench.search.yearOptional')"
+        :aria-label="t('tool.workbench.search.yearOptional')"
+        @update:model-value="emit('update:yearInput', $event)"
+        @enter="emit('search')"
       />
     </div>
 
@@ -149,103 +162,106 @@ const fillModeOptions = [
       v-else-if="detail?.entry.media_kind === 'video' && targetKind === 'tv_show'"
       class="grid grid-cols-3 gap-1.5"
     >
-      <input
-        :value="seasonInput"
-        type="text"
-        placeholder="季 (S)"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:seasonInput', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+      <MdTextField
+        :model-value="seasonInput"
+        size="sm"
+        :placeholder="t('tool.workbench.search.seasonShort')"
+        :aria-label="t('tool.workbench.search.seasonShort')"
+        @update:model-value="emit('update:seasonInput', $event)"
+        @enter="emit('search')"
       />
-      <input
-        :value="episodeInput"
-        type="text"
-        placeholder="集 (E)"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:episodeInput', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+      <MdTextField
+        :model-value="episodeInput"
+        size="sm"
+        :placeholder="t('tool.workbench.search.episodeShort')"
+        :aria-label="t('tool.workbench.search.episodeShort')"
+        @update:model-value="emit('update:episodeInput', $event)"
+        @enter="emit('search')"
       />
-      <input
-        :value="yearInput"
-        type="text"
-        placeholder="年份"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:yearInput', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+      <MdTextField
+        :model-value="yearInput"
+        size="sm"
+        :placeholder="t('tool.workbench.search.yearOptional')"
+        :aria-label="t('tool.workbench.search.yearOptional')"
+        @update:model-value="emit('update:yearInput', $event)"
+        @enter="emit('search')"
       />
     </div>
 
     <div v-else-if="detail?.entry.media_kind === 'video'" class="grid grid-cols-2 gap-1.5">
-      <input
-        :value="yearInput"
-        type="text"
-        placeholder="上映年份 (可选)"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-        @input="emit('update:yearInput', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+      <MdTextField
+        :model-value="yearInput"
+        size="sm"
+        :placeholder="t('tool.workbench.search.releaseYearOptional')"
+        :aria-label="t('tool.workbench.search.releaseYearOptional')"
+        @update:model-value="emit('update:yearInput', $event)"
+        @enter="emit('search')"
       />
     </div>
 
     <div v-else class="grid grid-cols-3 gap-1.5">
-      <input
-        :value="artistOrAuthor"
-        type="text"
+      <div class="col-span-2">
+        <MdTextField
+          :model-value="artistOrAuthor"
+          size="sm"
+          :disabled="!detail"
+          :placeholder="t('tool.workbench.search.creatorOptional')"
+          :aria-label="t('tool.workbench.search.creatorOptional')"
+          @update:model-value="emit('update:artistOrAuthor', $event)"
+          @enter="emit('search')"
+        />
+      </div>
+      <MdTextField
+        :model-value="yearInput"
+        size="sm"
         :disabled="!detail"
-        placeholder="作者/画师（可选）"
-        class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px] disabled:opacity-50"
-        @input="emit('update:artistOrAuthor', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
-      />
-      <input
-        :value="yearInput"
-        type="text"
-        :disabled="!detail"
-        placeholder="年份"
-        class="md-input h-7 !rounded-lg !px-2 text-[11px] disabled:opacity-50"
-        @input="emit('update:yearInput', ($event.target as HTMLInputElement).value)"
-        @keydown.enter.prevent="emit('search')"
+        :placeholder="t('tool.workbench.search.yearOptional')"
+        :aria-label="t('tool.workbench.search.yearOptional')"
+        @update:model-value="emit('update:yearInput', $event)"
+        @enter="emit('search')"
       />
     </div>
 
     <!-- Provider Toggle Chips -->
     <div v-if="providers.length > 0" class="flex flex-wrap gap-1">
-      <button
+      <MdChip
         v-for="p in providers"
         :key="p.id"
-        type="button"
+        variant="filter"
+        hide-check
+        :selected="p.configured && enabledProviderIds.includes(p.id)"
         :title="p.description"
-        class="md-state inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition"
-        :class="
-          !p.configured
-            ? 'border-dashed border-[var(--md-sys-color-warning)]/55 bg-[var(--md-sys-color-warning-container)]/50 text-[var(--md-sys-color-on-warning-container)]'
-            : enabledProviderIds.includes(p.id)
-              ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-              : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)]'
-        "
         @click="emit('toggle-provider', p)"
       >
+        <template #icon>
+          <LuKey
+            v-if="!p.configured && p.requires_api_key"
+            class="h-3.5 w-3.5 shrink-0 text-warning"
+            aria-hidden="true"
+          />
+        </template>
         <span
           v-if="p.configured && enabledProviderIds.includes(p.id)"
-          class="font-mono text-[9px] font-bold opacity-80"
+          class="mr-1 font-mono opacity-80"
         >
           #{{ enabledProviderIds.indexOf(p.id) + 1 }}
         </span>
-        <LuKey v-else-if="!p.configured && p.requires_api_key" class="h-2.5 w-2.5" />
         <span>{{ p.name }}</span>
-      </button>
+      </MdChip>
     </div>
 
     <!-- Flash Feedback -->
     <div
       v-if="recentFlash"
-      class="flex items-center gap-1.5 rounded-xl bg-[var(--md-sys-color-success-container)] px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-success-container)]"
+      class="text-body-small flex items-center gap-1.5 rounded-corner-md bg-success-container px-2.5 py-1 text-on-success-container"
     >
-      <LuCheck class="h-3 w-3 shrink-0" />
+      <LuCheck class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span class="truncate">{{ recentFlash }}</span>
     </div>
     <div
       v-if="searchError"
-      class="rounded-xl bg-[var(--md-sys-color-error-container)] px-2.5 py-1.5 text-[11px] text-[var(--md-sys-color-on-error-container)]"
+      role="alert"
+      class="text-body-small rounded-corner-md bg-error-container px-2.5 py-1.5 text-on-error-container"
     >
       {{ searchError }}
     </div>

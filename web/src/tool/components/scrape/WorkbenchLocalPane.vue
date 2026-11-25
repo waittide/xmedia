@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuBookOpen,
   LuClapperboard,
   LuDisc3,
   LuEye,
-  LuFileSignature,
   LuLayers,
-  LuLoader2,
   LuPencil,
   LuSave,
   LuUpload,
 } from 'vue-icons-plus/lu'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { formatBytes, formatDuration } from '@/utils/format'
 import { entryCompositeKey } from '../../completeness'
@@ -55,15 +56,25 @@ const emit = defineEmits<{
   'save-local': [organizeAfterSave: boolean]
 }>()
 
+const { t } = useI18n()
+const organizeLocalAfterSave = ref(false)
+
 const videoSlotOptions = computed(() => {
   if (props.detail.metadata.kind !== 'video') return []
   const d = props.detail.metadata.data
   return [
-    { value: 'poster' as const, label: d.has_poster ? '海报·' : '海报' },
-    { value: 'fanart' as const, label: d.has_fanart ? '背景·' : '背景' },
-    { value: 'thumb' as const, label: d.has_thumb ? '剧照·' : '剧照' },
+    { value: 'poster' as const, label: d.has_poster ? `${t('tool.inspector.slotPoster')}·` : t('tool.inspector.slotPoster') },
+    { value: 'fanart' as const, label: d.has_fanart ? `${t('tool.inspector.slotFanart')}·` : t('tool.inspector.slotFanart') },
+    { value: 'thumb' as const, label: d.has_thumb ? `${t('tool.inspector.slotThumb')}·` : t('tool.inspector.slotThumb') },
   ]
 })
+
+const hasMissingBadges = computed(
+  () =>
+    !props.detail.entry.completeness.has_cover ||
+    !props.detail.entry.completeness.has_summary_or_lyrics ||
+    !props.detail.entry.completeness.has_nfo_or_tag_block,
+)
 
 const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
   const m = props.detail.metadata
@@ -73,17 +84,17 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
       .filter(Boolean)
       .join(' ')
     return [
-      { id: 'title', label: '书名 (dc:title)', value: b.title },
-      { id: 'authors', label: '作者 (dc:creator)', value: b.authors.join(' / ') },
-      { id: 'series', label: '系列 / 丛书 (Series)', value: seriesVal },
-      { id: 'isbn', label: 'ISBN', value: b.isbn ?? '', half: true },
-      { id: 'publisher', label: '出版社 (dc:publisher)', value: b.publisher ?? '', half: true },
-      { id: 'published_at', label: '出版日期 (dc:date)', value: b.published_at ?? '', half: true },
-      { id: 'language', label: '语言 (dc:language)', value: b.language ?? '', half: true },
-      { id: 'tags', label: '标签 / 主题 (dc:subject)', value: b.tags.join(' / ') },
+      { id: 'title', label: t('tool.forms.book.title'), value: b.title },
+      { id: 'authors', label: t('tool.forms.book.authors'), value: b.authors.join(' / ') },
+      { id: 'series', label: t('tool.forms.book.series'), value: seriesVal },
+      { id: 'isbn', label: t('tool.forms.book.isbn'), value: b.isbn ?? '', half: true },
+      { id: 'publisher', label: t('tool.forms.book.publisher'), value: b.publisher ?? '', half: true },
+      { id: 'published_at', label: t('tool.forms.book.publishedAt'), value: b.published_at ?? '', half: true },
+      { id: 'language', label: t('tool.forms.book.language'), value: b.language ?? '', half: true },
+      { id: 'tags', label: t('tool.forms.book.tags'), value: b.tags.join(' / ') },
       {
         id: 'description',
-        label: '内容简介 (dc:description)',
+        label: t('tool.forms.book.description'),
         value: b.description ?? '',
         multiline: true,
       },
@@ -93,48 +104,50 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
     const c = m.data
     const seriesVal = [
       c.series,
-      c.volume !== null ? `Vol.${c.volume}` : '',
+      c.volume != null ? `Vol.${c.volume}` : '',
       c.number ? `#${c.number}` : '',
     ]
       .filter(Boolean)
       .join(' ')
     return [
-      { id: 'title', label: '标题', value: c.title ?? '' },
-      { id: 'series', label: '系列 / 丛书', value: seriesVal },
-      { id: 'writers', label: '作者 / 编剧', value: c.writers.join(' / '), half: true },
-      { id: 'pencillers', label: '画师 / 作画', value: c.pencillers.join(' / '), half: true },
-      { id: 'publisher', label: '出版社', value: c.publisher ?? '', half: true },
-      { id: 'year', label: '年份', value: c.year != null ? String(c.year) : '', half: true },
-      { id: 'language', label: '语言', value: c.language_iso ?? '', half: true },
-      { id: 'genres', label: '流派', value: c.genres.join(' / '), half: true },
-      { id: 'tags', label: '标签', value: c.tags.join(' / ') },
-      { id: 'summary', label: '简介', value: c.summary ?? '', multiline: true },
+      { id: 'title', label: t('tool.forms.comic.title'), value: c.title ?? '' },
+      { id: 'series', label: t('tool.forms.comic.series'), value: seriesVal },
+      { id: 'writers', label: t('tool.forms.comic.writers'), value: c.writers.join(' / '), half: true },
+      { id: 'pencillers', label: t('tool.forms.comic.pencillers'), value: c.pencillers.join(' / '), half: true },
+      { id: 'publisher', label: t('tool.forms.common.publisher'), value: c.publisher ?? '', half: true },
+      { id: 'year', label: t('tool.forms.common.year'), value: c.year != null ? String(c.year) : '', half: true },
+      { id: 'language', label: t('tool.forms.common.language'), value: c.language_iso ?? '', half: true },
+      { id: 'genres', label: t('tool.forms.comic.genres'), value: c.genres.join(' / '), half: true },
+      { id: 'tags', label: t('tool.forms.comic.tags'), value: c.tags.join(' / ') },
+      { id: 'summary', label: t('tool.forms.comic.summary'), value: c.summary ?? '', multiline: true },
     ]
   }
   if (m.kind === 'music') {
     const mu = m.data
     return [
-      { id: 'title', label: '曲目标题', value: mu.title },
-      { id: 'artist', label: '歌手 / 艺人', value: mu.artist, half: true },
-      { id: 'album_artist', label: '专辑艺术家', value: mu.album_artist ?? '', half: true },
-      { id: 'album', label: '专辑名称', value: mu.album },
+      { id: 'title', label: t('tool.forms.music.title'), value: mu.title },
+      { id: 'artist', label: t('tool.forms.music.artist'), value: mu.artist, half: true },
+      { id: 'album_artist', label: t('tool.forms.music.albumArtist'), value: mu.album_artist ?? '', half: true },
+      { id: 'album', label: t('tool.forms.music.album'), value: mu.album },
       {
         id: 'disc',
-        label: '碟号',
+        label: t('tool.forms.music.disc'),
         value: mu.disc_number != null ? String(mu.disc_number) : '',
         half: true,
       },
       {
         id: 'track',
-        label: '音轨号',
+        label: t('tool.forms.music.track'),
         value: mu.track_number != null ? String(mu.track_number) : '',
         half: true,
       },
-      { id: 'year', label: '年份', value: mu.year != null ? String(mu.year) : '', half: true },
-      { id: 'genre', label: '流派', value: mu.genre ?? '', half: true },
+      { id: 'year', label: t('tool.forms.music.year'), value: mu.year != null ? String(mu.year) : '', half: true },
+      { id: 'genre', label: t('tool.forms.music.genre'), value: mu.genre ?? '', half: true },
       {
         id: 'lyrics',
-        label: mu.sidecar_lrc ? `歌词（含 ${mu.sidecar_lrc_filename}）` : '内嵌歌词',
+        label: mu.sidecar_lrc
+          ? t('tool.workbench.local.lyricsWithSidecar', { filename: mu.sidecar_lrc_filename })
+          : t('tool.workbench.local.embeddedLyrics'),
         value: mu.embedded_lyrics || mu.sidecar_lrc || '',
         multiline: true,
       },
@@ -142,29 +155,29 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
   }
   const v = m.data
   return [
-    { id: 'title', label: '标题', value: v.title },
-    { id: 'original_title', label: '原作名', value: v.original_title ?? '' },
-    { id: 'show_title', label: '所属剧集 / 系列', value: v.show_title ?? '' },
+    { id: 'title', label: t('tool.forms.video.movieTitle'), value: v.title },
+    { id: 'original_title', label: t('tool.workbench.local.originalTitle'), value: v.original_title ?? '' },
+    { id: 'show_title', label: t('tool.workbench.local.showOrSeries'), value: v.show_title ?? '' },
     {
       id: 'season',
-      label: '季号',
+      label: t('tool.forms.video.season'),
       value: v.season_number != null ? String(v.season_number) : '',
       half: true,
     },
     {
       id: 'episode',
-      label: '集号',
+      label: t('tool.forms.video.episode'),
       value: v.episode_number != null ? String(v.episode_number) : '',
       half: true,
     },
-    { id: 'year', label: '首播 / 年份', value: v.year != null ? String(v.year) : '', half: true },
-    { id: 'rating', label: '评分', value: v.rating != null ? String(v.rating) : '', half: true },
-    { id: 'studio', label: '制片 / 发行商', value: v.studio ?? '' },
-    { id: 'directors', label: '导演', value: v.directors.join(' / ') },
-    { id: 'actors', label: '主演', value: v.actors.join(' / ') },
-    { id: 'genres', label: '流派', value: v.genres.join(' / ') },
-    { id: 'tags', label: '标签', value: v.tags.join(' / ') },
-    { id: 'summary', label: '剧情简介', value: v.summary ?? '', multiline: true },
+    { id: 'year', label: t('tool.forms.video.year'), value: v.year != null ? String(v.year) : '', half: true },
+    { id: 'rating', label: t('tool.forms.video.rating'), value: v.rating != null ? String(v.rating) : '', half: true },
+    { id: 'studio', label: t('tool.workbench.local.studioOrPublisher'), value: v.studio ?? '' },
+    { id: 'directors', label: t('tool.forms.video.directors'), value: v.directors.join(' / ') },
+    { id: 'actors', label: t('tool.workbench.local.cast'), value: v.actors.join(' / ') },
+    { id: 'genres', label: t('tool.forms.video.genres'), value: v.genres.join(' / ') },
+    { id: 'tags', label: t('tool.forms.video.tags'), value: v.tags.join(' / ') },
+    { id: 'summary', label: t('tool.forms.video.plot'), value: v.summary ?? '', multiline: true },
   ]
 })
 </script>
@@ -172,59 +185,63 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
 <template>
   <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
     <div
-      class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/45 px-4 py-2"
+      class="flex shrink-0 items-center justify-between gap-2 border-b border-outline-variant/45 px-4 py-2"
     >
       <div class="flex min-w-0 items-center gap-1.5">
         <span
-          class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+          class="text-label-small rounded-corner-full px-2 py-0.5"
           :class="
             localEditMode
-              ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-              : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-primary-container text-on-primary-container'
+              : 'bg-surface-container-high text-on-surface'
           "
         >
-          {{ localEditMode ? '直接编辑中' : '当前条目信息' }}
+          {{
+            localEditMode
+              ? t('tool.workbench.local.editingBadge')
+              : t('tool.workbench.local.infoBadge')
+          }}
         </span>
-        <span class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+        <span class="text-body-small truncate text-on-surface-variant">
           {{ formatBytes(detail.entry.file_size) }}
         </span>
         <span
           v-if="savedKeys.has(entryCompositeKey(detail.entry))"
-          class="shrink-0 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
+          class="text-label-small shrink-0 rounded-corner-full bg-success-container px-2 py-0.5 text-on-success-container"
         >
-          已更新
+          {{ t('tool.workbench.local.updatedBadge') }}
         </span>
       </div>
 
       <div class="flex shrink-0 items-center gap-1.5">
-        <button
+        <MdButton
           v-if="canSaveMetadata && !localEditMode"
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state !h-7 !px-2.5 !text-[11px]"
-          title="直接在左栏内联编辑当前条目字段"
+          variant="tonal"
+          size="sm"
+          :icon="LuPencil"
+          :title="t('tool.workbench.local.directEditHint')"
           @click="emit('enter-edit')"
         >
-          <LuPencil class="h-3 w-3" />
-          <span>直接编辑</span>
-        </button>
-        <button
+          {{ t('tool.workbench.local.directEdit') }}
+        </MdButton>
+        <MdButton
           v-else-if="localEditMode"
-          type="button"
-          class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+          variant="outlined"
+          size="sm"
+          :icon="LuEye"
           @click="emit('exit-edit')"
         >
-          <LuEye class="h-3 w-3" />
-          <span>退出编辑</span>
-        </button>
+          {{ t('tool.workbench.local.exitEdit') }}
+        </MdButton>
       </div>
     </div>
 
     <div class="flex-1 space-y-3.5 overflow-y-auto px-4 pt-3 pb-5">
       <!-- Local Persisted Cover & Summary Card -->
-      <div class="flex gap-3.5 rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
+      <div class="flex gap-3.5 rounded-corner-lg bg-surface p-3.5">
         <div class="flex shrink-0 flex-col items-center gap-1.5">
           <div
-            class="relative overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)]"
+            class="relative overflow-hidden rounded-corner-md bg-surface-container-high"
             :class="
               detail.entry.media_kind === 'music'
                 ? 'h-24 w-24 album-shadow'
@@ -240,13 +257,13 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
             />
             <div
               v-else
-              class="flex h-full w-full flex-col items-center justify-center gap-1 text-[var(--md-sys-color-on-surface-variant)]"
+              class="flex h-full w-full flex-col items-center justify-center gap-1 text-on-surface-variant"
             >
-              <LuBookOpen v-if="detail.entry.media_kind === 'book'" class="h-6 w-6 opacity-55" />
-              <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" />
-              <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" />
-              <LuClapperboard v-else class="h-6 w-6 opacity-55" />
-              <span class="text-[10px]">无封面</span>
+              <LuBookOpen v-if="detail.entry.media_kind === 'book'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <LuClapperboard v-else class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <span class="text-label-small">{{ t('tool.inspector.noCover') }}</span>
             </div>
           </div>
 
@@ -261,11 +278,11 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
 
         <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
           <div class="space-y-1">
-            <div class="line-clamp-2 text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
+            <div class="text-title-small line-clamp-2 text-on-surface">
               {{ detail.entry.display_title || detail.entry.file_name }}
             </div>
             <div
-              class="truncate font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+              class="text-label-small truncate font-mono text-on-surface-variant"
               :title="detail.entry.rel_path"
             >
               {{ detail.entry.rel_path }}
@@ -274,7 +291,7 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
 
           <div class="flex flex-wrap items-center gap-1.5">
             <span
-              class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-primary-container)]"
+              class="text-label-small rounded-corner-full bg-primary-container px-2 py-0.5 font-mono uppercase text-on-primary-container"
             >
               {{ detail.entry.extension }}
             </span>
@@ -282,105 +299,93 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
             <template v-if="detail.metadata.kind === 'music'">
               <span
                 v-if="detail.metadata.data.duration_secs"
-                class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+                class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant"
               >
                 {{ formatDuration(detail.metadata.data.duration_secs, '—') }}
               </span>
               <span
                 v-if="detail.metadata.data.bit_rate_kbps"
-                class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+                class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant"
               >
                 {{ detail.metadata.data.bit_rate_kbps }} kbps
               </span>
             </template>
 
             <template v-else-if="detail.metadata.kind === 'comic'">
-              <span
-                class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ detail.metadata.data.page_count }} 页
+              <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                {{ t('tool.inspector.pagesCount', { count: detail.metadata.data.page_count }) }}
               </span>
             </template>
 
             <template v-else-if="detail.metadata.kind === 'video'">
               <span
                 v-if="detail.metadata.data.width && detail.metadata.data.height"
-                class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+                class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant"
               >
                 {{ detail.metadata.data.width }}×{{ detail.metadata.data.height }}
               </span>
             </template>
 
             <template v-else-if="detail.metadata.kind === 'book'">
-              <span
-                class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-              >
+              <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
                 {{
                   detail.metadata.data.format === 'epub'
-                    ? 'EPUB 内封'
-                    : `${detail.metadata.data.format.toUpperCase()} 旁路 .opf`
+                    ? t('tool.inspector.epubEmbedded')
+                    : t('tool.inspector.sidecarOpf', {
+                        format: detail.metadata.data.format.toUpperCase(),
+                      })
                 }}
               </span>
             </template>
           </div>
 
-          <div class="flex flex-wrap items-center gap-1">
+          <div v-if="hasMissingBadges || localEditMode" class="flex flex-wrap items-center gap-1">
             <span
-              class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-              :class="
-                detail.entry.completeness.has_cover
-                  ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                  : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
-              "
+              v-if="!detail.entry.completeness.has_cover"
+              class="text-label-small rounded-corner-full bg-warning-container px-2 py-0.5 text-on-warning-container"
             >
-              {{ detail.entry.completeness.has_cover ? '有封面' : '缺封面' }}
+              {{ t('tool.row.missingCover') }}
             </span>
             <span
-              class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-              :class="
-                detail.entry.completeness.has_summary_or_lyrics
-                  ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                  : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-              "
+              v-if="!detail.entry.completeness.has_summary_or_lyrics"
+              class="text-label-small rounded-corner-full bg-surface-container-high px-2 py-0.5 text-on-surface-variant"
             >
               {{
                 detail.entry.media_kind === 'music'
-                  ? detail.entry.completeness.has_summary_or_lyrics
-                    ? '有歌词'
-                    : '缺歌词'
-                  : detail.entry.completeness.has_summary_or_lyrics
-                    ? '有简介'
-                    : '缺简介'
+                  ? t('tool.row.missingLyrics')
+                  : t('tool.row.missingSummary')
               }}
             </span>
             <span
-              class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-              :class="
-                detail.entry.completeness.has_nfo_or_tag_block
-                  ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                  : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-              "
+              v-if="!detail.entry.completeness.has_nfo_or_tag_block"
+              class="text-label-small rounded-corner-full bg-surface-container-high px-2 py-0.5 text-on-surface-variant"
             >
-              {{ detail.entry.completeness.has_nfo_or_tag_block ? '有标签' : '缺标签' }}
+              {{ t('tool.row.missingTags') }}
             </span>
 
-            <button
+            <MdButton
               v-if="localEditMode"
-              type="button"
-              :disabled="uploadingArtwork"
-              class="md-chip md-state ml-auto !h-6 !rounded-full !px-2 !text-[10px]"
+              variant="outlined"
+              size="sm"
+              class="ml-auto"
+              :icon="LuUpload"
+              :loading="uploadingArtwork"
               @click="emit('upload-artwork')"
             >
-              <LuUpload class="h-2.5 w-2.5" />
-              <span>{{ uploadingArtwork ? '上传中…' : '上传图片' }}</span>
-            </button>
+              {{
+                uploadingArtwork
+                  ? t('tool.workbench.local.uploading')
+                  : t('tool.workbench.local.uploadImage')
+              }}
+            </MdButton>
           </div>
         </div>
       </div>
 
       <div
         v-if="errorMsg"
-        class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
         {{ errorMsg }}
       </div>
@@ -413,79 +418,61 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
         />
       </template>
 
-      <!-- Read-Only Structured Local Metadata Grid -->
-      <div v-else class="grid grid-cols-2 gap-2.5">
+      <!-- Read-Only Structured Local Metadata Grid (Borderless Tonal Surface Blocks — NOT Input Lookalikes) -->
+      <dl v-else class="grid grid-cols-2 gap-2.5">
         <div
           v-for="field in localReadOnlyFields"
           :key="field.id"
           :class="field.half ? 'col-span-1' : 'col-span-2'"
-          class="space-y-1"
-          :title="canSaveMetadata ? '双击直接进入内联编辑' : undefined"
+          class="rounded-corner-md bg-surface px-3 py-2"
+          :title="canSaveMetadata ? t('tool.workbench.local.doubleClickHint') : undefined"
           @dblclick="canSaveMetadata && emit('enter-edit')"
         >
-          <div class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
+          <dt class="text-label-small text-on-surface-variant">
             {{ field.label }}
-          </div>
-          <div
+          </dt>
+          <dd
             v-if="field.multiline"
-            class="min-h-[84px] max-h-56 overflow-y-auto rounded-xl border border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface)]/80 px-2.5 py-2 text-xs leading-relaxed whitespace-pre-wrap select-text"
-            :class="
-              field.value
-                ? 'text-[var(--md-sys-color-on-surface)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)]/55'
-            "
+            class="text-body-small mt-1 max-h-56 overflow-y-auto leading-relaxed whitespace-pre-wrap select-text"
+            :class="field.value ? 'text-on-surface' : 'text-on-surface-variant/55'"
           >
             {{ field.value || '—' }}
-          </div>
-          <div
+          </dd>
+          <dd
             v-else
-            class="flex min-h-9 items-center rounded-xl border border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface)]/80 px-2.5 py-1.5 text-xs break-words select-text"
-            :class="
-              field.value
-                ? 'text-[var(--md-sys-color-on-surface)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)]/55'
-            "
+            class="text-body-medium mt-0.5 break-words select-text"
+            :class="field.value ? 'text-on-surface' : 'text-on-surface-variant/55'"
           >
             {{ field.value || '—' }}
-          </div>
+          </dd>
         </div>
-      </div>
+      </dl>
     </div>
 
-    <!-- Left Pane Inline Edit Footer -->
+    <!-- Local Pane Inline Edit Footer -->
     <div
       v-if="localEditMode"
-      class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/75 px-4 py-2.5"
+      class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-outline-variant/45 bg-surface-container/75 px-4 py-2.5"
     >
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-text md-state"
-        @click="emit('exit-edit')"
-      >
-        取消
-      </button>
+      <AppCheckbox
+        v-model="organizeLocalAfterSave"
+        :disabled="savingLocal"
+        :label="t('tool.inspector.saveAndArchive')"
+      />
+
       <div class="flex items-center gap-1.5">
-        <button
-          type="button"
-          :disabled="savingLocal"
-          class="md-btn md-btn-sm md-btn-outlined md-state"
-          title="保存修改并按默认模板重命名归档"
-          @click="emit('save-local', true)"
+        <MdButton variant="text" size="sm" :disabled="savingLocal" @click="emit('exit-edit')">
+          {{ t('tool.common.cancel') }}
+        </MdButton>
+        <MdButton
+          variant="filled"
+          size="sm"
+          :icon="LuSave"
+          :loading="savingLocal"
+          @click="emit('save-local', organizeLocalAfterSave)"
         >
-          <LuFileSignature class="h-3.5 w-3.5" />
-          <span>保存并归档</span>
-        </button>
-        <button
-          type="button"
-          :disabled="savingLocal"
-          class="md-btn md-btn-sm md-btn-filled md-state"
-          title="直接写入当前原文件 (⌘S)"
-          @click="emit('save-local', false)"
-        >
-          <LuLoader2 v-if="savingLocal" class="h-3.5 w-3.5 animate-spin" />
-          <LuSave v-else class="h-3.5 w-3.5" />
-          <span>{{ savingLocal ? '保存中…' : '保存修改' }}</span>
-        </button>
+          {{ savingLocal ? t('tool.common.saving') : t('tool.workbench.local.saveChanges') }}
+        </MdButton>
       </div>
     </div>
   </div>

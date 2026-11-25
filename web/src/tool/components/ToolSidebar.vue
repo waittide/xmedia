@@ -9,9 +9,10 @@ import {
   LuHome,
   LuLibrary,
 } from 'vue-icons-plus/lu'
-import type { MediaKind } from '@/types/api'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import type { MediaKind } from '@/types/api'
 import type { ManagedRootDto } from '../types'
 
 const props = defineProps<{
@@ -141,22 +142,16 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
 
       <div class="my-1 h-px w-8 bg-outline-variant/60" />
 
-      <button
-        type="button"
-        class="md-icon-btn md-state"
-        :title="t('tool.roots.title')"
+      <MdIconButton
+        :icon="LuHardDrive"
+        :tooltip="t('tool.roots.title')"
         :aria-label="t('tool.roots.title')"
         @click="emit('openSettingsRoots')"
-      >
-        <LuHardDrive class="h-5 w-5" aria-hidden="true" />
-      </button>
+      />
     </nav>
 
     <!-- EXPANDED MODE: MD3 Navigation Drawer -->
-    <nav
-      v-else
-      class="flex-1 space-y-1 overflow-y-auto px-3 pt-2 pb-5"
-    >
+    <nav v-else class="flex-1 space-y-1 overflow-y-auto px-3 pt-2 pb-5">
       <button
         type="button"
         class="md-state text-label-large flex h-14 w-full cursor-pointer items-center gap-3 rounded-corner-full px-4"
@@ -198,15 +193,13 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
             <LuChevronDown v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
             <span class="truncate">{{ t('tool.roots.title') }}</span>
           </button>
-          <button
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state"
-            :title="t('tool.roots.add')"
+          <MdIconButton
+            size="sm"
+            :icon="LuFolderPlus"
+            :tooltip="t('tool.roots.add')"
             :aria-label="t('tool.roots.add')"
             @click="emit('openSettingsRoots')"
-          >
-            <LuFolderPlus class="h-4 w-4" aria-hidden="true" />
-          </button>
+          />
         </div>
 
         <div v-if="!rootsFolded" class="space-y-0.5">

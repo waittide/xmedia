@@ -8,6 +8,7 @@ import {
   LuClapperboard,
   LuColumns3,
   LuDisc3,
+  LuMoreVertical,
   LuFileSignature,
   LuFileText,
   LuFilm,
@@ -16,24 +17,29 @@ import {
   LuLock,
   LuMusic,
   LuPackageCheck,
-  LuRefreshCw,
   LuSave,
+  LuSkipForward,
   LuTrash2,
   LuUnlock,
   LuUpload,
   LuWand2,
   LuX,
 } from 'vue-icons-plus/lu'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdMenu from '@/components/ui/MdMenu.vue'
+import MdMenuItem from '@/components/ui/MdMenuItem.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdSheet from '@/components/ui/MdSheet.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatBytes, formatDuration } from '@/utils/format'
 import { buildArtworkUrl, resolveScraperCoverUrl, toolApi } from '../api'
 import { saveAndOrganizeEntry } from '../services/saveEntry'
 import { useToolInspectorStore } from '../stores/inspector'
-import type {
-  MediaFileDetail,
-  MediaFileEntry,
-} from '../types'
+import type { MediaFileDetail, MediaFileEntry } from '../types'
 import InspectorBookForm from './inspector/InspectorBookForm.vue'
 import InspectorComicForm from './inspector/InspectorComicForm.vue'
 import InspectorMusicForm from './inspector/InspectorMusicForm.vue'
@@ -42,7 +48,10 @@ import { useMetadataForm } from './inspector/useMetadataForm'
 
 const props = withDefaults(
   defineProps<{
-    detail: MediaFileDetail
+    open?: boolean
+    modal?: boolean
+    loading?: boolean
+    detail: MediaFileDetail | null
     artworkVersion: number
     hasPrev?: boolean
     hasNext?: boolean
@@ -50,6 +59,9 @@ const props = withDefaults(
     shortcutsDisabled?: boolean
   }>(),
   {
+    open: true,
+    modal: false,
+    loading: false,
     hasPrev: false,
     hasNext: false,
     positionLabel: '',
@@ -95,10 +107,12 @@ const {
 } = useMetadataForm()
 
 const saving = ref(false)
+const organizeAfterSave = ref(false)
 const polishingBook = ref(false)
 const uploadingArtwork = ref(false)
 const errorMsg = ref<string | null>(null)
 const drawerRootRef = ref<HTMLElement | null>(null)
+const mdSheetRef = ref<InstanceType<typeof MdSheet> | null>(null)
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
 const skipNextHydrateKey = ref<string | null>(null)
@@ -122,16 +136,33 @@ watch(
   { immediate: true },
 )
 
-const isCurrentDirty = isDirty
+const isCurrentDirty = computed(() => Boolean(props.detail && isDirty.value))
 
 const canSaveMetadata = computed(() => {
+  if (!props.detail) return false
   if (props.detail.metadata.kind === 'book') {
     return props.detail.metadata.data.writable
   }
   return true
 })
 
+const headerSubtitle = computed(() => {
+  if (!props.detail) return ''
+  const size = formatBytes(props.detail.entry.file_size)
+  return props.positionLabel ? `${props.positionLabel} · ${size}` : size
+})
+
+const videoSlotOptions = computed(() => {
+  if (!props.detail || props.detail.metadata.kind !== 'video') return []
+  return [
+    { value: 'poster' as const, label: t('tool.inspector.slotPoster') },
+    { value: 'fanart' as const, label: t('tool.inspector.slotFanart') },
+    { value: 'thumb' as const, label: t('tool.inspector.slotThumb') },
+  ]
+})
+
 const artworkSrc = computed(() => {
+  if (!props.detail) return null
   if (pendingCoverUrl.value) {
     return resolveScraperCoverUrl(pendingCoverUrl.value)
   }
@@ -158,12 +189,12 @@ const artworkSrc = computed(() => {
 })
 
 async function confirmDiscardIfDirty(): Promise<boolean> {
-  if (!isCurrentDirty.value) return true
+  if (!isCurrentDirty.value || !props.detail) return true
   return dialogStore.confirm({
-    title: '放弃未保存的更改？',
-    message: `当前条目「${props.detail.entry.file_name}」有尚未保存的修改，继续操作将会丢失这些改动。`,
-    confirmText: '放弃更改',
-    cancelText: '继续编辑',
+    title: t('tool.inspector.discardTitle'),
+    message: t('tool.inspector.discardMessage', { name: props.detail.entry.file_name }),
+    confirmText: t('tool.inspector.discardConfirm'),
+    cancelText: t('tool.inspector.continueEditing'),
     danger: true,
   })
 }
@@ -193,7 +224,7 @@ async function handleArtworkPicked(ev: Event): Promise<void> {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file) return
+  if (!file || !props.detail) return
   uploadingArtwork.value = true
   errorMsg.value = null
   try {
@@ -207,7 +238,7 @@ async function handleArtworkPicked(ev: Event): Promise<void> {
     pendingCoverUrl.value = null
     skipNextHydrateKey.value = detailIdentityKey(updated)
     emit('updated', updated, true)
-    snackbar.show('封面已更新并写入磁盘')
+    snackbar.show(t('tool.inspector.coverUpdated'))
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -216,7 +247,7 @@ async function handleArtworkPicked(ev: Event): Promise<void> {
 }
 
 async function handlePolishBook(): Promise<void> {
-  if (polishingBook.value || props.detail.entry.media_kind !== 'book') return
+  if (polishingBook.value || !props.detail || props.detail.entry.media_kind !== 'book') return
   polishingBook.value = true
   errorMsg.value = null
   try {
@@ -226,7 +257,12 @@ async function handlePolishBook(): Promise<void> {
     )
     emit('updated', report.detail, true)
     snackbar.show(
-      `书籍抛光完成 · ${report.jacket_updated ? '简介页已更新' : '目录已同步'}，清理 ${report.removed_orphan_files} 个冗余资源`,
+      t('tool.inspector.bookPolished', {
+        step: report.jacket_updated
+          ? t('tool.inspector.jacketUpdated')
+          : t('tool.inspector.tocSynced'),
+        removed: report.removed_orphan_files,
+      }),
     )
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -235,11 +271,8 @@ async function handlePolishBook(): Promise<void> {
   }
 }
 
-async function saveMetadata(
-  organizeAfterSave = false,
-  advanceNext = false,
-): Promise<void> {
-  if (!canSaveMetadata.value || saving.value) return
+async function saveMetadata(shouldOrganize = false, advanceNext = false): Promise<void> {
+  if (!props.detail || !canSaveMetadata.value || saving.value) return
   saving.value = true
   errorMsg.value = null
   try {
@@ -255,7 +288,7 @@ async function saveMetadata(
       envelope,
       pendingCoverUrl: pendingCoverUrl.value,
       pendingBackdropUrl: pendingBackdropUrl.value,
-      organizeAfterSave,
+      organizeAfterSave: shouldOrganize,
     })
     pendingCoverUrl.value = null
     pendingBackdropUrl.value = null
@@ -265,13 +298,15 @@ async function saveMetadata(
     if (artworkWarnings.length > 0) {
       errorMsg.value = artworkWarnings.join('；')
       snackbar.show({
-        message: `元数据已保存，但${artworkWarnings.join('；')}`,
+        message: t('tool.inspector.savedWithWarnings', { warnings: artworkWarnings.join('；') }),
         tone: 'error',
       })
     } else {
       snackbar.show({
-        message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已保存元数据更改',
-        actionLabel: '变更历史',
+        message: shouldOrganize
+          ? t('tool.inspector.savedAndArchived')
+          : t('tool.inspector.savedChanges'),
+        actionLabel: t('tool.inspector.historyAction'),
         onAction: () => emit('openHistory'),
       })
     }
@@ -289,10 +324,10 @@ async function saveMetadata(
 function hasBlockingExternalOverlay(): boolean {
   if (typeof document === 'undefined') return false
   if (document.querySelector('[role="menu"], [role="listbox"]')) return true
-  const rootEl = drawerRootRef.value
+  const rootEl = props.modal ? (mdSheetRef.value?.sheetRef ?? null) : drawerRootRef.value
   const modals = document.querySelectorAll('[aria-modal="true"]')
-  for (const modal of modals) {
-    if (!rootEl || (!modal.contains(rootEl) && !rootEl.contains(modal))) {
+  for (const modalEl of modals) {
+    if (!rootEl || (!modalEl.contains(rootEl) && !rootEl.contains(modalEl))) {
       return true
     }
   }
@@ -300,16 +335,16 @@ function hasBlockingExternalOverlay(): boolean {
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
-  if (props.shortcutsDisabled) return
+  if (!props.open || props.shortcutsDisabled || !props.detail) return
   if (hasBlockingExternalOverlay()) return
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
     ev.preventDefault()
-    void saveMetadata(false, false)
+    void saveMetadata(organizeAfterSave.value, false)
     return
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
     ev.preventDefault()
-    void saveMetadata(false, true)
+    void saveMetadata(organizeAfterSave.value, true)
     return
   }
   if (ev.altKey && ev.key === 'ArrowUp') {
@@ -337,502 +372,882 @@ onBeforeUnmount(() => {
 defineExpose({
   isDirty: isCurrentDirty,
   confirmDiscardIfDirty,
-  save: () => saveMetadata(false, false),
+  save: () => saveMetadata(organizeAfterSave.value, false),
   requestClose,
 })
 </script>
 
 <template>
-  <aside
-    ref="drawerRootRef"
-    class="flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] transition-[width] duration-300 ease-[var(--md-sys-motion-easing-standard)] lg:w-[440px] lg:rounded-l-[24px] xl:w-[470px]"
+  <input
+    ref="coverInputRef"
+    type="file"
+    accept="image/jpeg,image/png,image/webp"
+    class="hidden"
+    @change="handleArtworkPicked"
+  />
+
+  <!-- Compact / Medium (<1200px): Authentic MD3 Adaptive Sheet -->
+  <MdSheet
+    v-if="modal"
+    ref="mdSheetRef"
+    :open="open"
+    :title="detail?.entry.file_name || t('tool.inspector.title')"
+    :subtitle="headerSubtitle"
+    size="md"
+    @close="requestClose"
   >
-    <input
-      ref="coverInputRef"
-      type="file"
-      accept="image/jpeg,image/png,image/webp"
-      class="hidden"
-      @change="handleArtworkPicked"
-    />
+    <template #headerActions>
+      <template v-if="detail && (hasPrev || hasNext)">
+        <MdIconButton
+          size="sm"
+          :disabled="!hasPrev"
+          :icon="LuArrowUp"
+          :tooltip="t('tool.inspector.prevItem')"
+          :aria-label="t('tool.inspector.prevItem')"
+          @click="requestStep(-1)"
+        />
+        <MdIconButton
+          size="sm"
+          :disabled="!hasNext"
+          :icon="LuArrowDown"
+          :tooltip="t('tool.inspector.nextItem')"
+          :aria-label="t('tool.inspector.nextItem')"
+          @click="requestStep(1)"
+        />
+      </template>
+      <MdButton
+        v-if="detail"
+        variant="tonal"
+        size="sm"
+        :icon="LuColumns3"
+        :title="t('tool.browser.workbenchTooltip')"
+        @click="emit('openWorkbench', detail)"
+      >
+        {{ t('tool.browser.workbenchBtn') }}
+      </MdButton>
+    </template>
 
-    <!-- Supporting Pane Top App Bar -->
     <div
-      class="flex shrink-0 items-center justify-between gap-2 px-4 pt-3.5 pb-2.5"
+      v-if="loading && !detail"
+      class="text-body-small flex min-h-48 items-center justify-center gap-2 text-on-surface-variant"
     >
-      <div class="flex min-w-0 items-center gap-1.5">
-        <div
-          v-if="hasPrev || hasNext"
-          class="flex shrink-0 items-center rounded-full bg-[var(--md-sys-color-surface-container-high)] p-0.5"
-        >
-          <button
-            type="button"
-            :disabled="!hasPrev"
-            class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7 disabled:opacity-35"
-            title="上一项 (Alt+↑)"
-            @click="requestStep(-1)"
-          >
-            <LuArrowUp class="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            :disabled="!hasNext"
-            class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7 disabled:opacity-35"
-            title="下一项 (Alt+↓)"
-            @click="requestStep(1)"
-          >
-            <LuArrowDown class="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        <div class="min-w-0">
-          <div class="flex items-center gap-1.5">
-            <span class="truncate text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
-              {{ detail.entry.file_name }}
-            </span>
-            <span
-              v-if="isCurrentDirty"
-              class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
-            >
-              {{ t('tool.inspector.unsaved') }}
-            </span>
-          </div>
-          <div class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            <span v-if="positionLabel" class="mr-1.5 font-mono">{{ positionLabel }} ·</span>
-            {{ formatBytes(detail.entry.file_size) }}
-          </div>
-        </div>
-      </div>
-
-      <div class="flex shrink-0 items-center gap-1">
-        <!-- Enter Full 3-Column Scraping Workbench -->
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
-          :title="t('tool.browser.workbenchTooltip')"
-          @click="emit('openWorkbench', detail)"
-        >
-          <LuColumns3 class="h-3.5 w-3.5" />
-          <span>{{ t('tool.browser.workbenchBtn') }}</span>
-        </button>
-
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state"
-          :title="t('tool.inspector.closePanel')"
-          :aria-label="t('tool.inspector.closePanel')"
-          @click="requestClose"
-        >
-          <LuX class="h-4 w-4" />
-        </button>
-      </div>
+      <MdCircularProgress :size="18" :aria-label="t('tool.workspace.parsingFile')" />
+      <span>{{ t('tool.workspace.parsingFile') }}</span>
     </div>
 
-    <!-- Main Body: Single Edit Pane -->
-    <div class="grid min-h-0 flex-1 grid-cols-1">
-      <!-- Left Column: Metadata Form + Artwork -->
-      <div class="flex min-h-0 flex-col overflow-hidden">
-        <div class="flex-1 space-y-4 overflow-y-auto px-4 pt-1 pb-4">
-          <!-- Artwork & Media Specs Card (Tonal Surface, No Harsh Border) -->
+    <div v-else-if="detail" class="space-y-4">
+      <div class="flex gap-3.5 rounded-corner-lg bg-surface p-3.5">
+        <div class="flex shrink-0 flex-col items-center gap-1.5">
           <div
-            class="flex gap-3.5 rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5"
+            class="relative overflow-hidden rounded-corner-md bg-surface-container-high"
+            :class="
+              detail.entry.media_kind === 'music'
+                ? 'h-24 w-24 album-shadow'
+                : 'h-32 w-24 book-shadow'
+            "
           >
-            <div class="flex shrink-0 flex-col items-center gap-1.5">
-              <div
-                class="relative overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)]"
-                :class="
-                  detail.entry.media_kind === 'music'
-                    ? 'h-24 w-24 album-shadow'
-                    : 'h-32 w-24 book-shadow'
-                "
+            <img
+              v-if="artworkSrc"
+              :src="artworkSrc"
+              alt="artwork"
+              referrerpolicy="no-referrer"
+              class="h-full w-full object-cover"
+            />
+            <div
+              v-else
+              class="flex h-full w-full flex-col items-center justify-center gap-1 text-on-surface-variant"
+            >
+              <LuBookOpen v-if="detail.entry.media_kind === 'book'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <LuClapperboard v-else class="h-6 w-6 opacity-55" aria-hidden="true" />
+              <span class="text-label-small">{{ t('tool.inspector.noCover') }}</span>
+            </div>
+            <span
+              v-if="pendingCoverUrl"
+              class="text-label-small absolute inset-x-0 bottom-0 bg-primary/90 py-0.5 text-center text-on-primary"
+            >
+              {{ t('tool.inspector.pendingCover') }}
+            </span>
+          </div>
+
+          <MdSegmentedButton
+            v-if="detail.metadata.kind === 'video'"
+            v-model="videoArtworkSlot"
+            :options="videoSlotOptions"
+            size="sm"
+          />
+        </div>
+
+        <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
+          <div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span
+                class="text-label-small rounded-corner-full bg-primary-container px-2.5 py-0.5 font-mono uppercase text-on-primary-container"
               >
-                <img
-                  v-if="artworkSrc"
-                  :src="artworkSrc"
-                  alt="artwork"
-                  referrerpolicy="no-referrer"
-                  class="h-full w-full object-cover"
-                />
-                <div
-                  v-else
-                  class="flex h-full w-full flex-col items-center justify-center gap-1 text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  <LuBookOpen v-if="detail.entry.media_kind === 'book'" class="h-6 w-6 opacity-55" />
-                  <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" />
-                  <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" />
-                  <LuClapperboard v-else class="h-6 w-6 opacity-55" />
-                  <span class="text-[10px]">{{ t('tool.inspector.noCover') }}</span>
-                </div>
-                <span
-                  v-if="pendingCoverUrl"
-                  class="absolute inset-x-0 bottom-0 bg-[var(--md-sys-color-primary)]/90 py-0.5 text-center text-[9px] font-semibold text-[var(--md-sys-color-on-primary)]"
-                >
-                  {{ t('tool.inspector.pendingCover') }}
+                {{ detail.entry.extension }}
+              </span>
+              <span
+                v-if="isCurrentDirty"
+                class="text-label-small rounded-corner-full bg-warning-container px-2 py-0.5 text-on-warning-container"
+              >
+                {{ t('tool.inspector.unsaved') }}
+              </span>
+              <template v-if="detail.metadata.kind === 'music'">
+                <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                  {{ formatDuration(detail.metadata.data.duration_secs, '—') }}
                 </span>
+                <span
+                  v-if="detail.metadata.data.bit_rate_kbps"
+                  class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant"
+                >
+                  {{ detail.metadata.data.bit_rate_kbps }} kbps
+                </span>
+              </template>
+              <template v-else-if="detail.metadata.kind === 'comic'">
+                <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                  {{ t('tool.inspector.pagesCount', { count: detail.metadata.data.page_count }) }}
+                </span>
+              </template>
+              <template v-else-if="detail.metadata.kind === 'video' && detail.metadata.data.width && detail.metadata.data.height">
+                <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant">
+                  {{ detail.metadata.data.width }}×{{ detail.metadata.data.height }}
+                </span>
+              </template>
+              <template v-else-if="detail.metadata.kind === 'book'">
+                <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                  {{
+                    detail.metadata.data.format === 'epub'
+                      ? t('tool.inspector.epubEmbedded')
+                      : t('tool.inspector.sidecarOpf', {
+                          format: detail.metadata.data.format.toUpperCase(),
+                        })
+                  }}
+                </span>
+              </template>
+            </div>
+
+            <div
+              v-if="detail.metadata.kind === 'video'"
+              class="text-body-small mt-2 space-y-0.5 text-on-surface-variant"
+            >
+              <div v-if="detail.metadata.data.audio_streams.length > 0" class="truncate">
+                {{
+                  t('tool.inspector.audioStreams', {
+                    summary: detail.metadata.data.audio_streams
+                      .map((a) => `${a.codec.toUpperCase()}${a.language ? ` [${a.language}]` : ''}`)
+                      .join(' · '),
+                  })
+                }}
+              </div>
+              <div
+                v-if="
+                  detail.metadata.data.subtitle_streams.length > 0 ||
+                  detail.metadata.data.sidecar_subtitles.length > 0
+                "
+                class="truncate"
+              >
+                {{
+                  t('tool.inspector.subtitlesSummary', {
+                    embedded: detail.metadata.data.subtitle_streams.length,
+                    sidecar: detail.metadata.data.sidecar_subtitles.length,
+                  })
+                }}
+              </div>
+            </div>
+          </div>
+
+          <!-- Decluttered Cover Action Bar: 1 Primary Action + Overflow MdMenu -->
+          <div class="flex items-center gap-1.5">
+            <MdButton
+              v-if="
+                detail.entry.media_kind === 'book' &&
+                (detail.entry.extension === 'txt' || detail.entry.extension === 'epub')
+              "
+              variant="tonal"
+              size="sm"
+              :icon="LuFileText"
+              @click="emit('openContentEditor', detail.entry)"
+            >
+              {{
+                detail.entry.extension === 'txt'
+                  ? t('tool.inspector.txtConvertEpub')
+                  : t('tool.inspector.editContent')
+              }}
+            </MdButton>
+            <MdButton
+              v-else-if="detail.entry.media_kind === 'comic'"
+              variant="tonal"
+              size="sm"
+              :icon="LuImage"
+              @click="emit('openComicPages', detail.entry)"
+            >
+              {{ t('tool.inspector.comicPages') }}
+            </MdButton>
+            <MdButton
+              v-else-if="detail.entry.media_kind === 'music'"
+              variant="tonal"
+              size="sm"
+              :icon="LuMusic"
+              @click="emit('openMusicTools', detail.entry)"
+            >
+              {{ t('tool.inspector.musicToolbox') }}
+            </MdButton>
+            <MdButton
+              v-else-if="detail.entry.media_kind === 'video'"
+              variant="tonal"
+              size="sm"
+              :icon="LuFilm"
+              @click="emit('openVideoTools', detail.entry)"
+            >
+              {{ t('tool.inspector.videoToolbox') }}
+            </MdButton>
+            <MdButton
+              v-else
+              variant="tonal"
+              size="sm"
+              :icon="LuUpload"
+              :loading="uploadingArtwork"
+              @click="triggerArtworkUpload('cover')"
+            >
+              {{ t('tool.actions.uploadCover') }}
+            </MdButton>
+
+            <MdMenu
+              placement="bottom-end"
+              :min-width="220"
+              :aria-label="t('tool.inspector.moreActions')"
+            >
+              <template #trigger="{ toggle, triggerAttrs }">
+                <MdIconButton
+                  variant="tonal"
+                  size="sm"
+                  :icon="LuMoreVertical"
+                  :tooltip="t('tool.inspector.moreActions')"
+                  :aria-label="t('tool.inspector.moreActions')"
+                  v-bind="triggerAttrs"
+                  @click="toggle"
+                />
+              </template>
+
+              <template v-if="detail.entry.media_kind !== 'video'">
+                <MdMenuItem
+                  :icon="LuUpload"
+                  :disabled="uploadingArtwork"
+                  :label="
+                    detail.entry.media_kind === 'comic'
+                      ? t('tool.inspector.chapterCover')
+                      : t('tool.actions.uploadCover')
+                  "
+                  @select="triggerArtworkUpload('cover')"
+                />
+                <MdMenuItem
+                  v-if="detail.entry.media_kind === 'comic' && detail.entry.rel_path.includes('/')"
+                  :icon="LuImage"
+                  :disabled="uploadingArtwork"
+                  :label="t('tool.inspector.seriesCover')"
+                  @select="triggerArtworkUpload('series_cover')"
+                />
+                <MdMenuItem
+                  v-if="detail.metadata.kind === 'book' && detail.metadata.data.writable"
+                  :icon="isBookFieldLocked('cover') ? LuUnlock : LuLock"
+                  :label="
+                    isBookFieldLocked('cover')
+                      ? t('tool.inspector.coverLocked')
+                      : t('tool.inspector.lockCover')
+                  "
+                  @select="toggleBookFieldLock('cover')"
+                />
+                <MdMenuItem
+                  v-if="
+                    detail.entry.media_kind === 'book' &&
+                    (detail.entry.extension === 'txt' ||
+                      detail.entry.extension === 'epub' ||
+                      detail.entry.extension === 'pdf')
+                  "
+                  :icon="LuPackageCheck"
+                  :label="
+                    detail.entry.completeness.is_normalized
+                      ? t('tool.inspector.normalizedEpub')
+                      : t('tool.inspector.normalizeToEpub')
+                  "
+                  @select="emit('openNormalizeEpub', detail.entry)"
+                />
+                <MdMenuItem
+                  v-if="detail.entry.media_kind === 'book' && detail.entry.extension === 'epub'"
+                  :icon="LuWand2"
+                  :disabled="polishingBook"
+                  :label="t('tool.inspector.polishBook')"
+                  @select="handlePolishBook"
+                />
+              </template>
+              <template v-else>
+                <MdMenuItem
+                  :icon="LuImage"
+                  :disabled="uploadingArtwork"
+                  :label="t('tool.actions.uploadPoster')"
+                  @select="triggerArtworkUpload('poster')"
+                />
+                <MdMenuItem
+                  :icon="LuUpload"
+                  :disabled="uploadingArtwork"
+                  :label="t('tool.actions.uploadFanart')"
+                  @select="triggerArtworkUpload('fanart')"
+                />
+                <MdMenuItem
+                  :icon="isVideoFieldLocked('poster') ? LuUnlock : LuLock"
+                  :label="
+                    isVideoFieldLocked('poster')
+                      ? t('tool.inspector.posterLocked')
+                      : t('tool.inspector.lockPoster')
+                  "
+                  @select="toggleVideoFieldLock('poster')"
+                />
+              </template>
+
+              <MdMenuItem
+                :icon="LuFileSignature"
+                :disabled="Boolean(detail.entry.completeness.is_organized)"
+                :label="
+                  detail.entry.completeness.is_organized
+                    ? t('tool.inspector.organized')
+                    : t('tool.inspector.organize')
+                "
+                @select="emit('openRename', detail.entry)"
+              />
+              <MdMenuItem
+                destructive
+                :icon="LuTrash2"
+                :label="t('tool.inspector.deleteEntry')"
+                @select="emit('requestDelete', detail.entry)"
+              />
+            </MdMenu>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="errorMsg"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
+      >
+        {{ errorMsg }}
+      </div>
+
+      <InspectorMusicForm
+        v-if="detail.metadata.kind === 'music'"
+        :form="musicForm"
+        :sidecar-lrc-filename="detail.metadata.data.sidecar_lrc_filename"
+        :file-key="`${detail.entry.root_id}:${detail.entry.rel_path}`"
+      />
+      <InspectorVideoForm
+        v-else-if="detail.metadata.kind === 'video'"
+        :form="videoForm"
+      />
+      <InspectorComicForm
+        v-else-if="detail.metadata.kind === 'comic'"
+        :form="comicForm"
+      />
+      <InspectorBookForm
+        v-else-if="detail.metadata.kind === 'book'"
+        :form="bookForm"
+        :book-format="detail.metadata.data.format"
+        :writable="detail.metadata.data.writable"
+        :is-epub="detail.entry.extension === 'epub'"
+        :has-cover="detail.metadata.data.has_cover"
+        :polishing-book="polishingBook"
+        @polish="handlePolishBook"
+      />
+    </div>
+
+    <template v-if="detail" #footer>
+      <div class="flex w-full items-center justify-between gap-2">
+        <AppCheckbox
+          v-model="organizeAfterSave"
+          :disabled="!canSaveMetadata || saving"
+          :label="t('tool.inspector.saveAndArchive')"
+        />
+
+        <div class="flex shrink-0 items-center gap-1.5">
+          <MdIconButton
+            v-if="hasNext"
+            variant="tonal"
+            size="sm"
+            :disabled="!canSaveMetadata || saving"
+            :icon="LuSkipForward"
+            :tooltip="t('tool.inspector.saveAndNext')"
+            :aria-label="t('tool.inspector.saveAndNext')"
+            @click="saveMetadata(organizeAfterSave, true)"
+          />
+          <MdButton
+            variant="filled"
+            size="sm"
+            :icon="LuSave"
+            :loading="saving"
+            :disabled="!canSaveMetadata"
+            @click="saveMetadata(organizeAfterSave, false)"
+          >
+            {{ saving ? t('tool.actions.saving') : t('tool.actions.save') }}
+          </MdButton>
+        </div>
+      </div>
+    </template>
+  </MdSheet>
+
+  <!-- Large Desktop (>=1200px): Docked Tonal Supporting Pane -->
+  <aside
+    v-else-if="open"
+    ref="drawerRootRef"
+    class="flex h-full w-[440px] shrink-0 flex-col overflow-hidden rounded-l-corner-xl bg-surface-container-low xl:w-[460px]"
+  >
+    <div
+      v-if="loading && !detail"
+      class="text-body-small flex flex-1 items-center justify-center gap-2 px-8 text-on-surface-variant"
+    >
+      <MdCircularProgress :size="18" :aria-label="t('tool.workspace.parsingFile')" />
+      <span>{{ t('tool.workspace.parsingFile') }}</span>
+    </div>
+
+    <template v-else-if="detail">
+      <!-- Supporting Pane Header -->
+      <div class="flex shrink-0 items-center justify-between gap-2 px-4 pt-3.5 pb-2.5">
+        <div class="flex min-w-0 items-center gap-1.5">
+          <div
+            v-if="hasPrev || hasNext"
+            class="flex shrink-0 items-center rounded-corner-full bg-surface-container-high p-0.5"
+          >
+            <MdIconButton
+              size="sm"
+              :disabled="!hasPrev"
+              :icon="LuArrowUp"
+              :tooltip="t('tool.inspector.prevItem')"
+              :aria-label="t('tool.inspector.prevItem')"
+              @click="requestStep(-1)"
+            />
+            <MdIconButton
+              size="sm"
+              :disabled="!hasNext"
+              :icon="LuArrowDown"
+              :tooltip="t('tool.inspector.nextItem')"
+              :aria-label="t('tool.inspector.nextItem')"
+              @click="requestStep(1)"
+            />
+          </div>
+
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-title-small truncate text-on-surface">
+                {{ detail.entry.file_name }}
+              </span>
+              <span
+                v-if="isCurrentDirty"
+                class="text-label-small shrink-0 rounded-corner-full bg-warning-container px-2 py-0.5 text-on-warning-container"
+              >
+                {{ t('tool.inspector.unsaved') }}
+              </span>
+            </div>
+            <div class="text-body-small mt-0.5 truncate text-on-surface-variant">
+              {{ headerSubtitle }}
+            </div>
+          </div>
+        </div>
+
+        <div class="flex shrink-0 items-center gap-1">
+          <MdButton
+            variant="tonal"
+            size="sm"
+            :icon="LuColumns3"
+            :title="t('tool.browser.workbenchTooltip')"
+            @click="emit('openWorkbench', detail)"
+          >
+            {{ t('tool.browser.workbenchBtn') }}
+          </MdButton>
+
+          <MdIconButton
+            size="sm"
+            :icon="LuX"
+            :tooltip="t('tool.inspector.closePanel')"
+            :aria-label="t('tool.inspector.closePanel')"
+            @click="requestClose"
+          />
+        </div>
+      </div>
+
+      <!-- Supporting Pane Body -->
+      <div class="flex-1 space-y-4 overflow-y-auto px-4 pt-1 pb-4">
+        <div class="flex gap-3.5 rounded-corner-lg bg-surface p-3.5">
+          <div class="flex shrink-0 flex-col items-center gap-1.5">
+            <div
+              class="relative overflow-hidden rounded-corner-md bg-surface-container-high"
+              :class="
+                detail.entry.media_kind === 'music'
+                  ? 'h-24 w-24 album-shadow'
+                  : 'h-32 w-24 book-shadow'
+              "
+            >
+              <img
+                v-if="artworkSrc"
+                :src="artworkSrc"
+                alt="artwork"
+                referrerpolicy="no-referrer"
+                class="h-full w-full object-cover"
+              />
+              <div
+                v-else
+                class="flex h-full w-full flex-col items-center justify-center gap-1 text-on-surface-variant"
+              >
+                <LuBookOpen v-if="detail.entry.media_kind === 'book'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+                <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+                <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" aria-hidden="true" />
+                <LuClapperboard v-else class="h-6 w-6 opacity-55" aria-hidden="true" />
+                <span class="text-label-small">{{ t('tool.inspector.noCover') }}</span>
+              </div>
+              <span
+                v-if="pendingCoverUrl"
+                class="text-label-small absolute inset-x-0 bottom-0 bg-primary/90 py-0.5 text-center text-on-primary"
+              >
+                {{ t('tool.inspector.pendingCover') }}
+              </span>
+            </div>
+
+            <MdSegmentedButton
+              v-if="detail.metadata.kind === 'video'"
+              v-model="videoArtworkSlot"
+              :options="videoSlotOptions"
+              size="sm"
+            />
+          </div>
+
+          <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
+            <div>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span
+                  class="text-label-small rounded-corner-full bg-primary-container px-2.5 py-0.5 font-mono uppercase text-on-primary-container"
+                >
+                  {{ detail.entry.extension }}
+                </span>
+
+                <template v-if="detail.metadata.kind === 'music'">
+                  <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                    {{ formatDuration(detail.metadata.data.duration_secs, '—') }}
+                  </span>
+                  <span
+                    v-if="detail.metadata.data.bit_rate_kbps"
+                    class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant"
+                  >
+                    {{ detail.metadata.data.bit_rate_kbps }} kbps
+                  </span>
+                </template>
+
+                <template v-else-if="detail.metadata.kind === 'comic'">
+                  <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                    {{ t('tool.inspector.pagesCount', { count: detail.metadata.data.page_count }) }}
+                  </span>
+                  <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                    {{
+                      detail.metadata.data.has_comic_info_xml
+                        ? t('tool.inspector.hasComicInfo')
+                        : t('tool.inspector.noComicInfo')
+                    }}
+                  </span>
+                </template>
+
+                <template v-else-if="detail.metadata.kind === 'video'">
+                  <span
+                    v-if="detail.metadata.data.width && detail.metadata.data.height"
+                    class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant"
+                  >
+                    {{ detail.metadata.data.width }}×{{ detail.metadata.data.height }}
+                  </span>
+                  <span
+                    v-if="detail.metadata.data.video_codec"
+                    class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 font-mono uppercase text-on-surface-variant"
+                  >
+                    {{ detail.metadata.data.video_codec }}
+                  </span>
+                </template>
+
+                <template v-else-if="detail.metadata.kind === 'book'">
+                  <span class="text-label-small rounded-corner-full bg-surface-container px-2 py-0.5 text-on-surface-variant">
+                    {{
+                      detail.metadata.data.format === 'epub'
+                        ? t('tool.inspector.epubEmbedded')
+                        : t('tool.inspector.sidecarOpf', {
+                            format: detail.metadata.data.format.toUpperCase(),
+                          })
+                    }}
+                  </span>
+                </template>
               </div>
 
-              <!-- Video Multi-Slot Artwork Preview Tabs -->
               <div
                 v-if="detail.metadata.kind === 'video'"
-                class="flex items-center gap-0.5 rounded-full bg-[var(--md-sys-color-surface-container)] p-0.5 text-[10px]"
+                class="text-body-small mt-2 space-y-0.5 text-on-surface-variant"
               >
-                <button
-                  v-for="slotTab in [
-                    { id: 'poster' as const, label: '海报', ok: detail.metadata.data.has_poster },
-                    { id: 'fanart' as const, label: '背景', ok: detail.metadata.data.has_fanart },
-                    { id: 'thumb' as const, label: '剧照', ok: detail.metadata.data.has_thumb },
-                  ]"
-                  :key="slotTab.id"
-                  type="button"
-                  class="rounded-full px-2 py-0.5 font-medium transition"
-                  :class="
-                    videoArtworkSlot === slotTab.id
-                      ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                      : slotTab.ok
-                        ? 'text-[var(--md-sys-color-on-surface)]'
-                        : 'text-[var(--md-sys-color-on-surface-variant)]/60'
+                <div v-if="detail.metadata.data.audio_streams.length > 0" class="truncate">
+                  {{
+                    t('tool.inspector.audioStreams', {
+                      summary: detail.metadata.data.audio_streams
+                        .map((a) => `${a.codec.toUpperCase()}${a.language ? ` [${a.language}]` : ''}`)
+                        .join(' · '),
+                    })
+                  }}
+                </div>
+                <div
+                  v-if="
+                    detail.metadata.data.subtitle_streams.length > 0 ||
+                    detail.metadata.data.sidecar_subtitles.length > 0
                   "
-                  @click="videoArtworkSlot = slotTab.id"
+                  class="truncate"
                 >
-                  {{ slotTab.label }}
-                </button>
+                  {{
+                    t('tool.inspector.subtitlesSummary', {
+                      embedded: detail.metadata.data.subtitle_streams.length,
+                      sidecar: detail.metadata.data.sidecar_subtitles.length,
+                    })
+                  }}
+                </div>
               </div>
             </div>
 
-            <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
-              <div>
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span
-                    class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase text-[var(--md-sys-color-on-primary-container)]"
-                  >
-                    {{ detail.entry.extension }}
-                  </span>
+            <!-- Decluttered Cover Action Bar: 1 Primary Action + Overflow MdMenu -->
+            <div class="flex items-center gap-1.5">
+              <MdButton
+                v-if="
+                  detail.entry.media_kind === 'book' &&
+                  (detail.entry.extension === 'txt' || detail.entry.extension === 'epub')
+                "
+                variant="tonal"
+                size="sm"
+                :icon="LuFileText"
+                @click="emit('openContentEditor', detail.entry)"
+              >
+                {{
+                  detail.entry.extension === 'txt'
+                    ? t('tool.inspector.txtConvertEpub')
+                    : t('tool.inspector.editContent')
+                }}
+              </MdButton>
+              <MdButton
+                v-else-if="detail.entry.media_kind === 'comic'"
+                variant="tonal"
+                size="sm"
+                :icon="LuImage"
+                @click="emit('openComicPages', detail.entry)"
+              >
+                {{ t('tool.inspector.comicPages') }}
+              </MdButton>
+              <MdButton
+                v-else-if="detail.entry.media_kind === 'music'"
+                variant="tonal"
+                size="sm"
+                :icon="LuMusic"
+                @click="emit('openMusicTools', detail.entry)"
+              >
+                {{ t('tool.inspector.musicToolbox') }}
+              </MdButton>
+              <MdButton
+                v-else-if="detail.entry.media_kind === 'video'"
+                variant="tonal"
+                size="sm"
+                :icon="LuFilm"
+                @click="emit('openVideoTools', detail.entry)"
+              >
+                {{ t('tool.inspector.videoToolbox') }}
+              </MdButton>
+              <MdButton
+                v-else
+                variant="tonal"
+                size="sm"
+                :icon="LuUpload"
+                :loading="uploadingArtwork"
+                @click="triggerArtworkUpload('cover')"
+              >
+                {{ t('tool.actions.uploadCover') }}
+              </MdButton>
 
-                  <template v-if="detail.metadata.kind === 'music'">
-                    <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{ formatDuration(detail.metadata.data.duration_secs, '—') }}
-                    </span>
-                    <span
-                      v-if="detail.metadata.data.bit_rate_kbps"
-                      class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-                    >
-                      {{ detail.metadata.data.bit_rate_kbps }} kbps
-                    </span>
-                  </template>
+              <MdMenu
+                placement="bottom-end"
+                :min-width="220"
+                :aria-label="t('tool.inspector.moreActions')"
+              >
+                <template #trigger="{ toggle, triggerAttrs }">
+                  <MdIconButton
+                    variant="tonal"
+                    size="sm"
+                    :icon="LuMoreVertical"
+                    :tooltip="t('tool.inspector.moreActions')"
+                    :aria-label="t('tool.inspector.moreActions')"
+                    v-bind="triggerAttrs"
+                    @click="toggle"
+                  />
+                </template>
 
-                  <template v-else-if="detail.metadata.kind === 'comic'">
-                    <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{ detail.metadata.data.page_count }} 页
-                    </span>
-                    <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{ detail.metadata.data.has_comic_info_xml ? '含 ComicInfo.xml' : '无 ComicInfo.xml' }}
-                    </span>
-                  </template>
-
-                  <template v-else-if="detail.metadata.kind === 'video'">
-                    <span
-                      v-if="detail.metadata.data.width && detail.metadata.data.height"
-                      class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-                    >
-                      {{ detail.metadata.data.width }}×{{ detail.metadata.data.height }}
-                    </span>
-                    <span
-                      v-if="detail.metadata.data.video_codec"
-                      class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] uppercase text-[var(--md-sys-color-on-surface-variant)]"
-                    >
-                      {{ detail.metadata.data.video_codec }}
-                    </span>
-                  </template>
-
-                  <template v-else-if="detail.metadata.kind === 'book'">
-                    <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{
-                        detail.metadata.data.format === 'epub'
-                          ? 'EPUB 内封'
-                          : `${detail.metadata.data.format.toUpperCase()} 旁路 .opf`
-                      }}
-                    </span>
-                  </template>
-                </div>
-
-                <!-- Video Stream Summary -->
-                <div
-                  v-if="detail.metadata.kind === 'video'"
-                  class="mt-2 space-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  <div v-if="detail.metadata.data.audio_streams.length > 0" class="truncate">
-                    音轨: {{
-                      detail.metadata.data.audio_streams
-                        .map((a) => `${a.codec.toUpperCase()}${a.language ? ` [${a.language}]` : ''}`)
-                        .join(' · ')
-                    }}
-                  </div>
-                  <div
-                    v-if="
-                      detail.metadata.data.subtitle_streams.length > 0 ||
-                      detail.metadata.data.sidecar_subtitles.length > 0
-                    "
-                    class="truncate"
-                  >
-                    字幕: 内封 {{ detail.metadata.data.subtitle_streams.length }} · 外挂
-                    {{ detail.metadata.data.sidecar_subtitles.length }}
-                  </div>
-                </div>
-              </div>
-
-              <!-- Quick Assist Chips -->
-              <div class="flex flex-wrap gap-1.5">
                 <template v-if="detail.entry.media_kind !== 'video'">
-                  <button
-                    type="button"
+                  <MdMenuItem
+                    :icon="LuUpload"
                     :disabled="uploadingArtwork"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="triggerArtworkUpload('cover')"
-                  >
-                    <LuUpload class="h-3 w-3" />
-                    <span>{{ detail.entry.media_kind === 'comic' ? '单话封面' : t('tool.actions.uploadCover') }}</span>
-                  </button>
-
-                  <button
-                    v-if="detail.entry.media_kind === 'comic' && detail.entry.rel_path.includes('/')"
-                    type="button"
-                    :disabled="uploadingArtwork"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="triggerArtworkUpload('series_cover')"
-                  >
-                    <LuImage class="h-3 w-3" />
-                    <span>系列封面</span>
-                  </button>
-
-                  <button
-                    v-if="detail.metadata.kind === 'book' && detail.metadata.data.writable"
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    :class="isBookFieldLocked('cover') ? 'md-chip-selected' : ''"
-                    @click="toggleBookFieldLock('cover')"
-                  >
-                    <LuLock v-if="isBookFieldLocked('cover')" class="h-3 w-3" />
-                    <LuUnlock v-else class="h-3 w-3" />
-                    <span>{{ isBookFieldLocked('cover') ? '封面已锁' : '锁封面' }}</span>
-                  </button>
-
-                  <button
-                    v-if="
-                      detail.entry.media_kind === 'book' &&
-                      (detail.entry.extension === 'txt' || detail.entry.extension === 'epub')
+                    :label="
+                      detail.entry.media_kind === 'comic'
+                        ? t('tool.inspector.chapterCover')
+                        : t('tool.actions.uploadCover')
                     "
-                    type="button"
-                    class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openContentEditor', detail.entry)"
-                  >
-                    <LuFileText class="h-3 w-3" />
-                    <span>{{ detail.entry.extension === 'txt' ? '正文与转 EPUB' : '编辑正文' }}</span>
-                  </button>
-
-                  <button
+                    @select="triggerArtworkUpload('cover')"
+                  />
+                  <MdMenuItem
+                    v-if="detail.entry.media_kind === 'comic' && detail.entry.rel_path.includes('/')"
+                    :icon="LuImage"
+                    :disabled="uploadingArtwork"
+                    :label="t('tool.inspector.seriesCover')"
+                    @select="triggerArtworkUpload('series_cover')"
+                  />
+                  <MdMenuItem
+                    v-if="detail.metadata.kind === 'book' && detail.metadata.data.writable"
+                    :icon="isBookFieldLocked('cover') ? LuUnlock : LuLock"
+                    :label="
+                      isBookFieldLocked('cover')
+                        ? t('tool.inspector.coverLocked')
+                        : t('tool.inspector.lockCover')
+                    "
+                    @select="toggleBookFieldLock('cover')"
+                  />
+                  <MdMenuItem
                     v-if="
                       detail.entry.media_kind === 'book' &&
                       (detail.entry.extension === 'txt' ||
                         detail.entry.extension === 'epub' ||
                         detail.entry.extension === 'pdf')
                     "
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    :class="
+                    :icon="LuPackageCheck"
+                    :label="
                       detail.entry.completeness.is_normalized
-                        ? '!border-[var(--md-sys-color-success)]/45 !bg-[var(--md-sys-color-success-container)] !text-[var(--md-sys-color-on-success-container)]'
-                        : ''
+                        ? t('tool.inspector.normalizedEpub')
+                        : t('tool.inspector.normalizeToEpub')
                     "
-                    :title="
-                      detail.entry.completeness.is_normalized
-                        ? '已是规范化 EPUB 3.0（点击可按新参数重新规范化）'
-                        : '转为规范化压缩 EPUB 3.0（默认保留源文件）'
-                    "
-                    @click="emit('openNormalizeEpub', detail.entry)"
-                  >
-                    <LuPackageCheck class="h-3 w-3" />
-                    <span>{{ detail.entry.completeness.is_normalized ? '已规范化 EPUB' : '转规范化 EPUB' }}</span>
-                  </button>
-
-                  <button
+                    @select="emit('openNormalizeEpub', detail.entry)"
+                  />
+                  <MdMenuItem
                     v-if="detail.entry.media_kind === 'book' && detail.entry.extension === 'epub'"
-                    type="button"
+                    :icon="LuWand2"
                     :disabled="polishingBook"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="handlePolishBook"
-                  >
-                    <LuRefreshCw v-if="polishingBook" class="h-3 w-3 animate-spin" />
-                    <LuWand2 v-else class="h-3 w-3" />
-                    <span>抛光</span>
-                  </button>
-
-                  <button
-                    v-if="detail.entry.media_kind === 'comic'"
-                    type="button"
-                    class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openComicPages', detail.entry)"
-                  >
-                    <LuImage class="h-3 w-3" />
-                    <span>页面管理</span>
-                  </button>
-
-                  <button
-                    v-if="detail.entry.media_kind === 'music'"
-                    type="button"
-                    class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openMusicTools', detail.entry)"
-                  >
-                    <LuMusic class="h-3 w-3" />
-                    <span>音频工具箱</span>
-                  </button>
+                    :label="t('tool.inspector.polishBook')"
+                    @select="handlePolishBook"
+                  />
                 </template>
-
                 <template v-else>
-                  <button
-                    type="button"
-                    class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openVideoTools', detail.entry)"
-                  >
-                    <LuFilm class="h-3 w-3" />
-                    <span>字幕与剧集工具</span>
-                  </button>
-                  <button
-                    type="button"
+                  <MdMenuItem
+                    :icon="LuImage"
                     :disabled="uploadingArtwork"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="triggerArtworkUpload('poster')"
-                  >
-                    <LuImage class="h-3 w-3" />
-                    <span>海报</span>
-                  </button>
-                  <button
-                    type="button"
+                    :label="t('tool.actions.uploadPoster')"
+                    @select="triggerArtworkUpload('poster')"
+                  />
+                  <MdMenuItem
+                    :icon="LuUpload"
                     :disabled="uploadingArtwork"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="triggerArtworkUpload('fanart')"
-                  >
-                    <LuUpload class="h-3 w-3" />
-                    <span>背景</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    :class="isVideoFieldLocked('poster') ? 'md-chip-selected' : ''"
-                    @click="toggleVideoFieldLock('poster')"
-                  >
-                    <LuLock v-if="isVideoFieldLocked('poster')" class="h-3 w-3" />
-                    <LuUnlock v-else class="h-3 w-3" />
-                    <span>{{ isVideoFieldLocked('poster') ? '已锁' : '锁海报' }}</span>
-                  </button>
+                    :label="t('tool.actions.uploadFanart')"
+                    @select="triggerArtworkUpload('fanart')"
+                  />
+                  <MdMenuItem
+                    :icon="isVideoFieldLocked('poster') ? LuUnlock : LuLock"
+                    :label="
+                      isVideoFieldLocked('poster')
+                        ? t('tool.inspector.posterLocked')
+                        : t('tool.inspector.lockPoster')
+                    "
+                    @select="toggleVideoFieldLock('poster')"
+                  />
                 </template>
 
-                <button
-                  type="button"
+                <MdMenuItem
+                  :icon="LuFileSignature"
                   :disabled="Boolean(detail.entry.completeness.is_organized)"
-                  class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px] disabled:cursor-not-allowed disabled:opacity-55"
-                  :title="
+                  :label="
                     detail.entry.completeness.is_organized
-                      ? '当前路径已符合默认归档模板，无需重复整理'
-                      : '按命名模板预览并归档移动此条目'
+                      ? t('tool.inspector.organized')
+                      : t('tool.inspector.organize')
                   "
-                  @click="emit('openRename', detail.entry)"
-                >
-                  <LuFileSignature class="h-3 w-3" />
-                  <span>{{ detail.entry.completeness.is_organized ? t('tool.inspector.organized') : t('tool.inspector.organize') }}</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="md-chip md-state !h-7 !rounded-full !border-[var(--md-sys-color-error)]/45 !px-2.5 !text-[11px] !text-[var(--md-sys-color-error)] hover:!bg-[var(--md-sys-color-error-container)]/40"
-                  title="删除此媒体条目及同名外挂文件"
-                  @click="emit('requestDelete', detail.entry)"
-                >
-                  <LuTrash2 class="h-3 w-3" />
-                  <span>删除</span>
-                </button>
-              </div>
+                  @select="emit('openRename', detail.entry)"
+                />
+                <MdMenuItem
+                  destructive
+                  :icon="LuTrash2"
+                  :label="t('tool.inspector.deleteEntry')"
+                  @select="emit('requestDelete', detail.entry)"
+                />
+              </MdMenu>
             </div>
           </div>
-
-          <div
-            v-if="errorMsg"
-            class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
-          >
-            {{ errorMsg }}
-          </div>
-
-          <!-- Domain Metadata Forms -->
-          <InspectorMusicForm
-            v-if="detail.metadata.kind === 'music'"
-            :form="musicForm"
-            :sidecar-lrc-filename="detail.metadata.data.sidecar_lrc_filename"
-            :file-key="`${detail.entry.root_id}:${detail.entry.rel_path}`"
-          />
-
-          <InspectorVideoForm
-            v-else-if="detail.metadata.kind === 'video'"
-            :form="videoForm"
-          />
-
-          <InspectorComicForm
-            v-else-if="detail.metadata.kind === 'comic'"
-            :form="comicForm"
-          />
-
-          <InspectorBookForm
-            v-else-if="detail.metadata.kind === 'book'"
-            :form="bookForm"
-            :book-format="detail.metadata.data.format"
-            :writable="detail.metadata.data.writable"
-            :is-epub="detail.entry.extension === 'epub'"
-            :has-cover="detail.metadata.data.has_cover"
-            :polishing-book="polishingBook"
-            @polish="handlePolishBook"
-          />
         </div>
 
-        <!-- Bottom Action Bar (Strict MD3 Button Hierarchy) -->
         <div
-          class="flex shrink-0 flex-wrap items-center justify-between gap-2 bg-[var(--md-sys-color-surface-container)]/75 px-4 py-3"
+          v-if="errorMsg"
+          role="alert"
+          class="text-body-small rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
         >
-          <span class="hidden text-[11px] text-[var(--md-sys-color-on-surface-variant)] sm:inline">
-            {{ t('tool.inspector.shortcutsHint') }}
-          </span>
+          {{ errorMsg }}
+        </div>
 
-          <div class="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              :disabled="!canSaveMetadata || saving"
-              class="md-btn md-btn-sm md-btn-text md-state"
-              :title="t('tool.inspector.saveAndArchiveTitle')"
-              @click="saveMetadata(true, false)"
-            >
-              <LuFileSignature class="h-3.5 w-3.5" />
-              <span>{{ t('tool.inspector.saveAndArchive') }}</span>
-            </button>
+        <InspectorMusicForm
+          v-if="detail.metadata.kind === 'music'"
+          :form="musicForm"
+          :sidecar-lrc-filename="detail.metadata.data.sidecar_lrc_filename"
+          :file-key="`${detail.entry.root_id}:${detail.entry.rel_path}`"
+        />
+        <InspectorVideoForm
+          v-else-if="detail.metadata.kind === 'video'"
+          :form="videoForm"
+        />
+        <InspectorComicForm
+          v-else-if="detail.metadata.kind === 'comic'"
+          :form="comicForm"
+        />
+        <InspectorBookForm
+          v-else-if="detail.metadata.kind === 'book'"
+          :form="bookForm"
+          :book-format="detail.metadata.data.format"
+          :writable="detail.metadata.data.writable"
+          :is-epub="detail.entry.extension === 'epub'"
+          :has-cover="detail.metadata.data.has_cover"
+          :polishing-book="polishingBook"
+          @polish="handlePolishBook"
+        />
+      </div>
 
-            <button
-              v-if="hasNext"
-              type="button"
-              :disabled="!canSaveMetadata || saving"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
-              @click="saveMetadata(false, true)"
-            >
-              <span>{{ t('tool.inspector.saveAndNext') }}</span>
-            </button>
+      <!-- Consolidated Bottom Save Bar: 1 Primary Save Button + Clean Secondary Option -->
+      <div
+        class="flex shrink-0 items-center justify-between gap-2 bg-surface-container/75 px-4 py-3"
+      >
+        <AppCheckbox
+          v-model="organizeAfterSave"
+          :disabled="!canSaveMetadata || saving"
+          :label="t('tool.inspector.saveAndArchive')"
+        />
 
-            <button
-              type="button"
-              :disabled="!canSaveMetadata || saving"
-              class="md-btn md-btn-sm md-btn-filled md-state"
-              @click="saveMetadata(false, false)"
-            >
-              <LuRefreshCw v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-              <LuSave v-else class="h-3.5 w-3.5" />
-              <span>{{ saving ? t('tool.actions.saving') : t('tool.actions.save') }}</span>
-            </button>
-          </div>
+        <div class="flex shrink-0 items-center gap-1.5">
+          <MdIconButton
+            v-if="hasNext"
+            variant="tonal"
+            size="sm"
+            :disabled="!canSaveMetadata || saving"
+            :icon="LuSkipForward"
+            :tooltip="t('tool.inspector.saveAndNext')"
+            :aria-label="t('tool.inspector.saveAndNext')"
+            @click="saveMetadata(organizeAfterSave, true)"
+          />
+
+          <MdButton
+            variant="filled"
+            size="sm"
+            :icon="LuSave"
+            :loading="saving"
+            :disabled="!canSaveMetadata"
+            :title="t('tool.inspector.shortcutsHint')"
+            @click="saveMetadata(organizeAfterSave, false)"
+          >
+            {{ saving ? t('tool.actions.saving') : t('tool.actions.save') }}
+          </MdButton>
         </div>
       </div>
-    </div>
+    </template>
   </aside>
 </template>

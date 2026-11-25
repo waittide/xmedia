@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { LuCheck, LuImage, LuLayers, LuZap } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
 import { resolveScraperCoverUrl } from '../../api'
 import type { ScrapeCandidate } from '../../types'
 
@@ -18,29 +20,27 @@ const emit = defineEmits<{
   'direct-apply': [candidate: ScrapeCandidate]
   'mark-cover-broken': [url: string | null | undefined]
 }>()
+
+const { t } = useI18n()
 </script>
 
 <template>
+  <!-- Non-Interactive Card Container + Sibling Preview Trigger & Action Buttons -->
   <div
-    role="button"
-    tabindex="0"
-    class="cursor-pointer rounded-2xl border p-2.5 transition outline-none focus-visible:outline-2 focus-visible:outline-secondary"
+    class="rounded-corner-lg p-2.5 transition"
     :class="
       selected
-        ? 'border-primary bg-primary-container/35 ring-1 ring-primary/40'
-        : 'border-outline-variant/55 bg-surface hover:border-primary/50'
+        ? 'bg-primary-container/35 ring-1 ring-primary'
+        : 'bg-surface hover:bg-surface-container-high/55'
     "
-    @click="emit('select-preview', candidate)"
-    @keydown.enter.self.prevent="emit('select-preview', candidate)"
-    @keydown.space.self.prevent="emit('select-preview', candidate)"
   >
-    <div class="flex items-start gap-2.5">
-      <button
-        type="button"
-        class="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-outline-variant/60 bg-surface-container-high"
-        title="点击在右侧预览此候选详情"
-        :aria-label="`预览 ${candidate.title}`"
-        @click.stop="emit('select-preview', candidate)"
+    <button
+      type="button"
+      class="md-state flex w-full cursor-pointer items-start gap-2.5 rounded-corner-md p-1 text-left outline-none focus-visible:outline-2 focus-visible:outline-secondary"
+      @click="emit('select-preview', candidate)"
+    >
+      <div
+        class="relative h-14 w-10 shrink-0 overflow-hidden rounded-corner-xs bg-surface-container-high"
       >
         <img
           v-if="coverUsable"
@@ -55,71 +55,63 @@ const emit = defineEmits<{
           v-else
           class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-on-surface-variant/75"
         >
-          <LuImage class="h-3.5 w-3.5" />
-          <span class="text-[10px]">无图</span>
+          <LuImage class="h-3.5 w-3.5" aria-hidden="true" />
+          <span class="text-label-small">{{ t('tool.workbench.merged.noImage') }}</span>
         </div>
-      </button>
+      </div>
 
       <div class="min-w-0 flex-1">
         <div class="flex items-start justify-between gap-1.5">
-          <button
-            type="button"
-            class="line-clamp-2 text-left text-xs font-bold text-[var(--md-sys-color-on-surface)] transition hover:text-[var(--md-sys-color-primary)]"
-            title="点击在右侧预览此条目详情"
-            @click.stop="emit('select-preview', candidate)"
-          >
+          <span class="text-title-small line-clamp-2 text-on-surface">
             {{ candidate.title }}
-          </button>
+          </span>
           <span
-            class="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold"
+            class="text-label-small shrink-0 rounded-corner-full px-2 py-0.5"
             :class="
               selected
-                ? 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
-                : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
+                ? 'bg-primary text-on-primary'
+                : 'bg-surface-container-high text-on-surface-variant'
             "
           >
             {{ candidate.provider_name }}
           </span>
         </div>
 
-        <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+        <div class="text-body-small mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-on-surface-variant">
           <span v-if="candidate.subtitle" class="truncate">{{ candidate.subtitle }}</span>
-          <span v-if="candidate.year" class="font-mono">{{ candidate.year }}</span>
-        </div>
-
-        <div class="mt-2 flex flex-wrap items-center gap-1.5">
-          <button
-            v-if="!isRepresentative"
-            type="button"
-            :disabled="loadingDetail"
-            class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-primary)]/45 bg-[var(--md-sys-color-surface)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-primary)] transition hover:bg-[var(--md-sys-color-primary-container)] disabled:opacity-50"
-            title="将此候选设为该数据源的聚合代表，并实时重算多源瀑布聚合结果"
-            @click.stop="emit('use-for-merge', candidate)"
-          >
-            <LuLayers class="h-3 w-3" />
-            <span>用于聚合</span>
-          </button>
-          <span
-            v-else-if="providerCandidateCount > 1"
-            class="inline-flex items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
-            title="当前已作为该数据源的聚合代表"
-          >
-            <LuCheck class="h-2.5 w-2.5" />
-            <span>聚合中</span>
-          </span>
-
-          <button
-            type="button"
-            :disabled="loadingDetail"
-            class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-low)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:border-[var(--md-sys-color-success)] hover:text-[var(--md-sys-color-success)] disabled:opacity-50"
-            title="直接写入磁盘（含封面），无需再点保存"
-            @click.stop="emit('direct-apply', candidate)"
-          >
-            <LuZap class="h-3 w-3" />
-            <span>直写</span>
-          </button>
+          <span v-if="candidate.year != null" class="font-mono">{{ candidate.year }}</span>
         </div>
       </div>
+    </button>
+
+    <div class="mt-1.5 flex flex-wrap items-center gap-1.5 pl-12">
+      <MdButton
+        v-if="!isRepresentative"
+        variant="tonal"
+        size="sm"
+        :disabled="loadingDetail"
+        :icon="LuLayers"
+        @click="emit('use-for-merge', candidate)"
+      >
+        {{ t('tool.workbench.merged.useForMerge') }}
+      </MdButton>
+      <span
+        v-else-if="providerCandidateCount > 1"
+        class="text-label-small inline-flex items-center gap-0.5 rounded-corner-full bg-primary-container px-2 py-1 text-on-primary-container"
+      >
+        <LuCheck class="h-3 w-3" aria-hidden="true" />
+        <span>{{ t('tool.workbench.merged.merging') }}</span>
+      </span>
+
+      <MdButton
+        variant="outlined"
+        size="sm"
+        :disabled="loadingDetail"
+        :icon="LuZap"
+        @click="emit('direct-apply', candidate)"
+      >
+        {{ t('tool.workbench.merged.directWrite') }}
+      </MdButton>
     </div>
   </div>
 </template>

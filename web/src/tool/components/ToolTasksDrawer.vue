@@ -19,6 +19,9 @@ import {
   LuSparkles,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSheet from '@/components/ui/MdSheet.vue'
@@ -93,9 +96,8 @@ watch(
 
 onBeforeUnmount(stopTickTimer)
 
-// Auto-expand active or newly created scrape tasks unless explicitly collapsed by user
 watch(
-  () => taskStore.persistentTasks.map((t) => `${t.id}:${t.status}`),
+  () => taskStore.persistentTasks.map((tk) => `${tk.id}:${tk.status}`),
   () => {
     const next = new Set(expandedTaskIds.value)
     let changed = false
@@ -119,24 +121,24 @@ watch(
 const filteredTasks = computed<ToolTaskEntry[]>(() => {
   const list = taskStore.persistentTasks
   if (statusFilter.value === 'active') {
-    return list.filter((t) => t.status === 'running' || t.status === 'queued')
+    return list.filter((tk) => tk.status === 'running' || tk.status === 'queued')
   }
   if (statusFilter.value === 'completed') {
-    return list.filter((t) => t.status === 'completed')
+    return list.filter((tk) => tk.status === 'completed')
   }
   if (statusFilter.value === 'failed') {
     return list.filter(
-      (t) =>
-        t.status === 'failed' ||
-        (t.failedCount ?? 0) > 0 ||
-        (t.unmatchedCount ?? 0) > 0,
+      (tk) =>
+        tk.status === 'failed' ||
+        (tk.failedCount ?? 0) > 0 ||
+        (tk.unmatchedCount ?? 0) > 0,
     )
   }
   return list
 })
 
 const hasCompleted = computed(() =>
-  taskStore.persistentTasks.some((t) => t.status === 'completed'),
+  taskStore.persistentTasks.some((tk) => tk.status === 'completed'),
 )
 
 function toggleExpand(id: string): void {
@@ -280,7 +282,7 @@ function reviewTaskUnmatched(task: ToolTaskEntry): void {
   emit('close')
   emit('reviewItems', {
     domain: task.domain ?? first.mediaKind,
-    items: targets.map((t) => ({ rootId: t.rootId, relPath: t.relPath })),
+    items: targets.map((item) => ({ rootId: item.rootId, relPath: item.relPath })),
     openCandidates: true,
   })
 }
@@ -292,7 +294,7 @@ function reviewTaskAllResults(task: ToolTaskEntry): void {
   emit('close')
   emit('reviewItems', {
     domain: task.domain ?? first.mediaKind,
-    items: targets.map((t) => ({ rootId: t.rootId, relPath: t.relPath })),
+    items: targets.map((item) => ({ rootId: item.rootId, relPath: item.relPath })),
     openCandidates: false,
   })
 }
@@ -358,15 +360,15 @@ function formatElapsed(task: ToolTaskEntry): string {
           />
         </div>
 
-        <button
+        <MdButton
           v-if="hasCompleted"
-          type="button"
-          class="md-btn md-btn-sm md-btn-outlined md-state"
+          variant="outlined"
+          size="sm"
+          :icon="LuTrash2"
           @click="taskStore.clearCompleted()"
         >
-          <LuTrash2 class="h-3.5 w-3.5" />
-          <span>{{ t('tool.tasks.clearCompleted') }}</span>
-        </button>
+          {{ t('tool.tasks.clearCompleted') }}
+        </MdButton>
       </div>
     </template>
 
@@ -374,422 +376,397 @@ function formatElapsed(task: ToolTaskEntry): string {
       <!-- Empty State -->
       <div
         v-if="filteredTasks.length === 0"
-        class="rounded-[24px] bg-[var(--md-sys-color-surface-container)] py-16 text-center"
+        class="rounded-corner-xl bg-surface-container py-16 text-center"
       >
-        <LuClock class="mx-auto mb-3 h-7 w-7 text-[var(--md-sys-color-on-surface-variant)]" />
-        <p class="text-sm font-semibold">{{ t('tool.tasks.emptyTitle') }}</p>
-        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+        <LuClock class="mx-auto mb-3 h-7 w-7 text-on-surface-variant" aria-hidden="true" />
+        <p class="text-title-small text-on-surface">{{ t('tool.tasks.emptyTitle') }}</p>
+        <p class="text-body-small mt-1 text-on-surface-variant">
           {{ t('tool.tasks.emptyDesc') }}
         </p>
       </div>
 
       <!-- MD3 Tonal Task Cards -->
       <div v-else class="space-y-3.5">
-      <div
-        v-for="task in filteredTasks"
-        :key="task.id"
-        class="md-card-filled overflow-hidden"
-      >
-        <div class="space-y-3.5 p-4 sm:p-5">
-          <!-- Top Row: Icon + Title + Badges + Actions -->
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div class="flex min-w-0 items-start gap-3">
-              <div
-                class="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl"
-                :class="
-                  task.status === 'running' || task.status === 'queued'
-                    ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-                    : task.status === 'failed'
-                      ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-                      : 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                "
-              >
-                <LuLoader2 v-if="task.status === 'running'" class="h-4 w-4 animate-spin" />
-                <LuClock v-else-if="task.status === 'queued'" class="h-4 w-4" />
-                <LuSparkles v-else-if="task.kind === 'scrape'" class="h-4 w-4" />
-                <LuFileSignature v-else-if="task.kind === 'rename'" class="h-4 w-4" />
-                <LuFolderSearch v-else class="h-4 w-4" />
-              </div>
-
-              <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2">
-                  <h3 class="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
-                    {{ task.title }}
-                  </h3>
-                  <span
-                    class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold"
-                    :class="
-                      task.status === 'running'
-                        ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-                        : task.status === 'queued'
-                          ? 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
-                          : task.status === 'failed'
-                            ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-                            : 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                    "
-                  >
-                    {{
-                      task.status === 'running'
-                        ? t('tool.tasks.statusRunning')
-                        : task.status === 'queued'
-                          ? t('tool.tasks.statusQueued')
-                          : task.status === 'failed'
-                            ? t('tool.tasks.statusFailed')
-                            : t('tool.tasks.filterCompleted')
-                    }}
-                  </span>
-                  <span
-                    v-if="task.strategyLabel"
-                    class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-                  >
-                    {{ task.strategyLabel }}
-                  </span>
-                  <span
-                    v-if="task.concurrency && task.concurrency > 1"
-                    class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-                  >
-                    {{ t('tool.tasks.concurrency', { n: task.concurrency }) }}
-                  </span>
-                  <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                    {{ formatTime(task.startedAt) }} · {{ t('tool.tasks.elapsed') }} {{ formatElapsed(task) }}
-                  </span>
-                </div>
-
-                <!-- Structured Live Progress & Quota Counters -->
-                <div
-                  v-if="task.subItems && task.subItems.length > 0"
-                  class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]"
-                >
-                  <span
-                    class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2.5 py-0.5 font-mono font-semibold text-[var(--md-sys-color-on-surface)]"
-                  >
-                    {{ task.processed }} / {{ task.total ?? task.subItems.length }}
-                    <template v-if="progressPct(task) !== null">({{ progressPct(task) }}%)</template>
-                  </span>
-                  <span
-                    v-if="getTaskSubView(task.id).counts.matched > 0"
-                    class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-success-container)]"
-                  >
-                    <LuCheckCircle2 class="h-3 w-3" />
-                    <span>{{ t('tool.tasks.statusMatched') }} {{ getTaskSubView(task.id).counts.matched }}</span>
-                  </span>
-                  <span
-                    v-if="getTaskSubView(task.id).counts.running > 0"
-                    class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-primary-container)]"
-                  >
-                    <LuLoader2 class="h-3 w-3 animate-spin" />
-                    <span>{{ t('tool.tasks.filterActive') }} {{ getTaskSubView(task.id).counts.running }}</span>
-                  </span>
-                  <span
-                    v-if="getTaskSubView(task.id).counts.queued > 0"
-                    class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface-variant)]"
-                  >
-                    {{ t('tool.tasks.statusQueued') }} {{ getTaskSubView(task.id).counts.queued }}
-                  </span>
-                  <span
-                    v-if="getTaskSubView(task.id).counts.unmatched > 0"
-                    class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-warning-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-warning-container)]"
-                  >
-                    <LuAlertCircle class="h-3 w-3" />
-                    <span>{{ t('tool.tasks.statusUnmatched') }} {{ getTaskSubView(task.id).counts.unmatched }}</span>
-                  </span>
-                  <span
-                    v-if="getTaskSubView(task.id).counts.failed > 0"
-                    class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-error-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-error-container)]"
-                  >
-                    <LuAlertCircle class="h-3 w-3" />
-                    <span>{{ t('tool.tasks.statusFailed') }} {{ getTaskSubView(task.id).counts.failed }}</span>
-                  </span>
-                </div>
-
-                <p
-                  v-else
-                  class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  <template v-if="task.status === 'running' && task.total">
-                    {{ task.processed.toLocaleString() }} / {{ task.total.toLocaleString() }} ·
-                    {{ task.detail }}
-                  </template>
-                  <template v-else>
-                    {{ task.detail }}
-                  </template>
-                </p>
-
-                <!-- Currently Processing Active Lanes Banner -->
-                <div
-                  v-if="task.status === 'running' && getTaskSubView(task.id).runningItems.length > 0"
-                  class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--md-sys-color-primary)]"
-                >
-                  <span class="font-semibold">{{ t('tool.tasks.runningNow') }}:</span>
-                  <span
-                    v-for="rItem in getTaskSubView(task.id).runningItems"
-                    :key="rItem.relPath"
-                    class="inline-flex max-w-[18rem] items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)]/70 px-2.5 py-0.5 text-[var(--md-sys-color-on-primary-container)]"
-                  >
-                    <LuLoader2 class="h-3 w-3 shrink-0 animate-spin" />
-                    <span class="truncate">{{ rItem.fileName }}</span>
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Task-Level Actions -->
-            <div class="flex flex-wrap shrink-0 items-center gap-1.5">
-              <button
-                v-if="task.cancellable && (task.status === 'running' || task.status === 'queued')"
-                type="button"
-                class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]"
-                @click="taskStore.cancelTask(task.id)"
-              >
-                <LuBan class="h-3.5 w-3.5" />
-                <span>{{ t('tool.tasks.cancel') }}</span>
-              </button>
-
-              <!-- Review & Edit ALL completed results (Works even when 100% matched!) -->
-              <button
-                v-if="task.subItems && task.processed > 0"
-                type="button"
-                class="md-btn md-btn-sm md-btn-tonal md-state"
-                @click="reviewTaskAllResults(task)"
-              >
-                <LuSlidersHorizontal class="h-3.5 w-3.5" />
-                <span>
-                  {{ t('tool.tasks.reviewAllResults', { count: task.processed }) }}
-                </span>
-              </button>
-
-              <button
-                v-if="hasRetryableSubItems(task)"
-                type="button"
-                class="md-btn md-btn-sm md-btn-filled md-state"
-                @click="reviewTaskUnmatched(task)"
-              >
-                <LuColumns3 class="h-3.5 w-3.5" />
-                <span>{{ t('tool.tasks.reviewUnmatched') }}</span>
-              </button>
-
-              <button
-                v-if="hasRetryableSubItems(task)"
-                type="button"
-                class="md-btn md-btn-sm md-btn-outlined md-state"
-                @click="taskStore.retryTaskFailedOrUnmatched(task.id)"
-              >
-                <LuRotateCcw class="h-3.5 w-3.5" />
-                <span>{{ t('tool.tasks.retryUnfinished') }}</span>
-              </button>
-
-              <button
-                v-if="task.subItems && task.subItems.length > 0"
-                type="button"
-                class="md-btn md-btn-sm md-btn-outlined md-state"
-                @click="toggleExpand(task.id)"
-              >
-                <span>{{ t('tool.tasks.details') }} ({{ task.subItems.length }})</span>
-                <LuChevronUp v-if="expandedTaskIds.has(task.id)" class="h-3.5 w-3.5" />
-                <LuChevronDown v-else class="h-3.5 w-3.5" />
-              </button>
-
-              <button
-                v-if="task.status !== 'running' && task.status !== 'queued'"
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-error)]"
-                :title="t('tool.tasks.removeRecord')"
-                @click="taskStore.removeTask(task.id)"
-              >
-                <LuTrash2 class="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-
-          <!-- Progress Bar -->
-          <MdLinearProgress
-            :value="progressPct(task)"
-            :indeterminate="(task.status === 'running' || task.status === 'queued') && progressPct(task) === null"
-            :tone="
-              task.status === 'failed'
-                ? 'error'
-                : task.status === 'completed'
-                  ? 'success'
-                  : 'primary'
-            "
-            :aria-label="task.title"
-          />
-        </div>
-
-        <!-- Expandable Sub-Items Panel with Status Filter & Per-Item Edit Controls -->
         <div
-          v-if="task.subItems && expandedTaskIds.has(task.id)"
-          class="border-t border-[var(--md-sys-color-outline-variant)]/40 bg-[var(--md-sys-color-surface-container-low)]"
+          v-for="task in filteredTasks"
+          :key="task.id"
+          class="md-card-filled overflow-hidden"
         >
-          <!-- Sub-item Filter Strip -->
-          <div
-            class="flex flex-wrap items-center gap-1.5 border-b border-[var(--md-sys-color-outline-variant)]/30 px-4 py-2.5 sm:px-5"
-          >
-            <button
-              v-for="pill in getTaskSubView(task.id).filterPills"
-              :key="pill.id"
-              type="button"
-              class="md-state rounded-full px-2.5 py-1 text-[11px] font-medium transition"
-              :class="
-                getSubFilter(task.id) === pill.id
-                  ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                  : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-              "
-              @click="setSubFilter(task.id, pill.id)"
-            >
-              {{ pill.label }}
-            </button>
-          </div>
-
-          <div
-            v-if="getTaskSubView(task.id).filteredItems.length === 0"
-            class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            {{ t('tool.tasks.noSubItemsInFilter') }}
-          </div>
-
-          <div
-            v-else
-            class="max-h-96 divide-y divide-[var(--md-sys-color-outline-variant)]/30 overflow-y-auto"
-          >
-            <div
-              v-for="sub in getTaskSubView(task.id).filteredItems"
-              :key="`${sub.rootId}:${sub.relPath}`"
-              class="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-xs transition hover:bg-[var(--md-sys-color-surface-container)] sm:px-5"
-            >
-              <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-center gap-2">
-                  <p class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">
-                    {{ sub.matchedTitle || sub.fileName }}
-                  </p>
-                  <span
-                    v-if="sub.matchedSubtitle"
-                    class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-                  >
-                    · {{ sub.matchedSubtitle }}
-                  </span>
-                </div>
-                <p class="mt-0.5 truncate font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                  {{ sub.relPath }}
-                </p>
-                <!-- Scraped Completeness Mini Badges -->
+          <div class="space-y-3.5 p-4 sm:p-5">
+            <!-- Top Row: Icon + Title + Badges + Actions -->
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="flex min-w-0 items-start gap-3">
                 <div
-                  v-if="sub.status === 'matched' || sub.status === 'unmatched'"
-                  class="mt-1 flex flex-wrap items-center gap-1 text-[10px]"
+                  class="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-lg"
+                  :class="
+                    task.status === 'running' || task.status === 'queued'
+                      ? 'bg-primary-container text-on-primary-container'
+                      : task.status === 'failed'
+                        ? 'bg-error-container text-on-error-container'
+                        : 'bg-success-container text-on-success-container'
+                  "
                 >
-                  <span
-                    v-if="sub.hasCover !== undefined"
-                    class="rounded-full px-1.5 py-0.25"
-                    :class="
-                      sub.hasCover
-                        ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                        : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
-                    "
+                  <LuLoader2 v-if="task.status === 'running'" class="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <LuClock v-else-if="task.status === 'queued'" class="h-4 w-4" aria-hidden="true" />
+                  <LuSparkles v-else-if="task.kind === 'scrape'" class="h-4 w-4" aria-hidden="true" />
+                  <LuFileSignature v-else-if="task.kind === 'rename'" class="h-4 w-4" aria-hidden="true" />
+                  <LuFolderSearch v-else class="h-4 w-4" aria-hidden="true" />
+                </div>
+
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="text-title-small text-on-surface">
+                      {{ task.title }}
+                    </h3>
+                    <span
+                      class="text-label-small rounded-corner-full px-2.5 py-0.5"
+                      :class="
+                        task.status === 'running'
+                          ? 'bg-primary-container text-on-primary-container'
+                          : task.status === 'queued'
+                            ? 'bg-surface-container-highest text-on-surface-variant'
+                            : task.status === 'failed'
+                              ? 'bg-error-container text-on-error-container'
+                              : 'bg-success-container text-on-success-container'
+                      "
+                    >
+                      {{
+                        task.status === 'running'
+                          ? t('tool.tasks.statusRunning')
+                          : task.status === 'queued'
+                            ? t('tool.tasks.statusQueued')
+                            : task.status === 'failed'
+                              ? t('tool.tasks.statusFailed')
+                              : t('tool.tasks.filterCompleted')
+                      }}
+                    </span>
+                    <span
+                      v-if="task.strategyLabel"
+                      class="text-label-small rounded-corner-full bg-surface-container-highest px-2 py-0.5 text-on-surface-variant"
+                    >
+                      {{ task.strategyLabel }}
+                    </span>
+                    <span
+                      v-if="task.concurrency && task.concurrency > 1"
+                      class="text-label-small rounded-corner-full bg-surface-container-highest px-2 py-0.5 font-mono text-on-surface-variant"
+                    >
+                      {{ t('tool.tasks.concurrency', { n: task.concurrency }) }}
+                    </span>
+                    <span class="text-label-small font-mono text-on-surface-variant">
+                      {{ formatTime(task.startedAt) }} · {{ t('tool.tasks.elapsed') }} {{ formatElapsed(task) }}
+                    </span>
+                  </div>
+
+                  <!-- Structured Live Progress & Quota Counters -->
+                  <div
+                    v-if="task.subItems && task.subItems.length > 0"
+                    class="text-label-small mt-2 flex flex-wrap items-center gap-1.5"
                   >
-                    {{ sub.hasCover ? t('tool.tasks.badgeHasCover') : t('tool.tasks.badgeNoCover') }}
-                  </span>
-                  <span
-                    v-if="sub.hasSummary !== undefined"
-                    class="rounded-full px-1.5 py-0.25"
-                    :class="
-                      sub.hasSummary
-                        ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                        : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
-                    "
+                    <span
+                      class="rounded-corner-full bg-surface-container-highest px-2.5 py-0.5 font-mono text-on-surface"
+                    >
+                      {{ task.processed }} / {{ task.total ?? task.subItems.length }}
+                      <template v-if="progressPct(task) !== null">({{ progressPct(task) }}%)</template>
+                    </span>
+                    <span
+                      v-if="getTaskSubView(task.id).counts.matched > 0"
+                      class="inline-flex items-center gap-1 rounded-corner-full bg-success-container px-2.5 py-0.5 text-on-success-container"
+                    >
+                      <LuCheckCircle2 class="h-3 w-3" aria-hidden="true" />
+                      <span>{{ t('tool.tasks.statusMatched') }} {{ getTaskSubView(task.id).counts.matched }}</span>
+                    </span>
+                    <span
+                      v-if="getTaskSubView(task.id).counts.running > 0"
+                      class="inline-flex items-center gap-1 rounded-corner-full bg-primary-container px-2.5 py-0.5 text-on-primary-container"
+                    >
+                      <LuLoader2 class="h-3 w-3 animate-spin" aria-hidden="true" />
+                      <span>{{ t('tool.tasks.filterActive') }} {{ getTaskSubView(task.id).counts.running }}</span>
+                    </span>
+                    <span
+                      v-if="getTaskSubView(task.id).counts.queued > 0"
+                      class="rounded-corner-full bg-surface-container-highest px-2.5 py-0.5 text-on-surface-variant"
+                    >
+                      {{ t('tool.tasks.statusQueued') }} {{ getTaskSubView(task.id).counts.queued }}
+                    </span>
+                    <span
+                      v-if="getTaskSubView(task.id).counts.unmatched > 0"
+                      class="inline-flex items-center gap-1 rounded-corner-full bg-warning-container px-2.5 py-0.5 text-on-warning-container"
+                    >
+                      <LuAlertCircle class="h-3 w-3" aria-hidden="true" />
+                      <span>{{ t('tool.tasks.statusUnmatched') }} {{ getTaskSubView(task.id).counts.unmatched }}</span>
+                    </span>
+                    <span
+                      v-if="getTaskSubView(task.id).counts.failed > 0"
+                      class="inline-flex items-center gap-1 rounded-corner-full bg-error-container px-2.5 py-0.5 text-on-error-container"
+                    >
+                      <LuAlertCircle class="h-3 w-3" aria-hidden="true" />
+                      <span>{{ t('tool.tasks.statusFailed') }} {{ getTaskSubView(task.id).counts.failed }}</span>
+                    </span>
+                  </div>
+
+                  <p v-else class="text-body-small mt-1 text-on-surface-variant">
+                    <template v-if="task.status === 'running' && task.total">
+                      {{ task.processed.toLocaleString() }} / {{ task.total.toLocaleString() }} ·
+                      {{ task.detail }}
+                    </template>
+                    <template v-else>
+                      {{ task.detail }}
+                    </template>
+                  </p>
+
+                  <!-- Currently Processing Active Lanes Banner -->
+                  <div
+                    v-if="task.status === 'running' && getTaskSubView(task.id).runningItems.length > 0"
+                    class="text-label-small mt-2 flex flex-wrap items-center gap-1.5 text-primary"
                   >
-                    {{ sub.hasSummary ? t('tool.tasks.badgeHasSummary') : t('tool.tasks.badgeNoSummary') }}
-                  </span>
-                  <span
-                    v-if="sub.hasTags !== undefined"
-                    class="rounded-full px-1.5 py-0.25"
-                    :class="
-                      sub.hasTags
-                        ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                        : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
-                    "
-                  >
-                    {{ sub.hasTags ? t('tool.tasks.badgeHasTags') : t('tool.tasks.badgeNoTags') }}
-                  </span>
+                    <span>{{ t('tool.tasks.runningNow') }}:</span>
+                    <span
+                      v-for="rItem in getTaskSubView(task.id).runningItems"
+                      :key="rItem.relPath"
+                      class="inline-flex max-w-[18rem] items-center gap-1 rounded-corner-full bg-primary-container/70 px-2.5 py-0.5 text-on-primary-container"
+                    >
+                      <LuLoader2 class="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+                      <span class="truncate">{{ rItem.fileName }}</span>
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <div class="flex shrink-0 flex-wrap items-center gap-2">
-                <span
-                  v-if="typeof sub.confidence === 'number'"
-                  class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
-                  :title="t('tool.tasks.confidenceTooltip')"
+              <!-- Task-Level Actions -->
+              <div class="flex shrink-0 flex-wrap items-center gap-1.5">
+                <MdButton
+                  v-if="task.cancellable && (task.status === 'running' || task.status === 'queued')"
+                  variant="tonal"
+                  tone="error"
+                  size="sm"
+                  :icon="LuBan"
+                  @click="taskStore.cancelTask(task.id)"
                 >
-                  {{ sub.confidence }}%
-                </span>
+                  {{ t('tool.tasks.cancel') }}
+                </MdButton>
 
-                <span
-                  v-if="sub.status === 'matched'"
-                  class="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--md-sys-color-success)]"
+                <MdButton
+                  v-if="task.subItems && task.processed > 0"
+                  variant="tonal"
+                  size="sm"
+                  :icon="LuSlidersHorizontal"
+                  @click="reviewTaskAllResults(task)"
                 >
-                  <LuCheckCircle2 class="h-3.5 w-3.5" />
-                  <span>{{ t('tool.tasks.statusMatched') }}</span>
-                </span>
-                <span
-                  v-else-if="sub.status === 'unmatched'"
-                  class="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--md-sys-color-warning)]"
-                >
-                  <LuAlertCircle class="h-3.5 w-3.5" />
-                  <span>{{ t('tool.tasks.statusUnmatched') }}</span>
-                </span>
-                <span
-                  v-else-if="sub.status === 'running'"
-                  class="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--md-sys-color-primary)]"
-                >
-                  <LuLoader2 class="h-3.5 w-3.5 animate-spin" />
-                  <span>{{ t('tool.tasks.statusRunning') }}</span>
-                </span>
-                <span
-                  v-else-if="sub.status === 'failed'"
-                  class="inline-flex max-w-[14rem] items-center gap-1 truncate text-[11px] font-medium text-[var(--md-sys-color-error)]"
-                  :title="sub.error"
-                >
-                  <LuAlertCircle class="h-3.5 w-3.5 shrink-0" />
-                  <span class="truncate">{{ sub.error || t('tool.tasks.statusFailed') }}</span>
-                </span>
-                <span
-                  v-else-if="sub.status === 'cancelled'"
-                  class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  {{ t('tool.tasks.statusCancelled') }}
-                </span>
-                <span v-else class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                  {{ t('tool.tasks.statusQueued') }}
-                </span>
+                  {{ t('tool.tasks.reviewAllResults', { count: task.processed }) }}
+                </MdButton>
 
-                <!-- Direct Post-Task Edit Controls for Each Item -->
-                <div
-                  v-if="sub.status !== 'running' && sub.status !== 'queued'"
-                  class="ml-1 flex items-center gap-1"
+                <MdButton
+                  v-if="hasRetryableSubItems(task)"
+                  variant="filled"
+                  size="sm"
+                  :icon="LuColumns3"
+                  @click="reviewTaskUnmatched(task)"
                 >
-                  <button
-                    type="button"
-                    class="md-btn md-btn-sm md-btn-tonal md-state !h-7 !px-2.5 !text-[11px]"
-                    @click="inspectSubItem(sub)"
+                  {{ t('tool.tasks.reviewUnmatched') }}
+                </MdButton>
+
+                <MdButton
+                  v-if="hasRetryableSubItems(task)"
+                  variant="outlined"
+                  size="sm"
+                  :icon="LuRotateCcw"
+                  @click="taskStore.retryTaskFailedOrUnmatched(task.id)"
+                >
+                  {{ t('tool.tasks.retryUnfinished') }}
+                </MdButton>
+
+                <MdButton
+                  v-if="task.subItems && task.subItems.length > 0"
+                  variant="outlined"
+                  size="sm"
+                  @click="toggleExpand(task.id)"
+                >
+                  <span>{{ t('tool.tasks.details') }} ({{ task.subItems.length }})</span>
+                  <LuChevronUp v-if="expandedTaskIds.has(task.id)" class="h-3.5 w-3.5" aria-hidden="true" />
+                  <LuChevronDown v-else class="h-3.5 w-3.5" aria-hidden="true" />
+                </MdButton>
+
+                <MdIconButton
+                  v-if="task.status !== 'running' && task.status !== 'queued'"
+                  size="sm"
+                  :icon="LuTrash2"
+                  :tooltip="t('tool.tasks.removeRecord')"
+                  :aria-label="t('tool.tasks.removeRecord')"
+                  @click="taskStore.removeTask(task.id)"
+                />
+              </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <MdLinearProgress
+              :value="progressPct(task)"
+              :indeterminate="(task.status === 'running' || task.status === 'queued') && progressPct(task) === null"
+              :tone="
+                task.status === 'failed'
+                  ? 'error'
+                  : task.status === 'completed'
+                    ? 'success'
+                    : 'primary'
+              "
+              :aria-label="task.title"
+            />
+          </div>
+
+          <!-- Expandable Sub-Items Panel -->
+          <div
+            v-if="task.subItems && expandedTaskIds.has(task.id)"
+            class="border-t border-outline-variant/40 bg-surface-container-low"
+          >
+            <!-- Sub-item Filter Strip -->
+            <div
+              class="flex flex-wrap items-center gap-1.5 border-b border-outline-variant/30 px-4 py-2.5 sm:px-5"
+            >
+              <MdChip
+                v-for="pill in getTaskSubView(task.id).filterPills"
+                :key="pill.id"
+                variant="filter"
+                :label="pill.label"
+                :selected="getSubFilter(task.id) === pill.id"
+                @click="setSubFilter(task.id, pill.id)"
+              />
+            </div>
+
+            <div
+              v-if="getTaskSubView(task.id).filteredItems.length === 0"
+              class="text-body-small py-6 text-center text-on-surface-variant"
+            >
+              {{ t('tool.tasks.noSubItemsInFilter') }}
+            </div>
+
+            <div
+              v-else
+              class="max-h-96 divide-y divide-outline-variant/30 overflow-y-auto"
+            >
+              <div
+                v-for="sub in getTaskSubView(task.id).filteredItems"
+                :key="`${sub.rootId}:${sub.relPath}`"
+                class="text-body-small flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 transition hover:bg-surface-container sm:px-5"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <p class="text-title-small truncate text-on-surface">
+                      {{ sub.matchedTitle || sub.fileName }}
+                    </p>
+                    <span
+                      v-if="sub.matchedSubtitle"
+                      class="text-body-small truncate text-on-surface-variant"
+                    >
+                      · {{ sub.matchedSubtitle }}
+                    </span>
+                  </div>
+                  <p class="text-label-small mt-0.5 truncate font-mono text-on-surface-variant">
+                    {{ sub.relPath }}
+                  </p>
+                  <!-- Missing-Only Anomaly Badges -->
+                  <div
+                    v-if="
+                      (sub.status === 'matched' || sub.status === 'unmatched') &&
+                      (sub.hasCover === false || sub.hasSummary === false || sub.hasTags === false)
+                    "
+                    class="text-label-small mt-1 flex flex-wrap items-center gap-1"
                   >
-                    <LuPencil class="h-3 w-3" />
-                    <span>{{ t('tool.tasks.editMetadata') }}</span>
-                  </button>
+                    <span
+                      v-if="sub.hasCover === false"
+                      class="rounded-corner-full bg-warning-container px-2 py-0.5 text-on-warning-container"
+                    >
+                      {{ t('tool.tasks.badgeNoCover') }}
+                    </span>
+                    <span
+                      v-if="sub.hasSummary === false"
+                      class="rounded-corner-full bg-surface-container-highest px-2 py-0.5 text-on-surface-variant"
+                    >
+                      {{ t('tool.tasks.badgeNoSummary') }}
+                    </span>
+                    <span
+                      v-if="sub.hasTags === false"
+                      class="rounded-corner-full bg-surface-container-highest px-2 py-0.5 text-on-surface-variant"
+                    >
+                      {{ t('tool.tasks.badgeNoTags') }}
+                    </span>
+                  </div>
+                </div>
 
-                  <button
-                    v-if="sub.mediaKind === 'book'"
-                    type="button"
-                    class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-                    @click="openSubItemBookEditor(sub)"
+                <div class="flex shrink-0 flex-wrap items-center gap-2">
+                  <span
+                    v-if="typeof sub.confidence === 'number'"
+                    class="text-label-small rounded-corner-full bg-surface-container-highest px-2 py-0.5 font-mono text-on-surface-variant"
+                    :title="t('tool.tasks.confidenceTooltip')"
                   >
-                    <LuBookOpen class="h-3 w-3" />
-                    <span>{{ t('tool.tasks.editBookContent') }}</span>
-                  </button>
+                    {{ sub.confidence }}%
+                  </span>
+
+                  <span
+                    v-if="sub.status === 'matched'"
+                    class="text-label-medium inline-flex items-center gap-1 text-success"
+                  >
+                    <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{{ t('tool.tasks.statusMatched') }}</span>
+                  </span>
+                  <span
+                    v-else-if="sub.status === 'unmatched'"
+                    class="text-label-medium inline-flex items-center gap-1 text-warning"
+                  >
+                    <LuAlertCircle class="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{{ t('tool.tasks.statusUnmatched') }}</span>
+                  </span>
+                  <span
+                    v-else-if="sub.status === 'running'"
+                    class="text-label-medium inline-flex items-center gap-1 text-primary"
+                  >
+                    <LuLoader2 class="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                    <span>{{ t('tool.tasks.statusRunning') }}</span>
+                  </span>
+                  <span
+                    v-else-if="sub.status === 'failed'"
+                    class="text-label-medium inline-flex max-w-[14rem] items-center gap-1 truncate text-error"
+                    :title="sub.error"
+                  >
+                    <LuAlertCircle class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span class="truncate">{{ sub.error || t('tool.tasks.statusFailed') }}</span>
+                  </span>
+                  <span
+                    v-else-if="sub.status === 'cancelled'"
+                    class="text-label-medium text-on-surface-variant"
+                  >
+                    {{ t('tool.tasks.statusCancelled') }}
+                  </span>
+                  <span v-else class="text-label-medium text-on-surface-variant">
+                    {{ t('tool.tasks.statusQueued') }}
+                  </span>
+
+                  <div
+                    v-if="sub.status !== 'running' && sub.status !== 'queued'"
+                    class="ml-1 flex items-center gap-1"
+                  >
+                    <MdButton
+                      variant="tonal"
+                      size="sm"
+                      :icon="LuPencil"
+                      @click="inspectSubItem(sub)"
+                    >
+                      {{ t('tool.tasks.editMetadata') }}
+                    </MdButton>
+
+                    <MdButton
+                      v-if="sub.mediaKind === 'book'"
+                      variant="outlined"
+                      size="sm"
+                      :icon="LuBookOpen"
+                      @click="openSubItemBookEditor(sub)"
+                    >
+                      {{ t('tool.tasks.editBookContent') }}
+                    </MdButton>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
       </div>
     </div>
   </MdSheet>

@@ -2,10 +2,8 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuBookOpen, LuClapperboard, LuDisc3, LuLayers } from 'vue-icons-plus/lu'
-import { useEscapeStack } from '@/composables/useEscapeStack'
-import { useFocusTrap } from '@/composables/useFocusTrap'
+import MdButton from '@/components/ui/MdButton.vue'
 import type { MediaKind } from '@/types/api'
-import { stripAriaModalOnLeave } from '@/utils/dom'
 import { entryCompositeKey } from '../completeness'
 import { useToolInspectorStore } from '../stores/inspector'
 import { useToolScrapeStore } from '../stores/scrape'
@@ -41,7 +39,6 @@ const scrapeStore = useToolScrapeStore()
 const taskStore = useToolTaskStore()
 
 const topHeaderRef = ref<InstanceType<typeof ToolTopHeader> | null>(null)
-const inspectorOverlayRef = ref<HTMLElement | null>(null)
 const tasksDrawerMounted = ref(false)
 watch(
   () => workspaceStore.tasksDrawerOpen,
@@ -84,25 +81,10 @@ useWorkspaceShortcuts({
   focusSearch: () => topHeaderRef.value?.focusSearch(),
 })
 
-const escapeStack = useEscapeStack()
 const inspectorVisible = computed(
   () =>
     (workspaceStore.activeNav === 'home' || workspaceStore.activeNav === 'items') &&
     Boolean(inspectorStore.activeDetail || inspectorStore.loadingInspector),
-)
-const inspectorModalActive = computed(() => !isLargeDesktop.value && inspectorVisible.value)
-
-async function closeInspectorOverlay(): Promise<void> {
-  if (!(await inspectorStore.confirmActiveEditorClean())) return
-  workspaceStore.closeInspectorAndSync()
-}
-
-useFocusTrap(inspectorOverlayRef, () => inspectorModalActive.value)
-escapeStack.register(
-  () => inspectorModalActive.value,
-  () => {
-    void closeInspectorOverlay()
-  },
 )
 
 let unbindTaskListeners: (() => void) | null = null
@@ -230,14 +212,13 @@ onBeforeUnmount(() => {
               <p class="max-w-md text-body-medium font-medium text-error">
                 {{ workspaceStore.initialLoadError }}
               </p>
-              <button
-                type="button"
-                :disabled="workspaceStore.loadingInitial"
-                class="md-btn md-btn-filled md-state"
+              <MdButton
+                variant="filled"
+                :loading="workspaceStore.loadingInitial"
                 @click="workspaceStore.loadInitial()"
               >
                 {{ t('tool.workspace.retryLoadConfig') }}
-              </button>
+              </MdButton>
             </div>
 
             <ToolSettingsView
@@ -272,60 +253,39 @@ onBeforeUnmount(() => {
             <ToolItemsBrowser v-else />
           </div>
 
-          <Transition name="md-fade">
-            <div
-              v-if="inspectorModalActive"
-              class="fixed inset-0 z-[var(--z-sheet)] bg-scrim/32 lg:hidden"
-              aria-hidden="true"
-              @mousedown="closeInspectorOverlay"
-            />
-          </Transition>
-
-          <Transition name="md-sheet-right" @before-leave="stripAriaModalOnLeave">
-            <div
-              v-if="inspectorVisible"
-              ref="inspectorOverlayRef"
-              :role="inspectorModalActive ? 'dialog' : undefined"
-              :aria-modal="inspectorModalActive ? 'true' : undefined"
-              :tabindex="inspectorModalActive ? -1 : undefined"
-              class="fixed inset-y-0 right-0 z-[var(--z-sheet)] flex w-full max-w-full bg-surface-container-low shadow-elevation-3 outline-none sm:w-[440px] lg:static lg:z-auto lg:w-auto lg:shadow-none"
-            >
-              <div
-                v-if="inspectorStore.loadingInspector && !inspectorStore.activeDetail"
-                class="flex h-full w-full items-center justify-center px-12 text-body-small text-on-surface-variant lg:w-[440px]"
-              >
-                {{ t('tool.workspace.parsingFile') }}
-              </div>
-              <MetadataInspectorDrawer
-                v-else-if="inspectorStore.activeDetail"
-                :detail="inspectorStore.activeDetail"
-                :artwork-version="
-                  inspectorStore.getFileArtworkVersion(
+          <MetadataInspectorDrawer
+            v-if="inspectorVisible"
+            :open="inspectorVisible"
+            :modal="!isLargeDesktop"
+            :loading="inspectorStore.loadingInspector"
+            :detail="inspectorStore.activeDetail"
+            :artwork-version="
+              inspectorStore.activeDetail
+                ? inspectorStore.getFileArtworkVersion(
                     inspectorStore.activeDetail.entry.root_id,
                     inspectorStore.activeDetail.entry.rel_path,
                   )
-                "
-                :has-prev="scrapeStore.hasPrevInspect"
-                :has-next="scrapeStore.hasNextInspect"
-                :position-label="scrapeStore.inspectPositionLabel"
-                :shortcuts-disabled="workspaceStore.anyModalOpen"
-                @step="scrapeStore.stepInspectingFile"
-                @close="workspaceStore.closeInspectorAndSync()"
-                @updated="scrapeStore.handleDetailUpdated"
-                @open-workbench="(d) => scrapeStore.openScrapeWorkbench(d.entry)"
-                @open-content-editor="workspaceStore.openBookContentEditor"
-                @open-normalize-epub="(e) => workspaceStore.openBookNormalizeModal([e])"
-                @open-comic-pages="workspaceStore.openComicPageManager"
-                @open-music-tools="(e) => workspaceStore.openMusicToolbox([e])"
-                @open-video-tools="(e) => workspaceStore.openVideoToolbox([e])"
-                @open-rename="(e) => workspaceStore.openRenameModal([e])"
-                @request-delete="
-                  (e) => workspaceStore.requestDeleteFiles([workspaceStore.entrySelectionKey(e)], true)
-                "
-                @open-history="workspaceStore.openHistoryModal('metadata')"
-              />
-            </div>
-          </Transition>
+                : inspectorStore.artworkVersion
+            "
+            :has-prev="scrapeStore.hasPrevInspect"
+            :has-next="scrapeStore.hasNextInspect"
+            :position-label="scrapeStore.inspectPositionLabel"
+            :shortcuts-disabled="workspaceStore.anyModalOpen"
+            @step="scrapeStore.stepInspectingFile"
+            @close="workspaceStore.closeInspectorAndSync()"
+            @updated="scrapeStore.handleDetailUpdated"
+            @open-workbench="(d) => scrapeStore.openScrapeWorkbench(d.entry)"
+            @open-content-editor="workspaceStore.openBookContentEditor"
+            @open-normalize-epub="(e) => workspaceStore.openBookNormalizeModal([e])"
+            @open-comic-pages="workspaceStore.openComicPageManager"
+            @open-music-tools="(e) => workspaceStore.openMusicToolbox([e])"
+            @open-video-tools="(e) => workspaceStore.openVideoToolbox([e])"
+            @open-rename="(e) => workspaceStore.openRenameModal([e])"
+            @request-delete="
+              (e) => workspaceStore.requestDeleteFiles([workspaceStore.entrySelectionKey(e)], true)
+            "
+            @open-history="workspaceStore.openHistoryModal('metadata')"
+          />
         </template>
       </main>
     </div>

@@ -1,5 +1,9 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { LuFileText, LuLock, LuUnlock } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import type { BookInspectorForm } from './types'
 
 const props = withDefaults(
@@ -20,6 +24,8 @@ const props = withDefaults(
 defineEmits<{
   polish: []
 }>()
+
+const { t } = useI18n()
 
 function isBookFieldLocked(field: string): boolean {
   return props.form.lockedFields.includes(field)
@@ -49,290 +55,260 @@ function lockFilledBookFields(): void {
   if (props.hasCover) next.add('cover')
   props.form.lockedFields = Array.from(next)
 }
-
-const inputCls =
-  'w-full rounded-xl border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] px-3 py-2 text-xs text-[var(--md-sys-color-on-surface)] outline-none transition focus:border-[var(--md-sys-color-primary)] disabled:opacity-55'
-
-function lockBtnCls(field: string): string {
-  return isBookFieldLocked(field)
-    ? 'bg-[var(--md-sys-color-warning-container)] font-semibold text-[var(--md-sys-color-on-warning-container)]'
-    : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-}
 </script>
 
 <template>
-  <div class="space-y-2.5">
+  <div class="space-y-3">
     <div
       v-if="bookFormat !== 'epub'"
-      class="flex items-center gap-2 rounded-xl bg-[var(--md-sys-color-primary-container)]/75 px-3 py-2 text-xs text-[var(--md-sys-color-on-primary-container)]"
+      class="text-body-small flex items-center gap-2 rounded-corner-md bg-primary-container/75 px-3 py-2 text-on-primary-container"
     >
-      <LuFileText class="h-4 w-4 shrink-0" />
-      <span>{{ bookFormat.toUpperCase() }} 元数据将写入旁路文件（metadata.opf / cover）</span>
+      <LuFileText class="h-4 w-4 shrink-0" aria-hidden="true" />
+      <span>{{ t('tool.forms.book.sidecarNotice', { format: bookFormat.toUpperCase() }) }}</span>
     </div>
 
     <div
       v-if="writable && !hideLocks"
-      class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)]/65 px-3 py-1.5 text-[11px]"
+      class="text-label-medium flex flex-wrap items-center justify-between gap-2 rounded-corner-md bg-surface px-3 py-1.5"
     >
-      <span class="flex items-center gap-1.5 text-[var(--md-sys-color-on-surface-variant)]">
-        <LuLock class="h-3.5 w-3.5 text-[var(--md-sys-color-warning)]" />
-        <span>
-          字段锁：已锁
-          <strong class="text-[var(--md-sys-color-on-surface)]">{{ form.lockedFields.length }}</strong>
-          项（刮削时跳过）
-        </span>
+      <span class="flex items-center gap-1.5 text-on-surface-variant">
+        <LuLock class="h-3.5 w-3.5 text-warning" aria-hidden="true" />
+        <span>{{ t('tool.forms.common.fieldLocks', { count: form.lockedFields.length }) }}</span>
       </span>
-      <div class="flex items-center gap-1.5">
-        <button
-          type="button"
-          class="md-state rounded-full px-2 py-0.5 font-medium text-[var(--md-sys-color-primary)]"
-          @click="lockFilledBookFields"
-        >
-          锁非空项
-        </button>
-        <button
+      <div class="flex items-center gap-1">
+        <MdButton variant="text" size="sm" @click="lockFilledBookFields">
+          {{ t('tool.forms.common.lockFilled') }}
+        </MdButton>
+        <MdButton
           v-if="form.lockedFields.length > 0"
-          type="button"
-          class="md-state rounded-full px-2 py-0.5 font-medium text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
+          variant="text"
+          size="sm"
           @click="form.lockedFields = []"
         >
-          全部解锁
-        </button>
+          {{ t('tool.forms.common.unlockAll') }}
+        </MdButton>
       </div>
     </div>
 
-    <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-      <div class="block sm:col-span-2">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">书名 (dc:title)</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('title')"
-            title="锁定/解锁书名字段"
-            @click="toggleBookFieldLock('title')"
-          >
-            <LuLock v-if="isBookFieldLocked('title')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <input v-model="form.title" :disabled="!writable" type="text" :class="inputCls" />
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div class="sm:col-span-2">
+        <MdTextField
+          v-model="form.title"
+          size="sm"
+          :disabled="!writable"
+          :label="t('tool.forms.book.title')"
+        >
+          <template v-if="writable && !hideLocks" #trailing>
+            <MdIconButton
+              size="sm"
+              class="-mr-2"
+              :selected="isBookFieldLocked('title')"
+              :icon="isBookFieldLocked('title') ? LuLock : LuUnlock"
+              :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.title') })"
+              @click="toggleBookFieldLock('title')"
+            />
+          </template>
+        </MdTextField>
       </div>
 
-      <div class="block sm:col-span-2">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">作者 (dc:creator，`/` 分隔)</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('authors')"
-            title="锁定/解锁作者字段"
-            @click="toggleBookFieldLock('authors')"
-          >
-            <LuLock v-if="isBookFieldLocked('authors')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <input v-model="form.authors" :disabled="!writable" type="text" :class="inputCls" />
+      <div class="sm:col-span-2">
+        <MdTextField
+          v-model="form.authors"
+          size="sm"
+          :disabled="!writable"
+          :label="t('tool.forms.book.authors')"
+        >
+          <template v-if="writable && !hideLocks" #trailing>
+            <MdIconButton
+              size="sm"
+              class="-mr-2"
+              :selected="isBookFieldLocked('authors')"
+              :icon="isBookFieldLocked('authors') ? LuLock : LuUnlock"
+              :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.authors') })"
+              @click="toggleBookFieldLock('authors')"
+            />
+          </template>
+        </MdTextField>
       </div>
 
-      <div class="grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-12">
-        <div class="block sm:col-span-5">
-          <div class="mb-1 flex items-center justify-between">
-            <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">系列 / 丛书 (Series)</span>
-            <button
-              v-if="writable && !hideLocks"
-              type="button"
-              class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-              :class="lockBtnCls('series')"
-              title="锁定/解锁系列字段"
-              @click="toggleBookFieldLock('series')"
-            >
-              <LuLock v-if="isBookFieldLocked('series')" class="h-3 w-3" />
-              <LuUnlock v-else class="h-3 w-3" />
-            </button>
-          </div>
-          <input
+      <div class="grid grid-cols-1 gap-2.5 sm:col-span-2 sm:grid-cols-12">
+        <div class="sm:col-span-5">
+          <MdTextField
             v-model="form.series"
+            size="sm"
             :disabled="!writable"
-            type="text"
-            placeholder="如：三体 / 魔法禁书目录"
-            :class="inputCls"
-          />
+            :label="t('tool.forms.book.series')"
+            :placeholder="t('tool.forms.book.seriesPlaceholder')"
+          >
+            <template v-if="writable && !hideLocks" #trailing>
+              <MdIconButton
+                size="sm"
+                class="-mr-2"
+                :selected="isBookFieldLocked('series')"
+                :icon="isBookFieldLocked('series') ? LuLock : LuUnlock"
+                :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.series') })"
+                @click="toggleBookFieldLock('series')"
+              />
+            </template>
+          </MdTextField>
         </div>
-        <div class="block sm:col-span-4">
-          <div class="mb-1 flex items-center justify-between">
-            <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">部 / 子系列 (Subseries)</span>
-            <button
-              v-if="writable && !hideLocks"
-              type="button"
-              class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-              :class="lockBtnCls('subseries')"
-              title="锁定/解锁子系列字段"
-              @click="toggleBookFieldLock('subseries')"
-            >
-              <LuLock v-if="isBookFieldLocked('subseries')" class="h-3 w-3" />
-              <LuUnlock v-else class="h-3 w-3" />
-            </button>
-          </div>
-          <input
+
+        <div class="sm:col-span-4">
+          <MdTextField
             v-model="form.subseries"
+            size="sm"
             :disabled="!writable"
-            type="text"
-            placeholder="选填，如：新约"
-            :class="inputCls"
-          />
+            :label="t('tool.forms.book.subseries')"
+            :placeholder="t('tool.forms.book.subseriesPlaceholder')"
+          >
+            <template v-if="writable && !hideLocks" #trailing>
+              <MdIconButton
+                size="sm"
+                class="-mr-2"
+                :selected="isBookFieldLocked('subseries')"
+                :icon="isBookFieldLocked('subseries') ? LuLock : LuUnlock"
+                :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.subseries') })"
+                @click="toggleBookFieldLock('subseries')"
+              />
+            </template>
+          </MdTextField>
         </div>
-        <div class="block sm:col-span-3">
-          <div class="mb-1 flex items-center justify-between">
-            <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">卷 / 册号 (Volume)</span>
-            <button
-              v-if="writable && !hideLocks"
-              type="button"
-              class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-              :class="lockBtnCls('series_index')"
-              title="锁定/解锁卷册号字段"
-              @click="toggleBookFieldLock('series_index')"
-            >
-              <LuLock v-if="isBookFieldLocked('series_index')" class="h-3 w-3" />
-              <LuUnlock v-else class="h-3 w-3" />
-            </button>
-          </div>
-          <input
+
+        <div class="sm:col-span-3">
+          <MdTextField
             v-model="form.seriesIndex"
+            size="sm"
             :disabled="!writable"
-            type="text"
-            placeholder="如：1 / 2.5"
-            :class="inputCls"
-          />
+            :label="t('tool.forms.book.seriesIndex')"
+            :placeholder="t('tool.forms.book.seriesIndexPlaceholder')"
+          >
+            <template v-if="writable && !hideLocks" #trailing>
+              <MdIconButton
+                size="sm"
+                class="-mr-2"
+                :selected="isBookFieldLocked('series_index')"
+                :icon="isBookFieldLocked('series_index') ? LuLock : LuUnlock"
+                :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.seriesIndex') })"
+                @click="toggleBookFieldLock('series_index')"
+              />
+            </template>
+          </MdTextField>
         </div>
       </div>
 
-      <div class="block">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">ISBN</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('isbn')"
-            title="锁定/解锁 ISBN"
+      <MdTextField
+        v-model="form.isbn"
+        size="sm"
+        :disabled="!writable"
+        :label="t('tool.forms.book.isbn')"
+      >
+        <template v-if="writable && !hideLocks" #trailing>
+          <MdIconButton
+            size="sm"
+            class="-mr-2"
+            :selected="isBookFieldLocked('isbn')"
+            :icon="isBookFieldLocked('isbn') ? LuLock : LuUnlock"
+            :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.isbn') })"
             @click="toggleBookFieldLock('isbn')"
-          >
-            <LuLock v-if="isBookFieldLocked('isbn')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <input v-model="form.isbn" :disabled="!writable" type="text" :class="inputCls" />
-      </div>
+          />
+        </template>
+      </MdTextField>
 
-      <div class="block">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">出版社 (dc:publisher)</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('publisher')"
-            title="锁定/解锁出版社"
+      <MdTextField
+        v-model="form.publisher"
+        size="sm"
+        :disabled="!writable"
+        :label="t('tool.forms.book.publisher')"
+      >
+        <template v-if="writable && !hideLocks" #trailing>
+          <MdIconButton
+            size="sm"
+            class="-mr-2"
+            :selected="isBookFieldLocked('publisher')"
+            :icon="isBookFieldLocked('publisher') ? LuLock : LuUnlock"
+            :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.publisher') })"
             @click="toggleBookFieldLock('publisher')"
-          >
-            <LuLock v-if="isBookFieldLocked('publisher')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <input v-model="form.publisher" :disabled="!writable" type="text" :class="inputCls" />
-      </div>
+          />
+        </template>
+      </MdTextField>
 
-      <div class="block">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">出版日期 (dc:date)</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('published_at')"
-            title="锁定/解锁出版日期"
+      <MdTextField
+        v-model="form.publishedAt"
+        size="sm"
+        :disabled="!writable"
+        :label="t('tool.forms.book.publishedAt')"
+        placeholder="YYYY-MM-DD"
+      >
+        <template v-if="writable && !hideLocks" #trailing>
+          <MdIconButton
+            size="sm"
+            class="-mr-2"
+            :selected="isBookFieldLocked('published_at')"
+            :icon="isBookFieldLocked('published_at') ? LuLock : LuUnlock"
+            :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.publishedAt') })"
             @click="toggleBookFieldLock('published_at')"
-          >
-            <LuLock v-if="isBookFieldLocked('published_at')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <input
-          v-model="form.publishedAt"
-          :disabled="!writable"
-          type="text"
-          placeholder="YYYY-MM-DD"
-          :class="inputCls"
-        />
-      </div>
+          />
+        </template>
+      </MdTextField>
 
-      <div class="block">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">语言 (dc:language)</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('language')"
-            title="锁定/解锁语言"
+      <MdTextField
+        v-model="form.language"
+        size="sm"
+        :disabled="!writable"
+        :label="t('tool.forms.book.language')"
+        placeholder="zh / en / ja"
+      >
+        <template v-if="writable && !hideLocks" #trailing>
+          <MdIconButton
+            size="sm"
+            class="-mr-2"
+            :selected="isBookFieldLocked('language')"
+            :icon="isBookFieldLocked('language') ? LuLock : LuUnlock"
+            :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.language') })"
             @click="toggleBookFieldLock('language')"
-          >
-            <LuLock v-if="isBookFieldLocked('language')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <input
-          v-model="form.language"
+          />
+        </template>
+      </MdTextField>
+
+      <div class="sm:col-span-2">
+        <MdTextField
+          v-model="form.tags"
+          size="sm"
           :disabled="!writable"
-          type="text"
-          placeholder="zh / en / ja"
-          :class="inputCls"
-        />
+          :label="t('tool.forms.book.tags')"
+        >
+          <template v-if="writable && !hideLocks" #trailing>
+            <MdIconButton
+              size="sm"
+              class="-mr-2"
+              :selected="isBookFieldLocked('tags')"
+              :icon="isBookFieldLocked('tags') ? LuLock : LuUnlock"
+              :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.tags') })"
+              @click="toggleBookFieldLock('tags')"
+            />
+          </template>
+        </MdTextField>
       </div>
 
-      <div class="block sm:col-span-2">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">标签 / 主题 (dc:subject，`/` 分隔)</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('tags')"
-            title="锁定/解锁标签"
-            @click="toggleBookFieldLock('tags')"
-          >
-            <LuLock v-if="isBookFieldLocked('tags')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <input v-model="form.tags" :disabled="!writable" type="text" :class="inputCls" />
-      </div>
-
-      <div class="block sm:col-span-2">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">内容简介 (dc:description)</span>
-          <button
-            v-if="writable && !hideLocks"
-            type="button"
-            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] transition"
-            :class="lockBtnCls('description')"
-            title="锁定/解锁内容简介"
-            @click="toggleBookFieldLock('description')"
-          >
-            <LuLock v-if="isBookFieldLocked('description')" class="h-3 w-3" />
-            <LuUnlock v-else class="h-3 w-3" />
-          </button>
-        </div>
-        <textarea
+      <div class="sm:col-span-2">
+        <MdTextField
           v-model="form.description"
+          multiline
+          :rows="5"
           :disabled="!writable"
-          rows="5"
-          class="w-full resize-y rounded-xl border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] p-2.5 text-xs leading-relaxed text-[var(--md-sys-color-on-surface)] outline-none transition focus:border-[var(--md-sys-color-primary)] disabled:opacity-55"
-        />
+          :label="t('tool.forms.book.description')"
+        >
+          <template v-if="writable && !hideLocks" #trailing>
+            <MdIconButton
+              size="sm"
+              class="-mr-2"
+              :selected="isBookFieldLocked('description')"
+              :icon="isBookFieldLocked('description') ? LuLock : LuUnlock"
+              :aria-label="t('tool.forms.common.toggleLock', { field: t('tool.forms.book.description') })"
+              @click="toggleBookFieldLock('description')"
+            />
+          </template>
+        </MdTextField>
       </div>
     </div>
   </div>

@@ -4,7 +4,6 @@ import { useI18n } from 'vue-i18n'
 import {
   LuArrowDown,
   LuArrowUp,
-  LuCheck,
   LuChevronRight,
   LuColumns3,
   LuCornerLeftUp,
@@ -12,12 +11,14 @@ import {
   LuFolderPlus,
   LuList,
   LuRadio,
-  LuRefreshCw,
   LuSlidersHorizontal,
   LuSparkles,
   LuUndo2,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSelect from '@/components/ui/MdSelect.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
@@ -207,7 +208,7 @@ function relativeDirBadge(relPath: string): string | null {
       <div
         class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
       >
-        <LuFolderPlus class="h-6 w-6" />
+        <LuFolderPlus class="h-6 w-6" aria-hidden="true" />
       </div>
       <h2 class="text-title-medium text-on-surface">
         {{ workspaceStore.domainLabels.emptyRootsTitle }}
@@ -215,25 +216,23 @@ function relativeDirBadge(relPath: string): string | null {
       <p class="mt-2 text-body-small leading-relaxed text-on-surface-variant">
         {{ workspaceStore.domainLabels.emptyRootsDesc }}
       </p>
-      <button
-        type="button"
-        class="md-btn md-btn-filled md-state mt-6"
-        @click="workspaceStore.openSettingsTab('roots')"
-      >
-        <LuFolderPlus class="h-4 w-4" />
-        <span>{{ t('tool.roots.add') }}</span>
-      </button>
+      <div class="mt-6 flex justify-center">
+        <MdButton variant="filled" :icon="LuFolderPlus" @click="workspaceStore.openSettingsTab('roots')">
+          {{ t('tool.roots.add') }}
+        </MdButton>
+      </div>
     </div>
 
     <template v-else>
       <!-- Clean Header: Breadcrumbs + View Segmented Button + Utility Icons -->
       <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-body-medium">
-          <button
+          <MdIconButton
             v-if="workspaceStore.snapshot && workspaceStore.snapshot.parent_rel_path !== null"
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state mr-1"
-            :title="t('tool.browser.parentDirTitle')"
+            size="sm"
+            class="mr-1"
+            :icon="LuCornerLeftUp"
+            :tooltip="t('tool.browser.parentDirTitle')"
             :aria-label="t('tool.browser.parentDirTitle')"
             @click="
               workspaceStore.enterFolder(
@@ -241,21 +240,20 @@ function relativeDirBadge(relPath: string): string | null {
                 workspaceStore.viewMode === 'folders',
               )
             "
-          >
-            <LuCornerLeftUp class="h-4 w-4" />
-          </button>
+          />
 
           <template v-for="(bc, idx) in workspaceStore.breadcrumbs" :key="bc.relPath || '__root__'">
             <LuChevronRight
               v-if="idx > 0"
               class="h-4 w-4 shrink-0 text-on-surface-variant"
+              aria-hidden="true"
             />
             <button
               type="button"
-              class="md-state rounded-corner-full px-2.5 py-1 transition"
+              class="md-state cursor-pointer rounded-corner-full px-2.5 py-1 transition"
               :class="
                 idx === workspaceStore.breadcrumbs.length - 1
-                  ? 'font-semibold text-on-surface'
+                  ? 'text-title-small text-on-surface'
                   : 'text-on-surface-variant hover:text-on-surface'
               "
               @click="workspaceStore.enterFolder(bc.relPath, workspaceStore.viewMode === 'folders')"
@@ -302,40 +300,32 @@ function relativeDirBadge(relPath: string): string | null {
                 @update:model-value="workspaceStore.setSortField($event as ToolSortField)"
               />
             </div>
-            <button
-              type="button"
-              class="md-icon-btn md-icon-btn-sm md-state"
-              :title="workspaceStore.sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
+            <MdIconButton
+              size="sm"
+              :icon="workspaceStore.sortDir === 'asc' ? LuArrowUp : LuArrowDown"
+              :tooltip="workspaceStore.sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
               :aria-label="workspaceStore.sortDir === 'asc' ? t('tool.sort.asc') : t('tool.sort.desc')"
               @click="workspaceStore.toggleSortDir()"
-            >
-              <LuArrowUp v-if="workspaceStore.sortDir === 'asc'" class="h-4 w-4" />
-              <LuArrowDown v-else class="h-4 w-4" />
-            </button>
+            />
           </div>
 
-          <button
+          <MdIconButton
             v-if="workspaceStore.settings?.xmedia_webhook_enabled"
-            type="button"
-            :disabled="workspaceStore.notifyingRescan"
-            class="md-icon-btn md-icon-btn-sm md-state"
-            :title="t('tool.batch.triggerRescan')"
+            size="sm"
+            :loading="workspaceStore.notifyingRescan"
+            :icon="LuRadio"
+            :tooltip="t('tool.batch.triggerRescan')"
             :aria-label="t('tool.batch.triggerRescan')"
             @click="workspaceStore.triggerManualRescan()"
-          >
-            <LuRefreshCw v-if="workspaceStore.notifyingRescan" class="h-4 w-4 animate-spin text-primary" />
-            <LuRadio v-else class="h-4 w-4" />
-          </button>
+          />
 
-          <button
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state"
-            :title="t('tool.browser.historyTooltip')"
+          <MdIconButton
+            size="sm"
+            :icon="LuUndo2"
+            :tooltip="t('tool.browser.historyTooltip')"
             :aria-label="t('tool.browser.historyTooltip')"
             @click="workspaceStore.openHistoryModal('metadata')"
-          >
-            <LuUndo2 class="h-4 w-4" />
-          </button>
+          />
 
           <RefreshButton
             :action="() => workspaceStore.reloadCurrentScope()"
@@ -350,16 +340,12 @@ function relativeDirBadge(relPath: string): string | null {
         v-if="workspaceStore.workbenchFocusPaths && workspaceStore.workbenchFocusPaths.size > 0"
         class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-corner-lg bg-warning-container px-4 py-2.5 text-body-small text-on-warning-container"
       >
-        <span class="font-semibold">
+        <span class="font-medium">
           {{ t('tool.browser.focusBanner', { count: workspaceStore.filteredFiles.length }) }}
         </span>
-        <button
-          type="button"
-          class="md-state rounded-corner-full px-3 py-1 text-label-medium"
-          @click="workspaceStore.workbenchFocusPaths = null"
-        >
+        <MdButton variant="text" size="sm" @click="workspaceStore.workbenchFocusPaths = null">
           {{ t('tool.browser.exitFocus') }}
-        </button>
+        </MdButton>
       </div>
 
       <!-- MD3 Filter Chips Row + Lightweight Primary Action -->
@@ -368,18 +354,16 @@ function relativeDirBadge(relPath: string): string | null {
         class="mb-4 flex flex-wrap items-center justify-between gap-2"
       >
         <div class="flex flex-wrap items-center gap-1.5">
-          <button
+          <MdChip
             v-for="f in workspaceStore.filterItems"
             :key="f.id"
-            type="button"
-            class="md-chip md-state"
-            :class="workspaceStore.completenessFilter === f.id ? 'md-chip-selected' : ''"
+            variant="filter"
+            :selected="workspaceStore.completenessFilter === f.id"
             @click="workspaceStore.selectCompletenessFilter(f.id)"
           >
-            <LuCheck v-if="workspaceStore.completenessFilter === f.id" class="h-3.5 w-3.5 shrink-0" />
             <span>{{ f.label }}</span>
-            <span class="font-mono text-label-small opacity-75">{{ f.count }}</span>
-          </button>
+            <span class="ml-1 font-mono text-label-small opacity-75">{{ f.count }}</span>
+          </MdChip>
         </div>
 
         <div class="flex items-center gap-2">
@@ -394,16 +378,16 @@ function relativeDirBadge(relPath: string): string | null {
             @change="workspaceStore.toggleSelectAllFiltered()"
           />
 
-          <button
+          <MdButton
             v-if="workspaceStore.filteredFiles.length > 0 && workspaceStore.selectedPaths.size === 0"
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
+            variant="outlined"
+            size="sm"
+            :icon="LuColumns3"
             :title="t('tool.browser.workbenchTooltip')"
             @click="scrapeStore.openScrapeWorkbench()"
           >
-            <LuColumns3 class="h-3.5 w-3.5" />
-            <span>{{ t('tool.browser.workbenchBtn') }}</span>
-          </button>
+            {{ t('tool.browser.workbenchBtn') }}
+          </MdButton>
 
           <div
             v-if="workspaceStore.filteredFiles.length > 0 && workspaceStore.selectedPaths.size === 0"
@@ -411,21 +395,21 @@ function relativeDirBadge(relPath: string): string | null {
           >
             <button
               type="button"
-              class="md-state inline-flex h-8 items-center gap-1.5 pr-2.5 pl-3.5 text-label-large"
+              class="md-state inline-flex h-8 cursor-pointer items-center gap-1.5 pr-2.5 pl-3.5 text-label-large"
               :title="t('tool.browser.quickScrapeAllTitle', { summary: scrapeStore.lastScrapeSummary })"
               @click="scrapeStore.quickScrapeSelection()"
             >
-              <LuSparkles class="h-3.5 w-3.5" />
+              <LuSparkles class="h-3.5 w-3.5" aria-hidden="true" />
               <span>{{ t('tool.browser.quickScrapeAll', { count: workspaceStore.filteredFiles.length }) }}</span>
             </button>
             <button
               type="button"
-              class="md-state inline-flex h-8 items-center border-l border-outline-variant/50 px-2.5 text-label-large"
+              class="md-state inline-flex h-8 cursor-pointer items-center border-l border-outline-variant/50 px-2.5 text-label-large"
               :title="t('tool.browser.configureScrapeTitle', { summary: scrapeStore.lastScrapeSummary })"
               :aria-label="t('tool.browser.configureScrapeTitle', { summary: scrapeStore.lastScrapeSummary })"
               @click="scrapeStore.configureScrapeSelection()"
             >
-              <LuSlidersHorizontal class="h-3.5 w-3.5" />
+              <LuSlidersHorizontal class="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -433,6 +417,7 @@ function relativeDirBadge(relPath: string): string | null {
 
       <div
         v-if="workspaceStore.dirError"
+        role="alert"
         class="mb-4 rounded-corner-lg bg-error-container px-4 py-3 text-body-small text-on-error-container"
       >
         {{ workspaceStore.dirError }}
@@ -535,9 +520,9 @@ function relativeDirBadge(relPath: string): string | null {
             }}
           </span>
           <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
+            <MdButton
+              variant="tonal"
+              size="sm"
               @click="workspaceStore.visibleLimit += PAGE_CHUNK_SIZE"
             >
               {{
@@ -545,14 +530,14 @@ function relativeDirBadge(relPath: string): string | null {
                   remaining: workspaceStore.filteredFiles.length - workspaceStore.visibleFiles.length,
                 })
               }}
-            </button>
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-text md-state"
+            </MdButton>
+            <MdButton
+              variant="text"
+              size="sm"
               @click="workspaceStore.visibleLimit = workspaceStore.filteredFiles.length"
             >
               {{ t('tool.batch.showAll') }}
-            </button>
+            </MdButton>
           </div>
         </div>
       </div>

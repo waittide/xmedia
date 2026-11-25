@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuLoader2, LuSearch, LuSparkles } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
 import { toolApi } from '../../api'
 import { mergeScrapedClientSide } from '../../merger'
 import type {
@@ -47,6 +50,8 @@ const emit = defineEmits<{
   openSettings: []
   settingsUpdated: [settings: PublicSettingsDto]
 }>()
+
+const { t } = useI18n()
 
 const keyword = ref('')
 const artistOrAuthor = ref('')
@@ -106,24 +111,24 @@ const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>((
   const kind = props.detail?.entry.media_kind
   if (kind === 'music') {
     return [
-      { value: 'music_track', label: '单曲' },
-      { value: 'music_album', label: '整张专辑' },
-      { value: 'lyrics', label: '仅歌词' },
+      { value: 'music_track', label: t('tool.workbench.candidates.targetTrack') },
+      { value: 'music_album', label: t('tool.workbench.candidates.targetAlbum') },
+      { value: 'lyrics', label: t('tool.workbench.candidates.targetLyrics') },
     ]
   }
   if (kind === 'video') {
     return [
-      { value: 'tv_show', label: '剧集 / 番剧' },
-      { value: 'movie', label: '电影' },
+      { value: 'tv_show', label: t('tool.workbench.candidates.targetTv') },
+      { value: 'movie', label: t('tool.workbench.candidates.targetMovie') },
     ]
   }
   if (kind === 'comic') {
     return [
-      { value: 'comic', label: '漫画源' },
-      { value: 'book', label: '图书 / 轻小说源' },
+      { value: 'comic', label: t('tool.workbench.candidates.targetComic') },
+      { value: 'book', label: t('tool.workbench.candidates.targetLightNovel') },
     ]
   }
-  return [{ value: 'book', label: '书籍' }]
+  return [{ value: 'book', label: t('tool.workbench.candidates.targetBook') }]
 })
 
 const canSearch = computed<boolean>(() =>
@@ -226,7 +231,7 @@ function selectMergedPreview(): void {
   emit('selectPreview', {
     key: '__merged__',
     isMerged: true,
-    sourceLabel: '多源瀑布聚合结果',
+    sourceLabel: t('tool.workbench.candidates.mergedSourceLabel'),
     meta: mergedMeta.value,
     loading: false,
     fieldSources: mergedFieldSources.value,
@@ -392,7 +397,9 @@ async function useCandidateForMerge(c: ScrapeCandidate): Promise<void> {
     ignoredProviderIds.value = nextIgnored
   }
   selectMergedPreview()
-  flashFeedback(`已将「${c.title}」设为 ${c.provider_name} 聚合代表`)
+  flashFeedback(
+    t('tool.workbench.candidates.setAsRepFlash', { title: c.title, provider: c.provider_name }),
+  )
 }
 
 async function handleDirectApplyCandidate(c: ScrapeCandidate): Promise<void> {
@@ -514,7 +521,7 @@ watch(mergedResult, (next) => {
     emit('selectPreview', {
       key: '__merged__',
       isMerged: true,
-      sourceLabel: '多源瀑布聚合结果',
+      sourceLabel: t('tool.workbench.candidates.mergedSourceLabel'),
       meta: next.metadata,
       loading: false,
       fieldSources: next.field_sources,
@@ -624,7 +631,7 @@ defineExpose({
 </script>
 
 <template>
-  <aside class="flex h-full min-h-0 flex-col bg-[var(--md-sys-color-surface-container-low)]/60">
+  <aside class="flex h-full min-h-0 flex-col bg-surface-container-low/60">
     <WorkbenchSearchHeader
       :detail="detail"
       :candidates-count="candidates.length"
@@ -661,38 +668,41 @@ defineExpose({
     <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3">
       <div
         v-if="!detail"
-        class="flex h-full flex-col items-center justify-center text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+        class="text-body-small flex h-full flex-col items-center justify-center text-center text-on-surface-variant"
       >
-        <LuSparkles class="mb-2 h-6 w-6 opacity-40" />
-        <p>在左栏选择一个文件开始刮削</p>
+        <LuSparkles class="mb-2 h-6 w-6 opacity-40" aria-hidden="true" />
+        <p>{{ t('tool.workbench.candidates.pickFileHint') }}</p>
       </div>
 
       <div
         v-else-if="searching"
-        class="flex flex-col items-center justify-center gap-2 py-12 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+        class="text-body-small flex flex-col items-center justify-center gap-2 py-12 text-on-surface-variant"
       >
-        <LuLoader2 class="h-5 w-5 animate-spin text-[var(--md-sys-color-primary)]" />
-        <span>正在并行查询 {{ enabledProviderIds.length }} 个数据源…</span>
+        <LuLoader2 class="h-5 w-5 animate-spin text-primary" aria-hidden="true" />
+        <span>
+          {{ t('tool.workbench.candidates.searchingCount', { count: enabledProviderIds.length }) }}
+        </span>
       </div>
 
       <div
         v-else-if="candidates.length === 0"
-        class="flex flex-col items-center justify-center gap-2 py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+        class="text-body-small flex flex-col items-center justify-center gap-2 py-12 text-center text-on-surface-variant"
       >
-        <LuSearch class="h-6 w-6 opacity-35" />
-        <p>点击上方「搜索」拉取在线候选</p>
-        <p class="max-w-[220px] text-[11px] opacity-75">
-          点击「多源瀑布聚合结果」或任意候选卡片，在右侧预览编辑并保存
+        <LuSearch class="h-6 w-6 opacity-35" aria-hidden="true" />
+        <p>{{ t('tool.workbench.candidates.emptySearchTitle') }}</p>
+        <p class="max-w-[220px] opacity-75">
+          {{ t('tool.workbench.candidates.emptySearchDesc') }}
         </p>
-        <button
+        <MdButton
           v-if="configuredProviders.length > 0 && canSearch"
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state mt-1"
+          variant="tonal"
+          size="sm"
+          class="mt-1"
+          :icon="LuSearch"
           @click="runSearch"
         >
-          <LuSearch class="h-3 w-3" />
-          <span>立即按当前标题搜索</span>
-        </button>
+          {{ t('tool.workbench.candidates.searchCurrentTitle') }}
+        </MdButton>
       </div>
 
       <template v-else>
@@ -719,32 +729,22 @@ defineExpose({
 
         <!-- Source Filter Bar -->
         <div v-if="sourceCounts.length > 1" class="flex flex-wrap gap-1">
-          <button
-            type="button"
-            class="md-state rounded-full px-2.5 py-0.5 text-[10px] font-semibold transition"
-            :class="
-              activeSourceFilter === 'all'
-                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-            "
+          <MdChip
+            variant="filter"
+            hide-check
+            :label="t('tool.workbench.candidates.allSources', { count: candidates.length })"
+            :selected="activeSourceFilter === 'all'"
             @click="activeSourceFilter = 'all'"
-          >
-            全部 ({{ candidates.length }})
-          </button>
-          <button
+          />
+          <MdChip
             v-for="src in sourceCounts"
             :key="src.id"
-            type="button"
-            class="md-state rounded-full px-2.5 py-0.5 text-[10px] font-semibold transition"
-            :class="
-              activeSourceFilter === src.id
-                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-            "
+            variant="filter"
+            hide-check
+            :label="`${src.name} (${src.count})`"
+            :selected="activeSourceFilter === src.id"
             @click="activeSourceFilter = src.id"
-          >
-            {{ src.name }} ({{ src.count }})
-          </button>
+          />
         </div>
 
         <WorkbenchCandidateCard

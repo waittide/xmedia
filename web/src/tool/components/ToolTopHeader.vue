@@ -10,20 +10,21 @@ import {
   LuMoon,
   LuPanelLeftClose,
   LuPanelLeftOpen,
-  LuSearch,
   LuSettings,
   LuSun,
   LuWrench,
-  LuX,
 } from 'vue-icons-plus/lu'
 import MdBadge from '@/components/ui/MdBadge.vue'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import { useToolTaskStore } from '../tasks'
 import type { ToolStatusDto } from '../types'
 
-const props = defineProps<{
+defineProps<{
   isCompact: boolean
   activeDomain: MediaKind
   activeNav: 'home' | 'items' | 'settings'
@@ -77,7 +78,7 @@ const taskButtonTooltip = computed<string>(() => {
   return t('tool.tasks.title')
 })
 
-const searchInputRef = ref<HTMLInputElement | null>(null)
+const searchFieldRef = ref<InstanceType<typeof MdTextField> | null>(null)
 
 const themeModeTooltip = computed(() => {
   if (themeStore.themeMode === 'light') return `${t('theme.modeTitle')}: ${t('theme.light')}`
@@ -92,8 +93,8 @@ function cycleThemeMode(): void {
 }
 
 function focusSearch(): void {
-  searchInputRef.value?.focus()
-  searchInputRef.value?.select()
+  searchFieldRef.value?.focus()
+  searchFieldRef.value?.select()
 }
 
 defineExpose({ focusSearch })
@@ -101,41 +102,32 @@ defineExpose({ focusSearch })
 
 <template>
   <header
-    class="flex h-16 shrink-0 items-center justify-between gap-3 px-3 transition-colors duration-[var(--md-sys-motion-duration-short)] select-none sm:px-4"
-    :class="
-      scrolled
-        ? 'bg-[var(--md-sys-color-surface-container)] shadow-[var(--md-sys-elevation-1)]'
-        : 'bg-[var(--md-sys-color-surface)] md:bg-[var(--md-sys-color-surface-container)]'
-    "
+    class="flex h-16 shrink-0 items-center justify-between gap-3 bg-surface px-3 transition-colors duration-150 select-none sm:px-4 md:bg-surface-container"
   >
     <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Button -->
     <div class="flex shrink-0 items-center gap-2">
-      <button
-        type="button"
-        class="md-icon-btn md-state"
-        :title="isCompact ? t('tool.nav.expandSidebar') : t('tool.nav.collapseSidebar')"
+      <MdIconButton
+        :icon="isCompact ? LuPanelLeftOpen : LuPanelLeftClose"
+        :tooltip="isCompact ? t('tool.nav.expandSidebar') : t('tool.nav.collapseSidebar')"
         :aria-label="isCompact ? t('tool.nav.expandSidebar') : t('tool.nav.collapseSidebar')"
         @click="emit('toggleSidebar')"
-      >
-        <LuPanelLeftOpen v-if="isCompact" class="h-5 w-5" />
-        <LuPanelLeftClose v-else class="h-5 w-5" />
-      </button>
+      />
 
       <button
         type="button"
-        class="md-state flex items-center gap-2.5 rounded-full py-1 pr-2.5 pl-1 text-left"
+        class="md-state flex cursor-pointer items-center gap-2.5 rounded-corner-full py-1 pr-2.5 pl-1 text-left"
         @click="emit('navigateHome')"
       >
         <div
-          class="flex h-9 w-9 items-center justify-center rounded-2xl bg-primary-container text-on-primary-container"
+          class="flex h-9 w-9 items-center justify-center rounded-corner-md bg-primary-container text-on-primary-container"
         >
-          <LuWrench class="h-[18px] w-[18px]" />
+          <LuWrench class="h-[18px] w-[18px]" aria-hidden="true" />
         </div>
         <div class="hidden lg:block">
-          <div class="text-sm leading-tight font-semibold tracking-tight text-on-surface">
+          <div class="text-title-small leading-tight text-on-surface">
             {{ t('tool.brand') }}
           </div>
-          <div class="text-[10px] text-on-surface-variant">
+          <div class="text-label-small text-on-surface-variant">
             {{ t('tool.brandSub') }}
           </div>
         </div>
@@ -152,105 +144,85 @@ defineExpose({ focusSearch })
       </div>
     </div>
 
-    <!-- Center: Authentic MD3 Search Bar -->
-    <div class="relative mx-auto w-full max-w-xl">
-      <LuSearch
-        class="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-      />
-      <input
-        ref="searchInputRef"
-        :value="searchQuery"
-        type="text"
+    <!-- Center: MD3 Search Field -->
+    <div class="mx-auto w-full max-w-xl">
+      <MdTextField
+        ref="searchFieldRef"
+        :model-value="searchQuery"
+        type="search"
+        clearable
         :placeholder="searchPlaceholder"
-        class="h-11 w-full rounded-full bg-[var(--md-sys-color-surface-container-high)] pr-14 pl-11 text-[13px] text-[var(--md-sys-color-on-surface)] placeholder-[var(--md-sys-color-on-surface-variant)] outline-none transition duration-200 focus:bg-[var(--md-sys-color-surface-container-lowest)] focus:shadow-[var(--md-sys-elevation-2)]"
-        @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
-      />
-      <kbd
-        v-if="!searchQuery"
-        class="pointer-events-none absolute top-1/2 right-3.5 hidden -translate-y-1/2 rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)] sm:inline"
+        :aria-label="searchPlaceholder"
+        @update:model-value="emit('update:searchQuery', $event)"
       >
-        ⌘K
-      </kbd>
-      <button
-        v-else
-        type="button"
-        class="md-icon-btn md-icon-btn-sm md-state absolute top-1/2 right-1.5 -translate-y-1/2"
-        :aria-label="t('common.clear')"
-        :title="t('common.clear')"
-        @click="emit('update:searchQuery', '')"
-      >
-        <LuX class="h-4 w-4" />
-      </button>
+        <template v-if="!searchQuery" #trailing>
+          <kbd
+            class="text-label-small hidden rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant sm:inline"
+          >
+            ⌘K
+          </kbd>
+        </template>
+      </MdTextField>
     </div>
 
     <!-- Right: Status Chip + Circular MD3 Icon Buttons -->
     <div class="flex shrink-0 items-center gap-1">
       <span
         v-if="status && !status.ffmpeg.ffprobe_available"
-        class="hidden items-center gap-1.5 rounded-full bg-warning-container px-3 py-1 text-[11px] font-medium text-on-warning-container sm:inline-flex"
+        class="text-label-medium hidden items-center gap-1.5 rounded-corner-full bg-warning-container px-3 py-1 text-on-warning-container sm:inline-flex"
         :title="t('tool.header.noFfprobeTooltip')"
       >
-        <LuAlertTriangle class="h-3.5 w-3.5" />
+        <LuAlertTriangle class="h-3.5 w-3.5" aria-hidden="true" />
         <span>{{ t('tool.header.noFfprobe') }}</span>
       </span>
 
-      <button
-        type="button"
-        class="md-icon-btn md-state"
-        :class="
+      <MdIconButton
+        :icon="
           themeStore.themeMode === 'system'
-            ? 'bg-surface-container-high text-on-surface'
-            : ''
+            ? LuMonitor
+            : themeStore.themeMode === 'light'
+              ? LuSun
+              : LuMoon
         "
-        :title="themeModeTooltip"
+        :tooltip="themeModeTooltip"
         :aria-label="themeModeTooltip"
         @click="cycleThemeMode"
-      >
-        <LuMonitor v-if="themeStore.themeMode === 'system'" class="h-[18px] w-[18px]" />
-        <LuSun v-else-if="themeStore.themeMode === 'light'" class="h-[18px] w-[18px]" />
-        <LuMoon v-else class="h-[18px] w-[18px]" />
-      </button>
+      />
 
-      <button
+      <MdButton
         v-if="status?.requires_password"
-        type="button"
-        class="md-btn md-btn-sm md-btn-tonal md-state"
+        variant="tonal"
+        size="sm"
+        :icon="LuLock"
         :title="t('tool.actions.lock')"
-        :aria-label="t('tool.actions.lock')"
         @click="emit('lock')"
       >
-        <LuLock class="h-3.5 w-3.5" />
         <span class="hidden sm:inline">{{ t('tool.actions.lock') }}</span>
-      </button>
+      </MdButton>
 
       <!-- Persistent Task Progress Pill / Drawer Toggle -->
       <button
         v-if="taskStore.activeTask"
         type="button"
-        class="md-state inline-flex h-9 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-3 text-xs font-semibold text-[var(--md-sys-color-on-primary-container)] transition hover:opacity-95"
-        :class="tasksOpen ? 'ring-2 ring-[var(--md-sys-color-primary)]/50' : ''"
+        class="md-state text-label-medium inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-corner-full bg-primary-container px-3 text-on-primary-container transition hover:opacity-95"
+        :class="tasksOpen ? 'ring-2 ring-primary/50' : ''"
         :title="taskButtonTooltip"
         :aria-label="taskButtonTooltip"
         @click="emit('toggleTasks')"
       >
-        <LuLoader2 class="h-3.5 w-3.5 shrink-0 animate-spin" />
+        <LuLoader2 class="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
         <span class="font-mono whitespace-nowrap">{{ activeTaskPillLabel }}</span>
       </button>
 
-      <button
-        v-else
-        type="button"
-        class="md-icon-btn md-state relative hidden sm:inline-flex"
-        :class="
-          tasksOpen
-            ? 'bg-secondary-container text-on-secondary-container'
-            : ''
-        "
-        :title="taskButtonTooltip"
-        :aria-label="taskButtonTooltip"
-        @click="emit('toggleTasks')"
-      >
-        <LuClock class="h-[18px] w-[18px]" aria-hidden="true" />
+      <div v-else class="relative hidden sm:inline-flex">
+        <MdIconButton
+          :variant="tasksOpen ? 'tonal' : 'standard'"
+          :selected="tasksOpen"
+          :icon="LuClock"
+          :tooltip="taskButtonTooltip"
+          :aria-label="taskButtonTooltip"
+          @click="emit('toggleTasks')"
+        />
         <MdBadge
           v-if="taskStore.unresolvedCount > 0"
           :value="taskStore.unresolvedCount"
@@ -258,22 +230,17 @@ defineExpose({ focusSearch })
           tone="error"
           class="pointer-events-none absolute -top-0.5 -right-0.5 ring-2 ring-surface-container"
         />
-      </button>
+      </div>
 
-      <button
-        type="button"
-        class="md-icon-btn md-state hidden sm:inline-flex"
-        :class="
-          activeNav === 'settings'
-            ? 'bg-secondary-container text-on-secondary-container'
-            : ''
-        "
-        :title="t('nav.settings')"
+      <MdIconButton
+        class="hidden sm:inline-flex"
+        :variant="activeNav === 'settings' ? 'tonal' : 'standard'"
+        :selected="activeNav === 'settings'"
+        :icon="LuSettings"
+        :tooltip="t('nav.settings')"
         :aria-label="t('nav.settings')"
         @click="emit('toggleSettings')"
-      >
-        <LuSettings class="h-[18px] w-[18px]" aria-hidden="true" />
-      </button>
+      />
     </div>
   </header>
 </template>

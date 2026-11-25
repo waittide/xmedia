@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
         <div
           class="flex h-11 w-11 items-center justify-center rounded-corner-lg bg-error-container text-on-error-container"
         >
-          <LuAlertCircle class="h-5 w-5" />
+          <LuAlertCircle class="h-5 w-5" aria-hidden="true" />
         </div>
         <div>
           <h1 class="text-title-medium text-on-surface">{{ t('tool.boot.failedTitle') }}</h1>
@@ -122,7 +122,7 @@ onBeforeUnmount(() => {
       <div
         v-if="bootError"
         role="alert"
-        class="rounded-corner-md bg-error-container px-3 py-2 font-mono text-[11px] break-all text-on-error-container"
+        class="text-body-small rounded-corner-md bg-error-container px-3 py-2 font-mono break-all text-on-error-container"
       >
         {{ bootError }}
       </div>
@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
           <div
             class="flex h-11 w-11 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
           >
-            <LuWrench class="h-5 w-5" />
+            <LuWrench class="h-5 w-5" aria-hidden="true" />
           </div>
           <div>
             <h1 class="text-title-medium text-on-surface">{{ t('tool.unlock.title') }}</h1>
@@ -159,7 +159,7 @@ onBeforeUnmount(() => {
         <div
           v-if="unlockError"
           role="alert"
-          class="rounded-corner-md bg-error-container px-3 py-2 text-xs text-on-error-container"
+          class="text-body-small rounded-corner-md bg-error-container px-3 py-2 text-on-error-container"
         >
           {{ unlockError }}
         </div>
@@ -167,8 +167,8 @@ onBeforeUnmount(() => {
         <MdTextField
           v-model="passwordInput"
           type="password"
+          :label="t('tool.unlock.subtitle')"
           :placeholder="t('tool.unlock.placeholder')"
-          :aria-label="t('tool.unlock.placeholder')"
           autofocus
         >
           <template #leading>

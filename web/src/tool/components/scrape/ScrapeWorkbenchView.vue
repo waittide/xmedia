@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuImage, LuPencil } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
 import MdTabs, { type MdTabItem } from '@/components/ui/MdTabs.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -48,6 +50,7 @@ const emit = defineEmits<{
   openHistory: []
 }>()
 
+const { t } = useI18n()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 const inspectorStore = useToolInspectorStore()
@@ -77,17 +80,49 @@ const showCompactQueueDropdown = computed(() => props.sidebarCollapsed || isMobi
 const queueDropdownOpen = ref(false)
 
 type WorkbenchMobilePane = 'local' | 'candidates' | 'preview'
+type WorkbenchDetailPane = 'local' | 'preview'
+
 const mobilePane = ref<WorkbenchMobilePane>('candidates')
+const detailPaneTab = ref<WorkbenchDetailPane>('local')
+
 const mobilePaneTabs = computed<MdTabItem<WorkbenchMobilePane>[]>(() => [
-  { value: 'local', label: localEditMode.value ? '当前信息（编辑中）' : '当前信息' },
-  { value: 'candidates', label: '候选结果' },
-  { value: 'preview', label: candidatePreview.value ? '对比预览 · 已选' : '对比预览' },
+  {
+    value: 'local',
+    label: localEditMode.value
+      ? t('tool.workbench.view.tabLocalEditing')
+      : t('tool.workbench.view.tabLocal'),
+  },
+  { value: 'candidates', label: t('tool.workbench.view.tabCandidates') },
+  {
+    value: 'preview',
+    label: candidatePreview.value
+      ? t('tool.workbench.view.tabPreviewSelected')
+      : t('tool.workbench.view.tabPreview'),
+  },
+])
+
+const detailPaneTabs = computed<MdTabItem<WorkbenchDetailPane>[]>(() => [
+  {
+    value: 'local',
+    label: localEditMode.value
+      ? t('tool.workbench.view.tabLocalEditing')
+      : t('tool.workbench.view.tabLocal'),
+  },
+  {
+    value: 'preview',
+    label: candidatePreview.value
+      ? t('tool.workbench.view.tabPreviewSelected')
+      : t('tool.workbench.view.tabPreview'),
+  },
 ])
 
 function handleSelectCandidatePreview(next: CandidatePreviewState | null): void {
   candidatePreview.value = next
-  if (next && typeof window !== 'undefined' && window.innerWidth < 1200) {
-    mobilePane.value = 'preview'
+  if (next) {
+    detailPaneTab.value = 'preview'
+    if (typeof window !== 'undefined' && window.innerWidth < 840) {
+      mobilePane.value = 'preview'
+    }
   }
 }
 
@@ -113,6 +148,7 @@ watch(
     errorMsg.value = null
     candidatePreview.value = null
     localEditMode.value = false
+    detailPaneTab.value = 'local'
     videoArtworkSlot.value = 'poster'
     if (autoSearchOnSwitch.value) {
       autoSearchTrigger.value += 1
@@ -173,15 +209,17 @@ function enterLocalEditMode(): void {
   if (!props.detail || !canSaveMetadata.value) return
   localForm.hydrateForm(props.detail)
   localEditMode.value = true
+  detailPaneTab.value = 'local'
+  mobilePane.value = 'local'
 }
 
 async function exitLocalEditMode(): Promise<void> {
   if (localForm.isDirty.value) {
     const ok = await dialogStore.confirm({
-      title: '放弃左栏未保存的修改？',
-      message: '退出编辑模式将丢弃当前左栏未保存的更改。',
-      confirmText: '放弃修改',
-      cancelText: '继续编辑',
+      title: t('tool.workbench.view.discardLocalTitle'),
+      message: t('tool.workbench.view.discardLocalMsg'),
+      confirmText: t('tool.workbench.view.discardLocalConfirm'),
+      cancelText: t('tool.inspector.continueEditing'),
       danger: true,
     })
     if (!ok) return
@@ -221,7 +259,7 @@ async function handleLocalArtworkPicked(ev: Event): Promise<void> {
     }
     lastEntryKey = entryCompositeKey(updated.entry)
     emit('updated', updated, true)
-    snackbar.show('封面已更新并写入磁盘')
+    snackbar.show(t('tool.inspector.coverUpdated'))
   } catch (err) {
     if (seq === saveSeq) {
       errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -251,7 +289,12 @@ async function handlePolishLocalBook(): Promise<void> {
     localForm.hydrateForm(report.detail)
     emit('updated', report.detail, true)
     snackbar.show(
-      `书籍抛光完成 · ${report.jacket_updated ? '简介页已更新' : '目录已同步'}，清理 ${report.removed_orphan_files} 个冗余资源`,
+      t('tool.inspector.bookPolished', {
+        step: report.jacket_updated
+          ? t('tool.inspector.jacketUpdated')
+          : t('tool.inspector.tocSynced'),
+        removed: report.removed_orphan_files,
+      }),
     )
   } catch (err) {
     if (seq === saveSeq) {
@@ -287,8 +330,10 @@ async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Pr
     localEditMode.value = false
     emit('updated', updated, false)
     snackbar.show({
-      message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已保存左栏元数据修改',
-      actionLabel: '变更历史',
+      message: organizeAfterSave
+        ? t('tool.inspector.savedAndArchived')
+        : t('tool.workbench.view.savedLocal'),
+      actionLabel: t('tool.inspector.historyAction'),
       onAction: () => emit('openHistory'),
     })
     if (advanceNext && props.hasNext) {
@@ -308,10 +353,10 @@ async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Pr
 async function confirmDiscardIfDirty(): Promise<boolean> {
   if (!isCurrentDirty.value) return true
   return dialogStore.confirm({
-    title: '放弃未保存的修改？',
-    message: '当前工作台存在尚未写入原文件的修改，切换后这些修改将丢失。',
-    confirmText: '放弃并继续',
-    cancelText: '留下编辑',
+    title: t('tool.workbench.view.discardTitle'),
+    message: t('tool.workbench.view.discardMsg'),
+    confirmText: t('tool.workbench.view.discardConfirm'),
+    cancelText: t('tool.workbench.view.stayEditing'),
     danger: true,
   })
 }
@@ -377,8 +422,10 @@ async function handleApplyAndSave(
     localForm.hydrateForm(updated)
     emit('updated', updated, bumpedArtwork)
     snackbar.show({
-      message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已写入原文件并更新左侧信息',
-      actionLabel: '变更历史',
+      message: organizeAfterSave
+        ? t('tool.inspector.savedAndArchived')
+        : t('tool.workbench.view.savedApplied'),
+      actionLabel: t('tool.inspector.historyAction'),
       onAction: () => emit('openHistory'),
     })
 
@@ -464,7 +511,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="relative flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface)]">
+  <div class="relative flex h-full w-full flex-col overflow-hidden bg-surface">
     <input
       ref="coverInputRef"
       type="file"
@@ -498,41 +545,55 @@ defineExpose({
     <!-- Loading Overlay when Switching Items -->
     <div
       v-if="loadingDetail && !detail"
-      class="flex flex-1 items-center justify-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      class="text-body-small flex flex-1 items-center justify-center text-on-surface-variant"
     >
-      正在加载当前条目元数据…
+      {{ t('tool.workbench.view.loadingEntry') }}
     </div>
 
     <!-- Empty Queue Fallback -->
     <div
       v-else-if="!detail"
-      class="flex flex-1 flex-col items-center justify-center gap-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      class="text-body-small flex flex-1 flex-col items-center justify-center gap-2 text-on-surface-variant"
     >
-      <p>当前队列没有可编辑的条目</p>
-      <button type="button" class="md-btn md-btn-sm md-btn-tonal md-state" @click="requestExit">
-        返回媒体列表
-      </button>
+      <p>{{ t('tool.workbench.view.emptyQueue') }}</p>
+      <MdButton variant="tonal" size="sm" @click="requestExit">
+        {{ t('tool.workbench.view.backToMedia') }}
+      </MdButton>
     </div>
 
-    <!-- MAIN 3-COLUMN WORKBENCH -->
+    <!-- RESPONSIVE WORKBENCH:
+         - <840px (<md): 1-column MdTabs (Local / Candidates / Preview)
+         - 840px–1599px (md..xl): 2-column spacious split (Candidates left + Tabbed Local/Preview right)
+         - >=1600px (xl+): 3-column full split (Local + Candidates + Preview) -->
     <div v-else class="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div class="shrink-0 bg-[var(--md-sys-color-surface-container-low)] lg:hidden">
+      <div class="shrink-0 bg-surface-container-low md:hidden">
         <MdTabs
           v-model="mobilePane"
           :tabs="mobilePaneTabs"
           variant="primary"
-          aria-label="刮削工作台分区"
+          :aria-label="t('tool.workbench.view.sectionsAria')"
         />
       </div>
 
       <div
-        class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_330px_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.05fr)_370px_minmax(0,1.05fr)]"
+        class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[340px_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_360px_minmax(0,1fr)]"
       >
-        <!-- COLUMN 1 (LEFT): Current Persisted Entry -->
+        <!-- PANE: Local Persisted Entry -->
         <div
-          class="min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] lg:flex"
-          :class="mobilePane === 'local' ? 'flex' : 'hidden'"
+          class="min-h-0 flex-col overflow-hidden bg-surface-container-low md:order-2 xl:order-1 xl:flex"
+          :class="[
+            mobilePane === 'local' ? 'flex' : 'hidden',
+            detailPaneTab === 'local' ? 'md:flex' : 'md:hidden',
+          ]"
         >
+          <div class="hidden shrink-0 bg-surface-container-low md:block xl:hidden">
+            <MdTabs
+              v-model="detailPaneTab"
+              :tabs="detailPaneTabs"
+              variant="secondary"
+              :aria-label="t('tool.workbench.view.sectionsAria')"
+            />
+          </div>
           <WorkbenchLocalPane
             :detail="detail"
             :saved-keys="savedKeys"
@@ -554,9 +615,9 @@ defineExpose({
           />
         </div>
 
-        <!-- COLUMN 2 (MIDDLE): Scraper Sources & Candidate List -->
+        <!-- PANE: Scraper Sources & Candidate List -->
         <div
-          class="min-h-0 flex-col border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/40 lg:flex lg:border-x"
+          class="min-h-0 flex-col border-outline-variant/45 bg-surface-container/40 md:order-1 md:flex md:border-r xl:order-2 xl:border-x"
           :class="mobilePane === 'candidates' ? 'flex' : 'hidden'"
         >
           <div class="min-h-0 flex-1 overflow-hidden">
@@ -573,11 +634,22 @@ defineExpose({
           </div>
         </div>
 
-        <!-- COLUMN 3 (RIGHT): Editable Pending Result & Save Area -->
+        <!-- PANE: Editable Pending Result & Save Area -->
         <div
-          class="min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] lg:flex"
-          :class="mobilePane === 'preview' ? 'flex' : 'hidden'"
+          class="min-h-0 flex-col overflow-hidden bg-surface-container-low md:order-2 xl:order-3 xl:flex"
+          :class="[
+            mobilePane === 'preview' ? 'flex' : 'hidden',
+            detailPaneTab === 'preview' ? 'md:flex' : 'md:hidden',
+          ]"
         >
+          <div class="hidden shrink-0 bg-surface-container-low md:block xl:hidden">
+            <MdTabs
+              v-model="detailPaneTab"
+              :tabs="detailPaneTabs"
+              variant="secondary"
+              :aria-label="t('tool.workbench.view.sectionsAria')"
+            />
+          </div>
           <CandidateDetailPreviewPane
             v-if="candidatePreview"
             ref="previewPaneRef"
@@ -591,28 +663,28 @@ defineExpose({
           />
           <div
             v-else
-            class="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            class="text-body-small flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-on-surface-variant"
           >
             <div
-              class="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--md-sys-color-surface-container-high)]"
+              class="flex h-12 w-12 items-center justify-center rounded-corner-lg bg-surface-container-high"
             >
-              <LuImage class="h-5 w-5 opacity-55" />
+              <LuImage class="h-5 w-5 opacity-55" aria-hidden="true" />
             </div>
-            <p class="font-semibold text-[var(--md-sys-color-on-surface)]">
-              等待选择刮削源结果
+            <p class="text-title-small text-on-surface">
+              {{ t('tool.workbench.view.waitingCandidate') }}
             </p>
-            <p class="max-w-[260px] text-[11px] leading-relaxed opacity-80">
-              点击中间候选结果即可对照编辑并写入，或直接在左栏点击「直接编辑」修改本地字段
+            <p class="max-w-[260px] leading-relaxed opacity-85">
+              {{ t('tool.workbench.view.waitingCandidateDesc') }}
             </p>
-            <button
+            <MdButton
               v-if="canSaveMetadata && !localEditMode"
-              type="button"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
-              @click="enterLocalEditMode(); mobilePane = 'local'"
+              variant="tonal"
+              size="sm"
+              :icon="LuPencil"
+              @click="enterLocalEditMode()"
             >
-              <LuPencil class="h-3.5 w-3.5" />
-              <span>在左栏直接编辑</span>
-            </button>
+              {{ t('tool.workbench.view.editLocalDirectly') }}
+            </MdButton>
           </div>
         </div>
       </div>

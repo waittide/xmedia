@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuBookOpen,
   LuClapperboard,
@@ -14,6 +15,9 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdChip from '@/components/ui/MdChip.vue'
+import MdIconButton from '@/components/ui/MdIconButton.vue'
 import type { MediaKind } from '@/types/api'
 import { resolveScraperCoverUrl } from '../../api'
 import type { FieldSourceBadge, ScrapedMetadata } from '../../types'
@@ -59,6 +63,7 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const { t } = useI18n()
 const candidateForm = useMetadataForm()
 const brokenCoverUrls = ref<Set<string>>(new Set())
 const organizeAfterSave = ref(false)
@@ -112,27 +117,27 @@ function sourceBadgeFor(...keys: string[]): string | null {
   return null
 }
 
-const SOURCE_FIELD_LABELS: Record<string, string> = {
-  title: '标题',
-  original_title: '原名',
-  series_or_album: '系列/专辑',
-  creators: '作者/艺人',
-  illustrators_or_directors: '导演/画师',
-  cast: '主演',
-  publisher_or_studio: '出品',
-  year: '年份',
-  published_date: '日期',
-  isbn: 'ISBN',
-  rating: '评分',
-  language: '语言',
-  disc_or_season_number: '季/碟',
-  track_or_episode_number: '集/轨',
-  genres: '流派',
-  tags: '标签',
-  summary: '简介',
-  lyrics: '歌词',
-  cover_url: '封面',
-}
+const sourceFieldLabels = computed<Record<string, string>>(() => ({
+  title: t('tool.sort.title'),
+  original_title: t('tool.workbench.local.originalTitle'),
+  series_or_album: t('tool.forms.comic.series'),
+  creators: t('tool.forms.music.artist'),
+  illustrators_or_directors: t('tool.forms.video.directors'),
+  cast: t('tool.workbench.local.cast'),
+  publisher_or_studio: t('tool.forms.common.publisher'),
+  year: t('tool.forms.common.year'),
+  published_date: t('tool.forms.book.publishedAt'),
+  isbn: t('tool.forms.book.isbn'),
+  rating: t('tool.forms.video.rating'),
+  language: t('tool.forms.common.language'),
+  disc_or_season_number: t('tool.forms.video.season'),
+  track_or_episode_number: t('tool.forms.video.episode'),
+  genres: t('tool.forms.common.genres'),
+  tags: t('tool.forms.common.tags'),
+  summary: t('tool.forms.common.summary'),
+  lyrics: t('tool.workbench.candidates.targetLyrics'),
+  cover_url: t('tool.modals.comicPages.coverBadge'),
+}))
 
 const sourceBadgesList = computed(() => {
   const map = props.preview.fieldSources
@@ -141,7 +146,7 @@ const sourceBadgesList = computed(() => {
     .filter(([, badge]) => Boolean(badge?.provider_name))
     .map(([key, badge]) => ({
       key,
-      label: SOURCE_FIELD_LABELS[key] ?? key,
+      label: sourceFieldLabels.value[key] ?? key,
       provider: badge.provider_name,
     }))
 })
@@ -195,7 +200,7 @@ defineExpose({
     >
       <div class="flex min-w-0 items-center gap-1.5">
         <span
-          class="truncate rounded-corner-full px-2 py-0.5 text-label-small"
+          class="text-label-small truncate rounded-corner-full px-2 py-0.5"
           :class="
             preview.isMerged
               ? 'bg-primary-container text-on-primary-container'
@@ -204,49 +209,45 @@ defineExpose({
         >
           {{ preview.sourceLabel }}
         </span>
-        <span class="truncate text-label-medium text-on-surface-variant">
-          待写入结果（可编辑）
+        <span class="text-label-medium truncate text-on-surface-variant">
+          {{ t('tool.workbench.preview.editableHint') }}
         </span>
         <span
           v-if="isDraftEdited"
-          class="shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-label-small text-on-warning-container"
+          class="text-label-small shrink-0 rounded-corner-full bg-warning-container px-1.5 py-0.5 text-on-warning-container"
         >
-          已微调
+          {{ t('tool.workbench.preview.editedBadge') }}
         </span>
       </div>
 
       <div class="flex shrink-0 items-center gap-0.5">
-        <button
+        <MdIconButton
           v-if="isDraftEdited"
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state"
-          title="恢复为此刮削源的原始信息"
-          aria-label="恢复为此刮削源的原始信息"
+          size="sm"
+          :icon="LuRotateCcw"
+          :tooltip="t('tool.workbench.preview.resetDraft')"
+          :aria-label="t('tool.workbench.preview.resetDraft')"
           @click="resetDraft"
-        >
-          <LuRotateCcw class="h-3.5 w-3.5" />
-        </button>
+        />
 
-        <button
+        <MdIconButton
           v-if="closable"
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state"
-          title="关闭右侧条目预览"
-          aria-label="关闭右侧条目预览"
+          size="sm"
+          :icon="LuX"
+          :tooltip="t('tool.workbench.preview.closePreview')"
+          :aria-label="t('tool.workbench.preview.closePreview')"
           @click="emit('close')"
-        >
-          <LuX class="h-3.5 w-3.5" />
-        </button>
+        />
       </div>
     </div>
 
     <!-- Loading State -->
     <div
       v-if="preview.loading && !preview.meta"
-      class="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-body-small text-on-surface-variant"
+      class="text-body-small flex flex-1 flex-col items-center justify-center gap-2 px-4 text-on-surface-variant"
     >
-      <LuLoader2 class="h-5 w-5 animate-spin text-primary" />
-      <span>正在拉取该候选源完整条目信息…</span>
+      <LuLoader2 class="h-5 w-5 animate-spin text-primary" aria-hidden="true" />
+      <span>{{ t('tool.workbench.preview.loadingDetail') }}</span>
     </div>
 
     <!-- Shared Inspector Domain Form Body -->
@@ -274,61 +275,63 @@ defineExpose({
                 v-else
                 class="flex h-full w-full flex-col items-center justify-center gap-1 text-on-surface-variant"
               >
-                <LuBookOpen v-if="mediaKind === 'book'" class="h-6 w-6 opacity-50" />
-                <LuLayers v-else-if="mediaKind === 'comic'" class="h-6 w-6 opacity-50" />
-                <LuDisc3 v-else-if="mediaKind === 'music'" class="h-6 w-6 opacity-50" />
-                <LuClapperboard v-else class="h-6 w-6 opacity-50" />
+                <LuBookOpen v-if="mediaKind === 'book'" class="h-6 w-6 opacity-50" aria-hidden="true" />
+                <LuLayers v-else-if="mediaKind === 'comic'" class="h-6 w-6 opacity-50" aria-hidden="true" />
+                <LuDisc3 v-else-if="mediaKind === 'music'" class="h-6 w-6 opacity-50" aria-hidden="true" />
+                <LuClapperboard v-else class="h-6 w-6 opacity-50" aria-hidden="true" />
                 <span class="text-label-small">
                   {{
                     !useCover
-                      ? '已取消封面'
+                      ? t('tool.workbench.preview.coverRemoved')
                       : preview.meta.cover_url
-                        ? '封面加载失败'
-                        : '无封面'
+                        ? t('tool.workbench.preview.coverFailed')
+                        : t('tool.inspector.noCover')
                   }}
                 </span>
               </div>
             </div>
             <span
               v-if="useCover && isCoverUsable(preview.meta.cover_url) && sourceBadgeFor('cover_url')"
-              class="rounded-corner-full bg-primary-container px-2 py-0.5 text-label-small text-on-primary-container"
+              class="text-label-small rounded-corner-full bg-primary-container px-2 py-0.5 text-on-primary-container"
             >
-              封面 · {{ sourceBadgeFor('cover_url') }}
+              {{ t('tool.workbench.preview.coverFrom', { provider: sourceBadgeFor('cover_url') }) }}
             </span>
           </div>
 
           <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
             <div>
-              <div class="line-clamp-2 text-title-small text-on-surface">
+              <div class="text-title-small line-clamp-2 text-on-surface">
                 {{ displayDraftTitle || preview.meta.title || '—' }}
               </div>
               <div
                 v-if="displayDraftCreators"
-                class="mt-1 truncate text-body-small text-on-surface-variant"
+                class="text-body-small mt-1 truncate text-on-surface-variant"
               >
                 {{ displayDraftCreators }}
               </div>
               <div
                 v-if="preview.loading"
-                class="mt-1.5 inline-flex items-center gap-1 text-label-small text-primary"
+                class="text-label-small mt-1.5 inline-flex items-center gap-1 text-primary"
               >
-                <LuLoader2 class="h-3 w-3 animate-spin" />
-                <span>补全详情中…</span>
+                <LuLoader2 class="h-3 w-3 animate-spin" aria-hidden="true" />
+                <span>{{ t('tool.workbench.preview.fetchingMore') }}</span>
               </div>
             </div>
 
             <div class="flex flex-wrap gap-1.5">
-              <button
+              <MdChip
                 v-if="isCoverUsable(preview.meta.cover_url)"
-                type="button"
-                class="md-chip md-state"
-                :class="!useCover ? 'md-chip-selected' : ''"
+                variant="filter"
+                hide-check
+                :selected="!useCover"
+                :icon="useCover ? LuImageOff : LuImage"
+                :label="
+                  useCover
+                    ? t('tool.workbench.preview.skipCover')
+                    : t('tool.workbench.preview.restoreCover')
+                "
                 @click="useCover = !useCover"
-              >
-                <LuImageOff v-if="useCover" class="h-3.5 w-3.5" />
-                <LuImage v-else class="h-3.5 w-3.5" />
-                <span>{{ useCover ? '不用此封面' : '恢复封面' }}</span>
-              </button>
+              />
             </div>
           </div>
         </div>
@@ -338,11 +341,13 @@ defineExpose({
           v-if="sourceBadgesList.length > 0"
           class="flex flex-wrap items-center gap-1 rounded-corner-md bg-surface px-2.5 py-2"
         >
-          <span class="text-label-small text-on-surface-variant">字段来源：</span>
+          <span class="text-label-small text-on-surface-variant">
+            {{ t('tool.workbench.preview.fieldProvenance') }}
+          </span>
           <span
             v-for="item in sourceBadgesList"
             :key="item.key"
-            class="rounded-corner-full bg-surface-container-high px-2 py-0.5 text-label-small text-on-surface"
+            class="text-label-small rounded-corner-full bg-surface-container-high px-2 py-0.5 text-on-surface"
           >
             {{ item.label }} · <strong class="text-primary">{{ item.provider }}</strong>
           </span>
@@ -352,7 +357,7 @@ defineExpose({
         <InspectorMusicForm
           v-if="mediaKind === 'music'"
           :form="candidateForm.musicForm"
-          sidecar-lrc-filename="同名 .lrc"
+          sidecar-lrc-filename=".lrc"
           :file-key="preview.key"
         />
         <InspectorVideoForm
@@ -380,45 +385,50 @@ defineExpose({
       <div
         class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-outline-variant/45 bg-surface-container/75 px-3.5 py-2.5"
       >
-        <div class="flex flex-wrap items-center gap-3 text-label-small text-on-surface-variant">
+        <div class="text-label-small flex flex-wrap items-center gap-3 text-on-surface-variant">
           <span>
-            写入模式：{{ preview.fillMode === 'overwrite' ? '覆盖' : '仅补空' }}
+            {{
+              t('tool.workbench.preview.writeModeLabel', {
+                mode:
+                  preview.fillMode === 'overwrite'
+                    ? t('tool.workbench.search.modeOverwrite')
+                    : t('tool.workbench.search.modeFillMissing'),
+              })
+            }}
           </span>
-          <span title="写入元数据后按设置页的默认命名模板重命名并归档目录">
-            <AppCheckbox v-model="organizeAfterSave" label="保存并归档" />
+          <span :title="t('tool.inspector.saveAndArchiveTitle')">
+            <AppCheckbox v-model="organizeAfterSave" :label="t('tool.inspector.saveAndArchive')" />
           </span>
           <span
             v-if="mediaKind === 'music' && useCover && isCoverUsable(preview.meta.cover_url)"
-            title="写入内嵌封面时同步在专辑目录保存 cover 图片"
+            :title="t('tool.workbench.preview.syncAlbumCoverHint')"
           >
-            <AppCheckbox v-model="writeAlbumCover" label="同步专辑 cover" />
+            <AppCheckbox v-model="writeAlbumCover" :label="t('tool.workbench.preview.syncAlbumCover')" />
           </span>
         </div>
 
         <div class="ml-auto flex items-center gap-1.5">
-          <button
+          <MdIconButton
             v-if="hasNext"
-            type="button"
+            variant="tonal"
+            size="sm"
             :disabled="saving"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            title="写入当前文件并自动切换到下一项 (⌘Enter)"
+            :icon="LuSkipForward"
+            :tooltip="t('tool.workbench.preview.applyAndNextHint')"
+            :aria-label="t('tool.workbench.preview.applyAndNext')"
             @click="emitDirectApply(true)"
-          >
-            <LuSkipForward class="h-3.5 w-3.5" />
-            <span>写入并下一项</span>
-          </button>
+          />
 
-          <button
-            type="button"
-            :disabled="saving"
-            class="md-btn md-btn-sm md-btn-filled md-state"
-            title="直接将此结果写入本地媒体文件 (⌘S)"
+          <MdButton
+            variant="filled"
+            size="sm"
+            :icon="LuSave"
+            :loading="saving"
+            :title="t('tool.workbench.preview.applyAndSaveHint')"
             @click="emitDirectApply(false)"
           >
-            <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-            <LuSave v-else class="h-3.5 w-3.5" />
-            <span>{{ saving ? '写入中…' : '应用并保存' }}</span>
-          </button>
+            {{ saving ? t('tool.actions.saving') : t('tool.workbench.preview.applyAndSave') }}
+          </MdButton>
         </div>
       </div>
     </template>
