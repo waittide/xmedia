@@ -4,11 +4,12 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_formats::decode_text_smart;
+use xmedia_formats::video::SubtitleFormatExt;
+pub use xmedia_formats::video::convert_subtitle_bytes_to_vtt;
 
 use crate::infra::atomic_fs::atomic_write_bytes;
 use crate::infra::inspectors::zh_text::{ZhConvertDirection, convert_zh_plain};
-
-const SUB_EXTS: &[&str] = &["srt", "ass", "ssa", "vtt"];
 
 static RE_SRT_TIMING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -100,12 +101,9 @@ fn detect_encoding_and_decode(bytes: &[u8]) -> (String, String, bool) {
     if let Ok(s) = std::str::from_utf8(stripped) {
         return ("UTF-8".to_string(), s.to_string(), true);
     }
-    let mut det = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
-    det.feed(bytes, true);
-    let enc = det.guess(None, chardetng::Utf8Detection::Allow);
-    let (decoded, _, _) = enc.decode(bytes);
+    let (decoded, enc_label) = decode_text_smart(bytes);
     (
-        enc.name().to_string(),
+        enc_label.to_string(),
         decoded.trim_start_matches('\u{feff}').to_string(),
         false,
     )
@@ -187,7 +185,7 @@ pub fn list_video_subtitles(video_path: &Path) -> DomainResult<Vec<VideoSubtitle
             .and_then(|s| s.to_str())
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
-        if !SUB_EXTS.contains(&ext.as_str()) {
+        if SubtitleFormatExt::from_extension(&ext).is_none() {
             continue;
         }
         let Some(fname) = p.file_name().and_then(|s| s.to_str()) else {

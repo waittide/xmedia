@@ -12,7 +12,8 @@ use zip::ZipArchive;
 
 use super::epub_zip::{normalize_zip_rel, parse_epub_archive, rewrite_epub_entries};
 use super::opf::{
-    render_sidecar_opf, replace_opf_metadata_block, swap_href_extension, update_manifest_cover_item,
+    file_meta_to_parsed_book, render_sidecar_opf, replace_opf_metadata_block, swap_href_extension,
+    update_manifest_cover_item,
 };
 use super::sidecar::{
     BOOK_EXTENSIONS, dir_has_single_book, find_existing_sidecar_opf, find_sidecar_cover,
@@ -24,6 +25,7 @@ use crate::domain::media::{
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::atomic_write_bytes;
 use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
+use xmedia_formats::book::{BookFormatExt, parse_book_bytes};
 
 pub struct EpubBookInspector;
 
@@ -143,6 +145,9 @@ impl MediaInspectorPort for EpubBookInspector {
                 }
                 if let Some(idx) = patch.series_index {
                     meta.series_index = (!idx.trim().is_empty()).then(|| idx.trim().to_string());
+                }
+                if let Some(rating) = patch.rating {
+                    meta.rating = (rating.is_finite() && rating >= 0.0).then_some(rating);
                 }
                 if let Some(desc) = patch.description {
                     meta.description = (!desc.trim().is_empty()).then(|| desc.trim().to_string());
@@ -280,6 +285,21 @@ impl MediaInspectorPort for EpubBookInspector {
                 return Ok(Some(BinaryPayload {
                     bytes: buf,
                     mime_type: mime,
+                }));
+            }
+
+            if let Some(fmt_ext) = BookFormatExt::from_extension(&ext)
+                && matches!(
+                    fmt_ext,
+                    BookFormatExt::Fb2 | BookFormatExt::Mobi | BookFormatExt::Azw3
+                )
+                && let Ok(raw) = std::fs::read(&p)
+                && let Ok(pkg) = parse_book_bytes(fmt_ext, &raw, "Untitled")
+                && let Some(cov) = pkg.cover
+            {
+                return Ok(Some(BinaryPayload {
+                    bytes: cov.bytes,
+                    mime_type: cov.mime_type,
                 }));
             }
             Ok(None)
@@ -432,9 +452,9 @@ impl MediaInspectorPort for EpubBookInspector {
                 escape(&detected)
             );
             opf_str = opf_str.replacen("</manifest>", &item_tag, 1);
-            opf_str = replace_opf_metadata_block(
+            opf_str = xmedia_formats::book::opf::replace_opf_metadata_block(
                 &opf_str,
-                &parsed.meta,
+                &file_meta_to_parsed_book(&parsed.meta),
                 Some("xmedia-cover-img"),
                 &parsed.unique_identifier_id,
                 &parsed.package_version,

@@ -113,6 +113,20 @@ impl MediaWorkbenchService {
                     .cloned()
             };
 
+            let resolve_dir_ins = |p: &Path| -> Option<Arc<dyn MediaInspectorPort>> {
+                if let Some(pref) = effective_pref
+                    && let Some(matched) = inspectors
+                        .iter()
+                        .find(|ins| ins.media_kind() == pref && ins.supports_directory(p))
+                {
+                    return Some(Arc::clone(matched));
+                }
+                inspectors
+                    .iter()
+                    .find(|ins| ins.supports_directory(p))
+                    .cloned()
+            };
+
             let mut raw_dirs: Vec<(String, PathBuf)> = Vec::new();
             let mut dir_counts: HashMap<String, (usize, usize)> = HashMap::new();
             let mut raw_files: Vec<(String, PathBuf, Arc<dyn MediaInspectorPort>)> = Vec::new();
@@ -144,16 +158,36 @@ impl MediaWorkbenchService {
                 };
 
                 if ft.is_dir() {
+                    let matched_dir_ins = resolve_dir_ins(p)
+                        .filter(|ins| domain_filter.is_none_or(|want| ins.media_kind() == want));
                     if depth == 1 {
                         let name_owned = fname.to_string();
                         dir_counts.entry(name_owned.clone()).or_insert((0, 0));
-                        raw_dirs.push((name_owned, p.to_path_buf()));
+                        raw_dirs.push((name_owned.clone(), p.to_path_buf()));
+                        if let Some(ref ins) = matched_dir_ins {
+                            dir_counts.entry(name_owned.clone()).or_insert((0, 0)).1 += 1;
+                            if !recursive {
+                                raw_files.push((name_owned, p.to_path_buf(), ins.clone()));
+                            }
+                        }
                     } else if depth == 2
                         && let Ok(rel_from_cur) = p.strip_prefix(&dir_sandbox.abs_path)
                         && let Some(Component::Normal(top_os)) = rel_from_cur.components().next()
                         && let Some(top_name) = top_os.to_str()
                     {
                         dir_counts.entry(top_name.to_string()).or_insert((0, 0)).0 += 1;
+                    }
+                    if depth >= 2
+                        && matched_dir_ins.is_some()
+                        && let Ok(rel_from_cur) = p.strip_prefix(&dir_sandbox.abs_path)
+                        && let Some(Component::Normal(top_os)) = rel_from_cur.components().next()
+                        && let Some(top_name) = top_os.to_str()
+                    {
+                        dir_counts.entry(top_name.to_string()).or_insert((0, 0)).1 += 1;
+                    }
+                    if recursive && let Some(ins) = matched_dir_ins {
+                        let fname_owned = fname.to_string();
+                        raw_files.push((fname_owned, p.to_path_buf(), ins));
                     }
                     continue;
                 }

@@ -11,7 +11,7 @@ use std::path::Path;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::infra::stream::decode_text_smart;
+use xmedia_formats::decode_text_smart;
 
 use crate::infra::inspectors::book::read_book_meta_any;
 use crate::infra::inspectors::zh_text::{

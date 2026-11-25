@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 use quick_xml::escape::escape;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::infra::stream::decode_text_smart;
-use xmedia_core::infra::thumbnail::sniff_image_mime;
+use xmedia_formats::{decode_text_smart, sniff_image_mime};
 use zip::ZipWriter;
 
 use crate::domain::media::BookFileMeta;

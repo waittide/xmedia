@@ -113,6 +113,21 @@ impl MediaWorkbenchService {
         path: &Path,
         preferred_kind: Option<MediaKind>,
     ) -> Option<Arc<dyn MediaInspectorPort>> {
+        if path.is_dir() {
+            if let Some(pref) = preferred_kind
+                && let Some(matched) = self
+                    .inspectors
+                    .iter()
+                    .find(|ins| ins.media_kind() == pref && ins.supports_directory(path))
+            {
+                return Some(Arc::clone(matched));
+            }
+            return self
+                .inspectors
+                .iter()
+                .find(|ins| ins.supports_directory(path))
+                .cloned();
+        }
         let ext = path
             .extension()
             .and_then(|s| s.to_str())?
@@ -152,20 +167,27 @@ impl MediaWorkbenchService {
     ) -> DomainResult<(ManagedRoot, SandboxPath, Arc<dyn MediaInspectorPort>)> {
         let root = self.settings.find_root(root_id).await?;
         let sandbox = resolve_existing_in_root(&root, rel_path)?;
-        if !sandbox.abs_path.is_file() {
+        let effective_pref = preferred_kind.or(root.default_kind);
+        if !sandbox.abs_path.is_file() && !sandbox.abs_path.is_dir() {
             return Err(DomainError::Validation(format!(
                 "'{}' is not a regular file",
                 sandbox.rel_slash_string()
             )));
         }
-        let effective_pref = preferred_kind.or(root.default_kind);
         let inspector = self
             .resolve_inspector_for_path(&sandbox.abs_path, effective_pref)
             .ok_or_else(|| {
-                DomainError::UnsupportedFormat(format!(
-                    "unsupported media file '{}'",
-                    sandbox.rel_slash_string()
-                ))
+                if sandbox.abs_path.is_dir() {
+                    DomainError::Validation(format!(
+                        "'{}' is not a regular file",
+                        sandbox.rel_slash_string()
+                    ))
+                } else {
+                    DomainError::UnsupportedFormat(format!(
+                        "unsupported media file '{}'",
+                        sandbox.rel_slash_string()
+                    ))
+                }
             })?;
         Ok((root, sandbox, inspector))
     }
@@ -191,15 +213,30 @@ impl MediaWorkbenchService {
             .strip_prefix(&root.path)
             .map(path_to_slash)
             .unwrap_or_else(|_| file_name.to_string());
-        let raw_ext = abs_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        let ext = raw_ext.to_ascii_lowercase();
-        let fallback_stem = abs_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(file_name);
+        let is_dir = abs_path.is_dir();
+        let (raw_ext, ext, fallback_stem, file_size) = if is_dir {
+            let dir_bytes = std::fs::read_dir(abs_path)
+                .ok()
+                .map(|rd| {
+                    rd.flatten()
+                        .filter_map(|e| e.metadata().ok())
+                        .filter(|m| m.is_file())
+                        .map(|m| m.len())
+                        .sum::<u64>()
+                })
+                .unwrap_or(0);
+            ("", "folder".to_string(), file_name, dir_bytes)
+        } else {
+            let re = abs_path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let fs = abs_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(file_name);
+            (re, re.to_ascii_lowercase(), fs, fs_meta.len())
+        };
 
         let mut quick = inspector.summarize_file(abs_path, fallback_stem).await;
         if let Some(ref meta) = quick.metadata {
@@ -213,7 +250,7 @@ impl MediaWorkbenchService {
             file_name: file_name.to_string(),
             extension: ext,
             media_kind: inspector.media_kind(),
-            file_size: fs_meta.len(),
+            file_size,
             modified_unix_secs,
             display_title: quick.display_title,
             display_subtitle: quick.display_subtitle,
@@ -271,6 +308,11 @@ pub(super) fn dir_has_any_media_file(
         })
         .flatten()
         .any(|entry| {
+            if entry.depth() > 0 && entry.file_type().is_dir() {
+                return inspectors
+                    .iter()
+                    .any(|ins| ins.supports_directory(entry.path()));
+            }
             entry.file_type().is_file()
                 && entry
                     .path()

@@ -35,6 +35,12 @@ pub trait MediaInspectorPort: Send + Sync {
 
     fn supports_extension(&self, ext_lower: &str) -> bool;
 
+    /// Returns `true` when `dir_path` is a standalone directory-backed media item (e.g. a comic image folder).
+    fn supports_directory(&self, dir_path: &Path) -> bool {
+        let _ = dir_path;
+        false
+    }
+
     /// Lightweight summary used when listing a directory.
     async fn summarize_file(&self, path: &Path, fallback_stem: &str) -> QuickFileSummary;
 

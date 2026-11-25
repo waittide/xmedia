@@ -182,3 +182,60 @@ async fn write_metadata_preserves_pages_extended_comicinfo_elements_and_fraction
     assert!(out_xml.contains("<Pages>"));
     assert!(out_xml.contains("DoublePage=\"true\""));
 }
+
+#[tokio::test]
+async fn comic_image_directory_inspect_write_metadata_and_artwork_roundtrip() {
+    use super::CbzComicInspector;
+    use crate::domain::media::{ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload};
+    use crate::domain::ports::MediaInspectorPort;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let series_dir = tmp.path().join("葬送的芙莉莲");
+    let ch_dir = series_dir.join("第07话");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    let png_bytes = b"\x89PNG\r\n\x1a\nfake";
+    std::fs::write(ch_dir.join("001.png"), png_bytes).unwrap();
+    std::fs::write(ch_dir.join("002.png"), png_bytes).unwrap();
+
+    let inspector = CbzComicInspector;
+    assert!(inspector.supports_directory(&ch_dir));
+    assert!(!inspector.supports_directory(&series_dir));
+
+    let payload = inspector.inspect_file(&ch_dir).await.unwrap();
+    let MediaMetadataPayload::Comic(meta) = payload else {
+        panic!("expected comic payload");
+    };
+    assert_eq!(meta.format, "folder");
+    assert_eq!(meta.series.as_deref(), Some("葬送的芙莉莲"));
+    assert_eq!(meta.number.as_deref(), Some("7"));
+    assert_eq!(meta.page_count, 2);
+    assert!(!meta.has_comic_info_xml);
+    assert!(meta.has_cover);
+
+    let updated = inspector
+        .write_metadata(
+            &ch_dir,
+            &MediaMetadataPatch::Comic(ComicMetaPatch {
+                title: Some("魂之眠地".into()),
+                writers: Some(vec!["山田钟人".into()]),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let MediaMetadataPayload::Comic(meta2) = updated else {
+        panic!("expected comic payload");
+    };
+    assert!(meta2.has_comic_info_xml);
+    assert_eq!(meta2.title.as_deref(), Some("魂之眠地"));
+    assert!(ch_dir.join("ComicInfo.xml").is_file());
+
+    let art = inspector.read_artwork(&ch_dir, None).await.unwrap();
+    assert!(art.is_some());
+
+    inspector
+        .write_artwork(&ch_dir, png_bytes, "image/png", "cover")
+        .await
+        .unwrap();
+    assert!(ch_dir.join("000_cover.png").is_file());
+}

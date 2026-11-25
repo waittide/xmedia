@@ -74,6 +74,8 @@ pub struct BookFileMeta {
     pub subseries: Option<String>,
     #[serde(default)]
     pub series_index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<f64>,
     pub description: Option<String>,
     pub publisher: Option<String>,
     pub published_at: Option<String>,
@@ -241,6 +243,8 @@ pub struct BookMetaPatch {
     pub subseries: Option<String>,
     #[serde(default)]
     pub series_index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<f64>,
     pub description: Option<String>,
     pub publisher: Option<String>,
     pub published_at: Option<String>,

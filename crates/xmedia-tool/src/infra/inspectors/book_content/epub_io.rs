@@ -10,11 +10,11 @@ use quick_xml::events::Event;
 use regex::Regex;
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_formats::book::epub_toc::{parse_nav_xhtml_toc, parse_ncx_toc};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::domain::media::BookFileMeta;
-use crate::infra::inspectors::append_xml_ref;
 use crate::infra::inspectors::book::{
     attr_value, find_opf_path_in_container, normalize_zip_rel, replace_opf_metadata_block,
 };
@@ -184,150 +184,24 @@ pub(crate) fn parse_epub_structure<R: Read + std::io::Seek>(
 }
 
 pub(crate) fn parse_nav_toc_map(nav_bytes: &[u8], nav_dir: &Path) -> HashMap<String, (String, u8)> {
-    let xml = String::from_utf8_lossy(nav_bytes);
-    let mut reader = Reader::from_str(&xml);
-    reader.config_mut().trim_text(true);
-
-    let mut out: HashMap<String, (String, u8)> = HashMap::new();
-    let mut in_toc_nav = false;
-    let mut nav_depth = 0usize;
-    let mut ol_depth = 0u8;
-    let mut active_href: Option<String> = None;
-    let mut text_buf = String::new();
-
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let local = e.local_name().as_ref().to_ascii_lowercase();
-                match local.as_str() {
-                    "nav" => {
-                        if nav_depth == 0 {
-                            let is_toc = attr_value(e, "type")
-                                .is_some_and(|v| v.split_whitespace().any(|t| t == "toc"))
-                                || attr_value(e, "role")
-                                    .is_some_and(|v| v.split_whitespace().any(|t| t == "doc-toc"));
-                            in_toc_nav = is_toc || out.is_empty();
-                            ol_depth = 0;
-                        }
-                        nav_depth += 1;
-                    }
-                    "ol" | "ul" if in_toc_nav => {
-                        ol_depth = ol_depth.saturating_add(1);
-                    }
-                    "a" if in_toc_nav && ol_depth > 0 => {
-                        active_href = attr_value(e, "href").map(|h| normalize_zip_rel(nav_dir, &h));
-                        text_buf.clear();
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Text(ref t)) if active_href.is_some() => {
-                text_buf.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
-            }
-            Ok(Event::GeneralRef(ref r)) if active_href.is_some() => {
-                append_xml_ref(&mut text_buf, r);
-            }
-            Ok(Event::End(ref e)) => {
-                let local = e.local_name().as_ref().to_ascii_lowercase();
-                match local.as_str() {
-                    "a" if in_toc_nav => {
-                        if let Some(full) = active_href.take() {
-                            let title = text_buf.trim().to_string();
-                            if !title.is_empty() {
-                                out.entry(full)
-                                    .or_insert((title, ol_depth.saturating_sub(1).min(1)));
-                            }
-                        }
-                        text_buf.clear();
-                    }
-                    "ol" | "ul" if in_toc_nav => {
-                        ol_depth = ol_depth.saturating_sub(1);
-                    }
-                    "nav" if nav_depth > 0 => {
-                        nav_depth -= 1;
-                        if nav_depth == 0 {
-                            in_toc_nav = false;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
+    let mut out = HashMap::new();
+    for entry in parse_nav_xhtml_toc(nav_bytes, nav_dir) {
+        if !entry.href.is_empty() && !entry.title.trim().is_empty() {
+            out.entry(entry.href)
+                .or_insert((entry.title, entry.level.min(1)));
         }
     }
-
     out
 }
 
 pub(crate) fn parse_ncx_toc_map(ncx_bytes: &[u8], ncx_dir: &Path) -> HashMap<String, (String, u8)> {
-    let xml = String::from_utf8_lossy(ncx_bytes);
-    let mut reader = Reader::from_str(&xml);
-    reader.config_mut().trim_text(true);
-
-    let mut out: HashMap<String, (String, u8)> = HashMap::new();
-    let mut depth = 0u8;
-    let mut in_text = false;
-    let mut cur_title = String::new();
-
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let local = e.local_name().as_ref().to_ascii_lowercase();
-                match local.as_str() {
-                    "navpoint" => {
-                        depth = depth.saturating_add(1);
-                        cur_title.clear();
-                    }
-                    "text" if depth > 0 => {
-                        in_text = true;
-                        cur_title.clear();
-                    }
-                    "content" if depth > 0 => {
-                        if let Some(src) = attr_value(e, "src") {
-                            let full = normalize_zip_rel(ncx_dir, &src);
-                            let t = cur_title.trim().to_string();
-                            if !t.is_empty() {
-                                out.entry(full)
-                                    .or_insert((t, depth.saturating_sub(1).min(1)));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                if depth > 0
-                    && e.local_name().as_ref().eq_ignore_ascii_case("content")
-                    && let Some(src) = attr_value(e, "src")
-                {
-                    let full = normalize_zip_rel(ncx_dir, &src);
-                    let t = cur_title.trim().to_string();
-                    if !t.is_empty() {
-                        out.entry(full)
-                            .or_insert((t, depth.saturating_sub(1).min(1)));
-                    }
-                }
-            }
-            Ok(Event::Text(ref t)) if in_text => {
-                cur_title.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
-            }
-            Ok(Event::GeneralRef(ref r)) if in_text => {
-                append_xml_ref(&mut cur_title, r);
-            }
-            Ok(Event::End(ref e)) => {
-                let local = e.local_name().as_ref().to_ascii_lowercase();
-                match local.as_str() {
-                    "text" => in_text = false,
-                    "navpoint" => depth = depth.saturating_sub(1),
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
+    let mut out = HashMap::new();
+    for entry in parse_ncx_toc(ncx_bytes, ncx_dir) {
+        if !entry.href.is_empty() && !entry.title.trim().is_empty() {
+            out.entry(entry.href)
+                .or_insert((entry.title, entry.level.min(1)));
         }
     }
-
     out
 }
 
@@ -371,27 +245,26 @@ pub fn read_epub_internal_asset(
     let bytes = read_zip_bytes(&mut archive, &normalized).ok_or_else(|| {
         DomainError::NotFound(format!("epub internal asset '{normalized}' not found"))
     })?;
-    let mime_type =
-        if let Some(raster) = xmedia_core::infra::thumbnail::sniff_raster_image_mime(&bytes) {
-            raster.to_string()
-        } else {
-            let ext = Path::new(&normalized)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-                .unwrap_or_default();
-            match ext.as_str() {
-                "woff" => "font/woff".to_string(),
-                "woff2" => "font/woff2".to_string(),
-                "ttf" => "font/ttf".to_string(),
-                "otf" => "font/otf".to_string(),
-                _ => {
-                    return Err(DomainError::Validation(format!(
-                        "epub asset '{normalized}' is not an allowed raster image or font"
-                    )));
-                }
+    let mime_type = if let Some(raster) = xmedia_formats::sniff_raster_image_mime(&bytes) {
+        raster.to_string()
+    } else {
+        let ext = Path::new(&normalized)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        match ext.as_str() {
+            "woff" => "font/woff".to_string(),
+            "woff2" => "font/woff2".to_string(),
+            "ttf" => "font/ttf".to_string(),
+            "otf" => "font/otf".to_string(),
+            _ => {
+                return Err(DomainError::Validation(format!(
+                    "epub asset '{normalized}' is not an allowed raster image or font"
+                )));
             }
-        };
+        }
+    };
     Ok(BinaryPayload { bytes, mime_type })
 }
 
@@ -517,7 +390,6 @@ pub(crate) fn render_nav_xhtml(
         let (title, full_path, _lvl) = &items[idx];
         let rel_href = relative_href_from_dir(nav_dir, full_path);
 
-        // Collect immediately following level=1 children if this item is level=0
         let is_top = items[idx].2 == 0 || idx == 0;
         let mut children = Vec::new();
         if is_top {
@@ -649,7 +521,6 @@ pub(crate) fn rebuild_opf_manifest_and_spine(
             .expect("valid package version regex")
     });
 
-    // Upgrade package version to 3.0 when nav property is present so EPUB3 validators pass
     let upgraded_opf = PKG_VER_RE.replace(raw_opf, "${1}3.0${2}").into_owned();
     let effective_ver = if package_version.starts_with('3') {
         package_version

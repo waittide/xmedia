@@ -217,12 +217,16 @@ impl MediaWorkbenchService {
                 continue;
             };
             let meta = inspector.inspect_file(&sandbox.abs_path).await?;
-            let ext = sandbox
-                .abs_path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
+            let ext = if sandbox.abs_path.is_dir() {
+                String::new()
+            } else {
+                sandbox
+                    .abs_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
 
             let tpl = match &meta {
                 MediaMetadataPayload::Book(_) => clean_primary_tpl

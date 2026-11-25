@@ -12,9 +12,13 @@ pub mod zh_text;
 
 use std::sync::Arc;
 
+use xmedia_core::domain::error::DomainError;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_formats::FormatError;
 
 use crate::domain::ports::MediaInspectorPort;
+
+pub(crate) use xmedia_formats::common::append_xml_ref;
 
 pub fn build_default_inspectors(ffmpeg: FfmpegToolkit) -> Vec<Arc<dyn MediaInspectorPort>> {
     vec![
@@ -25,16 +29,12 @@ pub fn build_default_inspectors(ffmpeg: FfmpegToolkit) -> Vec<Arc<dyn MediaInspe
     ]
 }
 
-pub(crate) fn append_xml_ref(out: &mut String, r: &quick_xml::events::BytesRef<'_>) {
-    if let Ok(Some(ch)) = r.resolve_char_ref() {
-        out.push(ch);
-        return;
-    }
-    if let Some(resolved) = quick_xml::escape::resolve_xml_entity(r.as_ref()) {
-        out.push_str(resolved);
-    } else {
-        out.push('&');
-        out.push_str(r.as_ref());
-        out.push(';');
+pub(crate) fn map_format_err(err: FormatError) -> DomainError {
+    match err {
+        FormatError::Validation(msg) => DomainError::Validation(msg),
+        FormatError::UnsupportedFormat(msg) => DomainError::UnsupportedFormat(msg),
+        FormatError::NotFound(msg) => DomainError::NotFound(msg),
+        FormatError::Conflict(msg) => DomainError::Conflict(msg),
+        FormatError::Io(msg) => DomainError::Storage(msg),
     }
 }

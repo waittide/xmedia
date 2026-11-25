@@ -327,10 +327,17 @@ pub fn render_template_target(
     fallback_path: &Path,
     ext: &str,
 ) -> (String, String) {
-    let fallback_stem = fallback_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Untitled");
+    let fallback_stem = if ext.trim().is_empty() && fallback_path.is_dir() {
+        fallback_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+    } else {
+        fallback_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+    };
     let vars = build_token_map(meta, fallback_stem);
 
     let normalized_tpl = tpl.trim().replace('\\', "/");

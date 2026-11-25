@@ -122,6 +122,7 @@ pub fn payload_to_restore_patch(payload: &MediaMetadataPayload) -> MediaMetadata
             series: Some(b.series.clone().unwrap_or_default()),
             subseries: Some(b.subseries.clone().unwrap_or_default()),
             series_index: Some(b.series_index.clone().unwrap_or_default()),
+            rating: Some(b.rating.unwrap_or(-1.0)),
             description: Some(b.description.clone().unwrap_or_default()),
             publisher: Some(b.publisher.clone().unwrap_or_default()),
             published_at: Some(b.published_at.clone().unwrap_or_default()),

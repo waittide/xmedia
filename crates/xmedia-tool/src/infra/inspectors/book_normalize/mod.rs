@@ -205,8 +205,13 @@ pub fn normalize_book_to_epub(
         "txt" => txt::normalize_txt_to_epub(source_path, opts),
         "epub" => epub::normalize_existing_epub(source_path, opts),
         "pdf" => pdf::normalize_pdf_to_epub(source_path, opts),
+        "fb2" | "mobi" | "azw3" => {
+            let fmt = xmedia_formats::book::BookFormatExt::from_extension(&ext)
+                .expect("checked fb2/mobi/azw3");
+            txt::normalize_structured_text_book_to_epub(source_path, fmt, opts)
+        }
         other => Err(DomainError::Validation(format!(
-            "暂不支持将 '.{other}' 转为规范化 EPUB（支持 txt / epub / pdf）"
+            "暂不支持将 '.{other}' 转为规范化 EPUB（支持 txt / epub / pdf / fb2 / mobi / azw3）"
         ))),
     }
 }

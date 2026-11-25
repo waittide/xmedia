@@ -258,6 +258,9 @@ pub(super) fn filter_patch_for_missing(
             if non_empty_opt(&b.series_index) {
                 bp.series_index = None;
             }
+            if b.rating.is_some() {
+                bp.rating = None;
+            }
             if non_empty_opt(&b.description) {
                 bp.description = None;
             }
@@ -374,6 +377,7 @@ pub(super) fn map_scraped_to_patch(
             series: s.series_or_album.clone(),
             subseries: None,
             series_index: s.track_or_episode_number.map(|n| n.to_string()),
+            rating: s.rating.map(f64::from),
             description: s.summary.clone(),
             publisher: s.publisher_or_studio.clone(),
             published_at: s
