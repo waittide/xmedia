@@ -112,7 +112,6 @@ function triggerDelete(): void {
         <template v-if="checkedFiles.length > 0">
           <MdButton
             variant="filled"
-            size="sm"
             class="shrink-0 whitespace-nowrap"
             :icon="LuSparkles"
             :title="t('tool.selectionBar.quickScrapeTitle', { summary: lastScrapeSummary })"
@@ -127,7 +126,6 @@ function triggerDelete(): void {
 
           <MdButton
             variant="tonal"
-            size="sm"
             class="hidden shrink-0 whitespace-nowrap sm:inline-flex"
             :icon="LuColumns3"
             :title="t('tool.selectionBar.workbenchTitle')"
@@ -139,7 +137,6 @@ function triggerDelete(): void {
           <MdButton
             v-if="unorganizedCheckedFiles.length > 0"
             variant="outlined"
-            size="sm"
             class="hidden shrink-0 whitespace-nowrap md:inline-flex"
             :icon="LuFileSignature"
             :title="
@@ -162,7 +159,6 @@ function triggerDelete(): void {
             <template #trigger="{ toggle, triggerAttrs }">
               <MdButton
                 variant="tonal"
-                size="sm"
                 class="shrink-0 whitespace-nowrap"
                 :icon="LuMoreHorizontal"
                 v-bind="triggerAttrs"
@@ -238,7 +234,6 @@ function triggerDelete(): void {
           v-else
           variant="tonal"
           tone="error"
-          size="sm"
           class="shrink-0 whitespace-nowrap"
           :icon="LuTrash2"
           @click="triggerDelete"

@@ -88,7 +88,6 @@ const { t } = useI18n()
       <MdButton
         v-if="!isRepresentative"
         variant="tonal"
-        size="sm"
         :disabled="loadingDetail"
         :icon="LuLayers"
         @click="emit('use-for-merge', candidate)"
@@ -105,7 +104,6 @@ const { t } = useI18n()
 
       <MdButton
         variant="outlined"
-        size="sm"
         :disabled="loadingDetail"
         :icon="LuZap"
         @click="emit('direct-apply', candidate)"

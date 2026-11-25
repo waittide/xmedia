@@ -206,7 +206,7 @@ const filteredEntries = computed(() => {
     <div v-else class="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pt-2.5 pb-3">
       <!-- Top Return & Progress Header -->
       <div class="mb-2.5 flex items-center justify-between gap-2">
-        <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="emit('exit')">
+        <MdButton variant="tonal" :icon="LuArrowLeft" @click="emit('exit')">
           {{ t('tool.workbench.queue.backToList') }}
         </MdButton>
 

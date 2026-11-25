@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { LuLoader2, LuSearch, LuSparkles } from 'vue-icons-plus/lu'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdChip from '@/components/ui/MdChip.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import { toolApi } from '../../api'
 import { mergeScrapedClientSide } from '../../merger'
 import type {
@@ -666,13 +667,13 @@ defineExpose({
 
     <!-- Candidate Body -->
     <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3">
-      <div
+      <MdEmptyState
         v-if="!detail"
-        class="text-body-small flex h-full flex-col items-center justify-center text-center text-on-surface-variant"
-      >
-        <LuSparkles class="mb-2 h-6 w-6 opacity-40" aria-hidden="true" />
-        <p>{{ t('tool.workbench.candidates.pickFileHint') }}</p>
-      </div>
+        compact
+        :icon="LuSparkles"
+        :title="t('tool.workbench.candidates.pickFileHint')"
+        class="h-full"
+      />
 
       <div
         v-else-if="searching"
@@ -684,26 +685,24 @@ defineExpose({
         </span>
       </div>
 
-      <div
+      <MdEmptyState
         v-else-if="candidates.length === 0"
-        class="text-body-small flex flex-col items-center justify-center gap-2 py-12 text-center text-on-surface-variant"
+        compact
+        :icon="LuSearch"
+        :title="t('tool.workbench.candidates.emptySearchTitle')"
+        :description="t('tool.workbench.candidates.emptySearchDesc')"
       >
-        <LuSearch class="h-6 w-6 opacity-35" aria-hidden="true" />
-        <p>{{ t('tool.workbench.candidates.emptySearchTitle') }}</p>
-        <p class="max-w-[220px] opacity-75">
-          {{ t('tool.workbench.candidates.emptySearchDesc') }}
-        </p>
-        <MdButton
-          v-if="configuredProviders.length > 0 && canSearch"
-          variant="tonal"
-          size="sm"
-          class="mt-1"
-          :icon="LuSearch"
-          @click="runSearch"
-        >
-          {{ t('tool.workbench.candidates.searchCurrentTitle') }}
-        </MdButton>
-      </div>
+        <template #action>
+          <MdButton
+            v-if="configuredProviders.length > 0 && canSearch"
+            variant="tonal"
+            :icon="LuSearch"
+            @click="runSearch"
+          >
+            {{ t('tool.workbench.candidates.searchCurrentTitle') }}
+          </MdButton>
+        </template>
+      </MdEmptyState>
 
       <template v-else>
         <WorkbenchMergedCard

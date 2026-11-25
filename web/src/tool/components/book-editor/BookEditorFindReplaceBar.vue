@@ -49,7 +49,7 @@ defineExpose({ focusFind })
 
 <template>
   <div
-    class="flex shrink-0 flex-wrap items-center gap-2 border-b border-outline-variant/50 bg-surface-container-low px-4 py-2"
+    class="flex shrink-0 flex-wrap items-center gap-2 bg-surface-container px-4 py-2"
   >
     <div class="w-48">
       <MdTextField
@@ -98,7 +98,6 @@ defineExpose({ focusFind })
     <div class="ml-auto flex items-center gap-1.5">
       <MdButton
         variant="outlined"
-        size="sm"
         :disabled="!findQuery"
         @click="emit('replaceSingle')"
       >
@@ -107,7 +106,6 @@ defineExpose({ focusFind })
       </MdButton>
       <MdButton
         variant="filled"
-        size="sm"
         :disabled="!findQuery"
         @click="emit('replaceAll')"
       >

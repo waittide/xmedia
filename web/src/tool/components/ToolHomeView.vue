@@ -16,6 +16,7 @@ import {
   LuSparkles,
 } from 'vue-icons-plus/lu'
 import MdButton from '@/components/ui/MdButton.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
@@ -70,27 +71,19 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
 <template>
   <div class="mx-auto max-w-6xl space-y-6 p-4 sm:p-6">
     <!-- Empty State: No Mounted Directories Configured -->
-    <div
+    <MdEmptyState
       v-if="domainRoots.length === 0"
-      class="mx-auto mt-10 max-w-lg rounded-corner-xl bg-surface-container-low p-8 text-center"
+      :icon="LuFolderPlus"
+      :title="domainLabels.emptyRootsTitle"
+      :description="domainLabels.emptyRootsDesc"
+      class="mx-auto mt-10 max-w-lg rounded-corner-xl bg-surface-container-low"
     >
-      <div
-        class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
-      >
-        <LuFolderPlus class="h-6 w-6" aria-hidden="true" />
-      </div>
-      <h2 class="text-title-medium text-on-surface">
-        {{ domainLabels.emptyRootsTitle }}
-      </h2>
-      <p class="text-body-small mt-2 leading-relaxed text-on-surface-variant">
-        {{ domainLabels.emptyRootsDesc }}
-      </p>
-      <div class="mt-6 flex justify-center">
+      <template #action>
         <MdButton variant="filled" :icon="LuFolderPlus" @click="workspaceStore.openSettingsTab('roots')">
           {{ t('tool.roots.add') }}
         </MdButton>
-      </div>
-    </div>
+      </template>
+    </MdEmptyState>
 
     <template v-else>
       <!-- Top Header & Actions -->
@@ -110,7 +103,6 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           <MdButton
             v-if="incompleteFiles.length > 0"
             variant="filled"
-            size="sm"
             :icon="LuSparkles"
             :title="t('tool.home.scrapeIncompleteTitle')"
             @click="scrapeStore.enqueueScrapeFiles(incompleteFiles, t('tool.filters.incomplete'))"
@@ -121,7 +113,6 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           <MdButton
             v-if="unorganizedFiles.length > 0"
             variant="tonal"
-            size="sm"
             :icon="LuFileSignature"
             :title="t('tool.home.batchRenameTitle')"
             @click="workspaceStore.openRenameModal(snapshot?.files ?? [])"
@@ -258,20 +249,20 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           </div>
           <MdButton
             variant="text"
-            size="sm"
             @click="workspaceStore.selectCompletenessFilter(incompleteFiles.length > 0 ? 'incomplete' : 'all')"
           >
             <span>{{ t('tool.home.enterItems') }}</span>
-            <LuArrowRight class="h-3.5 w-3.5" aria-hidden="true" />
+            <LuArrowRight class="h-4 w-4" aria-hidden="true" />
           </MdButton>
         </div>
 
-        <div
+        <MdEmptyState
           v-if="previewIncomplete.length === 0"
-          class="text-body-small rounded-corner-xl bg-surface-container-low py-10 text-center text-on-surface-variant"
-        >
-          {{ stats.total === 0 ? t('tool.home.emptyNoMedia') : t('tool.home.emptyAllReady') }}
-        </div>
+          compact
+          :icon="stats.total === 0 ? LuFolderPlus : LuCheckCircle2"
+          :title="stats.total === 0 ? t('tool.home.emptyNoMedia') : t('tool.home.emptyAllReady')"
+          class="rounded-corner-xl bg-surface-container-low"
+        />
 
         <div
           v-else

@@ -76,13 +76,12 @@ function lockFilledBookFields(): void {
         <span>{{ t('tool.forms.common.fieldLocks', { count: form.lockedFields.length }) }}</span>
       </span>
       <div class="flex items-center gap-1">
-        <MdButton variant="text" size="sm" @click="lockFilledBookFields">
+        <MdButton variant="text" @click="lockFilledBookFields">
           {{ t('tool.forms.common.lockFilled') }}
         </MdButton>
         <MdButton
           v-if="form.lockedFields.length > 0"
           variant="text"
-          size="sm"
           @click="form.lockedFields = []"
         >
           {{ t('tool.forms.common.unlockAll') }}

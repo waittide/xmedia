@@ -312,7 +312,7 @@ async function handleUndoLastBatch(): Promise<void> {
     </template>
 
     <template #headerActions>
-      <MdButton variant="tonal" size="sm" :icon="LuUndo2" @click="emit('openHistory')">
+      <MdButton variant="tonal" :icon="LuUndo2" @click="emit('openHistory')">
         {{ t('tool.modals.batchMeta.historyBtn') }}
       </MdButton>
     </template>
@@ -336,7 +336,7 @@ async function handleUndoLastBatch(): Promise<void> {
         </button>
         <div
           v-if="showFilesList"
-          class="max-h-32 divide-y divide-outline-variant/40 overflow-y-auto border-t border-outline-variant/40 px-4 py-1.5"
+          class="max-h-32 divide-y divide-outline-variant/30 overflow-y-auto bg-surface-container-low px-4 py-1.5"
         >
           <div
             v-for="(item, idx) in entries"
@@ -398,7 +398,6 @@ async function handleUndoLastBatch(): Promise<void> {
           <MdButton
             v-if="report.batch_id"
             variant="tonal"
-            size="sm"
             :icon="LuRotateCcw"
             :loading="undoing"
             @click="handleUndoLastBatch"
@@ -592,17 +591,16 @@ async function handleUndoLastBatch(): Promise<void> {
     </div>
 
     <template #footer>
-      <MdButton variant="text" size="sm" :icon="LuRotateCcw" @click="resetForm">
+      <MdButton variant="text" :icon="LuRotateCcw" @click="resetForm">
         {{ t('tool.modals.batchMeta.resetForm') }}
       </MdButton>
 
       <div class="flex items-center gap-2">
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" @click="emit('close')">
           {{ t('tool.common.close') }}
         </MdButton>
         <MdButton
           variant="filled"
-          size="sm"
           :icon="LuWand2"
           :loading="submitting"
           :disabled="!hasAnyRule || entries.length === 0"

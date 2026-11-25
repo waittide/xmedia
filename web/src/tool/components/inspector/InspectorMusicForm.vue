@@ -125,7 +125,6 @@ function syncLyricsBothWays(): void {
 
         <MdButton
           variant="text"
-          size="sm"
           :icon="LuCopy"
           :title="t('tool.forms.music.syncHint')"
           @click="syncLyricsBothWays"

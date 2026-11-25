@@ -495,12 +495,11 @@ const dialogSubtitle = computed(() => {
         {{ t('tool.modals.normalizeEpub.footerHint') }}
       </span>
       <div class="flex items-center gap-2">
-        <MdButton variant="text" size="sm" :disabled="running" @click="emit('close')">
+        <MdButton variant="text" :disabled="running" @click="emit('close')">
           {{ report ? t('tool.common.done') : t('tool.common.cancel') }}
         </MdButton>
         <MdButton
           variant="filled"
-          size="sm"
           :icon="LuPackageCheck"
           :loading="running"
           :disabled="runnableCount === 0"

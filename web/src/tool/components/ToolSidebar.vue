@@ -206,7 +206,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
           <button
             v-if="domainRoots.length === 0"
             type="button"
-            class="md-state text-body-medium flex w-full cursor-pointer items-center gap-2 rounded-corner-md border border-dashed border-outline-variant px-3.5 py-2.5 text-left text-on-surface-variant"
+            class="md-state text-body-medium flex w-full cursor-pointer items-center gap-2 rounded-corner-lg bg-surface-container-low px-3.5 py-2.5 text-left text-on-surface-variant"
             @click="emit('openSettingsRoots')"
           >
             <LuFolderPlus class="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />

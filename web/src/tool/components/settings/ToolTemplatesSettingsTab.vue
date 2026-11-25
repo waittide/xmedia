@@ -86,7 +86,6 @@ async function handleSaveSettings(): Promise<void> {
 
       <MdButton
         variant="outlined"
-        size="sm"
         :icon="LuRotateCcw"
         @click="resetDomainTemplates(domainSubTab)"
       >

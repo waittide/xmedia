@@ -53,7 +53,7 @@ const fillModeOptions = computed(() => [
 </script>
 
 <template>
-  <div class="shrink-0 space-y-2.5 border-b border-outline-variant/50 p-3">
+  <div class="shrink-0 space-y-2.5 bg-surface-container-low p-3">
     <div class="flex items-center justify-between gap-2">
       <div class="text-title-small flex items-center gap-1.5 text-on-surface">
         <LuSparkles class="h-4 w-4 text-primary" aria-hidden="true" />
@@ -97,7 +97,6 @@ const fillModeOptions = computed(() => [
       </div>
       <MdButton
         variant="filled"
-        size="sm"
         :icon="LuSearch"
         :loading="searching"
         :disabled="!canSearch"

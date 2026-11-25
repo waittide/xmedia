@@ -39,7 +39,7 @@ const { t } = useI18n()
 
 <template>
   <header
-    class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-outline-variant/50 bg-surface-container-low px-4 py-1.5 select-none"
+    class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 bg-surface-container-low px-4 py-1.5 select-none"
   >
     <div class="flex min-w-0 items-center gap-3">
       <div
@@ -133,7 +133,6 @@ const { t } = useI18n()
 
         <MdButton
           variant="outlined"
-          size="sm"
           :disabled="saving || converting || chapterCount === 0"
           @click="emit('save')"
         >
@@ -143,7 +142,6 @@ const { t } = useI18n()
 
         <MdButton
           variant="filled"
-          size="sm"
           :disabled="converting || saving || chapterCount === 0"
           @click="emit('convertToEpub')"
         >
@@ -155,7 +153,6 @@ const { t } = useI18n()
       <template v-else>
         <MdButton
           variant="tonal"
-          size="sm"
           :disabled="polishing || saving || chapterCount === 0"
           @click="emit('polish')"
         >
@@ -168,7 +165,6 @@ const { t } = useI18n()
 
         <MdButton
           variant="filled"
-          size="sm"
           :disabled="saving || polishing || chapterCount === 0"
           @click="emit('save')"
         >

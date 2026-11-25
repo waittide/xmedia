@@ -13,7 +13,9 @@ import {
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdButton from '@/components/ui/MdButton.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdListItem from '@/components/ui/MdListItem.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSheet from '@/components/ui/MdSheet.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -204,41 +206,26 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
 
       <!-- Tab 1: Metadata History -->
       <template v-else-if="activeTab === 'metadata'">
-        <div
+        <MdEmptyState
           v-if="metadataBatches.length === 0"
-          class="rounded-corner-lg bg-surface-container py-14 text-center"
-        >
-          <LuClock class="mx-auto mb-2.5 h-7 w-7 text-on-surface-variant" aria-hidden="true" />
-          <p class="text-title-small text-on-surface">{{ t('tool.modals.history.emptyMetaTitle') }}</p>
-          <p class="text-body-small mt-1 text-on-surface-variant">
-            {{ t('tool.modals.history.emptyMetaDesc') }}
-          </p>
-        </div>
+          compact
+          :icon="LuClock"
+          :title="t('tool.modals.history.emptyMetaTitle')"
+          :description="t('tool.modals.history.emptyMetaDesc')"
+          class="rounded-corner-lg bg-surface-container"
+        />
 
         <div
           v-for="batch in metadataBatches"
           :key="batch.batch_id"
           class="overflow-hidden rounded-corner-lg bg-surface"
         >
-          <div class="flex flex-wrap items-center justify-between gap-2.5 px-4 py-3.5">
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span class="text-title-small truncate text-on-surface">
-                  {{ batch.label }}
-                </span>
-                <span
-                  class="text-label-small rounded-corner-full bg-secondary-container px-2 py-0.5 text-on-secondary-container"
-                >
-                  {{ domainBadge(batch.media_kind) }}
-                </span>
-              </div>
-              <p class="text-label-small mt-1 font-mono text-on-surface-variant">
-                {{ formatUnix(batch.created_at_unix) }} ·
-                {{ t('tool.modals.history.filesCount', { count: batch.updated_count }) }}
-              </p>
-            </div>
-
-            <div class="flex shrink-0 items-center gap-1">
+          <MdListItem
+            :overline="domainBadge(batch.media_kind)"
+            :headline="batch.label"
+            :supporting-text="`${formatUnix(batch.created_at_unix)} · ${t('tool.modals.history.filesCount', { count: batch.updated_count })}`"
+          >
+            <template #trailing>
               <MdIconButton
                 size="sm"
                 :icon="expandedIds.has(batch.batch_id) ? LuChevronUp : LuChevronDown"
@@ -249,7 +236,6 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
 
               <MdButton
                 variant="tonal"
-                size="sm"
                 :icon="LuRotateCcw"
                 :loading="undoingId === batch.batch_id"
                 :disabled="undoingId !== null"
@@ -257,8 +243,8 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
               >
                 {{ t('tool.modals.history.undo') }}
               </MdButton>
-            </div>
-          </div>
+            </template>
+          </MdListItem>
 
           <div
             v-if="expandedIds.has(batch.batch_id)"
@@ -276,33 +262,25 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
 
       <!-- Tab 2: Rename History -->
       <template v-else>
-        <div
+        <MdEmptyState
           v-if="renameBatches.length === 0"
-          class="rounded-corner-lg bg-surface-container py-14 text-center"
-        >
-          <LuClock class="mx-auto mb-2.5 h-7 w-7 text-on-surface-variant" aria-hidden="true" />
-          <p class="text-title-small text-on-surface">{{ t('tool.modals.history.emptyRenameTitle') }}</p>
-          <p class="text-body-small mt-1 text-on-surface-variant">
-            {{ t('tool.modals.history.emptyRenameDesc') }}
-          </p>
-        </div>
+          compact
+          :icon="LuClock"
+          :title="t('tool.modals.history.emptyRenameTitle')"
+          :description="t('tool.modals.history.emptyRenameDesc')"
+          class="rounded-corner-lg bg-surface-container"
+        />
 
         <div
           v-for="batch in renameBatches"
           :key="batch.batch_id"
           class="overflow-hidden rounded-corner-lg bg-surface"
         >
-          <div class="flex flex-wrap items-center justify-between gap-2.5 px-4 py-3.5">
-            <div class="min-w-0 flex-1">
-              <div class="text-title-small text-on-surface">
-                {{ t('tool.modals.history.batchRenameTitle', { count: batch.moved_count }) }}
-              </div>
-              <p class="text-label-small mt-1 font-mono text-on-surface-variant">
-                {{ formatUnix(batch.created_at_unix) }}
-              </p>
-            </div>
-
-            <div class="flex shrink-0 items-center gap-1">
+          <MdListItem
+            :headline="t('tool.modals.history.batchRenameTitle', { count: batch.moved_count })"
+            :supporting-text="formatUnix(batch.created_at_unix)"
+          >
+            <template #trailing>
               <MdIconButton
                 size="sm"
                 :icon="expandedIds.has(batch.batch_id) ? LuChevronUp : LuChevronDown"
@@ -313,7 +291,6 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
 
               <MdButton
                 variant="tonal"
-                size="sm"
                 :icon="LuRotateCcw"
                 :loading="undoingId === batch.batch_id"
                 :disabled="undoingId !== null"
@@ -321,8 +298,8 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
               >
                 {{ t('tool.modals.history.undo') }}
               </MdButton>
-            </div>
-          </div>
+            </template>
+          </MdListItem>
 
           <div
             v-if="expandedIds.has(batch.batch_id)"

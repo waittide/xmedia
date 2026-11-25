@@ -66,7 +66,7 @@ function handleRunClean(): void {
 
 <template>
   <div
-    class="space-y-2.5 border-b border-outline-variant/50 bg-surface-container-low px-4 py-3"
+    class="space-y-2.5 bg-surface-container px-4 py-3"
   >
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-1.5">
@@ -79,7 +79,6 @@ function handleRunClean(): void {
 
         <MdButton
           variant="outlined"
-          size="sm"
           :disabled="transforming"
           @click="emit('runTransform', { zh_direction: 't2s' }, t('tool.bookEditor.proofread.t2sBtn'))"
         >
@@ -87,7 +86,6 @@ function handleRunClean(): void {
         </MdButton>
         <MdButton
           variant="outlined"
-          size="sm"
           :disabled="transforming"
           @click="emit('runTransform', { zh_direction: 's2t' }, t('tool.bookEditor.proofread.s2tBtn'))"
         >
@@ -95,7 +93,6 @@ function handleRunClean(): void {
         </MdButton>
         <MdButton
           variant="outlined"
-          size="sm"
           :disabled="transforming"
           @click="emit('runTransform', { vertical_to_horizontal: true, convert_quotes_to_horizontal: true }, t('tool.bookEditor.proofread.v2hBtn'))"
         >
@@ -112,14 +109,13 @@ function handleRunClean(): void {
       </MdIconButton>
     </div>
 
-    <div class="flex flex-wrap items-center justify-between gap-2 border-t border-outline-variant/40 pt-2.5">
+    <div class="flex flex-wrap items-center justify-between gap-2 rounded-corner-md bg-surface-container-low px-3 py-2">
       <div class="flex flex-wrap items-center gap-3">
         <AppCheckbox v-model="cleanWebnovelAds" :label="t('tool.bookEditor.proofread.cleanAds')" />
         <AppCheckbox v-model="normalizePunctuation" :label="t('tool.bookEditor.proofread.normalizePunct')" />
         <AppCheckbox v-model="convertCornerQuotes" :label="t('tool.bookEditor.proofread.cornerQuotes')" />
         <MdButton
           variant="text"
-          size="sm"
           @click="customStripRulesOpen = !customStripRulesOpen"
         >
           {{
@@ -132,7 +128,6 @@ function handleRunClean(): void {
 
       <MdButton
         variant="filled"
-        size="sm"
         :disabled="transforming"
         @click="handleRunClean"
       >

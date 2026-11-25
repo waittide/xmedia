@@ -10,19 +10,24 @@ import {
   LuMoon,
   LuPanelLeftClose,
   LuPanelLeftOpen,
+  LuSearch,
   LuSettings,
   LuSun,
   LuWrench,
 } from 'vue-icons-plus/lu'
 import MdBadge from '@/components/ui/MdBadge.vue'
 import MdButton from '@/components/ui/MdButton.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdListItem from '@/components/ui/MdListItem.vue'
+import MdSearchView from '@/components/ui/MdSearchView.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdTextField from '@/components/ui/MdTextField.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
+import { useToolWorkspaceStore } from '../stores/workspace'
 import { useToolTaskStore } from '../tasks'
-import type { ToolStatusDto } from '../types'
+import type { MediaFileEntry, ToolStatusDto } from '../types'
 
 defineProps<{
   isCompact: boolean
@@ -49,6 +54,17 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const themeStore = useThemeStore()
 const taskStore = useToolTaskStore()
+const workspaceStore = useToolWorkspaceStore()
+const mobileSearchOpen = ref(false)
+
+const searchPreviewItems = computed<MediaFileEntry[]>(() =>
+  workspaceStore.filteredFiles.slice(0, 12),
+)
+
+function pickMobileSearchItem(file: MediaFileEntry): void {
+  mobileSearchOpen.value = false
+  void workspaceStore.inspectEntry(file)
+}
 
 const activeTaskPillLabel = computed<string>(() => {
   const task = taskStore.activeTask
@@ -93,6 +109,10 @@ function cycleThemeMode(): void {
 }
 
 function focusSearch(): void {
+  if (typeof window !== 'undefined' && window.innerWidth < 600) {
+    mobileSearchOpen.value = true
+    return
+  }
   searchFieldRef.value?.focus()
   searchFieldRef.value?.select()
 }
@@ -144,8 +164,8 @@ defineExpose({ focusSearch })
       </div>
     </div>
 
-    <!-- Center: MD3 Search Field -->
-    <div class="mx-auto w-full max-w-xl">
+    <!-- Center: Desktop MD3 Search Field -->
+    <div class="mx-auto hidden w-full max-w-xl sm:block">
       <MdTextField
         ref="searchFieldRef"
         :model-value="searchQuery"
@@ -167,6 +187,15 @@ defineExpose({ focusSearch })
 
     <!-- Right: Status Chip + Circular MD3 Icon Buttons -->
     <div class="flex shrink-0 items-center gap-1">
+      <MdIconButton
+        class="sm:hidden"
+        :variant="searchQuery ? 'tonal' : 'standard'"
+        :selected="Boolean(searchQuery)"
+        :icon="LuSearch"
+        :tooltip="searchPlaceholder"
+        :aria-label="searchPlaceholder"
+        @click="mobileSearchOpen = true"
+      />
       <span
         v-if="status && !status.ffmpeg.ffprobe_available"
         class="text-label-medium hidden items-center gap-1.5 rounded-corner-full bg-warning-container px-3 py-1 text-on-warning-container sm:inline-flex"
@@ -192,7 +221,6 @@ defineExpose({ focusSearch })
       <MdButton
         v-if="status?.requires_password"
         variant="tonal"
-        size="sm"
         :icon="LuLock"
         :title="t('tool.actions.lock')"
         @click="emit('lock')"
@@ -242,5 +270,37 @@ defineExpose({ focusSearch })
         @click="emit('toggleSettings')"
       />
     </div>
+
+    <MdSearchView
+      :open="mobileSearchOpen"
+      :model-value="searchQuery"
+      :placeholder="searchPlaceholder"
+      :aria-label="searchPlaceholder"
+      @update:model-value="emit('update:searchQuery', $event)"
+      @submit="mobileSearchOpen = false"
+      @close="mobileSearchOpen = false"
+    >
+      <div
+        v-if="searchPreviewItems.length > 0"
+        class="divide-y divide-outline-variant/35 overflow-hidden rounded-corner-lg bg-surface-container-low"
+      >
+        <MdListItem
+          v-for="item in searchPreviewItems"
+          :key="`${item.root_id}::${item.rel_path}`"
+          clickable
+          :headline="item.display_title"
+          :supporting-text="item.rel_path"
+          :trailing-supporting-text="item.extension.toUpperCase()"
+          @click="pickMobileSearchItem(item)"
+        />
+      </div>
+      <MdEmptyState
+        v-else
+        compact
+        :icon="LuSearch"
+        :title="t('tool.browser.emptyFilteredTitle')"
+        :description="t('tool.browser.emptyFilteredDesc')"
+      />
+    </MdSearchView>
   </header>
 </template>

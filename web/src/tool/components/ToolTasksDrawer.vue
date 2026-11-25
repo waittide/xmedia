@@ -21,6 +21,7 @@ import {
 } from 'vue-icons-plus/lu'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdChip from '@/components/ui/MdChip.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
@@ -363,7 +364,6 @@ function formatElapsed(task: ToolTaskEntry): string {
         <MdButton
           v-if="hasCompleted"
           variant="outlined"
-          size="sm"
           :icon="LuTrash2"
           @click="taskStore.clearCompleted()"
         >
@@ -374,16 +374,13 @@ function formatElapsed(task: ToolTaskEntry): string {
 
     <div class="space-y-3.5">
       <!-- Empty State -->
-      <div
+      <MdEmptyState
         v-if="filteredTasks.length === 0"
-        class="rounded-corner-xl bg-surface-container py-16 text-center"
-      >
-        <LuClock class="mx-auto mb-3 h-7 w-7 text-on-surface-variant" aria-hidden="true" />
-        <p class="text-title-small text-on-surface">{{ t('tool.tasks.emptyTitle') }}</p>
-        <p class="text-body-small mt-1 text-on-surface-variant">
-          {{ t('tool.tasks.emptyDesc') }}
-        </p>
-      </div>
+        :icon="LuClock"
+        :title="t('tool.tasks.emptyTitle')"
+        :description="t('tool.tasks.emptyDesc')"
+        class="rounded-corner-xl bg-surface-container"
+      />
 
       <!-- MD3 Tonal Task Cards -->
       <div v-else class="space-y-3.5">
@@ -533,12 +530,11 @@ function formatElapsed(task: ToolTaskEntry): string {
               </div>
 
               <!-- Task-Level Actions -->
-              <div class="flex shrink-0 flex-wrap items-center gap-1.5">
+              <div class="flex shrink-0 flex-wrap items-center gap-2">
                 <MdButton
                   v-if="task.cancellable && (task.status === 'running' || task.status === 'queued')"
                   variant="tonal"
                   tone="error"
-                  size="sm"
                   :icon="LuBan"
                   @click="taskStore.cancelTask(task.id)"
                 >
@@ -548,7 +544,6 @@ function formatElapsed(task: ToolTaskEntry): string {
                 <MdButton
                   v-if="task.subItems && task.processed > 0"
                   variant="tonal"
-                  size="sm"
                   :icon="LuSlidersHorizontal"
                   @click="reviewTaskAllResults(task)"
                 >
@@ -558,7 +553,6 @@ function formatElapsed(task: ToolTaskEntry): string {
                 <MdButton
                   v-if="hasRetryableSubItems(task)"
                   variant="filled"
-                  size="sm"
                   :icon="LuColumns3"
                   @click="reviewTaskUnmatched(task)"
                 >
@@ -568,7 +562,6 @@ function formatElapsed(task: ToolTaskEntry): string {
                 <MdButton
                   v-if="hasRetryableSubItems(task)"
                   variant="outlined"
-                  size="sm"
                   :icon="LuRotateCcw"
                   @click="taskStore.retryTaskFailedOrUnmatched(task.id)"
                 >
@@ -578,17 +571,15 @@ function formatElapsed(task: ToolTaskEntry): string {
                 <MdButton
                   v-if="task.subItems && task.subItems.length > 0"
                   variant="outlined"
-                  size="sm"
                   @click="toggleExpand(task.id)"
                 >
                   <span>{{ t('tool.tasks.details') }} ({{ task.subItems.length }})</span>
-                  <LuChevronUp v-if="expandedTaskIds.has(task.id)" class="h-3.5 w-3.5" aria-hidden="true" />
-                  <LuChevronDown v-else class="h-3.5 w-3.5" aria-hidden="true" />
+                  <LuChevronUp v-if="expandedTaskIds.has(task.id)" class="h-4 w-4" aria-hidden="true" />
+                  <LuChevronDown v-else class="h-4 w-4" aria-hidden="true" />
                 </MdButton>
 
                 <MdIconButton
                   v-if="task.status !== 'running' && task.status !== 'queued'"
-                  size="sm"
                   :icon="LuTrash2"
                   :tooltip="t('tool.tasks.removeRecord')"
                   :aria-label="t('tool.tasks.removeRecord')"
@@ -615,11 +606,11 @@ function formatElapsed(task: ToolTaskEntry): string {
           <!-- Expandable Sub-Items Panel -->
           <div
             v-if="task.subItems && expandedTaskIds.has(task.id)"
-            class="border-t border-outline-variant/40 bg-surface-container-low"
+            class="bg-surface-container-low"
           >
             <!-- Sub-item Filter Strip -->
             <div
-              class="flex flex-wrap items-center gap-1.5 border-b border-outline-variant/30 px-4 py-2.5 sm:px-5"
+              class="flex flex-wrap items-center gap-1.5 bg-surface-container/60 px-4 py-2.5 sm:px-5"
             >
               <MdChip
                 v-for="pill in getTaskSubView(task.id).filterPills"
@@ -745,7 +736,6 @@ function formatElapsed(task: ToolTaskEntry): string {
                   >
                     <MdButton
                       variant="tonal"
-                      size="sm"
                       :icon="LuPencil"
                       @click="inspectSubItem(sub)"
                     >
@@ -755,7 +745,6 @@ function formatElapsed(task: ToolTaskEntry): string {
                     <MdButton
                       v-if="sub.mediaKind === 'book'"
                       variant="outlined"
-                      size="sm"
                       :icon="LuBookOpen"
                       @click="openSubItemBookEditor(sub)"
                     >

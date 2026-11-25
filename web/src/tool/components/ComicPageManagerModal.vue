@@ -348,7 +348,6 @@ async function handleSave(): Promise<void> {
       <MdButton
         v-if="deletedCount > 0"
         variant="outlined"
-        size="sm"
         :icon="LuRotateCcw"
         @click="restoreAll"
       >
@@ -356,7 +355,6 @@ async function handleSave(): Promise<void> {
       </MdButton>
       <MdButton
         variant="filled"
-        size="sm"
         :icon="LuSave"
         :loading="saving"
         :disabled="loading || !isCbzEditable"
@@ -581,10 +579,10 @@ async function handleSave(): Promise<void> {
         </div>
 
         <div v-if="hasMorePages" class="mt-6 flex justify-center gap-2">
-          <MdButton variant="tonal" size="sm" @click="visibleLimit += PAGE_BATCH_SIZE">
+          <MdButton variant="tonal" @click="visibleLimit += PAGE_BATCH_SIZE">
             {{ t('tool.modals.comicPages.loadMorePages', { count: pages.length - visibleLimit }) }}
           </MdButton>
-          <MdButton variant="text" size="sm" @click="visibleLimit = pages.length">
+          <MdButton variant="text" @click="visibleLimit = pages.length">
             {{ t('tool.modals.comicPages.expandAllPages', { count: pages.length }) }}
           </MdButton>
         </div>
@@ -612,12 +610,11 @@ async function handleSave(): Promise<void> {
         @close="lightboxIdx = null"
       >
         <template v-if="lightboxPage && lightboxIdx !== null && isCbzEditable" #headerActions>
-          <MdButton variant="tonal" size="sm" @click="setAsCover(lightboxIdx)">
+          <MdButton variant="tonal" @click="setAsCover(lightboxIdx)">
             {{ t('tool.modals.comicPages.setAsCover') }}
           </MdButton>
           <MdButton
             :variant="lightboxPage.double_page ? 'filled' : 'outlined'"
-            size="sm"
             @click="toggleDoublePage(lightboxIdx)"
           >
             {{
@@ -629,7 +626,6 @@ async function handleSave(): Promise<void> {
           <MdButton
             :variant="lightboxPage.deleted ? 'tonal' : 'outlined'"
             :tone="lightboxPage.deleted ? 'primary' : 'error'"
-            size="sm"
             @click="toggleDelete(lightboxIdx)"
           >
             {{

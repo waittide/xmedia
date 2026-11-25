@@ -298,7 +298,7 @@ function handleOpenDryRun(): void {
             v-model="writeSidecarLrc"
             :label="t('tool.modals.autoScrape.fieldSidecarLrc')"
           />
-          <div class="border-t border-outline-variant/40 pt-2 sm:col-span-2">
+          <div class="pt-2 sm:col-span-2">
             <AppCheckbox
               v-model="organizeByTemplate"
               :label="t('tool.modals.autoScrape.organizeAfter')"
@@ -353,7 +353,6 @@ function handleOpenDryRun(): void {
     <template #footer>
       <MdButton
         variant="outlined"
-        size="sm"
         :icon="LuSearchCheck"
         :disabled="entries.length === 0 || !hasAnyFieldSelected"
         @click="handleOpenDryRun"
@@ -362,12 +361,11 @@ function handleOpenDryRun(): void {
       </MdButton>
 
       <div class="flex items-center gap-2">
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" @click="emit('close')">
           {{ t('tool.common.cancel') }}
         </MdButton>
         <MdButton
           variant="filled"
-          size="sm"
           :icon="LuSparkles"
           :disabled="entries.length === 0 || !hasAnyFieldSelected"
           @click="handleStart"

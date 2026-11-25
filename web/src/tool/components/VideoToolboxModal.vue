@@ -362,8 +362,8 @@ async function handleBatchRemap(): Promise<void> {
                       :label="t('tool.modals.videoTools.offsetLabel')"
                     />
                   </div>
-                  <MdButton variant="outlined" size="sm" @click="shiftSubOffset(-500)">-0.5s</MdButton>
-                  <MdButton variant="outlined" size="sm" @click="shiftSubOffset(500)">+0.5s</MdButton>
+                  <MdButton variant="outlined" @click="shiftSubOffset(-500)">-0.5s</MdButton>
+                  <MdButton variant="outlined" @click="shiftSubOffset(500)">+0.5s</MdButton>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 sm:col-span-2">
                   <span class="text-label-medium text-on-surface-variant">
@@ -383,7 +383,6 @@ async function handleBatchRemap(): Promise<void> {
               <div class="flex justify-end">
                 <MdButton
                   variant="filled"
-                  size="sm"
                   :loading="busy"
                   :disabled="!selectedSubName"
                   @click="handleProcessSubtitle"
@@ -433,7 +432,6 @@ async function handleBatchRemap(): Promise<void> {
                 </div>
                 <MdButton
                   variant="tonal"
-                  size="sm"
                   :icon="LuDownload"
                   :disabled="busy"
                   @click="handleExtractStream(st)"
@@ -503,7 +501,6 @@ async function handleBatchRemap(): Promise<void> {
         <div class="flex justify-end">
           <MdButton
             variant="filled"
-            size="sm"
             :loading="busy"
             :disabled="sortedEntries.length === 0"
             @click="handleBatchRemap"
@@ -531,7 +528,7 @@ async function handleBatchRemap(): Promise<void> {
 
     <template #footer>
       <div class="ml-auto">
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" @click="emit('close')">
           {{ t('tool.common.close') }}
         </MdButton>
       </div>

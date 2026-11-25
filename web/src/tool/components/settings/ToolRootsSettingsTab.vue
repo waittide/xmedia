@@ -4,7 +4,9 @@ import { useI18n } from 'vue-i18n'
 import { LuCheckCircle2, LuFolderPlus, LuRotateCw, LuSave, LuTrash2 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdButton from '@/components/ui/MdButton.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdListItem from '@/components/ui/MdListItem.vue'
 import MdSelect from '@/components/ui/MdSelect.vue'
 import MdSwitch from '@/components/ui/MdSwitch.vue'
 import MdTextField from '@/components/ui/MdTextField.vue'
@@ -282,57 +284,45 @@ async function handleTestWebhook(): Promise<void> {
       }}
     </h2>
 
-    <div
+    <MdEmptyState
       v-if="filteredRoots.length === 0"
-      class="text-body-small rounded-corner-lg bg-surface py-10 text-center text-on-surface-variant"
-    >
-      {{ t('tool.settings.roots.emptyDomainRoots', { domain: domainLabel }) }}
-    </div>
+      compact
+      :icon="LuFolderPlus"
+      :title="t('tool.settings.roots.emptyDomainRoots', { domain: domainLabel })"
+      class="rounded-corner-lg bg-surface"
+    />
 
     <div
-      v-for="r in filteredRoots"
-      :key="r.id"
-      class="flex items-center justify-between gap-3 rounded-corner-lg bg-surface p-4"
+      v-else
+      class="divide-y divide-outline-variant/35 overflow-hidden rounded-corner-lg bg-surface"
     >
-      <div class="min-w-0">
-        <div class="flex items-center gap-2">
-          <span class="text-title-small truncate text-on-surface">{{ r.name }}</span>
-          <span
-            class="text-label-small rounded-corner-full bg-primary-container px-2 py-0.5 text-on-primary-container"
+      <MdListItem
+        v-for="r in filteredRoots"
+        :key="r.id"
+        :overline="r.read_only ? `${domainLabel} · ${t('tool.settings.roots.readOnlyBadge')}` : domainLabel"
+        :headline="r.name"
+        :supporting-text="r.path"
+      >
+        <template #trailing>
+          <MdButton
+            :variant="r.read_only ? 'tonal' : 'outlined'"
+            :title="t('tool.settings.roots.readOnlyHint')"
+            @click="handleToggleRootReadOnly(r.id, Boolean(r.read_only))"
           >
-            {{ domainLabel }}
-          </span>
-          <span
-            v-if="r.read_only"
-            class="text-label-small rounded-corner-full bg-warning-container px-2 py-0.5 text-on-warning-container"
-          >
-            {{ t('tool.settings.roots.readOnlyBadge') }}
-          </span>
-        </div>
-        <p class="text-body-small mt-1 truncate font-mono text-on-surface-variant">{{ r.path }}</p>
-      </div>
-
-      <div class="flex shrink-0 items-center gap-1.5">
-        <MdButton
-          :variant="r.read_only ? 'tonal' : 'outlined'"
-          size="sm"
-          :title="t('tool.settings.roots.readOnlyHint')"
-          @click="handleToggleRootReadOnly(r.id, Boolean(r.read_only))"
-        >
-          {{
-            r.read_only
-              ? t('tool.settings.roots.unsetReadOnly')
-              : t('tool.settings.roots.setReadOnly')
-          }}
-        </MdButton>
-        <MdIconButton
-          size="sm"
-          :icon="LuTrash2"
-          :tooltip="t('tool.settings.roots.removeRootHint')"
-          :aria-label="t('tool.settings.roots.removeRootHint')"
-          @click="handleRemoveRoot(r.id)"
-        />
-      </div>
+            {{
+              r.read_only
+                ? t('tool.settings.roots.unsetReadOnly')
+                : t('tool.settings.roots.setReadOnly')
+            }}
+          </MdButton>
+          <MdIconButton
+            :icon="LuTrash2"
+            :tooltip="t('tool.settings.roots.removeRootHint')"
+            :aria-label="t('tool.settings.roots.removeRootHint')"
+            @click="handleRemoveRoot(r.id)"
+          />
+        </template>
+      </MdListItem>
     </div>
   </section>
 
@@ -372,12 +362,11 @@ async function handleTestWebhook(): Promise<void> {
       {{ inboxNotice }}
     </div>
     <div class="flex flex-wrap items-center gap-2">
-      <MdButton variant="filled" size="sm" :icon="LuSave" :loading="saving" @click="handleSaveInbox">
+      <MdButton variant="filled" :icon="LuSave" :loading="saving" @click="handleSaveInbox">
         {{ t('tool.settings.roots.saveInbox') }}
       </MdButton>
       <MdButton
         variant="outlined"
-        size="sm"
         :icon="LuRotateCw"
         :loading="scanningInbox"
         :disabled="!inboxPath.trim() || !inboxTargetRootId"
@@ -438,7 +427,6 @@ async function handleTestWebhook(): Promise<void> {
     <div class="flex flex-wrap items-center gap-2">
       <MdButton
         variant="filled"
-        size="sm"
         :icon="LuSave"
         :loading="saving"
         @click="handleSaveWebhook"
@@ -447,7 +435,6 @@ async function handleTestWebhook(): Promise<void> {
       </MdButton>
       <MdButton
         variant="outlined"
-        size="sm"
         :icon="LuCheckCircle2"
         :loading="testingWebhook"
         @click="handleTestWebhook"

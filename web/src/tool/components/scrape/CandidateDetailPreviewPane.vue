@@ -196,7 +196,7 @@ defineExpose({
   <div class="flex h-full min-h-0 flex-col bg-surface-container-low">
     <!-- Preview / Editable Draft Header -->
     <div
-      class="flex shrink-0 items-center justify-between gap-2 border-b border-outline-variant/45 px-3.5 py-2.5"
+      class="flex shrink-0 items-center justify-between gap-2 bg-surface-container px-3.5 py-2.5"
     >
       <div class="flex min-w-0 items-center gap-1.5">
         <span
@@ -383,7 +383,7 @@ defineExpose({
 
       <!-- Bottom Action Bar -->
       <div
-        class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-outline-variant/45 bg-surface-container/75 px-3.5 py-2.5"
+        class="flex shrink-0 flex-wrap items-center justify-between gap-2 bg-surface-container px-3.5 py-2.5"
       >
         <div class="text-label-small flex flex-wrap items-center gap-3 text-on-surface-variant">
           <span>
@@ -421,7 +421,6 @@ defineExpose({
 
           <MdButton
             variant="filled"
-            size="sm"
             :icon="LuSave"
             :loading="saving"
             :title="t('tool.workbench.preview.applyAndSaveHint')"

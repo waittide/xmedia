@@ -255,7 +255,6 @@ async function handleSave(): Promise<void> {
             </span>
             <MdButton
               variant="text"
-              size="sm"
               tone="error"
               :disabled="clearingSecret"
               @click="handleClearSecret"
@@ -287,7 +286,6 @@ async function handleSave(): Promise<void> {
           <MdButton
             v-if="hasCustomOverrides"
             variant="text"
-            size="sm"
             :icon="LuRotateCcw"
             @click="resetNetworkOverrides"
           >
@@ -338,10 +336,10 @@ async function handleSave(): Promise<void> {
 
     <template #footer>
       <div class="flex items-center justify-end gap-2">
-        <MdButton variant="text" size="sm" :disabled="saving" @click="emit('close')">
+        <MdButton variant="text" :disabled="saving" @click="emit('close')">
           {{ t('tool.common.cancel') }}
         </MdButton>
-        <MdButton variant="filled" size="sm" :icon="LuSave" :loading="saving" @click="handleSave">
+        <MdButton variant="filled" :icon="LuSave" :loading="saving" @click="handleSave">
           {{ saving ? t('tool.common.saving') : t('tool.settings.providerDialog.saveProvider') }}
         </MdButton>
       </div>

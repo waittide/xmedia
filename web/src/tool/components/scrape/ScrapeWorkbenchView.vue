@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuImage, LuPencil } from 'vue-icons-plus/lu'
 import MdButton from '@/components/ui/MdButton.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
+import MdSkeleton from '@/components/ui/MdSkeleton.vue'
 import MdTabs, { type MdTabItem } from '@/components/ui/MdTabs.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -531,24 +533,36 @@ defineExpose({
       @update:auto-search-on-switch="autoSearchOnSwitch = $event"
     />
 
-    <!-- Loading Overlay when Switching Items -->
+    <!-- Loading Skeleton when Switching Items -->
     <div
       v-if="loadingDetail && !detail"
-      class="text-body-small flex flex-1 items-center justify-center text-on-surface-variant"
+      class="flex flex-1 flex-col gap-4 p-6"
+      :aria-label="t('tool.workbench.view.loadingEntry')"
     >
-      {{ t('tool.workbench.view.loadingEntry') }}
+      <div class="flex gap-4">
+        <MdSkeleton width="7rem" height="10rem" />
+        <div class="flex-1 space-y-3 py-1">
+          <MdSkeleton variant="text" :lines="3" />
+          <MdSkeleton width="9rem" height="2.5rem" />
+        </div>
+      </div>
+      <MdSkeleton height="8rem" />
+      <MdSkeleton height="8rem" />
     </div>
 
     <!-- Empty Queue Fallback -->
-    <div
+    <MdEmptyState
       v-else-if="!detail"
-      class="text-body-small flex flex-1 flex-col items-center justify-center gap-2 text-on-surface-variant"
+      :icon="LuImage"
+      :title="t('tool.workbench.view.emptyQueue')"
+      class="flex-1"
     >
-      <p>{{ t('tool.workbench.view.emptyQueue') }}</p>
-      <MdButton variant="tonal" size="sm" @click="requestExit">
-        {{ t('tool.workbench.view.backToMedia') }}
-      </MdButton>
-    </div>
+      <template #action>
+        <MdButton variant="tonal" @click="requestExit">
+          {{ t('tool.workbench.view.backToMedia') }}
+        </MdButton>
+      </template>
+    </MdEmptyState>
 
     <!-- RESPONSIVE WORKBENCH:
          - <840px (<md): 1-column MdTabs (Local / Candidates / Preview)
@@ -606,7 +620,7 @@ defineExpose({
 
         <!-- PANE: Scraper Sources & Candidate List -->
         <div
-          class="min-h-0 flex-col border-outline-variant/45 bg-surface-container/40 md:order-1 md:flex md:border-r xl:order-2 xl:border-x"
+          class="min-h-0 flex-col bg-surface-container/60 md:order-1 md:flex xl:order-2"
           :class="mobilePane === 'candidates' ? 'flex' : 'hidden'"
         >
           <div class="min-h-0 flex-1 overflow-hidden">
@@ -650,31 +664,24 @@ defineExpose({
             @direct-apply="(m, mode, opts) => handleApplyAndSave(m, mode, false, opts)"
             @direct-apply-next="(m, mode, opts) => handleApplyAndSave(m, mode, true, opts)"
           />
-          <div
+          <MdEmptyState
             v-else
-            class="text-body-small flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-on-surface-variant"
+            :icon="LuImage"
+            :title="t('tool.workbench.view.waitingCandidate')"
+            :description="t('tool.workbench.view.waitingCandidateDesc')"
+            class="flex-1"
           >
-            <div
-              class="flex h-12 w-12 items-center justify-center rounded-corner-lg bg-surface-container-high"
-            >
-              <LuImage class="h-5 w-5 opacity-55" aria-hidden="true" />
-            </div>
-            <p class="text-title-small text-on-surface">
-              {{ t('tool.workbench.view.waitingCandidate') }}
-            </p>
-            <p class="max-w-[260px] leading-relaxed opacity-85">
-              {{ t('tool.workbench.view.waitingCandidateDesc') }}
-            </p>
-            <MdButton
-              v-if="canSaveMetadata && !localEditMode"
-              variant="tonal"
-              size="sm"
-              :icon="LuPencil"
-              @click="enterLocalEditMode()"
-            >
-              {{ t('tool.workbench.view.editLocalDirectly') }}
-            </MdButton>
-          </div>
+            <template #action>
+              <MdButton
+                v-if="canSaveMetadata && !localEditMode"
+                variant="tonal"
+                :icon="LuPencil"
+                @click="enterLocalEditMode()"
+              >
+                {{ t('tool.workbench.view.editLocalDirectly') }}
+              </MdButton>
+            </template>
+          </MdEmptyState>
         </div>
       </div>
     </div>

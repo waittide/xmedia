@@ -101,11 +101,11 @@ const savedSessionCount = computed(() => {
 
 <template>
   <div
-    class="relative z-20 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-outline-variant/50 bg-surface-container-low px-3.5 py-2"
+    class="relative z-20 flex shrink-0 flex-wrap items-center justify-between gap-2 bg-surface-container-low px-3.5 py-2"
   >
     <!-- Left: Exit & Sidebar Queue Toggle -->
     <div class="flex shrink-0 items-center gap-1.5">
-      <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="emit('exit')">
+      <MdButton variant="tonal" :icon="LuArrowLeft" @click="emit('exit')">
         {{ t('tool.workbench.topBar.exitScrape') }}
       </MdButton>
 
@@ -180,7 +180,7 @@ const savedSessionCount = computed(() => {
 
         <template #default="{ close }">
           <div class="flex max-h-[64vh] w-[min(420px,88vw)] flex-col overflow-hidden">
-            <div class="shrink-0 space-y-2 border-b border-outline-variant/45 p-2.5">
+            <div class="shrink-0 space-y-2 bg-surface-container p-2.5">
               <div class="flex items-center justify-between gap-2">
                 <span class="text-label-large text-on-surface">
                   {{ t('tool.workbench.topBar.quickSwitchLabel', { count: entries.length }) }}

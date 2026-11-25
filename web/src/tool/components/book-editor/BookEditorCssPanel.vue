@@ -49,7 +49,7 @@ const { t } = useI18n()
 
 <template>
   <div
-    class="space-y-2.5 border-b border-outline-variant/50 bg-surface-container-low px-4 py-3"
+    class="space-y-2.5 bg-surface-container px-4 py-3"
   >
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-1.5">

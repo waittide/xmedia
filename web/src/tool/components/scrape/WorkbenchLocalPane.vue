@@ -185,7 +185,7 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
 <template>
   <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
     <div
-      class="flex shrink-0 items-center justify-between gap-2 border-b border-outline-variant/45 px-4 py-2"
+      class="flex shrink-0 items-center justify-between gap-2 bg-surface-container px-4 py-2"
     >
       <div class="flex min-w-0 items-center gap-1.5">
         <span
@@ -217,7 +217,6 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
         <MdButton
           v-if="canSaveMetadata && !localEditMode"
           variant="tonal"
-          size="sm"
           :icon="LuPencil"
           :title="t('tool.workbench.local.directEditHint')"
           @click="emit('enter-edit')"
@@ -227,7 +226,6 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
         <MdButton
           v-else-if="localEditMode"
           variant="outlined"
-          size="sm"
           :icon="LuEye"
           @click="emit('exit-edit')"
         >
@@ -366,7 +364,6 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
             <MdButton
               v-if="localEditMode"
               variant="outlined"
-              size="sm"
               class="ml-auto"
               :icon="LuUpload"
               :loading="uploadingArtwork"
@@ -452,7 +449,7 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
     <!-- Local Pane Inline Edit Footer -->
     <div
       v-if="localEditMode"
-      class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-outline-variant/45 bg-surface-container/75 px-4 py-2.5"
+      class="flex shrink-0 flex-wrap items-center justify-between gap-2 bg-surface-container px-4 py-2.5"
     >
       <AppCheckbox
         v-model="organizeLocalAfterSave"
@@ -461,12 +458,11 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
       />
 
       <div class="flex items-center gap-1.5">
-        <MdButton variant="text" size="sm" :disabled="savingLocal" @click="emit('exit-edit')">
+        <MdButton variant="text" :disabled="savingLocal" @click="emit('exit-edit')">
           {{ t('tool.common.cancel') }}
         </MdButton>
         <MdButton
           variant="filled"
-          size="sm"
           :icon="LuSave"
           :loading="savingLocal"
           @click="emit('save-local', organizeLocalAfterSave)"

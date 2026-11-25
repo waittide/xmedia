@@ -490,10 +490,10 @@ onBeforeUnmount(() => {
 
         <aside
           v-if="showLivePreview"
-          class="hidden w-[38%] max-w-xl shrink-0 flex-col border-l border-outline-variant/50 bg-surface-container-low lg:flex"
+          class="hidden w-[38%] max-w-xl shrink-0 flex-col bg-surface-container-low lg:flex"
         >
           <div
-            class="flex h-10 shrink-0 items-center justify-between border-b border-outline-variant/40 px-4"
+            class="flex h-10 shrink-0 items-center justify-between px-4"
           >
             <span class="text-label-large font-semibold text-on-surface">
               {{ t('tool.bookEditor.modal.livePreviewTitle') }}

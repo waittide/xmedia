@@ -36,7 +36,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="flex shrink-0 items-center gap-3 border-b border-outline-variant/40 px-6 py-2.5">
+  <div class="flex shrink-0 items-center gap-3 bg-surface-container-lowest px-6 py-2.5">
     <span class="text-label-small shrink-0 font-mono text-on-surface-variant">
       #{{ activeIndex + 1 }}
     </span>

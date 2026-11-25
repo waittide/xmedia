@@ -350,7 +350,6 @@ async function handleExecute(): Promise<void> {
             <div class="flex items-end sm:col-span-2">
               <MdButton
                 variant="outlined"
-                size="sm"
                 block
                 :icon="previewFeedback.done.value && !previewSpinning ? LuCheck : LuRefreshCw"
                 :loading="previewSpinning"
@@ -377,7 +376,6 @@ async function handleExecute(): Promise<void> {
           </div>
           <MdButton
             variant="outlined"
-            size="sm"
             :icon="previewFeedback.done.value && !previewSpinning ? LuCheck : LuRefreshCw"
             :loading="previewSpinning"
             @click="previewFeedback.run(runPreview)"
@@ -403,7 +401,7 @@ async function handleExecute(): Promise<void> {
           />
         </div>
 
-        <div class="flex flex-wrap items-center gap-2 border-t border-outline-variant/40 pt-2.5">
+        <div class="flex flex-wrap items-center gap-2 pt-2">
           <span class="text-label-medium text-on-surface-variant">
             {{ t('tool.modals.batchRename.conflictLabel') }}
           </span>
@@ -458,7 +456,6 @@ async function handleExecute(): Promise<void> {
           <MdButton
             v-if="unchangedCount > 0"
             variant="text"
-            size="sm"
             @click="showUnchanged = !showUnchanged"
           >
             {{
@@ -549,17 +546,16 @@ async function handleExecute(): Promise<void> {
         <span class="text-body-small text-on-surface-variant">
           {{ t('tool.modals.batchRename.footerSummary', { count: actionableCount }) }}
         </span>
-        <MdButton variant="text" size="sm" :icon="LuUndo2" @click="emit('openHistory')">
+        <MdButton variant="text" :icon="LuUndo2" @click="emit('openHistory')">
           {{ t('tool.modals.batchRename.undoHistory') }}
         </MdButton>
       </div>
       <div class="flex items-center gap-2">
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" @click="emit('close')">
           {{ t('tool.common.cancel') }}
         </MdButton>
         <MdButton
           variant="filled"
-          size="sm"
           :icon="LuCheck"
           :loading="executing"
           :disabled="actionableCount === 0"

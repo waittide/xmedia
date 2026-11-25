@@ -186,7 +186,7 @@ function handleManualScrape(): void {
               {{ t('tool.modals.dryRun.lowConfidenceNotice', { count: lowConfidenceCount }) }}
             </span>
           </span>
-          <MdButton variant="outlined" size="sm" @click="selectAllMatched">
+          <MdButton variant="outlined" @click="selectAllMatched">
             {{ t('tool.modals.dryRun.selectAllMatched') }}
           </MdButton>
         </div>
@@ -260,7 +260,6 @@ function handleManualScrape(): void {
         <MdButton
           v-if="!loading && unmatchedEntries.length > 0"
           variant="tonal"
-          size="sm"
           :icon="LuColumns3"
           :title="t('tool.modals.dryRun.manualScrapeHint')"
           @click="handleManualScrape"
@@ -269,12 +268,11 @@ function handleManualScrape(): void {
         </MdButton>
       </div>
       <div class="flex items-center gap-2">
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" @click="emit('close')">
           {{ t('tool.common.cancel') }}
         </MdButton>
         <MdButton
           variant="filled"
-          size="sm"
           :icon="LuSparkles"
           :disabled="loading || selectedCount === 0"
           @click="handleConfirm"

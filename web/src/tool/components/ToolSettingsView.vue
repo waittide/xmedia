@@ -90,7 +90,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
           {{ t('tool.settings.subtitle') }}
         </p>
       </div>
-      <MdButton variant="tonal" size="sm" :icon="LuArrowLeft" @click="workspaceStore.exitSettings()">
+      <MdButton variant="tonal" :icon="LuArrowLeft" @click="workspaceStore.exitSettings()">
         {{ t('tool.settings.backToWorkbench') }}
       </MdButton>
     </div>

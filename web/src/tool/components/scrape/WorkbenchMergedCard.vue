@@ -54,7 +54,7 @@ function isCoverUsable(url: string | null | undefined, broken: Set<string>): boo
     class="text-body-small flex items-center justify-between gap-2 rounded-corner-lg bg-warning-container px-3 py-2 text-on-warning-container"
   >
     <span>{{ t('tool.workbench.merged.allMutedBanner', { count: ignoredProviderIds.size }) }}</span>
-    <MdButton variant="text" size="sm" @click="emit('clear-ignored')">
+    <MdButton variant="text" @click="emit('clear-ignored')">
       {{ t('tool.workbench.merged.restoreAll') }}
     </MdButton>
   </div>
@@ -137,7 +137,6 @@ function isCoverUsable(url: string | null | undefined, broken: Set<string>): boo
     <div class="mt-1.5 flex flex-wrap items-center gap-1.5 pl-12">
       <MdButton
         :variant="waterfallExpanded || ignoredProviderIds.size > 0 ? 'tonal' : 'outlined'"
-        size="sm"
         :icon="LuSlidersHorizontal"
         @click="emit('toggle-waterfall')"
       >
@@ -146,7 +145,6 @@ function isCoverUsable(url: string | null | undefined, broken: Set<string>): boo
 
       <MdButton
         variant="filled"
-        size="sm"
         :icon="LuZap"
         @click="emit('direct-apply', mergedMeta)"
       >
@@ -157,14 +155,13 @@ function isCoverUsable(url: string | null | undefined, broken: Set<string>): boo
     <!-- Interactive Multi-Source Waterfall Priority & Mute Drawer -->
     <div
       v-if="waterfallExpanded"
-      class="mt-2.5 space-y-1.5 border-t border-primary/25 pt-2"
+      class="mt-2.5 space-y-1.5 pt-2"
     >
       <div class="text-label-small flex items-center justify-between text-on-surface-variant">
         <span>{{ t('tool.workbench.merged.waterfallHint') }}</span>
         <MdButton
           v-if="ignoredProviderIds.size > 0"
           variant="text"
-          size="sm"
           @click="emit('clear-ignored')"
         >
           {{ t('tool.workbench.merged.restoreAll') }}
@@ -206,7 +203,6 @@ function isCoverUsable(url: string | null | undefined, broken: Set<string>): boo
             <MdButton
               v-if="(providerCandidateCounts[brief.id] ?? 0) > 1"
               variant="text"
-              size="sm"
               @click="emit('filter-source', activeSourceFilter === brief.id ? 'all' : brief.id)"
             >
               {{ t('tool.workbench.merged.switchCandidate', { count: providerCandidateCounts[brief.id] }) }}

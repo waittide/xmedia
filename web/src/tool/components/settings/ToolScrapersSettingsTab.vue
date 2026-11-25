@@ -396,11 +396,10 @@ async function handleSaveGlobalSettings(): Promise<void> {
         </p>
       </div>
 
-      <div class="flex items-center gap-1.5">
+      <div class="flex items-center gap-2">
         <RefreshButton :action="loadCacheStats" />
         <MdButton
           variant="outlined"
-          size="sm"
           :icon="LuTrash2"
           :loading="clearingCache"
           :disabled="!cacheStats || cacheStats.total_entries === 0"

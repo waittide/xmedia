@@ -18,9 +18,11 @@ import {
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdChip from '@/components/ui/MdChip.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSelect from '@/components/ui/MdSelect.vue'
+import MdSkeleton from '@/components/ui/MdSkeleton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { ToolCompletenessFilter } from '../completeness'
 import { useToolInspectorStore } from '../stores/inspector'
@@ -201,27 +203,19 @@ function relativeDirBadge(relPath: string): string | null {
 <template>
   <div class="relative min-h-full p-4 pb-24 sm:p-6 sm:pb-24">
     <!-- Domain Empty State -->
-    <div
+    <MdEmptyState
       v-if="workspaceStore.domainRoots.length === 0"
-      class="mx-auto mt-14 max-w-md rounded-corner-xl bg-surface-container-low p-8 text-center"
+      :icon="LuFolderPlus"
+      :title="workspaceStore.domainLabels.emptyRootsTitle"
+      :description="workspaceStore.domainLabels.emptyRootsDesc"
+      class="mx-auto mt-10 max-w-md rounded-corner-xl bg-surface-container-low"
     >
-      <div
-        class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
-      >
-        <LuFolderPlus class="h-6 w-6" aria-hidden="true" />
-      </div>
-      <h2 class="text-title-medium text-on-surface">
-        {{ workspaceStore.domainLabels.emptyRootsTitle }}
-      </h2>
-      <p class="mt-2 text-body-small leading-relaxed text-on-surface-variant">
-        {{ workspaceStore.domainLabels.emptyRootsDesc }}
-      </p>
-      <div class="mt-6 flex justify-center">
+      <template #action>
         <MdButton variant="filled" :icon="LuFolderPlus" @click="workspaceStore.openSettingsTab('roots')">
           {{ t('tool.roots.add') }}
         </MdButton>
-      </div>
-    </div>
+      </template>
+    </MdEmptyState>
 
     <template v-else>
       <!-- Clean Header: Breadcrumbs + View Segmented Button + Utility Icons -->
@@ -343,7 +337,7 @@ function relativeDirBadge(relPath: string): string | null {
         <span class="font-medium">
           {{ t('tool.browser.focusBanner', { count: workspaceStore.filteredFiles.length }) }}
         </span>
-        <MdButton variant="text" size="sm" @click="workspaceStore.workbenchFocusPaths = null">
+        <MdButton variant="text" @click="workspaceStore.workbenchFocusPaths = null">
           {{ t('tool.browser.exitFocus') }}
         </MdButton>
       </div>
@@ -381,7 +375,6 @@ function relativeDirBadge(relPath: string): string | null {
           <MdButton
             v-if="workspaceStore.filteredFiles.length > 0 && workspaceStore.selectedPaths.size === 0"
             variant="outlined"
-            size="sm"
             :icon="LuColumns3"
             :title="t('tool.browser.workbenchTooltip')"
             @click="scrapeStore.openScrapeWorkbench()"
@@ -395,21 +388,21 @@ function relativeDirBadge(relPath: string): string | null {
           >
             <button
               type="button"
-              class="md-state inline-flex h-8 cursor-pointer items-center gap-1.5 pr-2.5 pl-3.5 text-label-large"
+              class="md-state inline-flex h-10 cursor-pointer items-center gap-1.5 pr-3 pl-4 text-label-large"
               :title="t('tool.browser.quickScrapeAllTitle', { summary: scrapeStore.lastScrapeSummary })"
               @click="scrapeStore.quickScrapeSelection()"
             >
-              <LuSparkles class="h-3.5 w-3.5" aria-hidden="true" />
+              <LuSparkles class="h-4 w-4" aria-hidden="true" />
               <span>{{ t('tool.browser.quickScrapeAll', { count: workspaceStore.filteredFiles.length }) }}</span>
             </button>
             <button
               type="button"
-              class="md-state inline-flex h-8 cursor-pointer items-center border-l border-outline-variant/50 px-2.5 text-label-large"
+              class="md-state inline-flex h-10 cursor-pointer items-center bg-on-secondary-container/8 px-3 text-label-large"
               :title="t('tool.browser.configureScrapeTitle', { summary: scrapeStore.lastScrapeSummary })"
               :aria-label="t('tool.browser.configureScrapeTitle', { summary: scrapeStore.lastScrapeSummary })"
               @click="scrapeStore.configureScrapeSelection()"
             >
-              <LuSlidersHorizontal class="h-3.5 w-3.5" aria-hidden="true" />
+              <LuSlidersHorizontal class="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -425,10 +418,11 @@ function relativeDirBadge(relPath: string): string | null {
 
       <!-- Loading Skeleton -->
       <div v-if="workspaceStore.loadingDir && !workspaceStore.snapshot" class="space-y-2">
-        <div
+        <MdSkeleton
           v-for="n in 6"
           :key="n"
-          class="h-16 animate-pulse rounded-corner-lg bg-surface-container-low"
+          height="4rem"
+          class="rounded-corner-lg"
         />
       </div>
 
@@ -456,25 +450,21 @@ function relativeDirBadge(relPath: string): string | null {
       />
 
       <!-- Empty File List (Flat / Filtered Mode) -->
-      <div
+      <MdEmptyState
         v-else-if="workspaceStore.filteredFiles.length === 0"
-        class="rounded-corner-xl bg-surface-container-low py-16 text-center"
-      >
-        <p class="text-title-small text-on-surface">
-          {{
-            workspaceStore.hasActiveSearchOrFilter
-              ? t('tool.browser.emptyFilteredTitle')
-              : t('tool.browser.emptyDirTitle')
-          }}
-        </p>
-        <p class="mt-1 text-body-small text-on-surface-variant">
-          {{
-            workspaceStore.hasActiveSearchOrFilter
-              ? t('tool.browser.emptyFilteredDesc')
-              : t('tool.browser.emptyDirDesc')
-          }}
-        </p>
-      </div>
+        :icon="LuFolder"
+        :title="
+          workspaceStore.hasActiveSearchOrFilter
+            ? t('tool.browser.emptyFilteredTitle')
+            : t('tool.browser.emptyDirTitle')
+        "
+        :description="
+          workspaceStore.hasActiveSearchOrFilter
+            ? t('tool.browser.emptyFilteredDesc')
+            : t('tool.browser.emptyDirDesc')
+        "
+        class="rounded-corner-xl bg-surface-container-low"
+      />
 
       <!-- MD3 Tonal Media List -->
       <div v-else class="space-y-3">
@@ -522,7 +512,6 @@ function relativeDirBadge(relPath: string): string | null {
           <div class="flex items-center gap-2">
             <MdButton
               variant="tonal"
-              size="sm"
               @click="workspaceStore.visibleLimit += PAGE_CHUNK_SIZE"
             >
               {{
@@ -533,7 +522,6 @@ function relativeDirBadge(relPath: string): string | null {
             </MdButton>
             <MdButton
               variant="text"
-              size="sm"
               @click="workspaceStore.visibleLimit = workspaceStore.filteredFiles.length"
             >
               {{ t('tool.batch.showAll') }}

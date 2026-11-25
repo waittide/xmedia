@@ -191,10 +191,10 @@ function onTocDrop(targetIdx: number): void {
 
 <template>
   <aside
-    class="flex w-68 shrink-0 flex-col border-r border-outline-variant/50 bg-surface-container-low select-none lg:w-76"
+    class="flex w-68 shrink-0 flex-col bg-surface-container-low select-none lg:w-76"
   >
     <!-- TOC Header + Search -->
-    <div class="space-y-2 border-b border-outline-variant/40 p-2.5">
+    <div class="space-y-2 p-2.5">
       <div class="flex items-center justify-between gap-1.5">
         <span class="px-1 text-label-large font-semibold text-on-surface">
           {{ t('tool.bookEditor.toc.heading', { count: chapters.length }) }}
@@ -231,7 +231,6 @@ function onTocDrop(targetIdx: number): void {
       <div class="grid grid-cols-2 gap-1.5">
         <MdButton
           variant="tonal"
-          size="sm"
           class="w-full"
           @click="emit('insertVolumeBelow', activeIndex)"
         >
@@ -240,7 +239,6 @@ function onTocDrop(targetIdx: number): void {
         </MdButton>
         <MdButton
           variant="tonal"
-          size="sm"
           class="w-full"
           @click="emit('insertBelow', activeIndex)"
         >
@@ -290,17 +288,17 @@ function onTocDrop(targetIdx: number): void {
     <!-- Collapsible Batch TOC Hierarchy & Sync Panel -->
     <div
       v-if="tocToolsOpen"
-      class="space-y-1.5 border-b border-outline-variant/40 bg-surface-container p-2.5"
+      class="mx-2 mb-2 space-y-1.5 rounded-corner-md bg-surface-container p-2.5"
     >
       <div class="grid grid-cols-2 gap-1.5">
-        <MdButton variant="outlined" size="sm" class="w-full" @click="emit('autoDetectHierarchy')">
+        <MdButton variant="outlined" class="w-full" @click="emit('autoDetectHierarchy')">
           {{ t('tool.bookEditor.toc.autoHierarchy') }}
         </MdButton>
-        <MdButton variant="outlined" size="sm" class="w-full" @click="emit('flattenLevels')">
+        <MdButton variant="outlined" class="w-full" @click="emit('flattenLevels')">
           {{ t('tool.bookEditor.toc.flattenLevels') }}
         </MdButton>
       </div>
-      <MdButton variant="tonal" size="sm" class="w-full" @click="emit('syncTitlesFromBody')">
+      <MdButton variant="tonal" class="w-full" @click="emit('syncTitlesFromBody')">
         {{ t('tool.bookEditor.toc.syncFromHeadings') }}
       </MdButton>
     </div>
@@ -308,7 +306,7 @@ function onTocDrop(targetIdx: number): void {
     <!-- Collapsible TXT Regex Panel -->
     <div
       v-if="docFormat === 'txt' && regexPanelOpen"
-      class="space-y-2 border-b border-outline-variant/40 bg-surface-container p-2.5"
+      class="mx-2 mb-2 space-y-2 rounded-corner-md bg-surface-container p-2.5"
     >
       <div class="flex flex-wrap gap-1">
         <MdChip
@@ -331,7 +329,6 @@ function onTocDrop(targetIdx: number): void {
       />
       <MdButton
         variant="filled"
-        size="sm"
         class="w-full"
         :disabled="resegmenting"
         @click="emit('resegmentTxt', chapterRegexInput.trim() || undefined, volumeRegexInput.trim() || undefined)"

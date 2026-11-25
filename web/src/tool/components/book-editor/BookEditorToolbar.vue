@@ -68,7 +68,7 @@ const surfaceModeOptions = computed(
 
 <template>
   <div
-    class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-outline-variant/50 bg-surface-container-low px-3 py-2 select-none"
+    class="flex shrink-0 flex-wrap items-center justify-between gap-2 bg-surface-container px-3 py-2 select-none"
   >
     <!-- Left Formatting Buttons (`@mousedown.prevent` keeps caret & selection intact) -->
     <div class="flex flex-wrap items-center gap-0.5">

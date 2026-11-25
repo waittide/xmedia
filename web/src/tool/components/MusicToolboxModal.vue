@@ -300,10 +300,10 @@ async function handleBatchSyncAlbum(): Promise<void> {
               :label="t('tool.modals.musicTools.offsetLabel')"
             />
           </div>
-          <MdButton variant="outlined" size="sm" @click="shiftOffset(-500)">-0.5s</MdButton>
-          <MdButton variant="outlined" size="sm" @click="shiftOffset(-100)">-0.1s</MdButton>
-          <MdButton variant="outlined" size="sm" @click="shiftOffset(100)">+0.1s</MdButton>
-          <MdButton variant="outlined" size="sm" @click="shiftOffset(500)">+0.5s</MdButton>
+          <MdButton variant="outlined" @click="shiftOffset(-500)">-0.5s</MdButton>
+          <MdButton variant="outlined" @click="shiftOffset(-100)">-0.1s</MdButton>
+          <MdButton variant="outlined" @click="shiftOffset(100)">+0.1s</MdButton>
+          <MdButton variant="outlined" @click="shiftOffset(500)">+0.5s</MdButton>
         </div>
 
         <div class="flex flex-wrap items-center gap-4">
@@ -345,7 +345,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
         />
 
         <div class="flex justify-end">
-          <MdButton variant="filled" size="sm" :loading="busy" @click="handleProcessLyrics">
+          <MdButton variant="filled" :loading="busy" @click="handleProcessLyrics">
             {{ t('tool.modals.musicTools.applyLyrics') }}
           </MdButton>
         </div>
@@ -361,7 +361,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
           <p class="text-body-small mb-3 text-on-surface-variant">
             {{ t('tool.modals.musicTools.replayGainDesc') }}
           </p>
-          <MdButton variant="filled" size="sm" :loading="busy" @click="handleReplayGain">
+          <MdButton variant="filled" :loading="busy" @click="handleReplayGain">
             {{ t('tool.modals.musicTools.runReplayGain', { count: sortedEntries.length }) }}
           </MdButton>
         </div>
@@ -383,7 +383,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
                 <MdSelect v-model="coverMaxDimStr" :options="coverDimOptions" variant="compact" />
               </div>
             </div>
-            <MdButton variant="tonal" size="sm" :loading="busy" @click="handleOptimizeCover">
+            <MdButton variant="tonal" :loading="busy" @click="handleOptimizeCover">
               {{ t('tool.modals.musicTools.optCoverBtn') }}
             </MdButton>
           </div>
@@ -397,7 +397,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
           <p class="text-body-small mb-3 text-on-surface-variant">
             {{ t('tool.modals.musicTools.cueDesc') }}
           </p>
-          <MdButton variant="tonal" size="sm" :loading="busy" @click="handleSplitCue">
+          <MdButton variant="tonal" :loading="busy" @click="handleSplitCue">
             {{ t('tool.modals.musicTools.splitCueBtn') }}
           </MdButton>
         </div>
@@ -453,7 +453,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
           </div>
         </div>
         <div class="flex justify-end">
-          <MdButton variant="filled" size="sm" :loading="busy" @click="handleBatchSyncAlbum">
+          <MdButton variant="filled" :loading="busy" @click="handleBatchSyncAlbum">
             {{ t('tool.modals.musicTools.syncAlbumBtn', { count: sortedEntries.length }) }}
           </MdButton>
         </div>
@@ -477,7 +477,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
 
     <template #footer>
       <div class="ml-auto">
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" @click="emit('close')">
           {{ t('tool.common.close') }}
         </MdButton>
       </div>

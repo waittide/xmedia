@@ -16,7 +16,9 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdEmptyState from '@/components/ui/MdEmptyState.vue'
 import MdIconButton from '@/components/ui/MdIconButton.vue'
+import MdListItem from '@/components/ui/MdListItem.vue'
 import { formatBytes } from '@/utils/format'
 import type {
   DirectorySnapshot,
@@ -116,58 +118,39 @@ function formatModifiedDate(unixSecs: number): string {
       v-if="isMultiRootSummary"
       class="divide-y divide-outline-variant/35 overflow-hidden rounded-corner-lg-increased bg-surface-container-low"
     >
-      <button
+      <MdListItem
         v-for="r in domainRoots"
         :key="`mount-dir-${r.id}`"
-        type="button"
-        class="md-state group flex w-full cursor-pointer items-center gap-3.5 px-4 py-3 text-left"
+        clickable
+        :headline="r.name"
+        :supporting-text="r.path"
+        :trailing-supporting-text="t('tool.folderView.mediaItemsCount', { count: rootFileCounts[r.id] ?? 0 })"
         @click="emit('selectRoot', r.id, 'folders')"
       >
-        <div
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-md bg-primary-container text-on-primary-container"
-        >
-          <LuHardDrive class="h-4 w-4" aria-hidden="true" />
-        </div>
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="text-title-small truncate text-on-surface">
-              {{ r.name }}
-            </span>
-            <span
-              class="text-label-small shrink-0 rounded-corner-full bg-surface-container-high px-2 py-0.5 text-on-surface-variant"
-            >
-              {{ t('tool.folderView.mountedRootBadge') }}
-            </span>
+        <template #leading>
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-md bg-primary-container text-on-primary-container"
+          >
+            <LuHardDrive class="h-4 w-4" aria-hidden="true" />
           </div>
-          <div class="text-body-small mt-0.5 truncate font-mono text-on-surface-variant">
-            {{ r.path }}
-          </div>
-        </div>
-        <div class="text-body-small hidden shrink-0 font-mono text-on-surface-variant sm:block">
-          {{ t('tool.folderView.mediaItemsCount', { count: rootFileCounts[r.id] ?? 0 }) }}
-        </div>
-        <LuChevronRight
-          class="h-4 w-4 shrink-0 text-on-surface-variant opacity-60 transition group-hover:translate-x-0.5 group-hover:opacity-100"
-          aria-hidden="true"
-        />
-      </button>
+        </template>
+        <template #trailing>
+          <LuChevronRight class="h-4 w-4 shrink-0 text-on-surface-variant" aria-hidden="true" />
+        </template>
+      </MdListItem>
     </div>
 
-    <div
+    <MdEmptyState
       v-else-if="isEmptyFolder"
-      class="rounded-corner-xl bg-surface-container-low py-16 text-center"
-    >
-      <p class="text-title-small text-on-surface">
-        {{ t('tool.folderView.emptyTitle') }}
-      </p>
-      <p class="text-body-small mt-1 text-on-surface-variant">
-        {{
-          snapshot && snapshot.parent_rel_path !== null
-            ? t('tool.folderView.emptyDescSub')
-            : t('tool.folderView.emptyDescRoot')
-        }}
-      </p>
-    </div>
+      :icon="LuFolder"
+      :title="t('tool.folderView.emptyTitle')"
+      :description="
+        snapshot && snapshot.parent_rel_path !== null
+          ? t('tool.folderView.emptyDescSub')
+          : t('tool.folderView.emptyDescRoot')
+      "
+      class="rounded-corner-xl bg-surface-container-low"
+    />
 
     <div
       v-else
@@ -175,7 +158,7 @@ function formatModifiedDate(unixSecs: number): string {
     >
       <!-- File Manager Table Header -->
       <div
-        class="text-label-medium flex items-center gap-3.5 border-b border-outline-variant/45 bg-surface-container/60 px-4 py-2 text-on-surface-variant"
+        class="text-label-medium flex items-center gap-3.5 bg-surface-container/60 px-4 py-2 text-on-surface-variant"
       >
         <div class="flex w-5 shrink-0 items-center justify-center">
           <AppCheckbox
