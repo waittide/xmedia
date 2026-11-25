@@ -166,30 +166,6 @@ export interface OnlineContentResponseDto {
   diagnostics: ExecutionDiagnostics
 }
 
-/**
- * TODO(integrator-v2): Delete `OnlineShelfBookDto` and the 4 typecheck-only shelf stubs below
- * immediately after landing `swarm/v2-web-core` (which removes their last external import in
- * `web/src/sources/useOnlineItemState.ts`).
- */
-export interface OnlineShelfBookDto {
-  id: string
-  source_id: string
-  source_name: string
-  name: string
-  author: string
-  book_url: string
-  toc_url: string
-  cover_url: string | null
-  intro: string | null
-  kind: string | null
-  last_chapter: string | null
-  total_chapters: number
-  current_chapter_index: number
-  current_chapter_title: string | null
-  scroll_ratio: number
-  updated_at: string
-}
-
 export const onlineBookItemsApi = createDomainOnlineItemsApi('book' as OnlineItemDomain)
 
 export type OnlineDownloadFormat = 'epub' | 'txt'
@@ -367,17 +343,6 @@ export const onlineBookApi = {
     }),
 
   items: onlineBookItemsApi,
-
-  // TODO(integrator-v2): Delete these 4 typecheck-only stubs after `swarm/v2-web-core` lands.
-  listShelf: async (): Promise<OnlineShelfBookDto[]> => [],
-  addToShelf: (_payload: Record<string, unknown>): Promise<OnlineShelfBookDto> =>
-    Promise.reject(new Error('Unified /book/online/items required')),
-  updateShelfBook: (
-    _id: string,
-    _patch: Record<string, unknown>,
-  ): Promise<OnlineShelfBookDto> =>
-    Promise.reject(new Error('Unified /book/online/items required')),
-  removeFromShelf: async (_id: string): Promise<void> => {},
 
   listDownloads: (): Promise<OnlineDownloadJobDto[]> =>
     requestJson('/book/online/downloads'),

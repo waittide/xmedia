@@ -10,7 +10,7 @@ import {
   formatDownloadSpeed,
   isOnlineDownloadJobActive,
   useOnlineDownloadsStore,
-} from '@/stores/onlineDownloads'
+} from '@/domains/book/onlineDownloads'
 import { formatBytes } from '@/utils/format'
 import type { DomainBackgroundTasksProvider, DomainPlugin, MergedShelfView } from '../domainRegistry'
 import { itemRoute, playRoute } from '../routes'
