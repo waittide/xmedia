@@ -19,6 +19,11 @@ import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
+import {
+  BATCH_TITLE_TEMPLATE_TOKENS,
+  normalizeTitleTemplateForBackend,
+  renderTitleTemplatePreview,
+} from '../templates'
 import type {
   BatchMetadataEditInputDto,
   BatchMetadataEditReportDto,
@@ -127,14 +132,7 @@ const domainFieldLabels = computed(() => {
   }
 })
 
-const templateTokens = [
-  { token: '${filename}', label: '文件名' },
-  { token: '${title}', label: '原标题' },
-  { token: '${creator}', label: '作者/艺人' },
-  { token: '${series}', label: '系列/专辑' },
-  { token: '${year}', label: '年份' },
-  { token: '${counter:2}', label: '序号(01)' },
-]
+const templateTokens = BATCH_TITLE_TEMPLATE_TOKENS
 
 const replacePresets = [
   { label: '去【】水印', find: '【[^】]+】', replace: '', regex: true },
@@ -181,21 +179,16 @@ function splitTokens(raw: string): string[] {
 }
 
 function previewFirstTitle(): string | null {
-  const tpl = titleTemplate.value.trim()
   const first = props.entries[0]
-  if (!tpl || !first) return null
-  const stem = first.file_name.replace(/\.[^.]+$/, '')
-  let out = tpl
-    .replaceAll('${filename}', stem)
-    .replaceAll('${title}', first.display_title || stem)
-    .replaceAll('${creator}', creator.value.trim() || first.display_subtitle || '')
-    .replaceAll('${series}', seriesOrAlbum.value.trim() || '')
-    .replaceAll('${year}', yearText.value.trim() || (first.year ? String(first.year) : ''))
-    .replaceAll('${counter}', '1')
-    .replaceAll('${counter:2}', '01')
-    .replaceAll('${counter:3}', '001')
-  out = out.trim()
-  return out || null
+  if (!first) return null
+  return renderTitleTemplatePreview({
+    template: titleTemplate.value,
+    entry: first,
+    creatorOverride: creator.value,
+    seriesOverride: seriesOrAlbum.value,
+    yearOverride: yearText.value,
+    counter: 1,
+  })
 }
 
 const firstTitlePreview = computed(() => previewFirstTitle())
@@ -251,7 +244,9 @@ async function handleSubmit(): Promise<void> {
     paths: props.entries.map((e) => e.rel_path),
     media_kind: props.domain,
   }
-  if (titleTemplate.value.trim()) payload.title_template = titleTemplate.value.trim()
+  if (titleTemplate.value.trim()) {
+    payload.title_template = normalizeTitleTemplateForBackend(titleTemplate.value.trim())
+  }
   if (creator.value.trim()) payload.creator = creator.value.trim()
   if (seriesOrAlbum.value.trim()) payload.series_or_album = seriesOrAlbum.value.trim()
   if (publisherOrStudio.value.trim()) payload.publisher_or_studio = publisherOrStudio.value.trim()
@@ -447,7 +442,7 @@ async function handleUndoLastBatch(): Promise<void> {
         <input
           v-model="titleTemplate"
           type="text"
-          placeholder="例如：${counter:2}. ${filename}（留空保持原标题）"
+          placeholder="例如：{counter:2}. {filename}（留空保持原标题）"
           class="md-input h-10 w-full text-xs"
         />
         <p

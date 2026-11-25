@@ -15,6 +15,7 @@ import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
 import { formatBytes } from '@/utils/format'
 import { toolApi } from '../../api'
+import { DEFAULT_SCRAPER_PRIORITIES } from '../../providers'
 import type {
   ProviderConfigOverrideDto,
   ProviderStatusDto,
@@ -73,37 +74,10 @@ const busyProviderId = ref<string | null>(null)
 const editingProvider = ref<ProviderStatusDto | null>(null)
 const allProviders = ref<ProviderStatusDto[]>([])
 const priorities = ref<ScraperPrioritiesDto>({
-  book: [
-    'douban',
-    'neodb',
-    'xinhua',
-    'qidian',
-    'fanqie',
-    'qimao',
-    '17k',
-    'ciweimao',
-    'sfacg',
-    'faloo',
-    'jjwxc',
-    'bangumi',
-    'anilist',
-    'openlibrary',
-  ],
-  comic: ['bangumi', 'douban', 'neodb', 'anilist', 'mangadex', 'nhentai'],
-  music: [
-    'qq',
-    'netease',
-    'kugou',
-    'kuwo',
-    'migu',
-    'taihe',
-    'qishui',
-    'itunes',
-    'bangumi',
-    'musicbrainz',
-    'lrclib',
-  ],
-  video: ['tmdb', 'bangumi', 'hanime1'],
+  book: [...DEFAULT_SCRAPER_PRIORITIES.book],
+  comic: [...DEFAULT_SCRAPER_PRIORITIES.comic],
+  music: [...DEFAULT_SCRAPER_PRIORITIES.music],
+  video: [...DEFAULT_SCRAPER_PRIORITIES.video],
 })
 
 const computedCacheTtlMs = computed<number>(() => {

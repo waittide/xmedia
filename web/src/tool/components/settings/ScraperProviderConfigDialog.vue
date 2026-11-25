@@ -13,6 +13,7 @@ import MdSelect from '@/components/ui/MdSelect.vue'
 import MdSwitch from '@/components/ui/MdSwitch.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { toolApi } from '../../api'
+import { ADULT_PROVIDER_IDS } from '../../providers'
 import type {
   ProviderConfigOverrideDto,
   ProviderStatusDto,
@@ -50,9 +51,7 @@ const clearingSecret = ref(false)
 const errorMsg = ref<string | null>(null)
 
 const providerId = computed(() => props.provider?.id ?? '')
-const isAdultProvider = computed(
-  () => providerId.value === 'nhentai' || providerId.value === 'hanime1',
-)
+const isAdultProvider = computed(() => ADULT_PROVIDER_IDS.has(providerId.value))
 
 const secretSpec = computed<{
   label: string

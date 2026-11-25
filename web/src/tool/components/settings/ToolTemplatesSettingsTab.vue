@@ -3,15 +3,8 @@ import { ref, watch } from 'vue'
 import { LuRotateCcw, LuSave } from 'vue-icons-plus/lu'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../../api'
+import { DEFAULT_RENAME_TEMPLATES, DOMAIN_RENAME_TEMPLATE_SPECS } from '../../templates'
 import type { PublicSettingsDto, RenameTemplatesDto } from '../../types'
-
-const DEFAULT_RENAME_TEMPLATES: RenameTemplatesDto = {
-  book: '{author}/{series}/{subseries}/<Vol.{volume:2} >{title} ({year})/{title} - {author}',
-  comic: '{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}',
-  music: '{album_artist}/{album} ({year})/{track:2} - {title}',
-  video_movie: '{title} ({year})/{title} ({year})',
-  video_episode: '{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}',
-}
 
 const props = defineProps<{
   settings: PublicSettingsDto | null
@@ -31,28 +24,7 @@ const domainBadgeLabels: Record<MediaKind, string> = {
   video: '影视',
 }
 
-const domainTokenExamples: Record<MediaKind, { tokens: string[]; spec: string; sample: string }> = {
-  book: {
-    tokens: ['{author}', '{series}', '{subseries}', '{volume:2}', '{title}', '{year}', '{publisher}'],
-    spec: 'Calibre / Kavita 规范',
-    sample: '刘慈欣/地球往事/Vol.01 三体 (2008)/三体 - 刘慈欣.epub',
-  },
-  comic: {
-    tokens: ['{series}', '{series_group}', '{volume:2}', '{number:2}', '{title}', '{year}'],
-    spec: 'Komga / Kavita 规范',
-    sample: '葬送的芙莉莲/葬送的芙莉莲 Vol.01 Ch.01 冒险的终点.cbz',
-  },
-  music: {
-    tokens: ['{album_artist}', '{artist}', '{album}', '{disc}', '{track:2}', '{title}', '{year}'],
-    spec: 'MusicBrainz Picard / Navidrome 规范',
-    sample: '米津玄師/LOST CORNER (2024)/01 - RED OUT.flac',
-  },
-  video: {
-    tokens: ['{title}', '{original_title}', '{show}', '{year}', '{season:2}', '{episode:2}'],
-    spec: 'Jellyfin / Kodi 官方目录规范',
-    sample: '葬送的芙莉莲 (2023)/Season 01/葬送的芙莉莲 - S01E01 - 冒险的终点.mkv',
-  },
-}
+const domainTokenExamples = DOMAIN_RENAME_TEMPLATE_SPECS
 
 const templates = ref<RenameTemplatesDto>({ ...DEFAULT_RENAME_TEMPLATES })
 const saving = ref(false)

@@ -15,6 +15,7 @@ import { useActionFeedback } from '@/composables/useActionFeedback'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import { useToolTaskStore } from '../tasks'
+import { DOMAIN_RENAME_TEMPLATE_SPECS } from '../templates'
 import type {
   MediaFileEntry,
   RenameConflictPolicy,
@@ -84,54 +85,7 @@ async function handleUndoBatch(batchId: string): Promise<void> {
 
 const dominantKind = computed<MediaKind>(() => props.entries[0]?.media_kind ?? 'music')
 
-const tokenChips = computed<string[]>(() => {
-  const k = dominantKind.value
-  if (k === 'music') {
-    return [
-      '{album_artist}',
-      '{artist}',
-      '{album}',
-      '{disc}',
-      '{track:2}',
-      '{title}',
-      '{year}',
-      '{genre}',
-    ]
-  }
-  if (k === 'video') {
-    return [
-      '{show}',
-      '{season:2}',
-      '{episode:2}',
-      '{title}',
-      '{original_title}',
-      '{year}',
-      '{jellyfin_id}',
-      '{tmdbid}',
-    ]
-  }
-  if (k === 'comic') {
-    return [
-      '{series}',
-      '{series_group}',
-      '<Vol.{volume:2}>',
-      '<Ch.{number:2}>',
-      '{title}',
-      '{publisher}',
-      '{year}',
-    ]
-  }
-  return [
-    '{author}',
-    '{series}',
-    '{subseries}',
-    '<Vol.{volume:2} >',
-    '{title}',
-    '{publisher}',
-    '{year}',
-    '{isbn}',
-  ]
-})
+const tokenChips = computed<string[]>(() => DOMAIN_RENAME_TEMPLATE_SPECS[dominantKind.value].quickChips)
 
 function seedTemplatesForEntries(): void {
   const k = dominantKind.value

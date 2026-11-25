@@ -1,3 +1,4 @@
+import { CN_WEBNOVEL_PROVIDER_IDS } from './providers'
 import type {
   FieldSourceBadge,
   MergedScrapedResult,
@@ -33,16 +34,7 @@ function normalizeIsbn(raw: string | null | undefined): string {
   return cleaned
 }
 
-const CN_WEBNOVEL_PROVIDERS = new Set([
-  'qidian',
-  'fanqie',
-  'qimao',
-  '17k',
-  'ciweimao',
-  'sfacg',
-  'faloo',
-  'jjwxc',
-])
+const CN_WEBNOVEL_PROVIDERS = CN_WEBNOVEL_PROVIDER_IDS
 
 function isAsciiOnly(s: string): boolean {
   for (let i = 0; i < s.length; i += 1) {

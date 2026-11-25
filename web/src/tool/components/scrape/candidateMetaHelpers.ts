@@ -1,28 +1,7 @@
+import { CN_WEBNOVEL_PROVIDER_IDS, MUSIC_PROVIDER_IDS } from '../../providers'
 import type { ScrapeCandidate, ScrapedMetadata } from '../../types'
 
-const CN_NOVEL_PROVIDER_IDS = new Set([
-  'qidian',
-  'fanqie',
-  'qimao',
-  'zongheng',
-  'jjwxc',
-  'sfacg',
-  'ciweimao',
-  'faloo',
-])
-
-const MUSIC_PROVIDER_IDS = new Set([
-  'qq',
-  'qq_music',
-  'netease',
-  'kugou',
-  'kuwo',
-  'taihe',
-  'qishui',
-  'musicbrainz',
-  'itunes',
-  'lrclib',
-])
+const CN_NOVEL_PROVIDER_IDS = CN_WEBNOVEL_PROVIDER_IDS
 
 export function candKey(c: ScrapeCandidate): string {
   return `${c.provider_id}::${c.external_id}`
