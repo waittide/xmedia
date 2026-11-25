@@ -37,6 +37,7 @@ import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onli
 import type { PdfFitMode, PdfReaderState } from '@/domains/book/readers/PdfReader.vue'
 import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
 import { formatProgressPercentValue } from '@/domains/book/utils/bookVm'
+import { sendKeepalivePutJson } from '@/domains/shared/keepalive'
 import { itemRoute, libraryRoute } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -183,17 +184,7 @@ async function flushPendingProgress(useKeepalive = false): Promise<void> {
   pendingProgress = null
   if (!targetBookId) return
   if (useKeepalive) {
-    try {
-      void fetch(`/api/v1/book/books/${encodeURIComponent(targetBookId)}/progress`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        keepalive: true,
-      })
-    } catch {
-      // ignore unload error
-    }
+    sendKeepalivePutJson(`/api/v1/book/books/${encodeURIComponent(targetBookId)}/progress`, payload)
     return
   }
   await api.saveProgress(targetBookId, payload).catch((err) => {

@@ -11,6 +11,7 @@ import ComicReaderShell, {
 } from '@/domains/comic/components/ComicReaderShell.vue'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import { useSidebarStore } from '@/domains/comic/store'
+import { sendKeepalivePutJson } from '@/domains/shared/keepalive'
 import type {
   ComicBookmark,
   ReaderContextDto,
@@ -185,20 +186,10 @@ function flushPendingProgress(useKeepalive = false): void {
   const payload = pendingProgress
   pendingProgress = null
   if (useKeepalive) {
-    try {
-      void fetch(`/api/v1/comic/chapters/${encodeURIComponent(payload.chapterId)}/progress`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          current_page: payload.page,
-          is_completed: payload.completed,
-        }),
-        keepalive: true,
-      })
-    } catch {
-      // ignore unload errors
-    }
+    sendKeepalivePutJson(`/api/v1/comic/chapters/${encodeURIComponent(payload.chapterId)}/progress`, {
+      current_page: payload.page,
+      is_completed: payload.completed,
+    })
     return
   }
   void api.updateProgress(payload.chapterId, payload.page, payload.completed).catch(() => {})

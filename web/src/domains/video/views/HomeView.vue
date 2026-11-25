@@ -226,7 +226,7 @@ watch(
       :error="combinedError"
       :is-admin="authStore.isAdmin"
       :can-upload="authStore.isAdmin"
-      :has-online-sources="true"
+      :has-online-sources="sourceFilter.hasOnlineSources.value"
       :empty-title="t('home.emptyLibraryTitle')"
       :empty-description="t('home.emptyLibraryDesc')"
       @refresh="handleRefresh"

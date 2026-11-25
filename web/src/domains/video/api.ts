@@ -1,4 +1,5 @@
 import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
+import { sendKeepalivePutJson } from '@/domains/shared/keepalive'
 import type {
   BindMediaItemsInput,
   BindMediaItemsResultDto,
@@ -168,17 +169,7 @@ export const api = {
       selected_subtitle?: string | null
     },
   ) => {
-    try {
-      void fetch(`/api/v1/video/videos/${encodeURIComponent(videoId)}/progress`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        keepalive: true,
-      })
-    } catch {
-      // ignore unload errors
-    }
+    sendKeepalivePutJson(`/api/v1/video/videos/${encodeURIComponent(videoId)}/progress`, payload)
   },
 
   listShows: (

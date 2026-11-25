@@ -1,4 +1,5 @@
 import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
+import { sendKeepalivePutJson } from '@/domains/shared/keepalive'
 import type {
   BindMediaItemsResultDto,
   CoreLibraryDto,
@@ -107,7 +108,7 @@ export function buildStreamUrl(
     sp.set('time_offset', String(Math.floor(timeOffsetSecs)))
   }
 
-  return `/api/v1/music/tracks/${encodeURIComponent(trackId)}/stream?${sp.toString()}`
+  return withAuthToken(`/api/v1/music/tracks/${encodeURIComponent(trackId)}/stream?${sp.toString()}`)
 }
 
 export function buildDownloadUrl(trackId: string): string {
@@ -267,17 +268,7 @@ export const api = {
     current_track_id: string | null
     position_ms: number
   }) => {
-    try {
-      void fetch('/api/v1/music/play-queue', {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        keepalive: true,
-      })
-    } catch {
-      // ignore unload errors
-    }
+    sendKeepalivePutJson('/api/v1/music/play-queue', payload)
   },
   listBookmarks: () => requestJson<BookmarkDto[]>('/music/bookmarks'),
   saveBookmark: (trackId: string, position_ms: number, comment?: string) =>
