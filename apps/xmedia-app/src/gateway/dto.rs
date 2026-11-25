@@ -88,6 +88,10 @@ pub(super) struct OpdsBrowseQuery {
 #[derive(Debug, Deserialize)]
 pub(super) struct OpdsProxyImageQuery {
     pub(super) url: String,
+    #[serde(default)]
+    pub(super) page: Option<u64>,
+    #[serde(default, rename = "maxWidth")]
+    pub(super) max_width: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

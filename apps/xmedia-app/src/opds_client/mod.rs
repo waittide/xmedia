@@ -13,9 +13,12 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-pub(crate) use helpers::{parse_filename_from_content_disposition, sanitize_filename_component};
+pub(crate) use helpers::{
+    expand_pse_template_url, parse_filename_from_content_disposition, sanitize_filename_component,
+};
 pub(crate) use http::{
-    LimitedByteStream, ReadLimitError, apply_proxy_security_headers,
+    ReadLimitError, SniffImageError, apply_proxy_security_headers,
+    build_sniffed_raster_image_response, is_disallowed_non_raster_header,
     is_safe_raster_image_content_type, read_response_text_limited, same_origin_redirect_policy,
     tokio_util_file_stream,
 };

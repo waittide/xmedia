@@ -792,6 +792,7 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
     let wav_bytes = sample_wav_bytes(800);
 
     let png_for_opds = png_bytes.clone();
+    let png_for_pse = png_bytes.clone();
     let png_for_sub = png_bytes.clone();
     let cbz_for_dl = cbz_bytes.clone();
     let wav_for_stream = wav_bytes.clone();
@@ -816,6 +817,23 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
             }),
         )
         .route(
+            "/pse/{page}",
+            get(move |headers: axum::http::HeaderMap| {
+                let png = png_for_pse.clone();
+                async move {
+                    let has_basic_auth = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|v| v.starts_with("Basic "));
+                    if !has_basic_auth {
+                        return (StatusCode::UNAUTHORIZED, "missing OPDS basic auth")
+                            .into_response();
+                    }
+                    ([(CONTENT_TYPE, "image/png")], png).into_response()
+                }
+            }),
+        )
+        .route(
             "/redirect-cross-origin",
             get(move || {
                 let target = attacker_redirect_target.clone();
@@ -827,6 +845,15 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
             get(move || {
                 let body = png_for_opds.clone();
                 async move { ([(CONTENT_TYPE, "image/png")], body) }
+            }),
+        )
+        .route(
+            "/img/spoofed-svg-as-png",
+            get(|| async {
+                (
+                    [(CONTENT_TYPE, "image/png")],
+                    "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>",
+                )
             }),
         )
         .route(
@@ -893,6 +920,11 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
                         Some("html") => (
                             [(CONTENT_TYPE, "text/html")],
                             b"<html>bad</html>".to_vec(),
+                        )
+                            .into_response(),
+                        Some("spoofed") => (
+                            [(CONTENT_TYPE, "image/png")],
+                            b"<svg><script>alert(1)</script></svg>".to_vec(),
                         )
                             .into_response(),
                         _ => ([(CONTENT_TYPE, "image/png")], png).into_response(),
@@ -1181,7 +1213,7 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
         Some("sandbox")
     );
 
-    for bad_img_path in ["/img/xss.svg", "/img/xss.html"] {
+    for bad_img_path in ["/img/xss.svg", "/img/xss.html", "/img/spoofed-svg-as-png"] {
         let resp = client
             .get(format!("{}/_app/opds/{opds_id}/proxy-image", gateway.url))
             .query(&[("url", format!("{upstream_url}{bad_img_path}"))])
@@ -1220,7 +1252,7 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
         Some("sandbox")
     );
 
-    for bad_cover in ["svg", "html"] {
+    for bad_cover in ["svg", "html", "spoofed"] {
         let resp = client
             .get(format!(
                 "{}/_app/subsonic/{sub_id}/cover/{bad_cover}",
@@ -1320,7 +1352,7 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
         "reqwest error leaked secret apiKey: {probe_err}"
     );
 
-    // 8. OPDS Comic PSE browse + CBZ import + aborted download temp file RAII cleanup
+    // 8. OPDS Comic PSE browse + authenticated page stream proxy + CBZ import + aborted download temp file RAII cleanup
     let comic_feed: OpdsFeedDto = client
         .get(format!("{}/_app/opds/{opds_id}/browse", gateway.url))
         .send()
@@ -1331,7 +1363,30 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
         .unwrap();
     assert_eq!(comic_feed.entries.len(), 1);
     assert_eq!(comic_feed.entries[0].page_count, Some(10));
-    assert!(comic_feed.entries[0].pse_stream_url.is_some());
+    let pse_template = comic_feed.entries[0]
+        .pse_stream_url
+        .as_deref()
+        .expect("PSE stream URL must be present");
+    assert!(
+        pse_template.starts_with(&format!("/_app/opds/{opds_id}/proxy-image?url=")),
+        "PSE stream URL must route through /_app/opds/{opds_id}/..., got: {pse_template}"
+    );
+    let pse_page_path = pse_template.replace("{pageNumber}", "0");
+    let pse_page_resp = client
+        .get(format!("{}{pse_page_path}", gateway.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pse_page_resp.status(), StatusCode::OK);
+    assert_eq!(
+        pse_page_resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
+    let pse_page_bytes = pse_page_resp.bytes().await.unwrap();
+    assert!(pse_page_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
 
     let comic_import = client
         .post(format!("{}/_app/opds/{opds_id}/import", gateway.url))

@@ -57,6 +57,7 @@ pub type IconApplier = Arc<dyn Fn(AppIconVariant) + Send + Sync>;
 pub struct AppIconStore {
     path: PathBuf,
     current: Arc<RwLock<AppIconVariant>>,
+    write_lock: Arc<tokio::sync::Mutex<()>>,
     applier: Option<IconApplier>,
 }
 
@@ -66,6 +67,7 @@ impl AppIconStore {
         Self {
             path,
             current: Arc::new(RwLock::new(initial)),
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
             applier,
         }
     }
@@ -76,13 +78,27 @@ impl AppIconStore {
 
     pub fn set(&self, variant: AppIconVariant) -> anyhow::Result<AppIconVariant> {
         persist_icon_atomically(&self.path, variant)?;
+        self.commit_in_memory(variant);
+        Ok(variant)
+    }
+
+    pub async fn set_async(&self, variant: AppIconVariant) -> anyhow::Result<AppIconVariant> {
+        let _guard = self.write_lock.lock().await;
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || persist_icon_atomically(&path, variant))
+            .await
+            .map_err(|e| anyhow::anyhow!("app icon persistence task failed: {e}"))??;
+        self.commit_in_memory(variant);
+        Ok(variant)
+    }
+
+    fn commit_in_memory(&self, variant: AppIconVariant) {
         if let Ok(mut guard) = self.current.write() {
             *guard = variant;
         }
         if let Some(ref apply) = self.applier {
             apply(variant);
         }
-        Ok(variant)
     }
 }
 

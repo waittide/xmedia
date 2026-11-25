@@ -53,8 +53,102 @@ pub(crate) fn is_safe_raster_image_content_type(content_type: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         essence.as_str(),
-        "image/jpeg" | "image/png" | "image/webp" | "image/gif" | "image/avif"
+        "image/jpeg" | "image/png" | "image/webp" | "image/gif" | "image/avif" | "image/bmp"
     )
+}
+
+pub(crate) fn is_disallowed_non_raster_header(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "image/svg+xml"
+            | "text/html"
+            | "application/xhtml+xml"
+            | "text/xml"
+            | "application/xml"
+            | "application/javascript"
+            | "text/javascript"
+    )
+}
+
+#[derive(Debug)]
+pub(crate) enum SniffImageError {
+    TooLarge(String),
+    Unsupported(String),
+    Upstream(String),
+}
+
+const IMAGE_MAGIC_PEEK_BYTES: usize = 32;
+
+pub(crate) async fn build_sniffed_raster_image_response(
+    resp: reqwest::Response,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Response, SniffImageError> {
+    if let Some(len) = resp.content_length()
+        && len > max_bytes
+    {
+        return Err(SniffImageError::TooLarge(format!(
+            "{label} image exceeds maximum allowed size of {max_bytes} bytes"
+        )));
+    }
+
+    let content_length_header = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| HeaderValue::from_str(s).ok());
+
+    let mut stream = resp.bytes_stream();
+    let mut prefix = Vec::with_capacity(IMAGE_MAGIC_PEEK_BYTES);
+    while prefix.len() < IMAGE_MAGIC_PEEK_BYTES {
+        let Some(chunk_res) = stream.next().await else {
+            break;
+        };
+        let chunk = chunk_res.map_err(|e| {
+            SniffImageError::Upstream(format!(
+                "Failed reading {label} image bytes: {}",
+                e.without_url()
+            ))
+        })?;
+        if (prefix.len() as u64).saturating_add(chunk.len() as u64) > max_bytes {
+            return Err(SniffImageError::TooLarge(format!(
+                "{label} image exceeds maximum allowed size of {max_bytes} bytes"
+            )));
+        }
+        prefix.extend_from_slice(&chunk);
+    }
+
+    let sniffed_mime = xmedia_core::infra::thumbnail::sniff_raster_image_mime(&prefix)
+        .filter(|mime| is_safe_raster_image_content_type(mime))
+        .ok_or_else(|| {
+            SniffImageError::Unsupported(format!(
+                "{label} image payload failed raster magic-byte verification"
+            ))
+        })?;
+
+    let chained = futures_util::stream::once(async move { Ok(Bytes::from(prefix)) }).chain(stream);
+    let limited = LimitedByteStream::new(chained, max_bytes);
+
+    let mut response = Response::new(Body::from_stream(limited));
+    *response.status_mut() = StatusCode::OK;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(sniffed_mime));
+    if let Some(cl) = content_length_header {
+        response.headers_mut().insert(CONTENT_LENGTH, cl);
+    }
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    apply_proxy_security_headers(response.headers_mut());
+    Ok(response)
 }
 
 pub(crate) fn apply_proxy_security_headers(headers: &mut axum::http::HeaderMap) {
@@ -376,43 +470,26 @@ impl OpdsClient {
             .trim()
             .to_string();
 
-        if !is_safe_raster_image_content_type(&content_type) {
+        if is_disallowed_non_raster_header(&content_type)
+            || (!content_type.is_empty()
+                && !content_type
+                    .to_ascii_lowercase()
+                    .starts_with("application/octet-stream")
+                && !content_type.to_ascii_lowercase().starts_with("image/jpg")
+                && !is_safe_raster_image_content_type(&content_type))
+        {
             return Err(OpdsError::Unsupported(format!(
                 "Remote image returned disallowed Content-Type '{content_type}'"
             )));
         }
 
-        if let Some(len) = resp.content_length()
-            && len > MAX_IMAGE_BYTES
-        {
-            return Err(OpdsError::TooLarge(format!(
-                "Remote image exceeds maximum allowed size of {} bytes",
-                MAX_IMAGE_BYTES
-            )));
-        }
-
-        let content_length_header = resp
-            .headers()
-            .get(reqwest::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| HeaderValue::from_str(s).ok());
-
-        let limited = LimitedByteStream::new(resp.bytes_stream(), MAX_IMAGE_BYTES);
-
-        let mut response = Response::new(Body::from_stream(limited));
-        *response.status_mut() = StatusCode::OK;
-        if let Ok(ct) = HeaderValue::from_str(&content_type) {
-            response.headers_mut().insert(CONTENT_TYPE, ct);
-        }
-        if let Some(cl) = content_length_header {
-            response.headers_mut().insert(CONTENT_LENGTH, cl);
-        }
-        response.headers_mut().insert(
-            CACHE_CONTROL,
-            HeaderValue::from_static("private, max-age=3600"),
-        );
-        apply_proxy_security_headers(response.headers_mut());
-        Ok(response)
+        build_sniffed_raster_image_response(resp, MAX_IMAGE_BYTES, "Remote OPDS")
+            .await
+            .map_err(|err| match err {
+                SniffImageError::TooLarge(m) => OpdsError::TooLarge(m),
+                SniffImageError::Unsupported(m) => OpdsError::Unsupported(m),
+                SniffImageError::Upstream(m) => OpdsError::Upstream(m),
+            })
     }
 
     pub async fn import_to_local(

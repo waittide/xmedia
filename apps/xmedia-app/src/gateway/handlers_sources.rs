@@ -59,7 +59,7 @@ pub(super) async fn set_app_icon(
             "Icon must be one of: cobalt, porcelain, obsidian, monolith",
         );
     };
-    match state.app_icon.set(variant) {
+    match state.app_icon.set_async(variant).await {
         Ok(saved) => with_app_headers(
             Json(AppIconResponse {
                 icon: saved.as_str().to_string(),

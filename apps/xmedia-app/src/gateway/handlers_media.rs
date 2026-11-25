@@ -46,7 +46,9 @@ pub(super) async fn opds_proxy_image(
         Err(err) => return err.into_response(),
     };
 
-    match state.opds.proxy_image(&source, &query.url).await {
+    let resolved_url =
+        crate::opds_client::expand_pse_template_url(&query.url, query.page, query.max_width);
+    match state.opds.proxy_image(&source, &resolved_url).await {
         Ok(res) => res,
         Err(err) => opds_error_response(err),
     }

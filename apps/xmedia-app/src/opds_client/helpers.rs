@@ -94,6 +94,38 @@ pub(super) fn proxy_image_path(source_id: &str, abs_url: &str) -> String {
     )
 }
 
+/// Rewrites an OPDS-PSE page stream URL template to route through `/_app/opds/{source_id}/proxy-image`
+/// while preserving literal `{pageNumber}` and `{maxWidth}` / `{maxWidth?}` placeholders for client expansion.
+pub(super) fn proxy_pse_stream_path(source_id: &str, abs_template_url: &str) -> String {
+    let encoded = encode_query_component(abs_template_url)
+        .replace("%7BpageNumber%7D", "{pageNumber}")
+        .replace("%7BmaxWidth%7D", "{maxWidth}")
+        .replace("%7BmaxWidth%3F%7D", "{maxWidth?}");
+    format!("/_app/opds/{source_id}/proxy-image?url={encoded}")
+}
+
+pub(crate) fn expand_pse_template_url(
+    raw_url: &str,
+    page: Option<u64>,
+    max_width: Option<u32>,
+) -> String {
+    let mut expanded = raw_url.to_string();
+    if let Some(p) = page {
+        let p_str = p.to_string();
+        expanded = expanded.replace("{pageNumber}", &p_str);
+    }
+    if let Some(w) = max_width {
+        let w_str = w.to_string();
+        expanded = expanded
+            .replace("{maxWidth}", &w_str)
+            .replace("{maxWidth?}", &w_str);
+    } else if expanded.contains("{maxWidth}") || expanded.contains("{maxWidth?}") {
+        let optionalized = expanded.replace("{maxWidth}", "{maxWidth?}");
+        expanded = strip_optional_template_params(&optionalized);
+    }
+    expanded
+}
+
 fn strip_optional_template_params(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let bytes = raw.as_bytes();

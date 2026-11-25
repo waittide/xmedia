@@ -4,7 +4,9 @@ use serde_json::Value;
 use url::Url;
 use uuid::Uuid;
 
-use super::helpers::{detect_format_from_mime_or_href, proxy_image_path, resolve_link_url};
+use super::helpers::{
+    detect_format_from_mime_or_href, proxy_image_path, proxy_pse_stream_path, resolve_link_url,
+};
 use super::{
     MAX_XML_DEPTH, OpdsDownloadLinkDto, OpdsEntryDto, OpdsError, OpdsFeedDto, OpdsNavLinkDto,
 };
@@ -187,7 +189,9 @@ fn parse_opds1_atom(
         }
 
         if rel == "http://vaemendis.net/opds-pse/stream" {
-            cur_entry.pse_stream_url = Some(abs_href);
+            if !abs_href.is_empty() {
+                cur_entry.pse_stream_url = Some(proxy_pse_stream_path(source_id, &abs_href));
+            }
             if let Some(count) = pse_count {
                 cur_entry.page_count = Some(count);
             }
@@ -545,7 +549,10 @@ fn parse_opds2_publication(
                 continue;
             };
             if link_has_rel(link, "http://vaemendis.net/opds-pse/stream") {
-                pse_stream_url = Some(resolve_link_url(base_url, raw_href));
+                let abs_pse = resolve_link_url(base_url, raw_href);
+                if !abs_pse.is_empty() {
+                    pse_stream_url = Some(proxy_pse_stream_path(source_id, &abs_pse));
+                }
                 if let Some(count) = link
                     .pointer("/properties/numberOfPages")
                     .or_else(|| link.pointer("/properties/count"))

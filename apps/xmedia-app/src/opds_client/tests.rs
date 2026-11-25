@@ -1,8 +1,8 @@
 use url::Url;
 
 use super::helpers::{
-    expand_search_template, parse_filename_from_content_disposition, percent_decode_utf8,
-    resolve_target_url,
+    expand_pse_template_url, expand_search_template, parse_filename_from_content_disposition,
+    percent_decode_utf8, resolve_target_url,
 };
 use super::http::is_safe_raster_image_content_type;
 use super::parser::parse_opds_feed;
@@ -81,7 +81,9 @@ fn parses_opds12_atom_navigation_and_acquisition_feeds() {
     assert_eq!(comic.title, "Folder Manga");
     assert_eq!(
         comic.pse_stream_url.as_deref(),
-        Some("http://example.com/opds/comic/chapters/1/page?page={pageNumber}")
+        Some(
+            "/_app/opds/src-1/proxy-image?url=http%3A%2F%2Fexample.com%2Fopds%2Fcomic%2Fchapters%2F1%2Fpage%3Fpage%3D{pageNumber}"
+        )
     );
     assert_eq!(comic.page_count, Some(24));
 }
@@ -112,7 +114,8 @@ fn parses_opds2_localized_objects_groups_and_pagination() {
                         },
                         "links": [
                             { "rel": "http://opds-spec.org/acquisition/buy", "href": "/buy/dune", "type": "text/html" },
-                            { "rel": "http://opds-spec.org/acquisition", "href": "/dl/dune.epub", "type": "application/epub+zip" }
+                            { "rel": "http://opds-spec.org/acquisition", "href": "/dl/dune.epub", "type": "application/epub+zip" },
+                            { "rel": "http://vaemendis.net/opds-pse/stream", "href": "/opds/v2/pse/{pageNumber}?maxWidth={maxWidth}", "type": "image/jpeg", "properties": { "count": 18 } }
                         ]
                     }
                 ]
@@ -145,7 +148,21 @@ fn parses_opds2_localized_objects_groups_and_pagination() {
     assert_eq!(feed.entries[0].title, "Dune");
     assert_eq!(feed.entries[0].authors, vec!["Frank Herbert"]);
     assert_eq!(feed.entries[0].summary.as_deref(), Some("Desert planet"));
-    assert_eq!(feed.entries[0].page_count, Some(412));
+    assert_eq!(feed.entries[0].page_count, Some(18));
+    assert_eq!(
+        feed.entries[0].pse_stream_url.as_deref(),
+        Some(
+            "/_app/opds/src-2/proxy-image?url=http%3A%2F%2Fexample.com%2Fopds%2Fv2%2Fpse%2F{pageNumber}%3FmaxWidth%3D{maxWidth}"
+        )
+    );
+    assert_eq!(
+        expand_pse_template_url(
+            "http://example.com/opds/v2/pse/{pageNumber}?maxWidth={maxWidth}",
+            Some(3),
+            None
+        ),
+        "http://example.com/opds/v2/pse/3"
+    );
     assert_eq!(feed.entries[0].downloads.len(), 1);
 }
 

@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use axum::body::Body;
 use axum::http::header::{
-    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
-    ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
+    IF_RANGE, LAST_MODIFIED, RANGE,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
@@ -23,8 +23,9 @@ use super::{
     TEST_TIMEOUT,
 };
 use crate::opds_client::{
-    LimitedByteStream, MAX_IMAGE_BYTES, MAX_METADATA_BYTES, ReadLimitError, RemoteImportResultDto,
-    apply_proxy_security_headers, is_safe_raster_image_content_type, read_response_text_limited,
+    MAX_IMAGE_BYTES, MAX_METADATA_BYTES, ReadLimitError, RemoteImportResultDto, SniffImageError,
+    apply_proxy_security_headers, build_sniffed_raster_image_response,
+    is_disallowed_non_raster_header, is_safe_raster_image_content_type, read_response_text_limited,
     tokio_util_file_stream,
 };
 use crate::remote_sources::{RemoteSource, normalize_remote_url};
@@ -357,41 +358,26 @@ impl SubsonicClient {
                 "Subsonic server returned metadata error instead of cover image".to_string(),
             ));
         }
-        if !is_safe_raster_image_content_type(&content_type) {
+        if is_disallowed_non_raster_header(&content_type)
+            || (!content_type.is_empty()
+                && !content_type
+                    .to_ascii_lowercase()
+                    .starts_with("application/octet-stream")
+                && !content_type.to_ascii_lowercase().starts_with("image/jpg")
+                && !is_safe_raster_image_content_type(&content_type))
+        {
             return Err(SubsonicError::Unsupported(format!(
                 "Subsonic cover endpoint returned disallowed Content-Type '{content_type}'"
             )));
         }
 
-        if let Some(len) = resp.content_length()
-            && len > MAX_IMAGE_BYTES
-        {
-            return Err(SubsonicError::TooLarge(format!(
-                "Subsonic cover image exceeds maximum allowed size of {MAX_IMAGE_BYTES} bytes"
-            )));
-        }
-
-        let content_length = resp
-            .headers()
-            .get(reqwest::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| HeaderValue::from_str(s).ok());
-
-        let limited = LimitedByteStream::new(resp.bytes_stream(), MAX_IMAGE_BYTES);
-        let mut response = Response::new(Body::from_stream(limited));
-        *response.status_mut() = StatusCode::OK;
-        if let Ok(ct) = HeaderValue::from_str(&content_type) {
-            response.headers_mut().insert(CONTENT_TYPE, ct);
-        }
-        if let Some(cl) = content_length {
-            response.headers_mut().insert(CONTENT_LENGTH, cl);
-        }
-        response.headers_mut().insert(
-            CACHE_CONTROL,
-            HeaderValue::from_static("private, max-age=3600"),
-        );
-        apply_proxy_security_headers(response.headers_mut());
-        Ok(response)
+        build_sniffed_raster_image_response(resp, MAX_IMAGE_BYTES, "Subsonic cover")
+            .await
+            .map_err(|err| match err {
+                SniffImageError::TooLarge(m) => SubsonicError::TooLarge(m),
+                SniffImageError::Unsupported(m) => SubsonicError::Unsupported(m),
+                SniffImageError::Upstream(m) => SubsonicError::Upstream(m),
+            })
     }
 
     pub async fn proxy_stream(
