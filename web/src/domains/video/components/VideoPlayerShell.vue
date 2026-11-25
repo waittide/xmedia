@@ -63,11 +63,9 @@ const props = withDefaults(
     hasPrev?: boolean
     hasNext?: boolean
     showFooter?: boolean
-    /** Single primary combobox rendered in `<header>` (Quality for local / Line or Subtitle for online). */
     headerSelectValue?: string
     headerSelectOptions?: SelectOption[]
     headerSelectAriaLabel?: string
-    /** Settings sheet controls */
     qualityValue?: string
     qualityOptions?: SelectOption[]
     lineValue?: string
@@ -77,15 +75,11 @@ const props = withDefaults(
     subtitleValue?: string
     subtitleOptions?: SelectOption[]
     downloadUrl?: string | null
-    /** On-demand Episodes MdSheet */
     episodes?: VideoPlayerEpisodeItem[]
     episodeGroupValue?: string
     episodeGroupOptions?: SelectOption[]
-    /** Underlying `<video>` element reference for Picture-in-Picture */
     videoElement?: HTMLVideoElement | null
-    /** Unified `<video>` event bindings when using built-in video stage */
     videoBindings?: VideoElementBindings | null
-    /** Active VTT subtitle track rendered inside built-in `<video>` */
     subtitleTrack?: VideoSubtitleTrackSpec | null
   }>(),
   {
@@ -289,21 +283,18 @@ function handlePickEpisode(id: string): void {
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+  )
 }
 
 function isPopupOpen(target: EventTarget | null): boolean {
-  if (typeof document !== 'undefined') {
-    if (document.querySelector('[role="listbox"], [aria-modal="true"]')) return true
+  if (typeof document !== 'undefined' && document.querySelector('[role="listbox"], [aria-modal="true"]')) {
+    return true
   }
-  if (target instanceof HTMLElement) {
-    const role = target.getAttribute('role')
-    if (role === 'combobox' || role === 'listbox' || role === 'option') return true
-  }
-  return false
+  const role = target instanceof HTMLElement ? target.getAttribute('role') : null
+  return role === 'combobox' || role === 'listbox' || role === 'option'
 }
 
 function onKeydown(ev: KeyboardEvent): void {

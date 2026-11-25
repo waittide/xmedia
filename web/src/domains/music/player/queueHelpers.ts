@@ -364,3 +364,80 @@ export function createShuffleTracker() {
     },
   }
 }
+
+export interface PlayQueueOptions {
+  startIndex?: number
+  startAtSecs?: number
+  shuffle?: boolean
+  bumpEpoch?: boolean
+  mode?: 'replace' | 'play-or-insert'
+}
+
+export type EnqueueMode = 'end' | 'next' | 'if-absent'
+
+export function createPlayerQueueAliases(
+  playItems: (input: PlayableQueueInput, options?: PlayQueueOptions) => void,
+  enqueueItems: (input: PlayableQueueInput, mode?: EnqueueMode) => void,
+  getQueue: () => readonly PlayerQueueItem[],
+) {
+  const playTrackAt = (track: TrackDto, startAtSecs = 0) =>
+    playItems(
+      { kind: 'local', tracks: [track] },
+      { startAtSecs, bumpEpoch: false, mode: 'play-or-insert' },
+    )
+  const playOnlineTrackAt = (track: OnlineMusicTrackDto, startAtSecs = 0) =>
+    playItems({ kind: 'online', tracks: [track] }, { startAtSecs, mode: 'play-or-insert' })
+
+  return {
+    playQueue: (tracks: TrackDto[], startIndex = 0) =>
+      playItems({ kind: 'local', tracks }, { startIndex }),
+    resumeQueue: (tracks: TrackDto[], startIndex = 0, startAtSecs = 0) =>
+      playItems({ kind: 'local', tracks }, { startIndex, startAtSecs, bumpEpoch: false }),
+    shuffleAndPlay: (tracks: TrackDto[]) =>
+      playItems({ kind: 'local', tracks }, { shuffle: true }),
+    playOnlineTracks: (tracks: OnlineMusicTrackDto[], startIndex = 0) =>
+      playItems({ kind: 'online', tracks }, { startIndex }),
+    shuffleAndPlayOnline: (tracks: OnlineMusicTrackDto[]) =>
+      playItems({ kind: 'online', tracks }, { shuffle: true }),
+    playTrackAt,
+    playTrackNow: (track: TrackDto) => playTrackAt(track, 0),
+    playOnlineTrackAt,
+    playOnlineTrackNow: (track: OnlineMusicTrackDto) => playOnlineTrackAt(track, 0),
+    playRemoteSongs: (
+      sourceId: string,
+      sourceName: string,
+      songs: SubsonicSongDto[],
+      startIndex = 0,
+      startAtSecs = 0,
+    ) => playItems({ kind: 'remote', sourceId, sourceName, songs }, { startIndex, startAtSecs }),
+    shuffleAndPlayRemoteSongs: (
+      sourceId: string,
+      sourceName: string,
+      songs: SubsonicSongDto[],
+    ) => playItems({ kind: 'remote', sourceId, sourceName, songs }, { shuffle: true }),
+    playRemoteSongAt: (
+      sourceId: string,
+      sourceName: string,
+      song: SubsonicSongDto,
+      startAtSecs = 0,
+    ) =>
+      playItems(
+        { kind: 'remote', sourceId, sourceName, songs: [song] },
+        { startAtSecs, mode: 'play-or-insert' },
+      ),
+    enqueueTracks: (tracks: TrackDto[]) => enqueueItems({ kind: 'local', tracks }, 'end'),
+    enqueueNext: (track: TrackDto) => enqueueItems({ kind: 'local', tracks: [track] }, 'next'),
+    enqueueOnlineTrackNext: (track: OnlineMusicTrackDto) =>
+      enqueueItems({ kind: 'online', tracks: [track] }, 'next'),
+    enqueueOnlineTrack: (track: OnlineMusicTrackDto) =>
+      enqueueItems({ kind: 'online', tracks: [track] }, 'if-absent'),
+    enqueueRemoteSong: (sourceId: string, sourceName: string, song: SubsonicSongDto) =>
+      enqueueItems({ kind: 'remote', sourceId, sourceName, songs: [song] }, 'if-absent'),
+    enqueueRemoteSongNext: (sourceId: string, sourceName: string, song: SubsonicSongDto) =>
+      enqueueItems({ kind: 'remote', sourceId, sourceName, songs: [song] }, 'next'),
+    isOnlineTrackInQueue: (track: OnlineMusicTrackDto): boolean =>
+      getQueue().some((item) => item.key === buildOnlineTrackKey(track)),
+    isRemoteSongInQueue: (sourceId: string, songId: string): boolean =>
+      getQueue().some((item) => item.key === buildRemoteSongKey(sourceId, songId)),
+  }
+}

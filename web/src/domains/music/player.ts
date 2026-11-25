@@ -1,12 +1,10 @@
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
-import type { SubsonicSongDto } from '@/api/appHost'
 import { claimMediaFocus, registerMediaFocus, releaseMediaFocus } from '@/composables/useMediaFocus'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { api } from './api'
 import { useMusicI18n } from './i18n'
-import type { OnlineMusicTrackDto } from './onlineApi'
 import { createPlayerAudioEngine } from './player/audioEngine'
 import { createPlayerCloudSync } from './player/cloudSync'
 import { createLyricsSyncController } from './player/lyricsSync'
@@ -14,6 +12,7 @@ import {
   buildOnlineTrackKey,
   buildPlayerTrackDisplay,
   buildRemoteSongKey,
+  createPlayerQueueAliases,
   createShuffleTracker,
   formatPlayerQualitySummary,
   isOnlineItemExpired,
@@ -21,11 +20,13 @@ import {
   resolveOnlineItemStreamUrl,
   shuffleCopy,
   toPlayerQueueItems,
+  type EnqueueMode,
   type LocalQueueItem,
   type OnlineQueueItem,
   type PlayableQueueInput,
   type PlayerQueueItem,
   type PlayerTrackDisplay,
+  type PlayQueueOptions,
   type RemoteQueueItem,
 } from './player/queueHelpers'
 import { createPlayerTrackLoader } from './player/trackLoader'
@@ -38,23 +39,15 @@ export {
   resolveOnlineItemStreamUrl,
 }
 export type {
+  EnqueueMode,
   LocalQueueItem,
   OnlineQueueItem,
   PlayableQueueInput,
   PlayerQueueItem,
   PlayerTrackDisplay,
+  PlayQueueOptions,
   RemoteQueueItem,
 }
-
-export interface PlayQueueOptions {
-  startIndex?: number
-  startAtSecs?: number
-  shuffle?: boolean
-  bumpEpoch?: boolean
-  mode?: 'replace' | 'play-or-insert'
-}
-
-export type EnqueueMode = 'end' | 'next' | 'if-absent'
 
 export const usePlayerStore = defineStore('player', () => {
   const preferencesStore = usePreferencesStore()
@@ -311,62 +304,7 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
-  // Thin 1-line ergonomic aliases for domain views
-  const playQueue = (tracks: TrackDto[], startIndex = 0) =>
-    playItems({ kind: 'local', tracks }, { startIndex })
-  const resumeQueue = (tracks: TrackDto[], startIndex = 0, startAtSecs = 0) =>
-    playItems({ kind: 'local', tracks }, { startIndex, startAtSecs, bumpEpoch: false })
-  const shuffleAndPlay = (tracks: TrackDto[]) =>
-    playItems({ kind: 'local', tracks }, { shuffle: true })
-  const playOnlineTracks = (tracks: OnlineMusicTrackDto[], startIndex = 0) =>
-    playItems({ kind: 'online', tracks }, { startIndex })
-  const shuffleAndPlayOnline = (tracks: OnlineMusicTrackDto[]) =>
-    playItems({ kind: 'online', tracks }, { shuffle: true })
-  const playTrackAt = (track: TrackDto, startAtSecs = 0) =>
-    playItems(
-      { kind: 'local', tracks: [track] },
-      { startAtSecs, bumpEpoch: false, mode: 'play-or-insert' },
-    )
-  const playTrackNow = (track: TrackDto) => playTrackAt(track, 0)
-  const playOnlineTrackAt = (track: OnlineMusicTrackDto, startAtSecs = 0) =>
-    playItems({ kind: 'online', tracks: [track] }, { startAtSecs, mode: 'play-or-insert' })
-  const playOnlineTrackNow = (track: OnlineMusicTrackDto) => playOnlineTrackAt(track, 0)
-  const playRemoteSongs = (
-    sourceId: string,
-    sourceName: string,
-    songs: SubsonicSongDto[],
-    startIndex = 0,
-    startAtSecs = 0,
-  ) => playItems({ kind: 'remote', sourceId, sourceName, songs }, { startIndex, startAtSecs })
-  const shuffleAndPlayRemoteSongs = (
-    sourceId: string,
-    sourceName: string,
-    songs: SubsonicSongDto[],
-  ) => playItems({ kind: 'remote', sourceId, sourceName, songs }, { shuffle: true })
-  const playRemoteSongAt = (
-    sourceId: string,
-    sourceName: string,
-    song: SubsonicSongDto,
-    startAtSecs = 0,
-  ) =>
-    playItems(
-      { kind: 'remote', sourceId, sourceName, songs: [song] },
-      { startAtSecs, mode: 'play-or-insert' },
-    )
-  const enqueueTracks = (tracks: TrackDto[]) => enqueueItems({ kind: 'local', tracks }, 'end')
-  const enqueueNext = (track: TrackDto) => enqueueItems({ kind: 'local', tracks: [track] }, 'next')
-  const enqueueOnlineTrackNext = (track: OnlineMusicTrackDto) =>
-    enqueueItems({ kind: 'online', tracks: [track] }, 'next')
-  const enqueueOnlineTrack = (track: OnlineMusicTrackDto) =>
-    enqueueItems({ kind: 'online', tracks: [track] }, 'if-absent')
-  const enqueueRemoteSong = (sourceId: string, sourceName: string, song: SubsonicSongDto) =>
-    enqueueItems({ kind: 'remote', sourceId, sourceName, songs: [song] }, 'if-absent')
-  const enqueueRemoteSongNext = (sourceId: string, sourceName: string, song: SubsonicSongDto) =>
-    enqueueItems({ kind: 'remote', sourceId, sourceName, songs: [song] }, 'next')
-  const isOnlineTrackInQueue = (track: OnlineMusicTrackDto): boolean =>
-    queue.value.some((item) => item.key === buildOnlineTrackKey(track))
-  const isRemoteSongInQueue = (sourceId: string, songId: string): boolean =>
-    queue.value.some((item) => item.key === buildRemoteSongKey(sourceId, songId))
+  const queueAliases = createPlayerQueueAliases(playItems, enqueueItems, () => queue.value)
 
   function playAtIndex(index: number): void {
     if (index < 0 || index >= queue.value.length) return
@@ -615,27 +553,8 @@ export const usePlayerStore = defineStore('player', () => {
     detachAudioElement,
     playItems,
     enqueueItems,
-    playQueue,
-    resumeQueue,
-    shuffleAndPlay,
-    playOnlineTracks,
-    shuffleAndPlayOnline,
     playAtIndex,
-    playTrackNow,
-    playTrackAt,
-    playOnlineTrackNow,
-    playOnlineTrackAt,
-    playRemoteSongs,
-    shuffleAndPlayRemoteSongs,
-    playRemoteSongAt,
-    enqueueTracks,
-    enqueueNext,
-    enqueueOnlineTrackNext,
-    enqueueOnlineTrack,
-    isOnlineTrackInQueue,
-    enqueueRemoteSong,
-    enqueueRemoteSongNext,
-    isRemoteSongInQueue,
+    ...queueAliases,
     pause,
     togglePlay,
     retryCurrentPlayback,
