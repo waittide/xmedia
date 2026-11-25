@@ -1546,8 +1546,7 @@ function buildTier2Cases() {
 
           // Open Source A edit sheet and click Save (PATCH held in-flight)
           await cdp.evalJs(`(() => {
-            const rows = [...document.querySelectorAll('main tr, main [data-source-row], main li, main div')];
-            const btn = [...document.querySelectorAll('main button')].find((b) => /编辑|edit/i.test(b.getAttribute('aria-label') || b.title || b.innerText || ''));
+            const btn = [...document.querySelectorAll('main button:not([role="switch"])')].find((b) => /编辑|edit/i.test(b.title || b.getAttribute('aria-label') || b.innerText || ''));
             if (!btn) throw new Error('missing Edit button for Alpha source');
             btn.click();
           })()`);
@@ -1569,7 +1568,7 @@ function buildTier2Cases() {
           });
 
           await cdp.evalJs(`(() => {
-            const btns = [...document.querySelectorAll('main button')].filter((b) => /编辑|edit/i.test(b.getAttribute('aria-label') || b.title || b.innerText || ''));
+            const btns = [...document.querySelectorAll('main button:not([role="switch"])')].filter((b) => /编辑|edit/i.test(b.title || b.getAttribute('aria-label') || b.innerText || ''));
             if (btns.length < 2) throw new Error('missing Edit button for Beta source');
             btns[1].click();
           })()`);
