@@ -3,12 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Request, State};
-use axum::http::StatusCode;
-use axum::http::header::{HOST, ORIGIN};
+use axum::http::header::{AUTHORIZATION, COOKIE, HOST, ORIGIN};
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use url::Url;
+use xmedia_core::domain::user::UserRole;
+use xmedia_core::http::AUTH_COOKIE_NAME;
 
 use super::StandaloneGatewayState;
 use super::dto::app_error;
@@ -204,5 +206,67 @@ pub(super) async fn guard_app_loopback_request(
         }
     }
 
+    next.run(req).await
+}
+
+fn extract_local_session_token(headers: &HeaderMap) -> Option<String> {
+    for val in headers.get_all(COOKIE) {
+        if let Ok(raw) = val.to_str() {
+            for pair in raw.split(';') {
+                let Some((k, v)) = pair.trim().split_once('=') else {
+                    continue;
+                };
+                if k.trim() == AUTH_COOKIE_NAME {
+                    let token = v.trim();
+                    if !token.is_empty() {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(auth_hdr) = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok())
+        && let Some(rest) = auth_hdr.trim().strip_prefix("Bearer ")
+    {
+        let token = rest.trim();
+        if !token.is_empty() {
+            return Some(token.to_string());
+        }
+    }
+
+    None
+}
+
+pub(super) async fn check_app_session_error(
+    state: &StandaloneGatewayState,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let Some(token) = extract_local_session_token(headers) else {
+        return Some(app_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Local session required; call POST /_app/auto-session first",
+        ));
+    };
+
+    match state.local_engine.auth.authenticate_jwt(&token).await {
+        Ok(user) if user.is_active && user.role == UserRole::Admin => None,
+        _ => Some(app_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid or expired local session",
+        )),
+    }
+}
+
+pub(super) async fn guard_app_session(
+    State(state): State<StandaloneGatewayState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if let Some(err_res) = check_app_session_error(&state, req.headers()).await {
+        return err_res;
+    }
     next.run(req).await
 }

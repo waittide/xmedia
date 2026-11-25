@@ -2,12 +2,12 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use axum::Router;
 use axum::http::HeaderValue;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use xmedia::{XMediaApp, XMediaConfig};
 use xmedia_core::application::auth::AuthService;
@@ -44,11 +44,11 @@ impl LocalIdentity {
                         }
                     }
                     Err(err) => {
-                        backup_corrupt_identity(path, &err.to_string());
+                        discard_corrupt_identity(path, &err.to_string());
                     }
                 },
                 Err(err) => {
-                    backup_corrupt_identity(path, &err.to_string());
+                    discard_corrupt_identity(path, &err.to_string());
                 }
             }
         }
@@ -60,6 +60,16 @@ impl LocalIdentity {
         };
         persist_identity_atomic(path, &generated)?;
         Ok(generated)
+    }
+
+    pub fn derive_secret_encryption_key(&self) -> [u8; 32] {
+        let mut sha = Sha256::new();
+        sha.update(b"xmedia-app:remote-sources:aes256gcm:v1:");
+        sha.update(self.jwt_secret.as_bytes());
+        let digest = sha.finalize();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&digest);
+        key
     }
 }
 
@@ -178,24 +188,18 @@ impl LocalEngine {
             format!("{AUTH_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl}");
         HeaderValue::from_str(&raw).unwrap_or_else(|_| HeaderValue::from_static(""))
     }
+
+    pub fn secret_encryption_key(&self) -> [u8; 32] {
+        self.identity.derive_secret_encryption_key()
+    }
 }
 
-fn backup_corrupt_identity(path: &Path, reason: &str) {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("local_identity.json");
-    let backup = path.with_file_name(format!("{file_name}.corrupt.{ts}.bak"));
-    let _ = fs::rename(path, &backup);
+fn discard_corrupt_identity(path: &Path, reason: &str) {
+    let _ = fs::remove_file(path);
     tracing::warn!(
         path = %path.display(),
-        backup = %backup.display(),
         error = %reason,
-        "local identity file was corrupt; backed up and regenerated"
+        "local identity file was corrupt; removed without writing plaintext backup and regenerated"
     );
 }
 

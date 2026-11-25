@@ -7,12 +7,132 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
+use crate::local_engine::LocalIdentity;
+
 const MARK_OK_THROTTLE_SECS: u64 = 60;
+const ENCRYPTED_SECRET_PREFIX: &str = "enc:v1:";
+
+#[derive(Clone)]
+pub struct SourceSecretCipher {
+    key: [u8; 32],
+}
+
+impl fmt::Debug for SourceSecretCipher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SourceSecretCipher([REDACTED])")
+    }
+}
+
+impl Drop for SourceSecretCipher {
+    fn drop(&mut self) {
+        for b in &mut self.key {
+            // SAFETY: `b` is a valid, aligned mutable byte owned by `self`.
+            unsafe {
+                std::ptr::write_volatile(b, 0);
+            }
+        }
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    }
+}
+
+enum DecryptedSecret {
+    Empty,
+    Decrypted(String),
+    MigratedPlaintext(String),
+    Undecryptable,
+}
+
+impl SourceSecretCipher {
+    pub fn new(key: [u8; 32]) -> Self {
+        Self { key }
+    }
+
+    fn aad_for(source_id: &str) -> String {
+        format!("xmedia-remote-source:{source_id}")
+    }
+
+    fn generate_nonce() -> [u8; 12] {
+        let mut sha = Sha256::new();
+        sha.update(Uuid::new_v4().as_bytes());
+        sha.update(Uuid::new_v4().as_bytes());
+        let digest = sha.finalize();
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&digest[..12]);
+        nonce
+    }
+
+    pub fn encrypt(&self, source_id: &str, plain: &str) -> Result<String, SourceStoreError> {
+        if plain.is_empty() {
+            return Ok(String::new());
+        }
+        let cipher = Aes256Gcm::new_from_slice(&self.key)
+            .map_err(|e| SourceStoreError::Io(format!("Cipher initialization failed: {e}")))?;
+        let nonce_bytes = Self::generate_nonce();
+        let nonce = nonce_bytes.into();
+        let aad = Self::aad_for(source_id);
+        let ciphertext = cipher
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plain.as_bytes(),
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|e| SourceStoreError::Io(format!("Secret encryption failed: {e}")))?;
+        Ok(format!(
+            "{ENCRYPTED_SECRET_PREFIX}{}:{}",
+            hex::encode(nonce_bytes),
+            hex::encode(ciphertext)
+        ))
+    }
+
+    fn decrypt_or_migrate(&self, source_id: &str, raw: &str) -> DecryptedSecret {
+        if raw.is_empty() {
+            return DecryptedSecret::Empty;
+        }
+        let Some(encoded) = raw.strip_prefix(ENCRYPTED_SECRET_PREFIX) else {
+            return DecryptedSecret::MigratedPlaintext(raw.to_string());
+        };
+        let Some((nonce_hex, ct_hex)) = encoded.split_once(':') else {
+            return DecryptedSecret::Undecryptable;
+        };
+        let (Ok(nonce_bytes), Ok(ct_bytes)) = (hex::decode(nonce_hex), hex::decode(ct_hex)) else {
+            return DecryptedSecret::Undecryptable;
+        };
+        if nonce_bytes.len() != 12 {
+            return DecryptedSecret::Undecryptable;
+        }
+        let Ok(cipher) = Aes256Gcm::new_from_slice(&self.key) else {
+            return DecryptedSecret::Undecryptable;
+        };
+        let Ok(nonce_arr): Result<[u8; 12], _> = nonce_bytes.as_slice().try_into() else {
+            return DecryptedSecret::Undecryptable;
+        };
+        let nonce = nonce_arr.into();
+        let aad = Self::aad_for(source_id);
+        match cipher.decrypt(
+            &nonce,
+            Payload {
+                msg: ct_bytes.as_slice(),
+                aad: aad.as_bytes(),
+            },
+        ) {
+            Ok(plain_bytes) => match String::from_utf8(plain_bytes) {
+                Ok(plain) => DecryptedSecret::Decrypted(plain),
+                Err(_) => DecryptedSecret::Undecryptable,
+            },
+            Err(_) => DecryptedSecret::Undecryptable,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -153,6 +273,7 @@ pub type SharedRemoteSourceStore = Arc<RwLock<RemoteSourceStore>>;
 pub struct PendingSourcePersist {
     storage_path: PathBuf,
     snapshot: PersistedRemoteSources,
+    cipher: SourceSecretCipher,
     revision: u64,
     persist_lock: Arc<Mutex<()>>,
     persisted_revision: Arc<AtomicU64>,
@@ -167,7 +288,7 @@ impl PendingSourcePersist {
         if self.persisted_revision.load(Ordering::Acquire) >= self.revision {
             return Ok(());
         }
-        persist_atomic(&self.storage_path, &self.snapshot)?;
+        persist_atomic(&self.storage_path, &self.snapshot, &self.cipher)?;
         self.persisted_revision
             .fetch_max(self.revision, Ordering::AcqRel);
         Ok(())
@@ -177,6 +298,7 @@ impl PendingSourcePersist {
 pub struct PendingSourceMutation {
     storage_path: PathBuf,
     next: PersistedRemoteSources,
+    cipher: SourceSecretCipher,
     summary: Option<RemoteSourceSummaryDto>,
     removed_id: Option<String>,
     revision: u64,
@@ -190,7 +312,7 @@ impl PendingSourceMutation {
             .persist_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        persist_atomic(&self.storage_path, &self.next)?;
+        persist_atomic(&self.storage_path, &self.next, &self.cipher)?;
         self.persisted_revision
             .fetch_max(self.revision, Ordering::AcqRel);
         Ok(PersistedSourceMutation {
@@ -213,6 +335,7 @@ pub struct PersistedSourceMutation {
 pub struct RemoteSourceStore {
     storage_path: PathBuf,
     data: PersistedRemoteSources,
+    cipher: SourceSecretCipher,
     last_ok_persisted: HashMap<String, u64>,
     revision: u64,
     persist_lock: Arc<Mutex<()>>,
@@ -221,6 +344,16 @@ pub struct RemoteSourceStore {
 
 impl RemoteSourceStore {
     pub fn load(storage_path: PathBuf) -> anyhow::Result<Self> {
+        let identity_dir = storage_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let identity = LocalIdentity::load_or_create(&identity_dir.join("local_identity.json"))?;
+        Self::load_with_key(storage_path, identity.derive_secret_encryption_key())
+    }
+
+    pub fn load_with_key(storage_path: PathBuf, key: [u8; 32]) -> anyhow::Result<Self> {
+        let cipher = SourceSecretCipher::new(key);
         let mut data = match fs::read(&storage_path) {
             Ok(raw) if raw.iter().all(|b| b.is_ascii_whitespace()) => {
                 PersistedRemoteSources::default()
@@ -228,7 +361,7 @@ impl RemoteSourceStore {
             Ok(raw) => match serde_json::from_slice::<PersistedRemoteSources>(&raw) {
                 Ok(parsed) => parsed,
                 Err(err) => {
-                    backup_corrupt_file(&storage_path, &err.to_string());
+                    discard_corrupt_sources_file(&storage_path, &err.to_string());
                     PersistedRemoteSources::default()
                 }
             },
@@ -246,18 +379,44 @@ impl RemoteSourceStore {
         };
 
         let mut last_ok_persisted = HashMap::new();
+        let mut needs_migration_persist = false;
         for src in &mut data.sources {
             if let Ok(normalized) = normalize_remote_url(&src.url) {
                 src.url = normalized;
+            }
+            match cipher.decrypt_or_migrate(&src.id, &src.password) {
+                DecryptedSecret::Empty => {}
+                DecryptedSecret::Decrypted(plain) => {
+                    src.password = plain;
+                }
+                DecryptedSecret::MigratedPlaintext(plain) => {
+                    src.password = plain;
+                    needs_migration_persist = true;
+                }
+                DecryptedSecret::Undecryptable => {
+                    tracing::warn!(
+                        source_id = %src.id,
+                        "remote source password could not be decrypted with current local identity; clearing stale secret"
+                    );
+                    src.password.clear();
+                    needs_migration_persist = true;
+                }
             }
             if let Some(ts) = src.last_ok_at {
                 last_ok_persisted.insert(src.id.clone(), ts);
             }
         }
 
+        if needs_migration_persist {
+            persist_atomic(&storage_path, &data, &cipher).map_err(|e| {
+                anyhow::anyhow!("failed migrating remote_sources.json secrets: {e}")
+            })?;
+        }
+
         Ok(Self {
             storage_path,
             data,
+            cipher,
             last_ok_persisted,
             revision: 0,
             persist_lock: Arc::new(Mutex::new(())),
@@ -267,6 +426,16 @@ impl RemoteSourceStore {
 
     pub fn open_shared(storage_path: PathBuf) -> anyhow::Result<SharedRemoteSourceStore> {
         Ok(Arc::new(RwLock::new(Self::load(storage_path)?)))
+    }
+
+    pub fn open_shared_with_key(
+        storage_path: PathBuf,
+        key: [u8; 32],
+    ) -> anyhow::Result<SharedRemoteSourceStore> {
+        Ok(Arc::new(RwLock::new(Self::load_with_key(
+            storage_path,
+            key,
+        )?)))
     }
 
     pub fn storage_path(&self) -> &Path {
@@ -298,6 +467,7 @@ impl RemoteSourceStore {
         PendingSourceMutation {
             storage_path: self.storage_path.clone(),
             next,
+            cipher: self.cipher.clone(),
             summary,
             removed_id,
             revision: self.revision.saturating_add(1),
@@ -475,6 +645,7 @@ impl RemoteSourceStore {
         Some(PendingSourcePersist {
             storage_path: self.storage_path.clone(),
             snapshot: self.data.clone(),
+            cipher: self.cipher.clone(),
             revision: self.revision,
             persist_lock: self.persist_lock.clone(),
             persisted_revision: self.persisted_revision.clone(),
@@ -558,30 +729,15 @@ fn unix_timestamp_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn backup_corrupt_file(path: &Path, reason: &str) {
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("remote_sources.json");
-    let backup = path.with_file_name(format!("{file_name}.corrupt.{}.bak", unix_timestamp_secs()));
-    match fs::rename(path, &backup) {
-        Ok(()) => {
-            tracing::warn!(
-                path = %path.display(),
-                backup = %backup.display(),
-                error = %reason,
-                "remote sources file was corrupt; backed up and fell back to empty list"
-            );
-        }
-        Err(rename_err) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %reason,
-                backup_error = %rename_err,
-                "remote sources file was corrupt and could not be backed up; falling back to empty list"
-            );
-        }
-    }
+fn discard_corrupt_sources_file(path: &Path, reason: &str) {
+    // Never rename or copy raw `remote_sources.json` into `.corrupt.*.bak`, since a manually edited
+    // or legacy file could contain plaintext secrets.
+    let _ = fs::remove_file(path);
+    tracing::warn!(
+        path = %path.display(),
+        error = %reason,
+        "remote sources file was corrupt; removed without writing plaintext backup and fell back to empty list"
+    );
 }
 
 fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
@@ -595,7 +751,11 @@ fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
     opts.open(path)
 }
 
-fn persist_atomic(path: &Path, data: &PersistedRemoteSources) -> Result<(), SourceStoreError> {
+fn persist_atomic(
+    path: &Path,
+    data: &PersistedRemoteSources,
+    cipher: &SourceSecretCipher,
+) -> Result<(), SourceStoreError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -607,7 +767,14 @@ fn persist_atomic(path: &Path, data: &PersistedRemoteSources) -> Result<(), Sour
         })?;
     }
 
-    let payload = serde_json::to_vec_pretty(data)
+    let mut on_disk = data.clone();
+    for src in &mut on_disk.sources {
+        if !src.password.is_empty() {
+            src.password = cipher.encrypt(&src.id, &src.password)?;
+        }
+    }
+
+    let payload = serde_json::to_vec_pretty(&on_disk)
         .map_err(|e| SourceStoreError::Io(format!("Failed to serialize remote sources: {e}")))?;
 
     let file_name = path
@@ -701,6 +868,16 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
 
+        let disk_json = fs::read_to_string(&file).unwrap();
+        assert!(
+            !disk_json.contains("super-secret"),
+            "persisted remote_sources.json must never store plaintext password"
+        );
+        assert!(
+            disk_json.contains("enc:v1:"),
+            "persisted remote_sources.json must store AES-GCM encrypted password"
+        );
+
         let reloaded = RemoteSourceStore::load(file.clone()).unwrap();
         assert_eq!(reloaded.count(), 1);
         assert_eq!(reloaded.get(&created.id).unwrap().password, "super-secret");
@@ -735,20 +912,62 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_remote_sources_json_is_backed_up_and_falls_back_to_empty() {
+    fn legacy_plaintext_remote_sources_are_migrated_to_aes_gcm_on_load() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("remote_sources.json");
-        fs::write(&file, b"{ not valid json !!!").unwrap();
+        let legacy_json = r#"{
+  "sources": [
+    {
+      "id": "src-legacy-1",
+      "name": "Legacy Navidrome",
+      "protocol": "subsonic",
+      "url": "http://127.0.0.1:4533",
+      "username": "alice",
+      "password": "legacy-plaintext-password",
+      "allow_insecure_tls": false
+    }
+  ]
+}"#;
+        fs::write(&file, legacy_json).unwrap();
+
+        let store = RemoteSourceStore::load(file.clone()).unwrap();
+        assert_eq!(store.count(), 1);
+        assert_eq!(
+            store.get("src-legacy-1").unwrap().password,
+            "legacy-plaintext-password"
+        );
+
+        let migrated_disk = fs::read_to_string(&file).unwrap();
+        assert!(
+            !migrated_disk.contains("legacy-plaintext-password"),
+            "plaintext secret must be migrated out of remote_sources.json on load"
+        );
+        assert!(migrated_disk.contains("enc:v1:"));
+    }
+
+    #[test]
+    fn corrupt_remote_sources_json_never_writes_plaintext_secrets_to_backup() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("remote_sources.json");
+        fs::write(
+            &file,
+            b"{\"sources\":[{\"password\":\"LEAKED_PLAIN_SECRET\" broken json",
+        )
+        .unwrap();
 
         let store = RemoteSourceStore::load(file.clone()).unwrap();
         assert_eq!(store.count(), 0);
-        assert!(!file.exists(), "corrupt file should be moved to backup");
+        assert!(!file.exists(), "corrupt file should be removed");
 
-        let has_backup = fs::read_dir(tmp.path())
-            .unwrap()
-            .flatten()
-            .any(|e| e.file_name().to_string_lossy().contains(".corrupt."));
-        assert!(has_backup, "expected a .corrupt.*.bak backup file");
+        for entry in fs::read_dir(tmp.path()).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.contains(".corrupt."),
+                "must not write .corrupt.*.bak files: found {name}"
+            );
+            let content = fs::read_to_string(entry.path()).unwrap_or_default();
+            assert!(!content.contains("LEAKED_PLAIN_SECRET"));
+        }
     }
 
     #[test]

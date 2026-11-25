@@ -8481,6 +8481,7 @@ dependencies = [
 name = "xmedia-app"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.11.1",
  "anyhow",
  "axum",
  "bytes",
@@ -8492,6 +8493,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tauri",
  "tauri-build",
  "tempfile",

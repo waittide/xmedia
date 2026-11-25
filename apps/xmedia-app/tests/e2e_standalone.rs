@@ -266,6 +266,14 @@ async fn e2e_standalone_local_engine_opds_and_subsonic_roundtrip() {
         .unwrap();
     assert_eq!(get_rejected.status(), StatusCode::METHOD_NOT_ALLOWED);
 
+    // Unauthenticated /_app/remote-sources* must be rejected with 401 before session cookie is issued
+    let unauthed_sources = client
+        .get(format!("{}/_app/remote-sources", gateway.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthed_sources.status(), StatusCode::UNAUTHORIZED);
+
     let session_resp = client
         .post(format!("{}/_app/auto-session", gateway.url))
         .header(APP_HEADER_NAME, APP_HEADER_VALUE)
@@ -283,6 +291,20 @@ async fn e2e_standalone_local_engine_opds_and_subsonic_roundtrip() {
         set_cookie.contains("xmedia_token=") && set_cookie.contains("HttpOnly"),
         "expected HttpOnly session cookie, got: {set_cookie}"
     );
+    let cookie_pair = set_cookie
+        .split(';')
+        .next()
+        .expect("cookie pair")
+        .trim()
+        .to_string();
+    let mut cookie_headers = reqwest::header::HeaderMap::new();
+    cookie_headers.insert(reqwest::header::COOKIE, cookie_pair.parse().unwrap());
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .default_headers(cookie_headers)
+        .build()
+        .unwrap();
+
     let session_json: Value = session_resp.json().await.unwrap();
     let local_token = session_json["token"].as_str().unwrap().to_string();
     assert_eq!(session_json["user"]["username"], json!("local"));
@@ -375,6 +397,17 @@ async fn e2e_standalone_local_engine_opds_and_subsonic_roundtrip() {
         serde_json::from_str(&created_opds12_raw).unwrap();
     assert!(created_opds12.source.has_password);
     let opds12_id = created_opds12.source.id.clone();
+
+    let persisted_sources_disk =
+        std::fs::read_to_string(local_tmp.path().join("remote_sources.json")).unwrap();
+    assert!(
+        !persisted_sources_disk.contains(remote_pass),
+        "remote_sources.json on disk must never contain plaintext passwords"
+    );
+    assert!(
+        persisted_sources_disk.contains("enc:v1:"),
+        "remote_sources.json on disk must store AES-GCM encrypted password"
+    );
 
     // Update name with empty password -> existing password must be retained
     let updated_opds12: MutatedRemoteSourceResponse = client
@@ -1076,6 +1109,45 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
         .await
         .unwrap();
     assert_eq!(same_origin_ok.status(), StatusCode::OK);
+
+    // 2b. Mutating & proxy /_app/* routes require a valid local session cookie (401 without cookie)
+    for unauthed_req in [
+        client.get(format!("{}/_app/remote-sources", gateway.url)),
+        client
+            .post(format!("{}/_app/remote-sources", gateway.url))
+            .json(&json!({})),
+        client
+            .put(format!("{}/_app/icon", gateway.url))
+            .json(&json!({ "icon": "obsidian" })),
+        client.get(format!("{}/_app/opds/any/browse", gateway.url)),
+        client.get(format!("{}/_app/subsonic/any/albums", gateway.url)),
+    ] {
+        let resp = unauthed_req.send().await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let auto_session = client
+        .post(format!("{}/_app/auto-session", gateway.url))
+        .header(APP_HEADER_NAME, APP_HEADER_VALUE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(auto_session.status(), StatusCode::OK);
+    let cookie_pair = auto_session
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.split(';').next())
+        .expect("auto-session Set-Cookie")
+        .trim()
+        .to_string();
+    let mut authed_headers = reqwest::header::HeaderMap::new();
+    authed_headers.insert(reqwest::header::COOKIE, cookie_pair.parse().unwrap());
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .default_headers(authed_headers)
+        .build()
+        .unwrap();
 
     // 3. Register OPDS & Subsonic mock sources with secrets
     let opds_created: MutatedRemoteSourceResponse = client

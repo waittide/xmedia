@@ -146,7 +146,7 @@ impl Drop for RunningGateway {
 }
 
 pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router) -> Router {
-    let app_router = Router::new()
+    let public_app_router = Router::new()
         .route("/_app", any(dto::app_not_found))
         .route("/_app/", any(dto::app_not_found))
         .route("/_app/health", get(handlers_sources::app_health))
@@ -158,6 +158,10 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
             "/_app/auto-session",
             post(handlers_sources::app_auto_session),
         )
+        .route("/_app/{*path}", any(dto::app_not_found))
+        .with_state(state.clone());
+
+    let protected_app_router = Router::new()
         .route(
             "/_app/remote-sources",
             get(handlers_sources::list_remote_sources).post(handlers_sources::create_remote_source),
@@ -201,10 +205,14 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
             "/_app/subsonic/{id}/import/{song_id}",
             post(handlers_media::subsonic_import_song),
         )
-        .route("/_app/{*path}", any(dto::app_not_found))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            security::guard_app_session,
+        ))
         .with_state(state.clone());
 
-    app_router
+    public_app_router
+        .merge(protected_app_router)
         .merge(xmedia_router)
         .layer(middleware::from_fn_with_state(
             state,
@@ -226,9 +234,14 @@ pub async fn start_gateway_with_icon_applier(
     external_web_dir: Option<PathBuf>,
     icon_applier: Option<IconApplier>,
 ) -> anyhow::Result<RunningGateway> {
-    let sources = RemoteSourceStore::open_shared(data_dir.join("remote_sources.json"))?;
-    let app_icon = AppIconStore::open(data_dir.join("app_icon.txt"), icon_applier);
+    let app_icon_path = data_dir.join("app_icon.txt");
+    let sources_path = data_dir.join("remote_sources.json");
     let (local_engine, xmedia_router) = LocalEngine::start(data_dir, external_web_dir).await?;
+    let sources = RemoteSourceStore::open_shared_with_key(
+        sources_path,
+        local_engine.secret_encryption_key(),
+    )?;
+    let app_icon = AppIconStore::open(app_icon_path, icon_applier);
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;
@@ -291,9 +304,14 @@ pub async fn run_gateway_forever(
     data_dir: PathBuf,
     external_web_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let sources = RemoteSourceStore::open_shared(data_dir.join("remote_sources.json"))?;
-    let app_icon = AppIconStore::open(data_dir.join("app_icon.txt"), None);
+    let app_icon_path = data_dir.join("app_icon.txt");
+    let sources_path = data_dir.join("remote_sources.json");
     let (local_engine, xmedia_router) = LocalEngine::start(data_dir, external_web_dir).await?;
+    let sources = RemoteSourceStore::open_shared_with_key(
+        sources_path,
+        local_engine.secret_encryption_key(),
+    )?;
+    let app_icon = AppIconStore::open(app_icon_path, None);
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;

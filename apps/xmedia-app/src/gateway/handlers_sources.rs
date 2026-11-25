@@ -50,8 +50,12 @@ pub(super) async fn get_app_icon(State(state): State<StandaloneGatewayState>) ->
 
 pub(super) async fn set_app_icon(
     State(state): State<StandaloneGatewayState>,
+    headers: HeaderMap,
     Json(input): Json<SetAppIconRequest>,
 ) -> Response {
+    if let Some(err_res) = super::security::check_app_session_error(&state, &headers).await {
+        return err_res;
+    }
     let Some(variant) = AppIconVariant::parse(&input.icon) else {
         return app_error(
             StatusCode::BAD_REQUEST,
