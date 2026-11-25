@@ -1,6 +1,7 @@
 mod collections_and_events;
 mod online_sources;
 mod rest_and_subsonic;
+mod v2_formats_sql_and_proxy;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
