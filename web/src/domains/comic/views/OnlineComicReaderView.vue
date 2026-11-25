@@ -8,6 +8,7 @@ import { api } from '@/domains/comic/api'
 import ComicReaderShell, {
   type ComicReaderChapterItem,
 } from '@/domains/comic/components/ComicReaderShell.vue'
+import { useComicReaderSession } from '@/domains/comic/composables/useComicReaderSession'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
   onlineComicApi,
@@ -18,7 +19,6 @@ import {
   type OnlineComicReaderContextStorage,
 } from '@/domains/comic/onlineApi'
 import { useSidebarStore } from '@/domains/comic/store'
-import type { ReaderFitMode, ReaderMode } from '@/domains/comic/types'
 import {
   readOnlineComicReaderContext,
   saveOnlineComicReaderContext,
@@ -28,9 +28,11 @@ import {
   libraryRoute,
   parseItemRef,
   playRoute,
+  useOnlineItemState,
+  type OnlineItemMetadataInput,
+  type PlayPosition,
   type TrackedItemRef,
 } from '@/sources'
-import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 
@@ -38,7 +40,6 @@ const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
-const preferences = usePreferencesStore()
 const snackbar = useSnackbarStore()
 const sidebarStore = useSidebarStore()
 const uploadStore = useUploadStore()
@@ -51,17 +52,75 @@ const activeChapterIndex = ref(0)
 const activeChapterUrl = ref('')
 const activeSourceName = ref('')
 const activeDirection = ref<ComicReadingDirection | null>(null)
-const initialPage = ref(1)
 
-const loading = ref(true)
-const loadError = ref<string | null>(null)
-const hasContent = ref(false)
+const trackedRef = computed<TrackedItemRef | null>(() => {
+  const c = ctx.value
+  if (!c?.sourceId || !c.comicUrl) return null
+  return {
+    scope: 'online',
+    domain: 'comic',
+    sourceId: c.sourceId,
+    ref: c.comicUrl,
+    hints: {
+      title: c.title,
+      author: c.author,
+      cover: c.coverUrl ?? undefined,
+    },
+  }
+})
 
-const readerMode = ref<ReaderMode>(preferences.comic.default_reader_mode)
-const fitMode = ref<ReaderFitMode>(preferences.comic.default_fit_mode)
-const offsetCoverPage = ref<boolean>(preferences.comic.offset_cover_page)
-const dimImages = ref<boolean>(preferences.comic.dim_images_in_dark)
-const webtoonWidth = ref<number>(preferences.comic.webtoon_width)
+const onlineMeta = computed<OnlineItemMetadataInput | null>(() => {
+  const c = ctx.value
+  if (!c) return null
+  return {
+    title: c.title || c.comicUrl || c.chapterUrl,
+    subtitle: c.author || null,
+    coverUrl: c.coverUrl ?? null,
+    extra: c.tocUrl ? { toc_url: c.tocUrl } : null,
+  }
+})
+
+const onlineItemState = useOnlineItemState(trackedRef, onlineMeta)
+
+function buildOnlinePlayPosition(pageOneBased: number, reachedEnd: boolean): PlayPosition {
+  const ch = currentChapterObj.value
+  return {
+    unitIndex: activeChapterIndex.value,
+    unitKey: activeChapterUrl.value || undefined,
+    unitTitle: ch?.title || ctx.value?.chapterTitle || undefined,
+    position: Math.max(0, pageOneBased - 1),
+    duration: pages.value.length > 0 ? pages.value.length : undefined,
+    totalUnits: chapters.value.length > 0 ? chapters.value.length : undefined,
+    completed: reachedEnd,
+  }
+}
+
+const session = useComicReaderSession({
+  onCommitProgress: (snapshot, keepalive) => {
+    if (!onlineItemState.record.value) return
+    const pos = buildOnlinePlayPosition(snapshot.highestInSpread, snapshot.reachedEnd)
+    if (keepalive) {
+      onlineItemState.flushProgressKeepalive(pos)
+    } else {
+      onlineItemState.saveProgress(pos, { immediate: true })
+    }
+  },
+})
+
+const {
+  preferences,
+  loading,
+  loadError,
+  hasContent,
+  initialPage,
+  lastPageEvent,
+  readerMode,
+  fitMode,
+  offsetCoverPage,
+  dimImages,
+  webtoonWidth,
+  userOverrodeMode,
+} = session
 
 let initSeq = 0
 let loadSeq = 0
@@ -69,7 +128,6 @@ let detailSeq = 0
 let pageAbortController: AbortController | null = null
 let detailAbortController: AbortController | null = null
 let unmounted = false
-let userOverrodeMode = false
 let syncingUrl = false
 let syncUrlSeq = 0
 
@@ -82,26 +140,6 @@ function isAbortError(err: unknown): boolean {
 function readQueryParam(key: string): string {
   const val = route.query[key]
   return typeof val === 'string' && val.trim() ? val.trim() : ''
-}
-
-const readStoredReaderCtx = readOnlineComicReaderContext
-const saveReaderCtxToStorage = saveOnlineComicReaderContext
-
-function mapDirectionToReaderMode(dir: ComicReadingDirection | null | undefined): ReaderMode {
-  if (dir === 'webtoon' && preferences.comic.default_reader_mode === 'rtl_double') {
-    return 'webtoon'
-  }
-  return preferences.comic.default_reader_mode
-}
-
-function hydratePreferencesFromTheme(dir?: ComicReadingDirection | null): void {
-  fitMode.value = preferences.comic.default_fit_mode
-  offsetCoverPage.value = preferences.comic.offset_cover_page
-  dimImages.value = preferences.comic.dim_images_in_dark
-  webtoonWidth.value = preferences.comic.webtoon_width
-  if (!userOverrodeMode) {
-    readerMode.value = mapDirectionToReaderMode(dir)
-  }
 }
 
 function parseExplicitPageQuery(): number | null {
@@ -131,7 +169,7 @@ function hydrateContextFromRoute(): OnlineComicReaderContextStorage | null {
   const qDir: ComicReadingDirection | null =
     qDirRaw === 'rtl' || qDirRaw === 'ltr' || qDirRaw === 'webtoon' ? qDirRaw : null
 
-  const stored = readStoredReaderCtx()
+  const stored = readOnlineComicReaderContext()
   const matchesStored = Boolean(
     stored &&
       ((!qSourceId &&
@@ -147,9 +185,7 @@ function hydrateContextFromRoute(): OnlineComicReaderContextStorage | null {
   const sourceId = qSourceId || (matchesStored && stored ? stored.sourceId : '')
   const comicUrl = qComicUrl || (matchesStored && stored ? stored.comicUrl : '')
   const chapterUrl = qChapterUrl || (matchesStored && stored ? stored.chapterUrl : '')
-  if (!sourceId || (!chapterUrl && !comicUrl)) {
-    return null
-  }
+  if (!sourceId || (!chapterUrl && !comicUrl)) return null
 
   const parsedIdx = qChapterIdxRaw ? Number.parseInt(qChapterIdxRaw, 10) : Number.NaN
   const storedChapters = matchesStored && Array.isArray(stored?.chapters) ? stored!.chapters : []
@@ -206,14 +242,14 @@ const currentReadablePos = computed(() => {
 
 const prevChapterIndex = computed<number | null>(() => {
   const pos = currentReadablePos.value
-  if (pos <= 0) return null
-  return readableChapterIndices.value[pos - 1] ?? null
+  return pos > 0 ? (readableChapterIndices.value[pos - 1] ?? null) : null
 })
 
 const nextChapterIndex = computed<number | null>(() => {
   const pos = currentReadablePos.value
-  if (pos < 0 || pos + 1 >= readableChapterIndices.value.length) return null
-  return readableChapterIndices.value[pos + 1] ?? null
+  return pos >= 0 && pos + 1 < readableChapterIndices.value.length
+    ? (readableChapterIndices.value[pos + 1] ?? null)
+    : null
 })
 
 const currentChapterObj = computed<OnlineComicChapter | null>(() => {
@@ -256,17 +292,6 @@ function getPageSrc(pageNum: number): string {
   return resolveOnlineComicCoverUrl(page.proxy_url, page.image_url, ctx.value?.sourceId)
 }
 
-let lastReportedPage: { page: number; reachedEnd: boolean } | null = null
-
-function handlePageChange(payload: {
-  page: number
-  highestInSpread: number
-  reachedEnd: boolean
-}): void {
-  // Ephemeral preview: track current page in memory only for seamless transfer on explicit "入库".
-  lastReportedPage = { page: payload.page, reachedEnd: payload.reachedEnd }
-}
-
 async function handleTrackFromReader(): Promise<void> {
   const c = ctx.value
   if (!c?.sourceId || !c.comicUrl || trackingBusy.value) return
@@ -283,7 +308,10 @@ async function handleTrackFromReader(): Promise<void> {
     })
     uploadStore.notifyCatalogChanged()
     void sidebarStore.refresh()
-    const currentPage = Math.max(1, Math.floor(lastReportedPage?.page ?? initialPage.value ?? 1))
+    const currentPage = Math.max(
+      1,
+      Math.floor(lastPageEvent.value?.page ?? initialPage.value ?? 1),
+    )
     const matchedChapter =
       created.chapters.find(
         (ch) =>
@@ -353,9 +381,7 @@ async function hydrateChaptersInBackground(
     }
     if (!activeDirection.value && detailRes.detail.reading_direction) {
       activeDirection.value = detailRes.detail.reading_direction
-      if (!userOverrodeMode) {
-        readerMode.value = mapDirectionToReaderMode(detailRes.detail.reading_direction)
-      }
+      session.applyDirectionIfNotOverridden(detailRes.detail.reading_direction)
     }
 
     if (ctx.value) {
@@ -376,7 +402,7 @@ async function hydrateChaptersInBackground(
         chapters: loadedChapters,
       }
       ctx.value = nextCtx
-      saveReaderCtxToStorage(nextCtx)
+      saveOnlineComicReaderContext(nextCtx)
     }
   } catch {
     // Background metadata enrichment must never disrupt direct chapter reading
@@ -398,6 +424,7 @@ async function openChapter(
   const controller = new AbortController()
   pageAbortController = controller
   const seq = ++loadSeq
+  session.flushProgress(false)
   loading.value = true
   loadError.value = null
   hasContent.value = false
@@ -414,7 +441,7 @@ async function openChapter(
     chapters: chapters.value,
   }
   ctx.value = updatedCtx
-  saveReaderCtxToStorage(updatedCtx)
+  saveOnlineComicReaderContext(updatedCtx)
 
   try {
     const pagesRes = await onlineComicApi.fetchPages(
@@ -444,9 +471,7 @@ async function openChapter(
     const resolvedDir =
       pagesRes.reading_direction || activeDirection.value || updatedCtx.readingDirection
     activeDirection.value = resolvedDir ?? null
-    if (!userOverrodeMode) {
-      readerMode.value = mapDirectionToReaderMode(resolvedDir)
-    }
+    session.applyDirectionIfNotOverridden(resolvedDir)
 
     pages.value = pagesRes.pages ?? []
     if (pages.value.length === 0) {
@@ -461,8 +486,7 @@ async function openChapter(
     loading.value = false
 
     if (seamlessToast) {
-      const label = chapterObj?.title || `#${targetIndex + 1}`
-      snackbar.show(t('reader.switchedToChapter', { title: label }))
+      session.showChapterSwitchedToast(chapterObj?.title || `#${targetIndex + 1}`)
     }
   } catch (err) {
     if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== loadSeq) return
@@ -504,7 +528,7 @@ async function initReader(): Promise<void> {
   activeDirection.value = hydrated.readingDirection ?? null
   activeChapterIndex.value = hydrated.chapterIndex
   activeChapterUrl.value = hydrated.chapterUrl
-  hydratePreferencesFromTheme(activeDirection.value)
+  session.syncFromGlobalPreferences(activeDirection.value)
 
   const explicitPage = parseExplicitPageQuery()
 
@@ -628,30 +652,7 @@ function switchChapterByIndex(targetIdx: number): void {
 
 function handleSelectChapterKey(key: string): void {
   const idx = chapterItems.value.findIndex((item) => item.key === key)
-  if (idx < 0) return
-  switchChapterByIndex(idx)
-}
-
-// Keep online reader settings session-scoped so one webtoon never overwrites global local manga defaults
-function handleModeChange(mode: ReaderMode): void {
-  userOverrodeMode = true
-  readerMode.value = mode
-}
-
-function handleFitChange(fit: ReaderFitMode): void {
-  fitMode.value = fit
-}
-
-function handleOffsetCoverChange(val: boolean): void {
-  offsetCoverPage.value = val
-}
-
-function handleDimImagesChange(val: boolean): void {
-  dimImages.value = val
-}
-
-function handleWebtoonWidthCommit(val: number): void {
-  webtoonWidth.value = val
+  if (idx >= 0) switchChapterByIndex(idx)
 }
 
 function handleRetry(): void {
@@ -702,7 +703,7 @@ watch(
   () => [route.query.source, route.query.ref, route.query.chapter],
   () => {
     if (syncingUrl) return
-    userOverrodeMode = false
+    userOverrodeMode.value = false
     void initReader()
   },
 )
@@ -730,13 +731,13 @@ watch(
     :loading="loading"
     :load-error="loadError"
     :has-content="hasContent"
-    @update:reader-mode="handleModeChange"
-    @update:fit-mode="handleFitChange"
-    @update:offset-cover-page="handleOffsetCoverChange"
-    @update:dim-images="handleDimImagesChange"
-    @update:webtoon-width="webtoonWidth = $event"
-    @commit-webtoon-width="handleWebtoonWidthCommit"
-    @page-change="handlePageChange"
+    @update:reader-mode="session.changeMode"
+    @update:fit-mode="session.changeFit"
+    @update:offset-cover-page="session.toggleOffsetCover"
+    @update:dim-images="session.toggleDimImages"
+    @update:webtoon-width="session.setWebtoonWidth"
+    @commit-webtoon-width="session.commitWebtoonWidth"
+    @page-change="session.handlePageChange"
     @prev-chapter="prevChapterIndex !== null && switchChapterByIndex(prevChapterIndex)"
     @next-chapter="nextChapterIndex !== null && switchChapterByIndex(nextChapterIndex)"
     @select-chapter="handleSelectChapterKey($event)"
@@ -747,7 +748,6 @@ watch(
       <MdButton
         v-if="ctx?.sourceId && ctx?.comicUrl"
         variant="tonal"
-        size="sm"
         :icon="LuLibrary"
         :loading="trackingBusy"
         @click="handleTrackFromReader"

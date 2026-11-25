@@ -1,9 +1,13 @@
 import { computed, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import {
+  onlineChaptersToTocItems,
+  parseChapterIndexFromLocator,
+  useOnlineChapterReaderState,
+} from '@/domains/book/composables/useOnlineChapterReaderState'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import {
   parseTextParagraphs,
-  useContinuousChapterReader,
   type ContinuousChapterSection,
 } from '@/domains/book/readers/useContinuousChapterReader'
 import {
@@ -43,17 +47,12 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
 
   const readerCtx = ref<ReaderContext | null>(null)
   const chapters = ref<OnlineChapterItem[]>([])
-  const loadingToc = ref(false)
-  const tocError = ref<string | null>(null)
   const savingShelf = ref(false)
 
   // Single mutually-exclusive overlay state (fixes overlapping drawers/dialogs)
   const activeOverlay = ref<OnlineReaderOverlay>(null)
-  const tocQuery = ref('')
   const switchingKey = ref<string | null>(null)
 
-  let tocSeq = 0
-  let unmounted = false
   let progressSyncTimer: ReturnType<typeof setTimeout> | null = null
   let lastPersistedPos = -1
 
@@ -152,7 +151,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     immediate = false,
   ): void {
     const ctx = readerCtx.value
-    if (!ctx || unmounted) return
+    if (!ctx || isUnmounted()) return
     if (onlineItemState.record.value) {
       onlineItemState.saveProgress(
         {
@@ -169,7 +168,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
 
     const commit = () => {
       const curCtx = readerCtx.value
-      if (!curCtx || unmounted) return
+      if (!curCtx || isUnmounted()) return
       lastPersistedPos = pos
       curCtx.currentChapterIndex = pos
       syncContextToUrlAndMemory(curCtx)
@@ -202,9 +201,18 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       .catch(() => {})
   }
 
-  const reader = useContinuousChapterReader({
+  const {
+    reader,
+    loadingToc,
+    tocError,
+    combinedLoading,
+    combinedErrorMsg,
+    beginTocLoad,
+    bumpTocSeq,
+    isCurrentTocSeq,
+    isUnmounted,
+  } = useOnlineChapterReaderState({
     scrollContainerRef: contentScrollRef,
-    isBlocked: () => loadingToc.value,
     getPrevPos: findPrevReadablePos,
     getNextPos: findNextReadablePos,
     fetchChapter: async (pos, { forceRefresh }): Promise<ContinuousChapterSection | null> => {
@@ -221,7 +229,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
         forceRefresh,
       )
       if (
-        unmounted ||
+        isUnmounted() ||
         readerCtx.value?.sourceId !== sourceId ||
         readerCtx.value?.bookUrl !== bookUrl
       ) {
@@ -245,6 +253,9 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     },
     progressDebounceMs: 250,
   })
+
+  const tocItems = computed(() => onlineChaptersToTocItems(chapters.value))
+  const activeTocHref = computed(() => `chapter:${reader.activePos.value}`)
 
   const currentChapter = computed<OnlineChapterItem | null>(
     () => chapters.value[reader.activePos.value] ?? null,
@@ -293,20 +304,23 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     await reader.openChapter(pos, { forceRefresh })
   }
 
+  async function selectTocHref(href: string): Promise<void> {
+    if (!href) return
+    const pos = parseChapterIndexFromLocator(href, null)
+    await openChapter(pos, false)
+  }
+
   async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<void> {
     const ctx = readerCtx.value
     if (!ctx) return
-    const seq = ++tocSeq
-    reader.resetState()
-    loadingToc.value = true
-    tocError.value = null
+    const seq = beginTocLoad()
     try {
       const tocRes = await onlineBookApi.fetchToc(
         ctx.sourceId,
         ctx.tocUrl,
         buildBookJsCtxFrom(ctx, targetIdx, matchTitle || ''),
       )
-      if (unmounted || seq !== tocSeq) return
+      if (!isCurrentTocSeq(seq)) return
       chapters.value = tocRes.chapters
       if (tocRes.chapters.length === 0) {
         tocError.value = t('reader.onlineEmptyToc')
@@ -324,10 +338,10 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       loadingToc.value = false
       await openChapter(idx, false)
     } catch (err) {
-      if (unmounted || seq !== tocSeq) return
+      if (!isCurrentTocSeq(seq)) return
       tocError.value = err instanceof Error ? err.message : String(err)
     } finally {
-      if (!unmounted && seq === tocSeq) {
+      if (isCurrentTocSeq(seq)) {
         loadingToc.value = false
       }
     }
@@ -371,7 +385,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
             cover_url: resolvedCoverUrl,
             intro: resolvedIntro,
           })
-          if (unmounted) return
+          if (isUnmounted()) return
           resolvedTocUrl = info.detail.toc_url
           resolvedName = info.detail.name || resolvedName
           resolvedAuthor = info.detail.author || resolvedAuthor
@@ -407,7 +421,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       readerCtx.value = storedCtx
     }
 
-    if (unmounted) return
+    if (isUnmounted()) return
     if (!readerCtx.value) {
       void router.replace(libraryRoute('book', { scope: 'online' }))
       return
@@ -416,7 +430,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     if (!Number.isFinite(parsedChapter)) {
       const persisted = await onlineItemState.refresh()
       if (
-        !unmounted &&
+        !isUnmounted() &&
         readerCtx.value &&
         persisted?.progress?.unitIndex !== undefined &&
         persisted.progress.unitIndex >= 0
@@ -481,7 +495,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
         cover_url: item.book.cover_url,
         intro: item.book.intro,
       })
-      if (unmounted) return
+      if (isUnmounted()) return
       const nextTocUrl = detailRes.detail.toc_url?.trim()
       if (!nextTocUrl) {
         throw new Error(t('online.switchSourceNoToc'))
@@ -501,7 +515,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
         nextCtx.tocUrl,
         buildBookJsCtxFrom(nextCtx, reader.activePos.value, previousTitle),
       )
-      if (unmounted) return
+      if (isUnmounted()) return
       if (tocRes.chapters.length === 0) {
         throw new Error(t('online.switchSourceEmptyToc'))
       }
@@ -520,7 +534,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
         targetPos = firstReadable
       }
 
-      tocSeq += 1
+      bumpTocSeq()
       nextCtx.currentChapterIndex = targetPos
       readerCtx.value = nextCtx
       chapters.value = tocRes.chapters
@@ -564,32 +578,31 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
   }
 
   onMounted(() => {
-    unmounted = false
     void initReader()
   })
 
   onBeforeUnmount(() => {
     clearProgressSyncTimer()
-    unmounted = true
-    tocSeq += 1
   })
 
   return {
     readerCtx,
     chapters,
+    tocItems,
+    activeTocHref,
     activeIndex: reader.activePos,
     loadedChapters: reader.loadedChapters,
     loadingToc,
     loadingContent: reader.loadingChapter,
+    combinedLoading,
     appendingNext: reader.appendingNext,
     appendError: reader.appendError,
-    errorMsg: computed(() => tocError.value || reader.errorMsg.value),
+    errorMsg: combinedErrorMsg,
     savingShelf,
     favorite: onlineItemState.favorite,
     togglingFavorite: onlineItemState.loading,
     toggleFavorite: onlineItemState.toggleFavorite,
     activeOverlay,
-    tocQuery,
     switchingKey,
     currentChapter,
     chapterTitle,
@@ -601,6 +614,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     closeOverlay,
     loadTocAndOpen,
     openChapter,
+    selectTocHref,
     appendNextChapter: reader.appendNextChapter,
     handleContentScroll: reader.handleScroll,
     handleSaveToShelf,

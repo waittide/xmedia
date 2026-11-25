@@ -9,51 +9,60 @@ import ComicReaderShell, {
   type ComicReaderBookmarkItem,
   type ComicReaderChapterItem,
 } from '@/domains/comic/components/ComicReaderShell.vue'
+import { useComicReaderSession } from '@/domains/comic/composables/useComicReaderSession'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import { useSidebarStore } from '@/domains/comic/store'
+import type { ComicBookmark, ReaderContextDto } from '@/domains/comic/types'
 import { sendKeepalivePutJson } from '@/domains/shared/keepalive'
-import type {
-  ComicBookmark,
-  ReaderContextDto,
-  ReaderFitMode,
-  ReaderMode,
-} from '@/domains/comic/types'
 import { itemRoute, libraryRoute, playRoute } from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { usePreferencesStore } from '@/stores/preferences'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
-const preferences = usePreferencesStore()
 const sidebarStore = useSidebarStore()
 const snackbar = useSnackbarStore()
 
 const ctx = ref<ReaderContextDto | null>(null)
 const chapterBookmarks = ref<ComicBookmark[]>([])
-const loading = ref(true)
-const loadError = ref<string | null>(null)
-
-const currentPage = ref(1)
-const initialPage = ref(1)
-const readerMode = ref<ReaderMode>(preferences.comic.default_reader_mode)
-const fitMode = ref<ReaderFitMode>(preferences.comic.default_fit_mode)
-const offsetCoverPage = ref(preferences.comic.offset_cover_page)
-const dimImages = ref(preferences.comic.dim_images_in_dark)
-const webtoonWidth = ref(preferences.comic.webtoon_width)
-
-watch(
-  () => preferences.comic.dim_images_in_dark,
-  (val) => {
-    dimImages.value = val
-  },
-)
-
-let progressTimer: ReturnType<typeof setTimeout> | null = null
-let pendingProgress: { chapterId: string; page: number; completed?: boolean } | null = null
+let activeChapterIdForProgress = ''
 let chapterLoadSeq = 0
 let bookmarkBusy = false
+
+const session = useComicReaderSession({
+  persistGlobalDimImages: true,
+  onPersistSeriesPref: async (patch) => {
+    if (!ctx.value) return
+    await api.saveSeriesReaderPref(ctx.value.series_id, patch)
+  },
+  onCommitProgress: (snapshot, keepalive) => {
+    const chapterId = activeChapterIdForProgress
+    if (!chapterId) return
+    const completed = snapshot.reachedEnd ? true : undefined
+    if (keepalive) {
+      sendKeepalivePutJson(`/api/v1/comic/chapters/${encodeURIComponent(chapterId)}/progress`, {
+        current_page: snapshot.highestInSpread,
+        is_completed: completed,
+      })
+      return
+    }
+    return api.updateProgress(chapterId, snapshot.highestInSpread, completed)
+  },
+})
+
+const {
+  preferences,
+  loading,
+  loadError,
+  currentPage,
+  initialPage,
+  readerMode,
+  fitMode,
+  offsetCoverPage,
+  dimImages,
+  webtoonWidth,
+} = session
 
 const routeChapterId = computed(() => {
   const ch = route.params.chapterId
@@ -103,7 +112,7 @@ async function loadChapter(
     return
   }
   const seq = ++chapterLoadSeq
-  flushPendingProgress()
+  session.flushProgress(false)
   loading.value = true
   loadError.value = null
 
@@ -116,34 +125,29 @@ async function loadChapter(
     ])
     if (seq !== chapterLoadSeq) return
     ctx.value = data
+    activeChapterIdForProgress = data.chapter.id
     chapterBookmarks.value = bms
 
-    readerMode.value = data.effective_pref.reader_mode
-    fitMode.value = data.effective_pref.fit_mode
-    offsetCoverPage.value = data.effective_pref.offset_cover_page
-    dimImages.value = data.effective_pref.dim_images_in_dark
-    webtoonWidth.value = data.effective_pref.webtoon_width
+    session.applyEffectivePreferences(data.effective_pref)
 
     const resumePage =
       data.chapter.current_page > 0 && !data.chapter.is_completed
         ? data.chapter.current_page
         : 1
     const targetInitial = queryPage && queryPage > 0 ? queryPage : resumePage
-    const clamped = Math.min(Math.max(1, targetInitial), Math.max(1, data.chapter.page_count))
+    const maxPages = Math.max(1, data.chapter.page_count)
+    const clamped = Math.min(Math.max(1, targetInitial), maxPages)
     initialPage.value = clamped
     currentPage.value = clamped
 
-    scheduleSaveProgress(
-      clamped,
-      clamped >= Math.max(1, data.chapter.page_count) ? true : undefined,
-    )
+    session.scheduleProgress({
+      page: clamped,
+      highestInSpread: clamped,
+      reachedEnd: clamped >= maxPages,
+    })
 
     if (seamlessToast) {
-      snackbar.show(
-        t('reader.switchedToChapter', {
-          title: `#${data.chapter.number_label} ${data.chapter.title}`,
-        }),
-      )
+      session.showChapterSwitchedToast(`#${data.chapter.number_label} ${data.chapter.title}`)
     }
 
     loading.value = false
@@ -154,20 +158,13 @@ async function loadChapter(
   }
 }
 
-function handleComicPageHide(): void {
-  flushPendingProgress(true)
-}
-
 onMounted(() => {
   const qPage = route.query.page ? Number(route.query.page) : undefined
   void loadChapter(routeChapterId.value, qPage, false)
-  window.addEventListener('pagehide', handleComicPageHide)
 })
 
 onBeforeUnmount(() => {
   chapterLoadSeq += 1
-  window.removeEventListener('pagehide', handleComicPageHide)
-  flushPendingProgress()
 })
 
 watch(routeChapterId, (newId, oldId) => {
@@ -176,88 +173,6 @@ watch(routeChapterId, (newId, oldId) => {
     void loadChapter(newId, qPage, true)
   }
 })
-
-function flushPendingProgress(useKeepalive = false): void {
-  if (progressTimer) {
-    clearTimeout(progressTimer)
-    progressTimer = null
-  }
-  if (!pendingProgress) return
-  const payload = pendingProgress
-  pendingProgress = null
-  if (useKeepalive) {
-    sendKeepalivePutJson(`/api/v1/comic/chapters/${encodeURIComponent(payload.chapterId)}/progress`, {
-      current_page: payload.page,
-      is_completed: payload.completed,
-    })
-    return
-  }
-  void api.updateProgress(payload.chapterId, payload.page, payload.completed).catch(() => {})
-}
-
-function scheduleSaveProgress(highestPage: number, forceCompleted?: boolean): void {
-  if (!ctx.value) return
-  const chapterId = ctx.value.chapter.id
-  const reachedEnd = highestPage >= totalPages.value
-  const completed = forceCompleted ?? (reachedEnd ? true : undefined)
-
-  pendingProgress = { chapterId, page: highestPage, completed }
-  if (progressTimer) clearTimeout(progressTimer)
-  progressTimer = setTimeout(() => {
-    flushPendingProgress()
-  }, 260)
-}
-
-function handlePageChange(payload: {
-  page: number
-  highestInSpread: number
-  reachedEnd: boolean
-}): void {
-  currentPage.value = payload.page
-  scheduleSaveProgress(payload.highestInSpread, payload.reachedEnd ? true : undefined)
-}
-
-async function persistSeriesReaderPref(): Promise<void> {
-  if (!ctx.value) return
-  try {
-    await api.saveSeriesReaderPref(ctx.value.series_id, {
-      reader_mode: readerMode.value,
-      fit_mode: fitMode.value,
-      offset_cover_page: offsetCoverPage.value,
-      webtoon_width: webtoonWidth.value,
-    })
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  }
-}
-
-function changeMode(mode: ReaderMode): void {
-  readerMode.value = mode
-  void persistSeriesReaderPref()
-}
-
-function changeFit(fit: ReaderFitMode): void {
-  fitMode.value = fit
-  void persistSeriesReaderPref()
-}
-
-function toggleOffsetCover(val: boolean): void {
-  offsetCoverPage.value = val
-  void persistSeriesReaderPref()
-}
-
-function toggleDimImages(val: boolean): void {
-  dimImages.value = val
-  preferences.updateComicPreferences({ dim_images_in_dark: val })
-}
-
-function handleWebtoonWidthCommit(val: number): void {
-  webtoonWidth.value = val
-  void persistSeriesReaderPref()
-}
 
 function goToChapter(chapterId: string): void {
   void router.replace(playRoute({ scope: 'local', domain: 'comic', id: chapterId }))
@@ -345,13 +260,13 @@ async function deleteBookmarkById(id: string): Promise<void> {
     :loading="loading"
     :load-error="loadError"
     :has-content="Boolean(ctx)"
-    @update:reader-mode="changeMode"
-    @update:fit-mode="changeFit"
-    @update:offset-cover-page="toggleOffsetCover"
-    @update:dim-images="toggleDimImages"
-    @update:webtoon-width="webtoonWidth = $event"
-    @commit-webtoon-width="handleWebtoonWidthCommit"
-    @page-change="handlePageChange"
+    @update:reader-mode="session.changeMode"
+    @update:fit-mode="session.changeFit"
+    @update:offset-cover-page="session.toggleOffsetCover"
+    @update:dim-images="session.toggleDimImages"
+    @update:webtoon-width="session.setWebtoonWidth"
+    @commit-webtoon-width="session.commitWebtoonWidth"
+    @page-change="session.handlePageChange"
     @prev-chapter="ctx?.prev_chapter && goToChapter(ctx.prev_chapter.id)"
     @next-chapter="ctx?.next_chapter && goToChapter(ctx.next_chapter.id)"
     @select-chapter="goToChapter($event)"

@@ -12,11 +12,12 @@ import {
   LuSlidersHorizontal,
 } from 'vue-icons-plus/lu'
 import { ImmersiveMediaTemplate } from '@/components/domain'
-import { MdButton, MdIconButton, MdMenu, MdMenuItem, MdTextField } from '@/components/ui'
+import { MdButton, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
 import BookSourceSwitchDialog from '@/domains/book/components/BookSourceSwitchDialog.vue'
 import OnlineDownloadModal from '@/domains/book/components/OnlineDownloadModal.vue'
-import ReaderTypographyPanel from '@/domains/book/components/ReaderTypographyPanel.vue'
 import { useOnlineReader } from '@/domains/book/components/online-reader/useOnlineReader'
+import BookTocDrawer from '@/domains/book/components/reader/BookTocDrawer.vue'
+import BookTypographySheet from '@/domains/book/components/reader/BookTypographySheet.vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import ContinuousTextArticle from '@/domains/book/readers/ContinuousTextArticle.vue'
 
@@ -32,10 +33,13 @@ const hudVisible = ref(true)
 const {
   readerCtx,
   chapters,
+  tocItems,
+  activeTocHref,
   activeIndex,
   loadedChapters,
   loadingToc,
   loadingContent,
+  combinedLoading,
   appendingNext,
   appendError,
   errorMsg,
@@ -44,7 +48,6 @@ const {
   togglingFavorite,
   toggleFavorite,
   activeOverlay,
-  tocQuery,
   switchingKey,
   currentChapter,
   chapterTitle,
@@ -56,6 +59,7 @@ const {
   closeOverlay,
   loadTocAndOpen,
   openChapter,
+  selectTocHref,
   appendNextChapter,
   handleContentScroll,
   handleSaveToShelf,
@@ -63,7 +67,6 @@ const {
   handleBackToCatalog,
 } = useOnlineReader(contentScrollRef)
 
-// Single mutually-exclusive MdSheet binding for TOC / Typography
 const activeSheet = computed<string | null>({
   get: () =>
     activeOverlay.value === 'toc' || activeOverlay.value === 'typography'
@@ -97,13 +100,6 @@ const sheetSubtitle = computed(() =>
   activeSheet.value === 'typography' ? t('reader.typographySubtitle') : '',
 )
 
-const filteredToc = computed(() => {
-  const q = tocQuery.value.trim().toLowerCase()
-  const entries = chapters.value.map((chapter, pos) => ({ chapter, pos }))
-  if (!q) return entries
-  return entries.filter((entry) => entry.chapter.title.toLowerCase().includes(q))
-})
-
 function handleRetryPrimary(): void {
   if (currentChapter.value) {
     void openChapter(activeIndex.value, true)
@@ -122,8 +118,7 @@ function handleRetryPrimary(): void {
     stage-bg-class="bg-surface text-on-surface"
     :auto-hide="true"
     :lock-hud="
-      loadingToc ||
-      loadingContent ||
+      combinedLoading ||
       Boolean(errorMsg) ||
       activeOverlay === 'switch-source' ||
       activeOverlay === 'download'
@@ -136,12 +131,10 @@ function handleRetryPrimary(): void {
     :escape-to-exit="true"
     @back="handleBackToCatalog"
   >
-    <!-- Top HUD Right Controls -->
     <template #header-controls>
       <MdButton
         v-if="readerCtx"
         variant="tonal"
-        size="sm"
         :icon="LuBookMarked"
         :loading="savingShelf"
         @click="handleSaveToShelf"
@@ -214,13 +207,12 @@ function handleRetryPrimary(): void {
       </MdMenu>
     </template>
 
-    <!-- Unified Continuous Chapter Reading Stage -->
     <ContinuousTextArticle
       ref="articleRef"
       :chapters="loadedChapters"
       :active-pos="activeIndex"
       :total-chapters="chapters.length"
-      :loading="loadingToc || loadingContent"
+      :loading="combinedLoading"
       :loading-label="loadingToc ? t('reader.loadingToc') : t('reader.loadingContent')"
       :error-msg="errorMsg"
       :appending-next="appendingNext"
@@ -238,45 +230,22 @@ function handleRetryPrimary(): void {
       @switch-source="openOverlay('switch-source')"
     />
 
-    <!-- Single Mutually-Exclusive Sheet (TOC / Typography) -->
-    <template v-if="activeSheet === 'toc'" #sheet-subheader>
-      <MdTextField
-        v-model="tocQuery"
-        type="search"
-        size="sm"
-        clearable
-        :placeholder="t('reader.tocSearchPlaceholder')"
-      />
+    <template v-if="activeSheet === 'toc'" #sheet-header-actions>
+      <MdButton variant="tonal" :icon="LuRepeat" @click="openOverlay('switch-source')">
+        {{ t('online.switchSource') }}
+      </MdButton>
     </template>
 
     <template #sheet>
-      <div v-if="activeSheet === 'toc'" class="space-y-0.5">
-        <p
-          v-if="filteredToc.length === 0"
-          class="text-body-small py-6 text-center text-on-surface-variant"
-        >
-          {{ t('reader.noToc') }}
-        </p>
-        <button
-          v-for="entry in filteredToc"
-          :key="`toc-${entry.pos}-${entry.chapter.index}`"
-          type="button"
-          :disabled="entry.chapter.is_volume || !entry.chapter.url"
-          class="md-state flex w-full cursor-pointer items-center rounded-corner-md px-3 py-2 text-left transition-colors duration-150 ease-standard disabled:cursor-default"
-          :class="
-            entry.chapter.is_volume
-              ? 'text-title-small mt-2 text-primary'
-              : entry.pos === activeIndex
-                ? 'text-title-small bg-secondary-container text-on-secondary-container'
-                : 'text-body-medium text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
-          "
-          @click="openChapter(entry.pos)"
-        >
-          <span class="truncate">{{ entry.chapter.title }}</span>
-        </button>
-      </div>
+      <BookTocDrawer
+        v-if="activeSheet === 'toc'"
+        :items="tocItems"
+        :active-href="activeTocHref"
+        searchable
+        @select="selectTocHref"
+      />
 
-      <ReaderTypographyPanel v-else-if="activeSheet === 'typography'" />
+      <BookTypographySheet v-else-if="activeSheet === 'typography'" />
     </template>
 
     <template #overlay>

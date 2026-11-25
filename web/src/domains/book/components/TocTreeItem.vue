@@ -92,16 +92,19 @@ const emit = defineEmits<{
     <button
       v-else
       type="button"
-      class="md-state flex w-full cursor-pointer items-center rounded-corner-md text-left transition-colors duration-150 ease-standard"
+      :disabled="!node.item.href"
+      class="md-state flex w-full cursor-pointer items-center rounded-corner-md text-left transition-colors duration-150 ease-standard disabled:cursor-default"
       :class="[
         depth === 0 ? 'px-3 py-2.5' : 'px-2.5 py-2',
-        isHrefMatch(node.item.href, activeHref)
-          ? 'text-title-small bg-secondary-container text-on-secondary-container'
-          : depth === 0
-            ? 'text-body-medium text-on-surface hover:bg-surface-container-high'
-            : 'text-body-small text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
+        !node.item.href
+          ? 'text-title-small mt-1 text-primary'
+          : isHrefMatch(node.item.href, activeHref)
+            ? 'text-title-small bg-secondary-container text-on-secondary-container'
+            : depth === 0
+              ? 'text-body-medium text-on-surface hover:bg-surface-container-high'
+              : 'text-body-small text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
       ]"
-      @click="emit('select', node.item.href)"
+      @click="node.item.href && emit('select', node.item.href)"
     >
       <span class="truncate">{{ node.item.title }}</span>
     </button>

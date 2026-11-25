@@ -8,10 +8,8 @@ import {
   LuList,
   LuMaximize2,
   LuMoveHorizontal,
-  LuPlus,
   LuRepeat,
   LuSlidersHorizontal,
-  LuTrash2,
   LuZoomIn,
   LuZoomOut,
 } from 'vue-icons-plus/lu'
@@ -30,8 +28,9 @@ import {
 } from '@/components/ui'
 import { api } from '@/domains/book/api'
 import BookSourceSwitchDialog from '@/domains/book/components/BookSourceSwitchDialog.vue'
-import ReaderTypographyPanel from '@/domains/book/components/ReaderTypographyPanel.vue'
-import TocTree from '@/domains/book/components/TocTree.vue'
+import BookBookmarksSheet from '@/domains/book/components/reader/BookBookmarksSheet.vue'
+import BookTocDrawer from '@/domains/book/components/reader/BookTocDrawer.vue'
+import BookTypographySheet from '@/domains/book/components/reader/BookTypographySheet.vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onlineApi'
 import type { PdfFitMode, PdfReaderState } from '@/domains/book/readers/PdfReader.vue'
@@ -96,7 +95,6 @@ const loadError = ref<string | null>(null)
 
 const hudVisible = ref(true)
 const activeSheet = ref<ReaderSheet>(null)
-const bookmarkLabel = ref('')
 const switchSourceOpen = ref(false)
 const switchingSourceKey = ref<string | null>(null)
 
@@ -372,20 +370,19 @@ async function jumpToTarget(hrefOrLocator: string, scrollRatio = 0): Promise<voi
   }
 }
 
-async function handleAddBookmark(): Promise<void> {
+async function handleAddBookmark(label: string): Promise<void> {
   if (!currentLocation.value || !bookId.value) return
   const loc = currentLocation.value
   const defaultTitle = `${formatProgressPercentValue(loc.progress_percent)}% · ${book.value?.metadata.title ?? ''}`
   try {
     const created = await api.createBookmark(bookId.value, {
-      title: bookmarkLabel.value.trim() || defaultTitle,
+      title: label.trim() || defaultTitle,
       progress_percent: loc.progress_percent,
       locator: loc.locator,
       chapter_index: loc.chapter_index,
       page_number: loc.page_number,
       scroll_ratio: loc.scroll_ratio,
     })
-    bookmarkLabel.value = ''
     bookmarks.value = [created, ...bookmarks.value]
     snackbarStore.show(t('reader.bookmarkAdded'))
   } catch (err) {
@@ -673,7 +670,6 @@ onBeforeUnmount(() => {
     >
       <MdButton
         variant="tonal"
-        size="sm"
         :icon="LuRepeat"
         @click="
           activeSheet = null;
@@ -685,7 +681,7 @@ onBeforeUnmount(() => {
     </template>
 
     <template #sheet>
-      <TocTree
+      <BookTocDrawer
         v-if="activeSheet === 'toc'"
         :items="toc"
         :active-href="currentLocation?.locator"
@@ -693,53 +689,15 @@ onBeforeUnmount(() => {
         @select="jumpToTarget"
       />
 
-      <div v-else-if="activeSheet === 'bookmarks'" class="space-y-4">
-        <form class="space-y-2.5" @submit.prevent="handleAddBookmark">
-          <MdTextField
-            v-model="bookmarkLabel"
-            size="sm"
-            :placeholder="t('reader.bookmarkTitlePlaceholder')"
-          />
-          <MdButton type="submit" variant="filled" size="sm" :icon="LuPlus" block>
-            {{ t('reader.addBookmark') }}
-          </MdButton>
-        </form>
+      <BookBookmarksSheet
+        v-else-if="activeSheet === 'bookmarks'"
+        :bookmarks="bookmarks"
+        @add="handleAddBookmark"
+        @select="jumpToTarget"
+        @remove="handleRemoveBookmark"
+      />
 
-        <p
-          v-if="bookmarks.length === 0"
-          class="text-body-small py-6 text-center text-on-surface-variant"
-        >
-          {{ t('reader.noBookmarks') }}
-        </p>
-
-        <div v-else class="space-y-1.5">
-          <div
-            v-for="bm in bookmarks"
-            :key="bm.id"
-            class="flex items-center justify-between gap-2 rounded-corner-md bg-surface-container px-3 py-2.5"
-          >
-            <button
-              type="button"
-              class="md-state min-w-0 flex-1 cursor-pointer rounded-corner-sm text-left"
-              @click="jumpToTarget(bm.location.locator, bm.location.scroll_ratio ?? 0)"
-            >
-              <div class="text-title-small truncate text-on-surface">{{ bm.title }}</div>
-              <div class="text-label-small mt-0.5 tabular-nums text-primary">
-                {{ Math.round(bm.location.progress_percent) }}%
-              </div>
-            </button>
-            <MdIconButton
-              size="sm"
-              variant="standard"
-              :icon="LuTrash2"
-              :aria-label="t('common.delete')"
-              @click="handleRemoveBookmark(bm.id)"
-            />
-          </div>
-        </div>
-      </div>
-
-      <ReaderTypographyPanel
+      <BookTypographySheet
         v-else-if="activeSheet === 'typography'"
         :show-flow-mode="Boolean(book && book.format === 'epub' && !book.online_tracking)"
       />

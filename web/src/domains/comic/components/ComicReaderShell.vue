@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   LuLayers,
   LuMaximize,
@@ -26,10 +26,13 @@ import type {
   ComicReaderChapterItem,
   ReaderSheetId,
 } from '@/domains/comic/components/reader/types'
+import {
+  preferredComicScrollBehavior,
+  useComicStageController,
+} from '@/domains/comic/composables/useComicStageController'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import type { ReaderFitMode, ReaderMode } from '@/domains/comic/types'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
 
 export type { ComicReaderBookmarkItem, ComicReaderChapterItem }
 
@@ -84,128 +87,61 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const theme = useThemeStore()
 const snackbar = useSnackbarStore()
 
 const immersiveRef = ref<InstanceType<typeof ImmersiveMediaTemplate> | null>(null)
 const stageRef = ref<InstanceType<typeof ComicReaderStage> | null>(null)
 
+const activeSheet = ref<ReaderSheetId | null>(null)
+const chaptersSheetTab = ref<ChaptersSheetTab>('chapters')
+const chapterFilter = ref('')
+
 function getWebtoonContainer(): HTMLDivElement | null {
   return stageRef.value?.getWebtoonContainer() ?? null
 }
 
-const activeSheet = ref<ReaderSheetId | null>(null)
-const chaptersSheetTab = ref<ChaptersSheetTab>('chapters')
-const chapterFilter = ref('')
-const isFullscreen = ref(false)
-
-const currentPage = ref(1)
-const zoomPercent = ref(100)
-const pendingNextChapterTap = ref(false)
-
-const widePages = reactive<Record<number, boolean>>({})
-const naturalWidths = reactive<Record<number, number>>({})
-const brokenPages = reactive<Record<number, boolean>>({})
-const retryTokens = reactive<Record<number, number>>({})
-const preloadedSet = new Set<string>()
-
-let webtoonObserver: IntersectionObserver | null = null
-const visibleWebtoonPages = new Set<number>()
-let suppressWebtoonObserverUntil = 0
-let lastWebtoonScrollTop = 0
-let unmounted = false
-
-const safeTotalPages = computed(() => Math.max(1, props.totalPages))
-const isSinglePage = computed(() => safeTotalPages.value <= 1)
-const isRtl = computed(() => props.readerMode === 'rtl_double')
-
-const spreads = computed<number[][]>(() => {
-  const total = safeTotalPages.value
-  if (props.readerMode === 'ltr_single' || props.readerMode === 'webtoon') {
-    return Array.from({ length: total }, (_, i) => [i + 1])
-  }
-
-  const groups: number[][] = []
-  let p = 1
-  while (p <= total) {
-    if (p === 1 && props.offsetCoverPage) {
-      groups.push([1])
-      p += 1
-      continue
-    }
-    if (widePages[p]) {
-      groups.push([p])
-      p += 1
-      continue
-    }
-    if (p + 1 <= total && !widePages[p + 1]) {
-      groups.push([p, p + 1])
-      p += 2
-    } else {
-      groups.push([p])
-      p += 1
-    }
-  }
-  return groups
-})
-
-const currentSpreadIndex = computed(() => {
-  const idx = spreads.value.findIndex((sp) => sp.includes(currentPage.value))
-  return idx >= 0 ? idx : 0
-})
-
-const currentSpread = computed<number[]>(
-  () => spreads.value[currentSpreadIndex.value] || [1],
-)
-
-const pageCounterText = computed(() => {
-  if (currentSpread.value.length > 1) {
-    return `${currentSpread.value[0]}-${currentSpread.value[1]} / ${props.totalPages}`
-  }
-  return `${currentPage.value} / ${props.totalPages}`
-})
-
-function pageImageStyle(pageNum: number): Record<string, string> {
-  const scale = zoomPercent.value / 100
-  if (props.fitMode === 'fit_height') {
-    return {
-      maxHeight: `${Math.round(100 * scale)}dvh`,
-      width: 'auto',
-      maxWidth:
-        currentSpread.value.length > 1
-          ? `${Math.round(50 * scale)}vw`
-          : `${Math.round(100 * scale)}vw`,
-    }
-  }
-  if (props.fitMode === 'fit_width') {
-    return {
-      width:
-        currentSpread.value.length > 1
-          ? `${Math.round(50 * scale)}vw`
-          : `${Math.round(96 * scale)}vw`,
-      height: 'auto',
-    }
-  }
-  const natW = naturalWidths[pageNum]
-  if (natW && natW > 0) {
-    return {
-      width: `${Math.round(natW * scale)}px`,
-      height: 'auto',
-      maxWidth: 'none',
-    }
-  }
-  return {
-    width: `${Math.round(100 * scale)}%`,
-    height: 'auto',
-    maxWidth: 'none',
-  }
-}
-
-const eyeCareClass = computed(() => {
-  if (!props.dimImages) return ''
-  return theme.isDark
-    ? 'brightness-[0.82] contrast-[0.95]'
-    : 'brightness-[0.94] sepia-[0.14] contrast-[0.96]'
+const {
+  currentPage,
+  zoomPercent,
+  pendingNextChapterTap,
+  isFullscreen,
+  brokenPages,
+  safeTotalPages,
+  isSinglePage,
+  isRtl,
+  spreads,
+  currentSpreadIndex,
+  currentSpread,
+  pageCounterText,
+  eyeCareClass,
+  pageImageStyle,
+  pageSrc,
+  onImageLoaded,
+  onImageError,
+  retryPageImage,
+  emitPageChange,
+  scrollToWebtoonPage,
+  onWebtoonScroll,
+  adjustZoom,
+  resetZoom,
+  toggleFullscreen,
+} = useComicStageController({
+  getChapterKey: () => props.chapterKey,
+  getTotalPages: () => props.totalPages,
+  getInitialPage: () => props.initialPage,
+  getReaderMode: () => props.readerMode,
+  getFitMode: () => props.fitMode,
+  getOffsetCoverPage: () => props.offsetCoverPage,
+  getDimImages: () => props.dimImages,
+  getPreloadPages: () => props.preloadPages,
+  getLoading: () => props.loading,
+  getHasContent: () => props.hasContent,
+  getPageSrc: (p) => props.getPageSrc(p),
+  getWebtoonContainer,
+  onHideHud: () => immersiveRef.value?.hideHud(),
+  onShowOsd: (text) => immersiveRef.value?.showOsd(text),
+  canAutoHideHud: () => activeSheet.value === null,
+  onPageChange: (payload) => emit('page-change', payload),
 })
 
 const sheetTitle = computed(() => {
@@ -214,10 +150,7 @@ const sheetTitle = computed(() => {
   return ''
 })
 
-const sheetSubtitle = computed(() => {
-  if (activeSheet.value === 'chapters') return props.title
-  return ''
-})
+const sheetSubtitle = computed(() => (activeSheet.value === 'chapters' ? props.title : ''))
 
 const chaptersSheetTabs = computed<MdTabItem<ChaptersSheetTab>[]>(() => [
   {
@@ -236,6 +169,12 @@ const hasChaptersButton = computed(
   () => props.hasContent && (props.chapters.length > 0 || props.showBookmarksTab),
 )
 
+watch(activeSheet, (sheet) => {
+  if (sheet === 'chapters') {
+    chapterFilter.value = ''
+  }
+})
+
 function handleSheetModelUpdate(next: string | null): void {
   activeSheet.value = next === 'chapters' || next === 'settings' ? next : null
 }
@@ -244,176 +183,8 @@ function handleChaptersTabUpdate(next: string): void {
   chaptersSheetTab.value = next === 'bookmarks' ? 'bookmarks' : 'chapters'
 }
 
-function pageSrc(pageNum: number): string {
-  const base = props.getPageSrc(pageNum)
-  if (!base) return ''
-  const token = retryTokens[pageNum]
-  if (!token) return base
-  if (base.startsWith('data:')) return base
-  const sep = base.includes('?') ? '&' : '?'
-  return `${base}${sep}_retry=${token}`
-}
-
-function resetStageState(): void {
-  teardownWebtoonObserver()
-  pendingNextChapterTap.value = false
-  preloadedSet.clear()
-  for (const k of Object.keys(widePages)) delete widePages[Number(k)]
-  for (const k of Object.keys(naturalWidths)) delete naturalWidths[Number(k)]
-  for (const k of Object.keys(brokenPages)) delete brokenPages[Number(k)]
-  for (const k of Object.keys(retryTokens)) delete retryTokens[Number(k)]
-}
-
-function onImageLoaded(pageNum: number, ev: Event): void {
-  const img = ev.target
-  delete brokenPages[pageNum]
-  if (img instanceof HTMLImageElement && img.naturalWidth > 0 && img.naturalHeight > 0) {
-    naturalWidths[pageNum] = img.naturalWidth
-    widePages[pageNum] = img.naturalWidth > img.naturalHeight * 1.12
-  }
-}
-
-function onImageError(pageNum: number): void {
-  brokenPages[pageNum] = true
-}
-
-function retryPageImage(pageNum: number): void {
-  delete brokenPages[pageNum]
-  retryTokens[pageNum] = (retryTokens[pageNum] || 0) + 1
-}
-
-function preloadAround(centerPage: number): void {
-  if (!props.hasContent || props.loading || props.totalPages <= 0) return
-  const ahead = Math.max(3, props.preloadPages || 3)
-  const keyPrefix = props.chapterKey
-  const maxPage = props.totalPages
-
-  const candidates: number[] = []
-  for (let offset = 0; offset <= ahead + 1; offset++) {
-    if (centerPage + offset <= maxPage) candidates.push(centerPage + offset)
-  }
-  if (centerPage - 1 >= 1) candidates.push(centerPage - 1)
-
-  for (const p of candidates) {
-    const src = props.getPageSrc(p)
-    if (!src) continue
-    const key = `${keyPrefix}:${p}`
-    if (preloadedSet.has(key)) continue
-    preloadedSet.add(key)
-    const img = new Image()
-    img.onload = () => {
-      if (
-        !unmounted &&
-        img.naturalWidth > 0 &&
-        img.naturalHeight > 0 &&
-        props.chapterKey === keyPrefix
-      ) {
-        naturalWidths[p] = img.naturalWidth
-        widePages[p] = img.naturalWidth > img.naturalHeight * 1.12
-      }
-    }
-    img.onerror = () => {
-      // swallow preload failures cleanly
-    }
-    img.src = src
-  }
-}
-
-function emitPageChange(pageVal: number, forceReachedEnd = false): void {
-  if (!props.hasContent || props.loading) return
-  const highestInSpread = Math.max(...currentSpread.value, pageVal)
-  const reachedEnd = forceReachedEnd || highestInSpread >= props.totalPages
-  emit('page-change', { page: pageVal, highestInSpread, reachedEnd })
-}
-
-watch(currentPage, (p) => {
-  pendingNextChapterTap.value = false
-  preloadAround(p)
-  emitPageChange(p)
-})
-
-watch(activeSheet, (sheet) => {
-  if (sheet === 'chapters') {
-    chapterFilter.value = ''
-  }
-})
-
-watch(
-  () => [props.readerMode, props.chapterKey, props.loading, props.hasContent] as const,
-  async ([mode, newKey, isLoading, ready], oldVal) => {
-    const oldMode = oldVal?.[0]
-    const oldKey = oldVal?.[1]
-    const oldLoading = oldVal?.[2]
-    const oldReady = oldVal?.[3]
-
-    const keyChanged = newKey !== oldKey
-    const contentJustReady =
-      keyChanged || oldVal === undefined || Boolean(oldLoading) || !oldReady
-
-    if (keyChanged) {
-      resetStageState()
-    } else {
-      teardownWebtoonObserver()
-    }
-
-    if (isLoading || !ready) {
-      return
-    }
-
-    if (contentJustReady) {
-      const targetInitial = Math.min(
-        Math.max(1, props.initialPage || 1),
-        Math.max(1, props.totalPages),
-      )
-      currentPage.value = targetInitial
-      preloadAround(targetInitial)
-      suppressWebtoonObserverUntil = Date.now() + 600
-      emitPageChange(targetInitial)
-    } else if (mode !== oldMode && mode === 'webtoon') {
-      suppressWebtoonObserverUntil = Date.now() + 600
-    }
-
-    if (mode === 'webtoon' && newKey) {
-      await nextTick()
-      if (
-        unmounted ||
-        props.chapterKey !== newKey ||
-        props.readerMode !== 'webtoon' ||
-        props.loading ||
-        !props.hasContent
-      ) {
-        return
-      }
-      scrollToWebtoonPage(currentPage.value)
-      setupWebtoonObserver()
-    }
-  },
-  { immediate: true },
-)
-
-function adjustZoom(delta: number): void {
-  const next = Math.max(50, Math.min(200, zoomPercent.value + delta))
-  zoomPercent.value = next
-  immersiveRef.value?.showOsd(`${next}%`)
-}
-
-function resetZoom(): void {
-  zoomPercent.value = 100
-  immersiveRef.value?.showOsd('100%')
-}
-
 function toggleSheet(id: ReaderSheetId): void {
   activeSheet.value = activeSheet.value === id ? null : id
-}
-
-function preferredScrollBehavior(): ScrollBehavior {
-  if (
-    typeof window !== 'undefined' &&
-    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-  ) {
-    return 'auto'
-  }
-  return 'smooth'
 }
 
 function advanceForward(): void {
@@ -421,7 +192,7 @@ function advanceForward(): void {
   if (props.readerMode === 'webtoon') {
     getWebtoonContainer()?.scrollBy({
       top: window.innerHeight * 0.82,
-      behavior: preferredScrollBehavior(),
+      behavior: preferredComicScrollBehavior(),
     })
     return
   }
@@ -455,7 +226,7 @@ function stepBackward(): void {
   if (props.readerMode === 'webtoon') {
     getWebtoonContainer()?.scrollBy({
       top: -window.innerHeight * 0.82,
-      behavior: preferredScrollBehavior(),
+      behavior: preferredComicScrollBehavior(),
     })
     return
   }
@@ -513,85 +284,6 @@ function onScrubberValue(targetPage: number): void {
   }
 }
 
-function onWebtoonScroll(): void {
-  const container = getWebtoonContainer()
-  if (!container) return
-  const cur = container.scrollTop
-  if (Math.abs(cur - lastWebtoonScrollTop) > 48 && activeSheet.value === null) {
-    immersiveRef.value?.hideHud()
-    lastWebtoonScrollTop = cur
-  }
-}
-
-function scrollToWebtoonPage(pageNum: number): void {
-  const container = getWebtoonContainer()
-  if (!container) return
-  suppressWebtoonObserverUntil = Date.now() + 450
-  const el = container.querySelector<HTMLElement>(`[data-page="${pageNum}"]`)
-  if (el) {
-    el.scrollIntoView({ behavior: 'instant', block: 'start' })
-    lastWebtoonScrollTop = container.scrollTop
-  }
-}
-
-function teardownWebtoonObserver(): void {
-  if (webtoonObserver) {
-    webtoonObserver.disconnect()
-    webtoonObserver = null
-  }
-  visibleWebtoonPages.clear()
-}
-
-function setupWebtoonObserver(): void {
-  teardownWebtoonObserver()
-  const container = getWebtoonContainer()
-  if (!container || props.readerMode !== 'webtoon' || props.loading || !props.hasContent) return
-  webtoonObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        const target = entry.target
-        if (!(target instanceof HTMLElement)) continue
-        const p = Number(target.dataset.page)
-        if (!p) continue
-        if (entry.isIntersecting) visibleWebtoonPages.add(p)
-        else visibleWebtoonPages.delete(p)
-      }
-      if (Date.now() < suppressWebtoonObserverUntil) return
-      if (visibleWebtoonPages.size > 0) {
-        const minVisible = Math.min(...visibleWebtoonPages)
-        if (minVisible !== currentPage.value) {
-          currentPage.value = minVisible
-        }
-      }
-    },
-    {
-      root: container,
-      rootMargin: '-35% 0px -55% 0px',
-      threshold: 0,
-    },
-  )
-  const nodes = container.querySelectorAll<HTMLElement>('[data-page]')
-  for (const node of nodes) {
-    webtoonObserver.observe(node)
-  }
-}
-
-async function toggleFullscreen(): Promise<void> {
-  try {
-    if (!document.fullscreenElement) {
-      await document.documentElement.requestFullscreen()
-    } else {
-      await document.exitFullscreen()
-    }
-  } catch {
-    // ignore fullscreen permission restrictions
-  }
-}
-
-function handleFullscreenChange(): void {
-  isFullscreen.value = Boolean(document.fullscreenElement)
-}
-
 function onKeydown(e: KeyboardEvent): void {
   const target = e.target
   if (
@@ -621,9 +313,9 @@ function onKeydown(e: KeyboardEvent): void {
     if (isRtl.value) stepBackward()
     else advanceForward()
   } else if (e.key === 'ArrowDown' && props.readerMode === 'webtoon') {
-    getWebtoonContainer()?.scrollBy({ top: 320, behavior: preferredScrollBehavior() })
+    getWebtoonContainer()?.scrollBy({ top: 320, behavior: preferredComicScrollBehavior() })
   } else if (e.key === 'ArrowUp' && props.readerMode === 'webtoon') {
-    getWebtoonContainer()?.scrollBy({ top: -320, behavior: preferredScrollBehavior() })
+    getWebtoonContainer()?.scrollBy({ top: -320, behavior: preferredComicScrollBehavior() })
   } else if (e.key === '+' || e.key === '=') {
     e.preventDefault()
     adjustZoom(10)
@@ -649,18 +341,11 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 onMounted(() => {
-  unmounted = false
-  isFullscreen.value = Boolean(document.fullscreenElement)
   window.addEventListener('keydown', onKeydown)
-  document.addEventListener('fullscreenchange', handleFullscreenChange)
 })
 
 onBeforeUnmount(() => {
-  unmounted = true
   window.removeEventListener('keydown', onKeydown)
-  document.removeEventListener('fullscreenchange', handleFullscreenChange)
-  teardownWebtoonObserver()
-  preloadedSet.clear()
 })
 
 defineExpose({
@@ -767,7 +452,6 @@ defineExpose({
       >
         <MdButton
           variant="tonal"
-          size="sm"
           :icon="isRtl ? LuSkipForward : LuSkipBack"
           :disabled="!hasPrevChapter"
           :aria-label="hasPrevChapter ? t('reader.prevChapterAria') : t('reader.noPrevChapter')"
@@ -801,7 +485,6 @@ defineExpose({
 
         <MdButton
           variant="tonal"
-          size="sm"
           :disabled="!hasNextChapter"
           :aria-label="hasNextChapter ? t('reader.nextChapterAria') : t('reader.noNextChapter')"
           class="shrink-0"
