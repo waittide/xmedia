@@ -7,6 +7,10 @@ use tokio::sync::Semaphore;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
+pub use crate::http::proxy::{
+    filter_header_map_for_target_origin, filter_headers_for_target_origin, has_origin_affinity,
+    is_sensitive_origin_header, registrable_domain,
+};
 use crate::http::{
     DEFAULT_WEBVIEW_UA, HttpClientConfig, build_sanitized_headers, get_or_build_async_client,
     has_ssrf_io_error_in_chain, validate_target_url_async,
@@ -198,11 +202,36 @@ pub async fn fetch_validated_image_bytes(
     max_bytes: usize,
     allow_private_ips: bool,
 ) -> DomainResult<(Vec<u8>, &'static str)> {
+    fetch_validated_image_bytes_for_source(
+        client,
+        None,
+        raw_url,
+        headers,
+        max_bytes,
+        allow_private_ips,
+    )
+    .await
+}
+
+/// Fetches and validates a raster image while enforcing origin-affinity credential filtering
+/// whenever `source_url` is provided (stripping `Authorization`, `Cookie`, `X-Api-Key`, and
+/// `Proxy-Authorization` when `raw_url` is outside `source_url`'s host / registrable domain).
+pub async fn fetch_validated_image_bytes_for_source(
+    client: &reqwest::Client,
+    source_url: Option<&str>,
+    raw_url: &str,
+    headers: Option<&HashMap<String, String>>,
+    max_bytes: usize,
+    allow_private_ips: bool,
+) -> DomainResult<(Vec<u8>, &'static str)> {
     let validated = validate_target_url_async(raw_url.trim(), allow_private_ips)
         .await
         .map_err(DomainError::Validation)?;
 
     let mut header_map = headers.map(build_sanitized_headers).unwrap_or_default();
+    if let Some(src) = source_url {
+        header_map = filter_headers_for_target_origin(src, validated.as_str(), &header_map);
+    }
     if !header_map.contains_key(USER_AGENT) {
         header_map.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_WEBVIEW_UA));
     }
@@ -248,14 +277,29 @@ pub async fn fetch_validated_image_bytes_with_config(
     max_bytes: usize,
     config: &HttpClientConfig,
 ) -> DomainResult<(Vec<u8>, &'static str)> {
+    fetch_validated_image_bytes_with_config_for_source(None, raw_url, headers, max_bytes, config)
+        .await
+}
+
+/// Source-aware counterpart of [`fetch_validated_image_bytes_with_config`] that strips static
+/// credential headers (`Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`) whenever
+/// `raw_url` does not match the host or registrable domain of `source_url`.
+pub async fn fetch_validated_image_bytes_with_config_for_source(
+    source_url: Option<&str>,
+    raw_url: &str,
+    headers: Option<&HashMap<String, String>>,
+    max_bytes: usize,
+    config: &HttpClientConfig,
+) -> DomainResult<(Vec<u8>, &'static str)> {
     let client = get_or_build_async_client(
         config.timeout_secs,
         config.allow_private_ips,
         config.proxy_url.as_deref(),
     )
     .map_err(DomainError::Storage)?;
-    fetch_validated_image_bytes(
+    fetch_validated_image_bytes_for_source(
         &client,
+        source_url,
         raw_url,
         headers,
         max_bytes,
@@ -963,6 +1007,103 @@ mod tests {
         assert_eq!(mime, "image/png");
         assert_eq!(bytes, PNG_BYTES);
         assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_validated_image_bytes_for_source_strips_cross_origin_auth_headers() {
+        let captured: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let cap_c = captured.clone();
+
+        let app = Router::new().route(
+            "/cover.png",
+            get(move |headers: HeaderMap| {
+                let cap = cap_c.clone();
+                async move {
+                    let mut guard = cap.lock().unwrap();
+                    guard.clear();
+                    for (k, v) in &headers {
+                        if let Ok(s) = v.to_str() {
+                            guard.insert(k.as_str().to_ascii_lowercase(), s.to_string());
+                        }
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "image/png")
+                        .body(Body::from(PNG_BYTES.to_vec()))
+                        .unwrap()
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let cfg = HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: true,
+            proxy_url: None,
+        };
+        let custom_headers = HashMap::from([
+            ("Authorization".to_string(), "Bearer secret-jwt".to_string()),
+            ("Cookie".to_string(), "session=secret-cookie".to_string()),
+            ("X-Api-Key".to_string(), "xmk_secret_key".to_string()),
+            (
+                "Referer".to_string(),
+                "https://comic.example.com/".to_string(),
+            ),
+        ]);
+
+        // Cross-origin target (`127.0.0.1` vs `https://comic.example.com`) strips credentials
+        fetch_validated_image_bytes_with_config_for_source(
+            Some("https://comic.example.com"),
+            &format!("http://{addr}/cover.png"),
+            Some(&custom_headers),
+            1024,
+            &cfg,
+        )
+        .await
+        .unwrap();
+        {
+            let guard = captured.lock().unwrap();
+            assert!(!guard.contains_key("authorization"));
+            assert!(!guard.contains_key("cookie"));
+            assert!(!guard.contains_key("x-api-key"));
+            assert_eq!(
+                guard.get("referer").map(String::as_str),
+                Some("https://comic.example.com/")
+            );
+        }
+
+        // Same-origin target (`127.0.0.1` vs `http://127.0.0.1:...`) preserves credentials
+        fetch_validated_image_bytes_with_config_for_source(
+            Some(&format!("http://{addr}")),
+            &format!("http://{addr}/cover.png"),
+            Some(&custom_headers),
+            1024,
+            &cfg,
+        )
+        .await
+        .unwrap();
+        {
+            let guard = captured.lock().unwrap();
+            assert_eq!(
+                guard.get("authorization").map(String::as_str),
+                Some("Bearer secret-jwt")
+            );
+            assert_eq!(
+                guard.get("cookie").map(String::as_str),
+                Some("session=secret-cookie")
+            );
+            assert_eq!(
+                guard.get("x-api-key").map(String::as_str),
+                Some("xmk_secret_key")
+            );
+        }
 
         server.abort();
     }

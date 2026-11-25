@@ -1,4 +1,5 @@
 mod client;
+pub mod proxy;
 pub mod ssrf;
 pub mod template;
 mod url_cookie;
@@ -15,6 +16,10 @@ pub const MAX_COOKIE_TOTAL_BYTES: usize = 256 * 1024;
 pub use client::{
     LegadoHttpClient, build_sanitized_headers, decode_response_bytes, get_or_build_async_client,
     get_or_build_blocking_client, is_forbidden_custom_header,
+};
+pub use proxy::{
+    filter_header_map_for_target_origin, filter_headers_for_target_origin, has_origin_affinity,
+    is_sensitive_origin_header, registrable_domain,
 };
 pub use ssrf::{
     SsrfSafeResolver, has_ssrf_io_error_in_chain, is_restricted_hostname, is_restricted_ip,
