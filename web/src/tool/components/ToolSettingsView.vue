@@ -92,13 +92,13 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
 
 <template>
   <div class="mx-auto max-w-5xl px-6 py-8 sm:px-8">
-    <!-- Top Header (Aligned with Server SettingsView) -->
+    <!-- Top Header -->
     <div class="mb-8 flex flex-wrap items-center justify-between gap-4">
       <div>
         <h1 class="text-headline-medium text-on-surface">
           {{ t('settings.title') }}
         </h1>
-        <p class="text-body-small mt-1 text-on-surface-variant">
+        <p v-if="t('tool.settings.subtitle')" class="text-body-small mt-1 text-on-surface-variant">
           {{ t('tool.settings.subtitle') }}
         </p>
       </div>
@@ -108,33 +108,33 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_minmax(0,1fr)]">
-      <!-- Left Settings Category Rail (MD3 Full-Pill Active Indicator) -->
+      <!-- Left Settings Category Rail -->
       <nav class="no-scrollbar -m-1 flex gap-1 overflow-x-auto p-1 lg:flex-col lg:overflow-visible">
         <button
           type="button"
-          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
+          class="md-state text-label-large flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-corner-full px-4 text-left"
           :class="
             activeTab === 'appearance'
-              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'appearance'"
         >
-          <LuPalette class="h-4 w-4" />
+          <LuPalette class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('settings.navAppearance') }}</span>
         </button>
 
         <button
           type="button"
-          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
+          class="md-state text-label-large flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-corner-full px-4 text-left"
           :class="
             activeTab === 'scrapers'
-              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'scrapers'"
         >
-          <LuSparkles class="h-4 w-4" />
+          <LuSparkles class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('tool.settings.tabScrapers') }}</span>
         </button>
 
@@ -142,53 +142,53 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
 
         <button
           type="button"
-          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
+          class="md-state text-label-large flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-corner-full px-4 text-left"
           :class="
             activeTab === 'roots'
-              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'roots'"
         >
-          <LuLibrary class="h-4 w-4" />
+          <LuLibrary class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('tool.settings.tabRoots') }}</span>
         </button>
 
         <button
           type="button"
-          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
+          class="md-state text-label-large flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-corner-full px-4 text-left"
           :class="
             activeTab === 'templates'
-              ? 'bg-secondary-container font-semibold text-on-secondary-container'
+              ? 'bg-secondary-container text-on-secondary-container'
               : 'text-on-surface-variant hover:text-on-surface'
           "
           @click="activeTab = 'templates'"
         >
-          <LuFileSignature class="h-4 w-4" />
+          <LuFileSignature class="h-4 w-4" aria-hidden="true" />
           <span>{{ t('tool.settings.tabTemplates') }}</span>
         </button>
-
       </nav>
 
       <!-- Right Content Area -->
       <div class="min-w-0 space-y-6">
         <div
           v-if="errorMsg"
-          class="flex items-center gap-2 rounded-2xl bg-error-container px-4 py-3 text-xs text-on-error-container"
+          role="alert"
+          class="text-body-small flex items-center gap-2 rounded-corner-lg bg-error-container px-4 py-3 text-on-error-container"
         >
-          <LuAlertCircle class="h-4 w-4 shrink-0" />
+          <LuAlertCircle class="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>{{ errorMsg }}</span>
         </div>
 
         <div
           v-if="savedBanner"
-          class="flex items-center gap-2 rounded-2xl bg-success-container px-4 py-3 text-xs font-medium text-on-success-container"
+          class="text-body-small flex items-center gap-2 rounded-corner-lg bg-success-container px-4 py-3 font-medium text-on-success-container"
         >
-          <LuCheckCircle2 class="h-4 w-4 shrink-0" />
+          <LuCheckCircle2 class="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>{{ t('tool.settings.savedBanner') }}</span>
         </div>
 
-        <!-- Domain Isolation Sub-Tab Bar (for scrapers / roots / templates) -->
+        <!-- Domain Isolation Sub-Tab Bar -->
         <MdTabs
           v-if="activeTab !== 'appearance'"
           :model-value="domainSubTab"

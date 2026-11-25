@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuExternalLink,
   LuKey,
-  LuLoader2,
   LuRotateCcw,
   LuSave,
   LuSettings,
   LuShieldAlert,
 } from 'vue-icons-plus/lu'
+import MdButton from '@/components/ui/MdButton.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSelect from '@/components/ui/MdSelect.vue'
 import MdSwitch from '@/components/ui/MdSwitch.vue'
-import MdDialog from '@/components/ui/MdDialog.vue'
+import MdTextField from '@/components/ui/MdTextField.vue'
 import { toolApi } from '../../api'
 import { ADULT_PROVIDER_IDS } from '../../providers'
 import type {
@@ -32,13 +34,15 @@ const emit = defineEmits<{
   updated: [settings: PublicSettingsDto]
 }>()
 
-const localeOptions = [
-  { value: '', label: '继承全局默认语言' },
+const { t } = useI18n()
+
+const localeOptions = computed(() => [
+  { value: '', label: t('tool.settings.providerDialog.inheritLocale') },
   { value: 'zh-CN', label: '简体中文 (zh-CN)' },
   { value: 'zh-TW', label: '繁體中文 (zh-TW)' },
   { value: 'ja-JP', label: '日本語 (ja-JP)' },
   { value: 'en-US', label: 'English (en-US)' },
-]
+])
 
 const enabled = ref(true)
 const httpProxy = ref('')
@@ -62,8 +66,8 @@ const secretSpec = computed<{
 } | null>(() => {
   if (providerId.value === 'tmdb') {
     return {
-      label: 'TMDB API Key / v4 Read Access Token',
-      placeholder: '输入新的 TMDB v3 API Key 或 v4 Bearer Token（留空保持不变）',
+      label: t('tool.settings.providerDialog.tmdbLabel'),
+      placeholder: t('tool.settings.providerDialog.tmdbPlaceholder'),
       hasSecret: Boolean(props.settings?.has_tmdb_api_key),
       masked: props.settings?.tmdb_api_key_masked ?? null,
       field: 'tmdb_api_key',
@@ -71,8 +75,8 @@ const secretSpec = computed<{
   }
   if (providerId.value === 'bangumi') {
     return {
-      label: 'Bangumi Access Token（可选，解锁更高频限额）',
-      placeholder: '输入 Bangumi 个人令牌（留空保持不变）',
+      label: t('tool.settings.providerDialog.bangumiLabel'),
+      placeholder: t('tool.settings.providerDialog.bangumiPlaceholder'),
       hasSecret: Boolean(props.settings?.has_bangumi_token),
       masked: props.settings?.bangumi_token_masked ?? null,
       field: 'bangumi_access_token',
@@ -80,8 +84,8 @@ const secretSpec = computed<{
   }
   if (providerId.value === 'qishui') {
     return {
-      label: '汽水音乐 Cookie（可选，增强歌词与曲目抓取）',
-      placeholder: '输入汽水音乐请求 Cookie（留空保持不变）',
+      label: t('tool.settings.providerDialog.qishuiLabel'),
+      placeholder: t('tool.settings.providerDialog.qishuiPlaceholder'),
       hasSecret: Boolean(props.settings?.has_qishui_cookie),
       masked: props.settings?.qishui_cookie_masked ?? null,
       field: 'qishui_cookie',
@@ -175,187 +179,171 @@ async function handleSave(): Promise<void> {
 <template>
   <MdDialog
     :open="open && Boolean(provider)"
-    :title="provider ? `${provider.name} · 刮削源设置` : '刮削源设置'"
+    :title="
+      provider
+        ? t('tool.settings.providerDialog.titleWithProvider', { name: provider.name })
+        : t('tool.settings.providerDialog.titleFallback')
+    "
     :subtitle="provider?.description"
     max-width="max-w-lg"
     @close="!saving && emit('close')"
   >
     <template #icon>
-      <LuSettings class="h-5 w-5 text-[var(--md-sys-color-primary)]" />
+      <LuSettings class="h-5 w-5 text-primary" aria-hidden="true" />
     </template>
 
     <div v-if="provider" class="space-y-4 py-1">
       <div
         v-if="errorMsg"
-        class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
         {{ errorMsg }}
       </div>
 
       <!-- Enable Switch + Website Link -->
       <div
-        class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-4 py-3"
+        class="flex items-center justify-between gap-3 rounded-corner-lg bg-surface-container px-4 py-3"
       >
         <div class="min-w-0">
-          <div class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            启用此刮削源
+          <div class="text-title-small text-on-surface">
+            {{ t('tool.settings.providerDialog.enableProvider') }}
           </div>
           <a
             v-if="provider.website"
             :href="provider.website"
             target="_blank"
             rel="noopener noreferrer"
-            class="mt-0.5 inline-flex items-center gap-1 text-[11px] text-[var(--md-sys-color-primary)] hover:underline"
+            class="text-body-small mt-0.5 inline-flex items-center gap-1 text-primary hover:underline"
           >
             <span class="truncate">{{ provider.website }}</span>
-            <LuExternalLink class="h-3 w-3 shrink-0" />
+            <LuExternalLink class="h-3 w-3 shrink-0" aria-hidden="true" />
           </a>
         </div>
-        <MdSwitch v-model="enabled" />
+        <MdSwitch
+          v-model="enabled"
+          :aria-label="t('tool.settings.providerDialog.enableProvider')"
+        />
       </div>
 
       <!-- Adult / R18 Provider Advisory -->
       <div
         v-if="isAdultProvider"
-        class="flex items-start gap-2.5 rounded-2xl bg-[var(--md-sys-color-warning-container)]/75 px-3.5 py-3 text-xs text-[var(--md-sys-color-on-warning-container)]"
+        class="text-body-small flex items-start gap-2.5 rounded-corner-lg bg-warning-container/75 px-3.5 py-3 text-on-warning-container"
       >
-        <LuShieldAlert class="mt-0.5 h-4 w-4 shrink-0" />
+        <LuShieldAlert class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
         <p class="leading-relaxed">
-          此源为 R18 / 成人向刮削源，默认关闭。建议按需启用并配置独立代理或全局代理。
+          {{ t('tool.settings.providerDialog.adultAdvisory') }}
         </p>
       </div>
 
       <!-- Provider-Specific Secret Credential -->
       <div
         v-if="secretSpec"
-        class="space-y-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4"
+        class="space-y-2.5 rounded-corner-lg bg-surface-container p-4"
       >
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex items-center gap-1.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            <LuKey class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+          <div class="text-title-small flex items-center gap-1.5 text-on-surface">
+            <LuKey class="h-4 w-4 text-primary" aria-hidden="true" />
             <span>{{ secretSpec.label }}</span>
           </div>
-          <div class="flex items-center gap-2">
+          <div v-if="secretSpec.hasSecret" class="flex items-center gap-2">
             <span
-              v-if="secretSpec.hasSecret"
-              class="rounded-full bg-[var(--md-sys-color-success-container)] px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
+              class="text-label-small rounded-corner-full bg-success-container px-2.5 py-0.5 font-mono text-on-success-container"
             >
-              已配置 {{ secretSpec.masked }}
+              {{ t('tool.settings.providerDialog.configuredPrefix', { masked: secretSpec.masked ?? '' }) }}
             </span>
-            <button
-              v-if="secretSpec.hasSecret"
-              type="button"
+            <MdButton
+              variant="text"
+              size="sm"
+              tone="error"
               :disabled="clearingSecret"
-              class="text-[11px] font-medium text-[var(--md-sys-color-error)] hover:underline disabled:opacity-50"
               @click="handleClearSecret"
             >
-              清空
-            </button>
+              {{ t('tool.settings.providerDialog.clearSecret') }}
+            </MdButton>
           </div>
         </div>
-        <input
+        <MdTextField
           v-model="secretInput"
           type="password"
+          size="sm"
+          :aria-label="secretSpec.label"
           :placeholder="secretSpec.placeholder"
-          class="md-input h-10 w-full px-3.5 font-mono text-xs"
         />
       </div>
 
       <!-- Independent Network & Locale Overrides -->
-      <div class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
+      <div class="space-y-3 rounded-corner-lg bg-surface-container p-4">
         <div class="flex items-center justify-between gap-2">
           <div>
-            <div class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-              独立请求设置（可选）
+            <div class="text-title-small text-on-surface">
+              {{ t('tool.settings.providerDialog.overridesTitle') }}
             </div>
-            <p class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              留空则自动继承全局默认语言、全局代理与默认超时
+            <p class="text-body-small mt-0.5 text-on-surface-variant">
+              {{ t('tool.settings.providerDialog.overridesDesc') }}
             </p>
           </div>
-          <button
+          <MdButton
             v-if="hasCustomOverrides"
-            type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
+            variant="text"
+            size="sm"
+            :icon="LuRotateCcw"
             @click="resetNetworkOverrides"
           >
-            <LuRotateCcw class="h-3.5 w-3.5" />
-            <span>恢复继承</span>
-          </button>
+            {{ t('tool.settings.providerDialog.resetInherit') }}
+          </MdButton>
         </div>
 
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <label class="mb-1.5 block text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-              独立抓取语言
-            </label>
+          <div class="flex flex-col gap-1">
+            <span class="text-label-medium text-on-surface-variant">
+              {{ t('tool.settings.providerDialog.overrideLocale') }}
+            </span>
             <MdSelect v-model="locale" :options="localeOptions" size="sm" />
           </div>
 
-          <div>
-            <label class="mb-1.5 block text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-              独立超时 (秒，5–120)
-            </label>
-            <input
-              v-model="timeoutSecs"
-              type="number"
-              min="5"
-              max="120"
-              placeholder="默认 20"
-              class="md-input h-9 w-full px-3 font-mono text-xs"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label class="mb-1.5 block text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            独立 HTTP / SOCKS5 代理
-          </label>
-          <input
-            v-model="httpProxy"
-            type="text"
-            :placeholder="
-              settings?.http_proxy
-                ? `留空继承全局代理：${settings.http_proxy}`
-                : '例如 http://127.0.0.1:7890 或 socks5h://127.0.0.1:1080'
-            "
-            class="md-input h-9 w-full px-3 font-mono text-xs"
+          <MdTextField
+            v-model="timeoutSecs"
+            type="number"
+            size="sm"
+            min="5"
+            max="120"
+            :label="t('tool.settings.providerDialog.overrideTimeout')"
+            :placeholder="t('tool.settings.providerDialog.timeoutPlaceholder')"
           />
         </div>
 
-        <div>
-          <label class="mb-1.5 block text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            自定义 User-Agent
-          </label>
-          <input
-            v-model="userAgent"
-            type="text"
-            placeholder="留空使用默认 User-Agent"
-            class="md-input h-9 w-full px-3 font-mono text-xs"
-          />
-        </div>
+        <MdTextField
+          v-model="httpProxy"
+          size="sm"
+          :label="t('tool.settings.providerDialog.overrideProxy')"
+          :placeholder="
+            settings?.http_proxy
+              ? t('tool.settings.providerDialog.inheritProxyPlaceholder', {
+                  proxy: settings.http_proxy,
+                })
+              : t('tool.settings.providerDialog.proxyPlaceholder')
+          "
+        />
+
+        <MdTextField
+          v-model="userAgent"
+          size="sm"
+          :label="t('tool.settings.providerDialog.overrideUa')"
+          :placeholder="t('tool.settings.providerDialog.uaPlaceholder')"
+        />
       </div>
     </div>
 
     <template #footer>
       <div class="flex items-center justify-end gap-2">
-        <button
-          type="button"
-          :disabled="saving"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          @click="emit('close')"
-        >
-          取消
-        </button>
-        <button
-          type="button"
-          :disabled="saving"
-          class="md-btn md-btn-sm md-btn-filled md-state"
-          @click="handleSave"
-        >
-          <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-          <LuSave v-else class="h-3.5 w-3.5" />
-          <span>{{ saving ? '保存中…' : '保存源设置' }}</span>
-        </button>
+        <MdButton variant="text" size="sm" :disabled="saving" @click="emit('close')">
+          {{ t('tool.common.cancel') }}
+        </MdButton>
+        <MdButton variant="filled" size="sm" :icon="LuSave" :loading="saving" @click="handleSave">
+          {{ saving ? t('tool.common.saving') : t('tool.settings.providerDialog.saveProvider') }}
+        </MdButton>
       </div>
     </template>
   </MdDialog>
