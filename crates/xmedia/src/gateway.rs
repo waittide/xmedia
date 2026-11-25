@@ -345,7 +345,9 @@ async fn delete_user(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state.auth.delete_user(&user, UserId(id)).await?;
-    let _ = state.activity.purge_user(UserId(id)).await;
+    if !state.auth.has_activity_cleanup() {
+        state.activity.purge_user(UserId(id)).await?;
+    }
     Ok(Json(OkResponse { ok: true }))
 }
 

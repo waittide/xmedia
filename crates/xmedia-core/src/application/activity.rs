@@ -329,7 +329,10 @@ impl ActivityService {
     }
 
     pub async fn purge_user(&self, user_id: UserId) -> DomainResult<()> {
-        self.repo.delete_by_user(user_id).await
+        self.repo.delete_by_user(user_id).await?;
+        let mut locks = self.key_locks.lock().await;
+        locks.retain(|(uid, _, _), _| *uid != user_id);
+        Ok(())
     }
 }
 

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
+use crate::application::activity::ActivityService;
 use crate::application::dto::{
     AuthSessionDto, ChangePasswordInput, CreateUserInput, SetupAdminInput, SetupStatusDto,
     SubsonicCredentials, UpdateUserInput, UserDto,
@@ -176,6 +177,7 @@ pub struct AuthService {
     hasher: Arc<dyn PasswordHasherPort>,
     tokens: Arc<dyn TokenServicePort>,
     lifecycles: Arc<RwLock<HashMap<MediaKind, Arc<dyn MediaDomainLifecycle>>>>,
+    activity: Option<Arc<ActivityService>>,
     setup_lock: Arc<Mutex<()>>,
     throttled_verify_lock: Arc<Mutex<()>>,
     revoked_jtis: Arc<RwLock<HashMap<String, u64>>>,
@@ -194,6 +196,7 @@ impl AuthService {
             hasher,
             tokens,
             lifecycles,
+            activity: None,
             setup_lock: Arc::new(Mutex::new(())),
             throttled_verify_lock: Arc::new(Mutex::new(())),
             revoked_jtis: Arc::new(RwLock::new(HashMap::new())),
@@ -202,6 +205,15 @@ impl AuthService {
                 AUTH_RATE_LIMIT_MAX_FAILURES,
             )),
         }
+    }
+
+    pub fn with_activity(mut self, activity: Arc<ActivityService>) -> Self {
+        self.activity = Some(activity);
+        self
+    }
+
+    pub fn has_activity_cleanup(&self) -> bool {
+        self.activity.is_some()
     }
 
     /// Revokes a single JWT (by its `jti`) until its natural expiration timestamp.
@@ -642,6 +654,9 @@ impl AuthService {
         for handler in handlers {
             handler.on_user_deleted(target_id).await?;
         }
+        if let Some(ref activity) = self.activity {
+            activity.purge_user(target_id).await?;
+        }
 
         self.users.delete(target_id).await
     }
@@ -914,5 +929,133 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(api_user.username, "admin");
+
+        // 4. Deleting a user via AuthService purges that user's activity records consistently
+        use crate::application::activity::{ActivityHeatmapQuery, RecordActivityInput};
+        use crate::domain::activity::{UserActivityDaily, UserActivityRepository};
+
+        #[derive(Default)]
+        struct MemActivityRepo {
+            rows: tokio::sync::Mutex<Vec<UserActivityDaily>>,
+        }
+
+        #[async_trait]
+        impl UserActivityRepository for MemActivityRepo {
+            async fn list_by_user_and_domain(
+                &self,
+                user_id: UserId,
+                media_kind: MediaKind,
+            ) -> DomainResult<Vec<UserActivityDaily>> {
+                let g = self.rows.lock().await;
+                Ok(g.iter()
+                    .filter(|r| r.user_id == user_id && r.media_kind == media_kind)
+                    .cloned()
+                    .collect())
+            }
+            async fn find_by_key(
+                &self,
+                user_id: UserId,
+                media_kind: MediaKind,
+                activity_date: &str,
+            ) -> DomainResult<Option<UserActivityDaily>> {
+                let g = self.rows.lock().await;
+                Ok(g.iter()
+                    .find(|r| {
+                        r.user_id == user_id
+                            && r.media_kind == media_kind
+                            && r.activity_date == activity_date
+                    })
+                    .cloned())
+            }
+            async fn save(&self, record: &UserActivityDaily) -> DomainResult<()> {
+                let mut g = self.rows.lock().await;
+                if let Some(slot) = g.iter_mut().find(|r| r.id == record.id) {
+                    *slot = record.clone();
+                } else {
+                    g.push(record.clone());
+                }
+                Ok(())
+            }
+            async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
+                self.rows.lock().await.retain(|r| r.user_id != user_id);
+                Ok(())
+            }
+        }
+
+        let activity = Arc::new(ActivityService::new(Arc::new(MemActivityRepo::default())));
+        let auth_with_act = auth.with_activity(activity.clone());
+        let member = auth_with_act
+            .create_user(
+                &api_user,
+                CreateUserInput {
+                    username: "member_to_delete".into(),
+                    display_name: None,
+                    password: "member-pass-123".into(),
+                    role: UserRole::Member,
+                },
+            )
+            .await
+            .unwrap();
+        let today = Timestamp::now()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date()
+            .to_string();
+        activity
+            .record_heartbeat(
+                member.id,
+                RecordActivityInput {
+                    media_kind: MediaKind::Book,
+                    date: today.clone(),
+                    delta_secs: 90,
+                    new_session: true,
+                    item_title: Some("Sample".into()),
+                },
+            )
+            .await
+            .unwrap();
+        activity
+            .record_heartbeat(
+                api_user.id,
+                RecordActivityInput {
+                    media_kind: MediaKind::Book,
+                    date: today.clone(),
+                    delta_secs: 120,
+                    new_session: true,
+                    item_title: Some("AdminBook".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        auth_with_act
+            .delete_user(&api_user, member.id)
+            .await
+            .unwrap();
+
+        let deleted_hm = activity
+            .get_heatmap(
+                member.id,
+                ActivityHeatmapQuery {
+                    media_kind: MediaKind::Book,
+                    year: None,
+                    today: Some(today.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted_hm.summary.total_secs, 0);
+
+        let admin_hm = activity
+            .get_heatmap(
+                api_user.id,
+                ActivityHeatmapQuery {
+                    media_kind: MediaKind::Book,
+                    year: None,
+                    today: Some(today),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(admin_hm.summary.total_secs, 120);
     }
 }

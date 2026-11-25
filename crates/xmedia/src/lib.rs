@@ -181,12 +181,10 @@ impl XMediaApp {
         );
         let ffmpeg = FfmpegToolkit::from_ffmpeg_bin(&cfg.ffmpeg_bin);
 
-        let auth = Arc::new(AuthService::new(
-            users_repo.clone(),
-            security,
-            tokens,
-            lifecycles.clone(),
-        ));
+        let auth = Arc::new(
+            AuthService::new(users_repo.clone(), security, tokens, lifecycles.clone())
+                .with_activity(activity.clone()),
+        );
         let libraries = Arc::new(LibraryService::with_data_dir(
             libraries_repo.clone(),
             events.clone(),
