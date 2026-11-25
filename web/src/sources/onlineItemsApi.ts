@@ -1,4 +1,4 @@
-import { requestJson } from '@/api/client'
+import { postKeepaliveJson, requestJson } from '@/api/client'
 import type {
   OnlineItem,
   OnlineItemDomain,
@@ -155,22 +155,12 @@ export const onlineItemsApi = {
       | { id: string; progress: OnlineProgress }
       | { upsert: UpsertOnlineItemInput },
   ): void => {
-    try {
-      const url =
-        'id' in payload
-          ? `/api/v1${basePath(domain)}/${encodeURIComponent(payload.id)}/progress`
-          : `/api/v1${basePath(domain)}`
-      const body = 'id' in payload ? payload.progress : payload.upsert
-      void fetch(url, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        keepalive: true,
-      })
-    } catch {
-      // ignore unload errors
-    }
+    const path =
+      'id' in payload
+        ? `${basePath(domain)}/${encodeURIComponent(payload.id)}/progress`
+        : basePath(domain)
+    const body = 'id' in payload ? payload.progress : payload.upsert
+    postKeepaliveJson(path, body, 'PUT')
   },
 }
 

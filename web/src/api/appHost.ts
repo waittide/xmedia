@@ -164,6 +164,43 @@ function isJsonResponse(res: Response): boolean {
 
 const APP_HOST_TIMEOUT_MS = 15_000
 
+let activeAppServerBaseUrl = ''
+let activeBearerToken: string | null = null
+
+export function setActiveAppServerContext(options: {
+  baseUrl?: string | null
+  token?: string | null
+}): void {
+  if (options.baseUrl !== undefined) {
+    activeAppServerBaseUrl = (options.baseUrl ?? '').trim().replace(/\/+$/, '')
+  }
+  if (options.token !== undefined) {
+    const trimmed = options.token?.trim() ?? ''
+    activeBearerToken = trimmed.length > 0 ? trimmed : null
+  }
+}
+
+export function getActiveAppServerBaseUrl(): string {
+  return activeAppServerBaseUrl
+}
+
+export function getActiveAuthToken(): string | null {
+  return activeBearerToken
+}
+
+export function getActiveAuthHeader(): Record<string, string> {
+  return activeBearerToken ? { Authorization: `Bearer ${activeBearerToken}` } : {}
+}
+
+export function resolveAppApiUrl(path: string): string {
+  if (!path) return activeAppServerBaseUrl || ''
+  if (/^https?:\/\//i.test(path) || path.startsWith('data:') || path.startsWith('blob:')) {
+    return path
+  }
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return activeAppServerBaseUrl ? `${activeAppServerBaseUrl}${normalizedPath}` : normalizedPath
+}
+
 async function fetchWithTimeout(
   input: string,
   init: RequestInit = {},

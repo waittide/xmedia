@@ -1,3 +1,9 @@
+import {
+  getActiveAppServerBaseUrl,
+  getActiveAuthHeader,
+  getActiveAuthToken,
+  resolveAppApiUrl,
+} from '@/api/appHost'
 import type {
   AuthSessionDto,
   CoreLibraryDto,
@@ -27,8 +33,48 @@ export function setUnauthorizedHandler(handler: () => void): void {
   unauthorizedHandler = handler
 }
 
+export function notifyUnauthorized(): void {
+  unauthorizedHandler?.()
+}
+
+function toApiV1Path(path: string): string {
+  if (/^https?:\/\//i.test(path) || path.startsWith('/api/') || path.startsWith('/_app/')) {
+    return path
+  }
+  return `/api/v1${path.startsWith('/') ? path : `/${path}`}`
+}
+
 export function withAuthToken(rawUrl: string | null | undefined): string {
-  return rawUrl || ''
+  if (!rawUrl) return ''
+  const resolved = rawUrl.startsWith('/') ? resolveAppApiUrl(rawUrl) : rawUrl
+  const token = getActiveAuthToken()
+  if (!token || !getActiveAppServerBaseUrl() || /[?&]token=/.test(resolved)) {
+    return resolved
+  }
+  const sep = resolved.includes('?') ? '&' : '?'
+  return `${resolved}${sep}token=${encodeURIComponent(token)}`
+}
+
+export function postKeepaliveJson(
+  path: string,
+  body: unknown,
+  method: 'POST' | 'PUT' | 'PATCH' = 'POST',
+): void {
+  try {
+    const url = resolveAppApiUrl(toApiV1Path(path))
+    void fetch(url, {
+      method,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getActiveAuthHeader(),
+      },
+      body: JSON.stringify(body),
+      keepalive: true,
+    })
+  } catch {
+    // ignore unload errors
+  }
 }
 
 export class ApiRequestError extends Error {
@@ -48,11 +94,15 @@ export async function requestJson<T>(
   suppressAuthRedirect = false,
 ): Promise<T> {
   const headers = new Headers(init.headers)
+  const activeAuth = getActiveAuthHeader()
+  if (activeAuth.Authorization && !headers.has('Authorization')) {
+    headers.set('Authorization', activeAuth.Authorization)
+  }
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
-  const res = await fetch(`/api/v1${path}`, {
+  const res = await fetch(resolveAppApiUrl(toApiV1Path(path)), {
     ...init,
     headers,
     credentials: 'include',

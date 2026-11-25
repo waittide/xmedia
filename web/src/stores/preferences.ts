@@ -1,6 +1,6 @@
 import { onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api } from '@/api/client'
+import { api, postKeepaliveJson } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { resolveStoredAppIcon } from '@/theme/appIcons'
@@ -186,17 +186,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
   function flushSyncOnPageHide(): void {
     if (!dirtyPendingSync || !useAuthStore().isAuthenticated) return
     clearPendingSync()
-    try {
-      void fetch('/api/v1/auth/preferences', {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(toUserPreferences()),
-        keepalive: true,
-      })
-    } catch {
-      // ignore unload errors
-    }
+    postKeepaliveJson('/auth/preferences', toUserPreferences(), 'PUT')
   }
 
   if (typeof window !== 'undefined') {

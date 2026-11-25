@@ -10,6 +10,7 @@ import {
   type Ref,
 } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { postKeepaliveJson } from '@/api/client'
 import { onlineBookApi, type OnlineShelfBookDto } from '@/domains/book/onlineApi'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
@@ -33,6 +34,7 @@ import {
 } from './types'
 
 const DEFAULT_PROGRESS_DEBOUNCE_MS = 3000
+const BOOK_SHELF_CACHE_TTL_MS = 5000
 
 /**
  * Shared reactive cache of persisted online/remote item snapshots keyed by natural key.
@@ -41,6 +43,36 @@ const DEFAULT_PROGRESS_DEBOUNCE_MS = 3000
  * - absent (`!has(key)`): not yet queried
  */
 const snapshotCache = reactive(new Map<string, OnlineItemSnapshot | null>())
+let inflightBookShelf: Promise<OnlineShelfBookDto[]> | null = null
+let lastBookShelfFetchedAt = 0
+let lastBookShelfItems: OnlineShelfBookDto[] | null = null
+
+async function fetchBookShelfShared(force = false): Promise<OnlineShelfBookDto[]> {
+  if (
+    !force &&
+    lastBookShelfItems !== null &&
+    Date.now() - lastBookShelfFetchedAt < BOOK_SHELF_CACHE_TTL_MS
+  ) {
+    return lastBookShelfItems
+  }
+  if (!force && inflightBookShelf) {
+    return inflightBookShelf
+  }
+  const req = onlineBookApi
+    .listShelf()
+    .then((items) => {
+      lastBookShelfItems = items
+      lastBookShelfFetchedAt = Date.now()
+      return items
+    })
+    .finally(() => {
+      if (inflightBookShelf === req) {
+        inflightBookShelf = null
+      }
+    })
+  inflightBookShelf = req
+  return req
+}
 
 export function buildOnlineItemKey(
   domain: MediaKind,
@@ -57,6 +89,9 @@ export function buildRefNaturalKey(itemRef: TrackedItemRef): string {
 
 export function clearOnlineItemStateCache(): void {
   snapshotCache.clear()
+  inflightBookShelf = null
+  lastBookShelfFetchedAt = 0
+  lastBookShelfItems = null
 }
 
 export function seedOnlineItemStateCache(items: readonly OnlineItem[]): void {
@@ -311,13 +346,15 @@ export function useOnlineItemState(
 
       // Book domain fallback: check `/book/online/shelf`
       if (target.scope === 'online') {
-        const shelfList = await onlineBookApi.listShelf()
+        const shelfList = await fetchBookShelfShared(force)
+        let matched = false
         for (const book of shelfList) {
           const snap = shelfBookToSnapshot(book)
           const k = buildOnlineItemKey('book', 'online', book.source_id, book.book_url)
           snapshotCache.set(k, snap)
+          if (k === key) matched = true
         }
-        if (!snapshotCache.has(key)) {
+        if (!matched) {
           snapshotCache.set(key, null)
         }
         return snapshotCache.get(key) ?? null
@@ -375,9 +412,11 @@ export function useOnlineItemState(
             kind: currentMeta?.kind ?? null,
           })
           snapshotCache.set(key, shelfBookToSnapshot(added))
+          lastBookShelfItems = null
         } else if (prev?.id) {
           await onlineBookApi.removeFromShelf(prev.id)
           snapshotCache.set(key, null)
+          lastBookShelfItems = null
         }
       }
 
@@ -457,22 +496,37 @@ export function useOnlineItemState(
       }
     }
     if (!item) return
-    if (!isOnlineItemDomain(item.ref.domain)) return
 
     const key = buildRefNaturalKey(item.ref)
     const existing = snapshotCache.get(key) ?? null
     if (existing && isAvailabilityBlocked(existing.availability)) return
 
-    const progressDto = playPositionToOnlineProgress(item.pos)
-    if (existing?.id) {
-      onlineItemsApi.flushProgressKeepalive(item.ref.domain, {
-        id: existing.id,
-        progress: progressDto,
-      })
-    } else {
-      onlineItemsApi.flushProgressKeepalive(item.ref.domain, {
-        upsert: buildUpsertPayload(item.ref, item.meta, existing, { progress: item.pos }),
-      })
+    if (isOnlineItemDomain(item.ref.domain)) {
+      const progressDto = playPositionToOnlineProgress(item.pos)
+      if (existing?.id) {
+        onlineItemsApi.flushProgressKeepalive(item.ref.domain, {
+          id: existing.id,
+          progress: progressDto,
+        })
+      } else {
+        onlineItemsApi.flushProgressKeepalive(item.ref.domain, {
+          upsert: buildUpsertPayload(item.ref, item.meta, existing, { progress: item.pos }),
+        })
+      }
+      return
+    }
+
+    if (item.ref.scope === 'online' && existing?.id) {
+      postKeepaliveJson(
+        `/book/online/shelf/${encodeURIComponent(existing.id)}`,
+        {
+          current_chapter_index: item.pos.unitIndex ?? 0,
+          current_chapter_title: item.pos.unitTitle ?? null,
+          scroll_ratio: item.pos.position,
+          total_chapters: item.pos.totalUnits,
+        },
+        'PATCH',
+      )
     }
   }
 
@@ -699,7 +753,7 @@ export function useOnlineItemStates(
 
       if (needsBookShelf) {
         tasks.push(
-          onlineBookApi.listShelf().then((shelfBooks) => {
+          fetchBookShelfShared(force).then((shelfBooks) => {
             const matched = new Set<string>()
             for (const book of shelfBooks) {
               const snap = shelfBookToSnapshot(book)
