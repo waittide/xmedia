@@ -7,7 +7,9 @@ use regex::Regex;
 use serde::de::DeserializeOwned;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
-use crate::domain::scraper::{ScrapeQuery, score_candidate_relevance};
+use crate::domain::scraper::{
+    ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata, score_candidate_relevance,
+};
 use crate::infra::scrapers::cn_novel_common::{
     decode_html_entities, read_response_text, strip_inline_html,
 };
@@ -420,4 +422,135 @@ pub fn score_music_candidate(
     }
 
     score
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MusicCandidateDraft {
+    pub external_id: String,
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: Option<String>,
+    pub year: Option<i32>,
+    pub duration_secs: Option<u32>,
+    pub song_count: Option<u32>,
+    pub summary: Option<String>,
+    pub cover_url: Option<String>,
+    pub popularity_votes: u32,
+}
+
+pub fn build_music_subtitle(
+    target: ScrapeTargetKind,
+    artists: &[String],
+    album: Option<&str>,
+    duration_secs: Option<u32>,
+    song_count: Option<u32>,
+) -> Option<String> {
+    let mut sub = Vec::new();
+    if !artists.is_empty() {
+        sub.push(artists.join(" / "));
+    }
+    if target == ScrapeTargetKind::MusicAlbum {
+        if let Some(cnt) = song_count.filter(|&c| c > 0) {
+            sub.push(format!("{cnt} 首"));
+        }
+    } else {
+        if let Some(alb) = album.map(str::trim).filter(|s| !s.is_empty()) {
+            sub.push(alb.to_string());
+        }
+        if let Some(dur) = duration_secs.and_then(format_duration_mmss) {
+            sub.push(dur);
+        }
+    }
+    (!sub.is_empty()).then(|| sub.join(" · "))
+}
+
+pub fn rank_music_candidates(
+    provider_id: &str,
+    provider_name: &str,
+    target: ScrapeTargetKind,
+    query: &ScrapeQuery,
+    drafts: impl IntoIterator<Item = MusicCandidateDraft>,
+    limit: usize,
+) -> Vec<ScrapeCandidate> {
+    let is_album = target == ScrapeTargetKind::MusicAlbum;
+    let mut scored: Vec<(i32, usize, ScrapeCandidate)> = drafts
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, d)| {
+            if d.external_id.trim().is_empty() || d.title.trim().is_empty() {
+                return None;
+            }
+            let album_for_score = if is_album {
+                d.album.as_deref().or(Some(d.title.as_str()))
+            } else {
+                d.album.as_deref()
+            };
+            let score = score_music_candidate(
+                query,
+                &d.title,
+                &d.artists,
+                album_for_score,
+                d.year,
+                d.duration_secs,
+                d.popularity_votes,
+            );
+            let subtitle = build_music_subtitle(
+                target,
+                &d.artists,
+                d.album.as_deref(),
+                d.duration_secs,
+                d.song_count,
+            );
+            Some((
+                score,
+                idx,
+                ScrapeCandidate {
+                    provider_id: provider_id.to_string(),
+                    provider_name: provider_name.to_string(),
+                    external_id: d.external_id,
+                    target,
+                    title: d.title,
+                    subtitle,
+                    year: d.year,
+                    summary: d.summary.filter(|s| !s.trim().is_empty()),
+                    cover_url: d.cover_url,
+                    synced_lyrics: None,
+                    plain_lyrics: None,
+                },
+            ))
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().take(limit).map(|(_, _, c)| c).collect()
+}
+
+pub fn music_candidate_from_detail(
+    provider_id: &str,
+    provider_name: &str,
+    target: ScrapeTargetKind,
+    detail: ScrapedMetadata,
+) -> Option<ScrapeCandidate> {
+    let title = detail.title?;
+    let is_album = target == ScrapeTargetKind::MusicAlbum;
+    let subtitle = build_music_subtitle(
+        target,
+        &detail.creators,
+        detail.series_or_album.as_deref(),
+        None,
+        None,
+    );
+    Some(ScrapeCandidate {
+        provider_id: provider_id.to_string(),
+        provider_name: provider_name.to_string(),
+        external_id: detail.external_id,
+        target,
+        title,
+        subtitle,
+        year: detail.year,
+        summary: detail.summary,
+        cover_url: detail.cover_url,
+        synced_lyrics: if is_album { None } else { detail.synced_lyrics },
+        plain_lyrics: if is_album { None } else { detail.plain_lyrics },
+    })
 }

@@ -8,9 +8,9 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_music_common::{
-    build_music_search_keyword, decode_base64_utf8, format_duration_mmss,
-    normalize_lrc_and_extract_plain, read_json_response, score_music_candidate,
-    split_music_artists, unescape_music_text,
+    MusicCandidateDraft, build_music_search_keyword, decode_base64_utf8,
+    music_candidate_from_detail, normalize_lrc_and_extract_plain, rank_music_candidates,
+    read_json_response, split_music_artists, unescape_music_text,
 };
 use crate::infra::scrapers::cn_novel_common::{
     build_browser_http_client, extract_numeric_id_from_query, normalize_cover_url,
@@ -338,51 +338,17 @@ impl ScraperProviderPort for KugouMusicProvider {
         let target = query.target.unwrap_or(ScrapeTargetKind::MusicTrack);
         let is_album = target == ScrapeTargetKind::MusicAlbum;
 
-        if is_album {
-            if let Some(alb_id) =
-                extract_numeric_id_from_query(&query.keyword, &["album/info/", "album/"])
-                && (query.keyword.contains("kugou.com") || query.keyword.trim().len() >= 5)
-                && let Ok(detail) = self.fetch_detail(&alb_id, target, "zh-CN", creds).await
-                && let Some(title) = detail.title
-            {
-                return Ok(vec![ScrapeCandidate {
-                    provider_id: "kugou".to_string(),
-                    provider_name: "酷狗音乐".to_string(),
-                    external_id: detail.external_id,
-                    target,
-                    title,
-                    subtitle: (!detail.creators.is_empty()).then(|| detail.creators.join(" / ")),
-                    year: detail.year,
-                    summary: detail.summary,
-                    cover_url: detail.cover_url,
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                }]);
-            }
-        } else if let Some(hash) = extract_kugou_direct_hash(&query.keyword)
-            && let Ok(detail) = self.fetch_detail(&hash, target, "zh-CN", creds).await
-            && let Some(title) = detail.title
+        let direct_id = if is_album {
+            extract_numeric_id_from_query(&query.keyword, &["album/info/", "album/"])
+                .filter(|_| query.keyword.contains("kugou.com") || query.keyword.trim().len() >= 5)
+        } else {
+            extract_kugou_direct_hash(&query.keyword)
+        };
+        if let Some(id) = direct_id
+            && let Ok(detail) = self.fetch_detail(&id, target, "zh-CN", creds).await
+            && let Some(cand) = music_candidate_from_detail("kugou", "酷狗音乐", target, detail)
         {
-            let mut sub = Vec::new();
-            if !detail.creators.is_empty() {
-                sub.push(detail.creators.join(" / "));
-            }
-            if let Some(alb) = detail.series_or_album {
-                sub.push(alb);
-            }
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "kugou".to_string(),
-                provider_name: "酷狗音乐".to_string(),
-                external_id: detail.external_id,
-                target,
-                title,
-                subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: detail.synced_lyrics,
-                plain_lyrics: detail.plain_lyrics,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let search_kw = build_music_search_keyword(query);
@@ -408,55 +374,34 @@ impl ScraperProviderPort for KugouMusicProvider {
                 read_json_response(resp, "酷狗音乐 album search").await?;
             let list = env.data.map(|d| d.info).unwrap_or_default();
 
-            let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-            for (idx, alb) in list.into_iter().enumerate() {
-                let Some(alb_id) = json_val_to_id(&alb.albumid) else {
-                    continue;
-                };
+            let drafts = list.into_iter().filter_map(|alb| {
+                let alb_id = json_val_to_id(&alb.albumid)?;
                 let title = strip_inline_html(&unescape_music_text(&alb.albumname));
-                if title.is_empty() {
-                    continue;
-                }
                 let artists = split_music_artists(&alb.singername);
                 let (year, _) = parse_year_and_date(&alb.publishtime);
-                let score = score_music_candidate(
-                    query,
-                    &title,
-                    &artists,
-                    Some(&title),
+                let song_count = alb
+                    .songcount
+                    .and_then(|c| u32::try_from(c).ok())
+                    .filter(|&c| c > 0);
+                Some(MusicCandidateDraft {
+                    external_id: alb_id,
+                    title,
+                    artists,
                     year,
-                    None,
-                    u32::try_from(alb.songcount.unwrap_or(0))
-                        .unwrap_or(0)
-                        .saturating_mul(15),
-                );
-                let mut sub = Vec::new();
-                if !artists.is_empty() {
-                    sub.push(artists.join(" / "));
-                }
-                if let Some(cnt) = alb.songcount.filter(|&c| c > 0) {
-                    sub.push(format!("{cnt} 首"));
-                }
-                scored.push((
-                    score,
-                    idx,
-                    ScrapeCandidate {
-                        provider_id: "kugou".to_string(),
-                        provider_name: "酷狗音乐".to_string(),
-                        external_id: alb_id,
-                        target,
-                        title,
-                        subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                        year,
-                        summary: None,
-                        cover_url: upgrade_kugou_cover(&alb.imgurl, "400"),
-                        synced_lyrics: None,
-                        plain_lyrics: None,
-                    },
-                ));
-            }
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            return Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect());
+                    song_count,
+                    cover_url: upgrade_kugou_cover(&alb.imgurl, "400"),
+                    popularity_votes: song_count.unwrap_or(0).saturating_mul(15),
+                    ..Default::default()
+                })
+            });
+            return Ok(rank_music_candidates(
+                "kugou",
+                "酷狗音乐",
+                target,
+                query,
+                drafts,
+                15,
+            ));
         }
 
         let resp = client
@@ -476,70 +421,40 @@ impl ScraperProviderPort for KugouMusicProvider {
             read_json_response(resp, "酷狗音乐 song search").await?;
         let list = env.data.map(|d| d.info).unwrap_or_default();
 
-        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-        for (idx, item) in list.into_iter().enumerate() {
+        let drafts = list.into_iter().filter_map(|item| {
             let hash = item.hash.trim().to_ascii_lowercase();
             if hash.is_empty() {
-                continue;
+                return None;
             }
             let title = strip_inline_html(&unescape_music_text(&item.songname));
-            if title.is_empty() {
-                continue;
-            }
             let artists = split_music_artists(&item.singername);
-            let album_name = {
+            let album = {
                 let a = strip_inline_html(&unescape_music_text(&item.album_name));
                 (!a.is_empty()).then_some(a)
             };
-            let alb_id = json_val_to_id(&item.album_id);
-            let ext_id = match &alb_id {
+            let ext_id = match json_val_to_id(&item.album_id) {
                 Some(aid) => format!("{hash}:{aid}"),
                 None => hash,
             };
+            let duration_secs = u32::try_from(item.duration).ok().filter(|&d| d > 0);
+            Some(MusicCandidateDraft {
+                external_id: ext_id,
+                title,
+                artists,
+                album,
+                duration_secs,
+                ..Default::default()
+            })
+        });
 
-            let dur_u32 = u32::try_from(item.duration).ok().filter(|&d| d > 0);
-            let score = score_music_candidate(
-                query,
-                &title,
-                &artists,
-                album_name.as_deref(),
-                None,
-                dur_u32,
-                0,
-            );
-
-            let mut sub = Vec::new();
-            if !artists.is_empty() {
-                sub.push(artists.join(" / "));
-            }
-            if let Some(ref a) = album_name {
-                sub.push(a.clone());
-            }
-            if let Some(dur) = dur_u32.and_then(format_duration_mmss) {
-                sub.push(dur);
-            }
-
-            scored.push((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "kugou".to_string(),
-                    provider_name: "酷狗音乐".to_string(),
-                    external_id: ext_id,
-                    target,
-                    title,
-                    subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                    year: None,
-                    summary: None,
-                    cover_url: None,
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ));
-        }
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect())
+        Ok(rank_music_candidates(
+            "kugou",
+            "酷狗音乐",
+            target,
+            query,
+            drafts,
+            15,
+        ))
     }
 
     async fn fetch_detail(

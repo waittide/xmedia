@@ -9,8 +9,9 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_music_common::{
-    build_music_search_keyword, normalize_lrc_and_extract_plain, read_json_response,
-    score_music_candidate, split_music_artists, unescape_music_text,
+    MusicCandidateDraft, build_music_search_keyword, music_candidate_from_detail,
+    normalize_lrc_and_extract_plain, rank_music_candidates, read_json_response,
+    split_music_artists, unescape_music_text,
 };
 use crate::infra::scrapers::cn_novel_common::{
     build_browser_http_client, extract_numeric_id_from_query, normalize_cover_url,
@@ -370,28 +371,9 @@ impl ScraperProviderPort for MiguMusicProvider {
         if let Some(direct_id) = extract_numeric_id_from_query(&query.keyword, url_markers)
             && (query.keyword.contains("migu.cn") || query.keyword.trim().len() >= 6)
             && let Ok(detail) = self.fetch_detail(&direct_id, target, "zh-CN", creds).await
-            && let Some(title) = detail.title
+            && let Some(cand) = music_candidate_from_detail("migu", "咪咕音乐", target, detail)
         {
-            let mut sub = Vec::new();
-            if !detail.creators.is_empty() {
-                sub.push(detail.creators.join(" / "));
-            }
-            if !is_album && let Some(alb) = detail.series_or_album {
-                sub.push(alb);
-            }
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "migu".to_string(),
-                provider_name: "咪咕音乐".to_string(),
-                external_id: detail.external_id,
-                target,
-                title,
-                subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: detail.synced_lyrics,
-                plain_lyrics: detail.plain_lyrics,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let search_kw = build_music_search_keyword(query);
@@ -428,53 +410,36 @@ impl ScraperProviderPort for MiguMusicProvider {
 
         if is_album {
             let list = env.album_result_data.map(|d| d.result).unwrap_or_default();
-            let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-            for (idx, alb) in list.into_iter().enumerate() {
-                let id = alb.id.trim().to_string();
-                if id.is_empty() {
-                    continue;
-                }
+            let drafts = list.into_iter().map(|alb| {
                 let title = strip_inline_html(&unescape_music_text(&alb.name));
-                if title.is_empty() {
-                    continue;
-                }
                 let artists = split_music_artists(&alb.singer);
                 let (year, _) = parse_year_and_date(&alb.publish_date);
-                let score =
-                    score_music_candidate(query, &title, &artists, Some(&title), year, None, 0);
-                scored.push((
-                    score,
-                    idx,
-                    ScrapeCandidate {
-                        provider_id: "migu".to_string(),
-                        provider_name: "咪咕音乐".to_string(),
-                        external_id: id,
-                        target,
-                        title,
-                        subtitle: (!artists.is_empty()).then(|| artists.join(" / ")),
-                        year,
-                        summary: None,
-                        cover_url: pick_best_migu_cover(&alb.img_items),
-                        synced_lyrics: None,
-                        plain_lyrics: None,
-                    },
-                ));
-            }
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            return Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect());
+                MusicCandidateDraft {
+                    external_id: alb.id.trim().to_string(),
+                    title,
+                    artists,
+                    year,
+                    cover_url: pick_best_migu_cover(&alb.img_items),
+                    ..Default::default()
+                }
+            });
+            return Ok(rank_music_candidates(
+                "migu",
+                "咪咕音乐",
+                target,
+                query,
+                drafts,
+                15,
+            ));
         }
 
         let list = env.song_result_data.map(|d| d.result).unwrap_or_default();
-        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-        for (idx, item) in list.into_iter().enumerate() {
+        let drafts = list.into_iter().filter_map(|item| {
             let sid = item.id.trim();
             if sid.is_empty() {
-                continue;
+                return None;
             }
             let title = strip_inline_html(&unescape_music_text(&item.name));
-            if title.is_empty() {
-                continue;
-            }
             let artists: Vec<String> = item
                 .singers
                 .iter()
@@ -482,55 +447,32 @@ impl ScraperProviderPort for MiguMusicProvider {
                 .filter(|s| !s.is_empty())
                 .collect();
             let first_album = item.albums.first();
-            let album_name = first_album
+            let album = first_album
                 .map(|a| strip_inline_html(&unescape_music_text(&a.name)))
                 .filter(|s| !s.is_empty());
             let ext_id = match first_album.map(|a| a.id.trim()).filter(|id| !id.is_empty()) {
                 Some(aid) => format!("{sid}:{aid}"),
                 None => sid.to_string(),
             };
+            Some(MusicCandidateDraft {
+                external_id: ext_id,
+                title,
+                artists,
+                album,
+                summary: (!item.tags.is_empty()).then(|| item.tags.join(" · ")),
+                cover_url: pick_best_migu_cover(&item.img_items),
+                ..Default::default()
+            })
+        });
 
-            let score = score_music_candidate(
-                query,
-                &title,
-                &artists,
-                album_name.as_deref(),
-                None,
-                None,
-                0,
-            );
-
-            let mut sub = Vec::new();
-            if !artists.is_empty() {
-                sub.push(artists.join(" / "));
-            }
-            if let Some(ref alb) = album_name {
-                sub.push(alb.clone());
-            }
-
-            let tag_summary = (!item.tags.is_empty()).then(|| item.tags.join(" · "));
-
-            scored.push((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "migu".to_string(),
-                    provider_name: "咪咕音乐".to_string(),
-                    external_id: ext_id,
-                    target,
-                    title,
-                    subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                    year: None,
-                    summary: tag_summary,
-                    cover_url: pick_best_migu_cover(&item.img_items),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ));
-        }
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect())
+        Ok(rank_music_candidates(
+            "migu",
+            "咪咕音乐",
+            target,
+            query,
+            drafts,
+            15,
+        ))
     }
 
     async fn fetch_detail(

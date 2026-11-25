@@ -9,9 +9,9 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_music_common::{
-    build_music_search_keyword, decode_base64_utf8, format_duration_mmss,
-    normalize_lrc_and_extract_plain, read_json_response, score_music_candidate,
-    split_music_artists, unescape_music_text,
+    MusicCandidateDraft, build_music_search_keyword, decode_base64_utf8,
+    music_candidate_from_detail, normalize_lrc_and_extract_plain, rank_music_candidates,
+    read_json_response, split_music_artists, unescape_music_text,
 };
 use crate::infra::scrapers::cn_novel_common::{
     build_browser_http_client, parse_year_and_date, strip_html_to_text, strip_inline_html,
@@ -467,28 +467,9 @@ impl ScraperProviderPort for QqMusicProvider {
 
         if let Some(direct_id) = extract_qq_direct_id(&query.keyword, is_album)
             && let Ok(detail) = self.fetch_detail(&direct_id, target, "zh-CN", creds).await
-            && let Some(title) = detail.title
+            && let Some(cand) = music_candidate_from_detail("qq", "QQ音乐", target, detail)
         {
-            let mut sub = Vec::new();
-            if !detail.creators.is_empty() {
-                sub.push(detail.creators.join(" / "));
-            }
-            if !is_album && let Some(alb) = detail.series_or_album {
-                sub.push(alb);
-            }
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "qq".to_string(),
-                provider_name: "QQ音乐".to_string(),
-                external_id: detail.external_id,
-                target,
-                title,
-                subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: detail.synced_lyrics,
-                plain_lyrics: detail.plain_lyrics,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let search_kw = build_music_search_keyword(query);
@@ -533,68 +514,38 @@ impl ScraperProviderPort for QqMusicProvider {
         }
 
         if is_album {
-            let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-            for (idx, item) in env.req.data.body.album.list.into_iter().enumerate() {
-                if item.album_mid.trim().is_empty() {
-                    continue;
-                }
+            let drafts = env.req.data.body.album.list.into_iter().map(|item| {
                 let title = strip_inline_html(&unescape_music_text(&item.album_name));
-                if title.is_empty() {
-                    continue;
-                }
                 let mut artists = collect_qq_singers(&item.singer_list);
                 if artists.is_empty() && !item.singer_name.trim().is_empty() {
                     artists = split_music_artists(&item.singer_name);
                 }
                 let (year, _) = parse_year_and_date(&item.public_time);
-                let score = score_music_candidate(
-                    query,
-                    &title,
-                    &artists,
-                    Some(&title),
+                let song_count = u32::try_from(item.song_count).ok().filter(|&c| c > 0);
+                let cover_url = qq_album_cover_url(&item.album_mid, 500);
+                MusicCandidateDraft {
+                    external_id: item.album_mid,
+                    title,
+                    artists,
                     year,
-                    None,
-                    u32::try_from(item.song_count)
-                        .unwrap_or(0)
-                        .saturating_mul(20),
-                );
-                let mut sub = Vec::new();
-                if !artists.is_empty() {
-                    sub.push(artists.join(" / "));
+                    song_count,
+                    cover_url,
+                    popularity_votes: song_count.unwrap_or(0).saturating_mul(20),
+                    ..Default::default()
                 }
-                if item.song_count > 0 {
-                    sub.push(format!("{} 首", item.song_count));
-                }
-                scored.push((
-                    score,
-                    idx,
-                    ScrapeCandidate {
-                        provider_id: "qq".to_string(),
-                        provider_name: "QQ音乐".to_string(),
-                        external_id: item.album_mid.clone(),
-                        target,
-                        title,
-                        subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                        year,
-                        summary: None,
-                        cover_url: qq_album_cover_url(&item.album_mid, 500),
-                        synced_lyrics: None,
-                        plain_lyrics: None,
-                    },
-                ));
-            }
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            return Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect());
+            });
+            return Ok(rank_music_candidates(
+                "qq", "QQ音乐", target, query, drafts, 15,
+            ));
         }
 
-        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-        for (idx, item) in env.req.data.body.song.list.into_iter().enumerate() {
+        let drafts = env.req.data.body.song.list.into_iter().filter_map(|item| {
             let ext_id = if !item.mid.trim().is_empty() {
                 item.mid.clone()
             } else if item.id > 0 {
                 item.id.to_string()
             } else {
-                continue;
+                return None;
             };
             let raw_t = if !item.name.trim().is_empty() {
                 &item.name
@@ -602,9 +553,6 @@ impl ScraperProviderPort for QqMusicProvider {
                 &item.title
             };
             let title = strip_inline_html(&unescape_music_text(raw_t));
-            if title.is_empty() {
-                continue;
-            }
             let artists = collect_qq_singers(&item.singer);
             let album_raw = if !item.album.name.trim().is_empty() {
                 &item.album.name
@@ -616,42 +564,22 @@ impl ScraperProviderPort for QqMusicProvider {
                 (!a.is_empty()).then_some(a)
             };
             let (year, _) = parse_year_and_date(&item.time_public);
-            let dur_u32 = u32::try_from(item.interval).ok().filter(|&d| d > 0);
-            let score =
-                score_music_candidate(query, &title, &artists, album.as_deref(), year, dur_u32, 0);
+            let duration_secs = u32::try_from(item.interval).ok().filter(|&d| d > 0);
+            Some(MusicCandidateDraft {
+                external_id: ext_id,
+                title,
+                artists,
+                album,
+                year,
+                duration_secs,
+                cover_url: qq_album_cover_url(&item.album.mid, 500),
+                ..Default::default()
+            })
+        });
 
-            let mut sub = Vec::new();
-            if !artists.is_empty() {
-                sub.push(artists.join(" / "));
-            }
-            if let Some(ref alb) = album {
-                sub.push(alb.clone());
-            }
-            if let Some(dur) = dur_u32.and_then(format_duration_mmss) {
-                sub.push(dur);
-            }
-
-            scored.push((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "qq".to_string(),
-                    provider_name: "QQ音乐".to_string(),
-                    external_id: ext_id,
-                    target,
-                    title,
-                    subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                    year,
-                    summary: None,
-                    cover_url: qq_album_cover_url(&item.album.mid, 500),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ));
-        }
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect())
+        Ok(rank_music_candidates(
+            "qq", "QQ音乐", target, query, drafts, 15,
+        ))
     }
 
     async fn fetch_detail(

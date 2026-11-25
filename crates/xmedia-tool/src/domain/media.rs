@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::infra::ffmpeg::{ProbedAudioStream, ProbedSubtitleStream};
+use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 
 use crate::domain::workspace::RootId;
 

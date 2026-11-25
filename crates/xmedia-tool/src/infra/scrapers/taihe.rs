@@ -12,8 +12,9 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_music_common::{
-    build_music_search_keyword, format_duration_mmss, normalize_lrc_and_extract_plain,
-    read_json_response, score_music_candidate, unescape_music_text,
+    MusicCandidateDraft, build_music_search_keyword, music_candidate_from_detail,
+    normalize_lrc_and_extract_plain, rank_music_candidates, read_json_response,
+    unescape_music_text,
 };
 use crate::infra::scrapers::cn_novel_common::{
     build_browser_http_client, normalize_cover_url, parse_year_and_date, read_response_text,
@@ -317,28 +318,9 @@ impl ScraperProviderPort for TaiheMusicProvider {
         };
         if let Some(code) = direct_code
             && let Ok(detail) = self.fetch_detail(&code, target, "zh-CN", creds).await
-            && let Some(title) = detail.title
+            && let Some(cand) = music_candidate_from_detail("taihe", "千千音乐", target, detail)
         {
-            let mut sub = Vec::new();
-            if !detail.creators.is_empty() {
-                sub.push(detail.creators.join(" / "));
-            }
-            if !is_album && let Some(alb) = detail.series_or_album {
-                sub.push(alb);
-            }
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "taihe".to_string(),
-                provider_name: "千千音乐".to_string(),
-                external_id: detail.external_id,
-                target,
-                title,
-                subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: detail.synced_lyrics,
-                plain_lyrics: detail.plain_lyrics,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let search_kw = build_music_search_keyword(query);
@@ -377,116 +359,69 @@ impl ScraperProviderPort for TaiheMusicProvider {
         };
 
         if is_album {
-            let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-            for (idx, alb) in data.type_album.into_iter().enumerate() {
-                let code = alb.album_asset_code.trim().to_string();
-                if code.is_empty() {
-                    continue;
-                }
+            let drafts = data.type_album.into_iter().map(|alb| {
                 let title = strip_inline_html(&unescape_music_text(&alb.title));
-                if title.is_empty() {
-                    continue;
-                }
                 let artists = collect_taihe_singers(&alb.artist);
                 let (year, _) = parse_year_and_date(&alb.release_date);
-                let score = score_music_candidate(
-                    query,
-                    &title,
-                    &artists,
-                    Some(&title),
-                    year,
-                    None,
-                    (alb.track_list.len() as u32).saturating_mul(15),
-                );
                 let summary = {
                     let s = strip_inline_html(&alb.introduce);
                     (!s.is_empty()).then_some(s)
                 };
-                scored.push((
-                    score,
-                    idx,
-                    ScrapeCandidate {
-                        provider_id: "taihe".to_string(),
-                        provider_name: "千千音乐".to_string(),
-                        external_id: code,
-                        target,
-                        title,
-                        subtitle: (!artists.is_empty()).then(|| artists.join(" / ")),
-                        year,
-                        summary,
-                        cover_url: normalize_cover_url(&alb.pic),
-                        synced_lyrics: None,
-                        plain_lyrics: None,
-                    },
-                ));
-            }
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            return Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect());
+                MusicCandidateDraft {
+                    external_id: alb.album_asset_code.trim().to_string(),
+                    title,
+                    artists,
+                    year,
+                    summary,
+                    cover_url: normalize_cover_url(&alb.pic),
+                    popularity_votes: (alb.track_list.len() as u32).saturating_mul(15),
+                    ..Default::default()
+                }
+            });
+            return Ok(rank_music_candidates(
+                "taihe",
+                "千千音乐",
+                target,
+                query,
+                drafts,
+                15,
+            ));
         }
 
-        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-        for (idx, item) in data.type_track.into_iter().enumerate() {
+        let drafts = data.type_track.into_iter().map(|item| {
             let tsid = if !item.tsid.trim().is_empty() {
                 item.tsid.trim().to_string()
             } else {
                 item.asset_id.trim().to_string()
             };
-            if tsid.is_empty() {
-                continue;
-            }
             let title = strip_inline_html(&unescape_music_text(&item.title));
-            if title.is_empty() {
-                continue;
-            }
             let artists = collect_taihe_singers(&item.artist);
-            let album_name = {
+            let album = {
                 let a = strip_inline_html(&unescape_music_text(&item.album_title));
                 (!a.is_empty()).then_some(a)
             };
             let (year, _) = parse_year_and_date(&item.release_date);
-            let dur_u32 = u32::try_from(item.duration).ok().filter(|&d| d > 0);
-            let score = score_music_candidate(
-                query,
-                &title,
-                &artists,
-                album_name.as_deref(),
+            let duration_secs = u32::try_from(item.duration).ok().filter(|&d| d > 0);
+            MusicCandidateDraft {
+                external_id: tsid,
+                title,
+                artists,
+                album,
                 year,
-                dur_u32,
-                0,
-            );
-
-            let mut sub = Vec::new();
-            if !artists.is_empty() {
-                sub.push(artists.join(" / "));
+                duration_secs,
+                cover_url: normalize_cover_url(&item.pic),
+                ..Default::default()
             }
-            if let Some(ref alb) = album_name {
-                sub.push(alb.clone());
-            }
-            if let Some(ds) = dur_u32.and_then(format_duration_mmss) {
-                sub.push(ds);
-            }
+        });
 
-            scored.push((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "taihe".to_string(),
-                    provider_name: "千千音乐".to_string(),
-                    external_id: tsid,
-                    target,
-                    title,
-                    subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                    year,
-                    summary: None,
-                    cover_url: normalize_cover_url(&item.pic),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ));
-        }
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect())
+        Ok(rank_music_candidates(
+            "taihe",
+            "千千音乐",
+            target,
+            query,
+            drafts,
+            15,
+        ))
     }
 
     async fn fetch_detail(

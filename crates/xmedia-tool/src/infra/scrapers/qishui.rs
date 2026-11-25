@@ -12,8 +12,9 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_music_common::{
-    build_music_search_keyword, format_duration_mmss, normalize_lrc_and_extract_plain,
-    parse_epoch_ms_year_and_date, read_json_response, score_music_candidate, unescape_music_text,
+    MusicCandidateDraft, build_music_search_keyword, music_candidate_from_detail,
+    normalize_lrc_and_extract_plain, parse_epoch_ms_year_and_date, rank_music_candidates,
+    read_json_response, unescape_music_text,
 };
 use crate::infra::scrapers::cn_novel_common::{
     build_browser_http_client, extract_numeric_id_from_query, normalize_cover_url,
@@ -472,28 +473,9 @@ impl ScraperProviderPort for QishuiMusicProvider {
 
         if let Some(direct_id) = resolve_qishui_direct_id(creds, &query.keyword, is_album).await
             && let Ok(detail) = self.fetch_detail(&direct_id, target, "zh-CN", creds).await
-            && let Some(title) = detail.title
+            && let Some(cand) = music_candidate_from_detail("qishui", "汽水音乐", target, detail)
         {
-            let mut sub = Vec::new();
-            if !detail.creators.is_empty() {
-                sub.push(detail.creators.join(" / "));
-            }
-            if !is_album && let Some(alb) = detail.series_or_album {
-                sub.push(alb);
-            }
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "qishui".to_string(),
-                provider_name: "汽水音乐".to_string(),
-                external_id: detail.external_id,
-                target,
-                title,
-                subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: detail.synced_lyrics,
-                plain_lyrics: detail.plain_lyrics,
-            }]);
+            return Ok(vec![cand]);
         }
 
         if is_album {
@@ -549,22 +531,15 @@ impl ScraperProviderPort for QishuiMusicProvider {
             }
         }
 
-        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-        for (idx, tr) in tracks.into_iter().enumerate() {
-            if tr.id.trim().is_empty() {
-                continue;
-            }
+        let drafts = tracks.into_iter().map(|tr| {
             let title = strip_inline_html(&unescape_music_text(&tr.name));
-            if title.is_empty() {
-                continue;
-            }
             let artists: Vec<String> = tr
                 .artists
                 .iter()
                 .map(|a| strip_inline_html(&unescape_music_text(&a.name)))
                 .filter(|s| !s.is_empty())
                 .collect();
-            let album_name = tr
+            let album = tr
                 .album
                 .as_ref()
                 .map(|a| strip_inline_html(&unescape_music_text(&a.name)))
@@ -575,52 +550,30 @@ impl ScraperProviderPort for QishuiMusicProvider {
                 .filter(|a| a.release_date > 0)
                 .map(|a| parse_epoch_ms_year_and_date(a.release_date * 1000))
                 .unwrap_or((None, None));
-            let dur_secs = u32::try_from(tr.duration / 1000).ok().filter(|&d| d > 0);
-            let score = score_music_candidate(
-                query,
-                &title,
-                &artists,
-                album_name.as_deref(),
+            let duration_secs = u32::try_from(tr.duration / 1000).ok().filter(|&d| d > 0);
+            MusicCandidateDraft {
+                external_id: tr.id.trim().to_string(),
+                title,
+                artists,
+                album,
                 year,
-                dur_secs,
-                0,
-            );
-
-            let mut sub = Vec::new();
-            if !artists.is_empty() {
-                sub.push(artists.join(" / "));
+                duration_secs,
+                cover_url: build_qishui_cover_url(
+                    tr.album.as_ref().and_then(|a| a.url_cover.as_ref()),
+                    500,
+                ),
+                ..Default::default()
             }
-            if let Some(ref alb) = album_name {
-                sub.push(alb.clone());
-            }
-            if let Some(ds) = dur_secs.and_then(format_duration_mmss) {
-                sub.push(ds);
-            }
+        });
 
-            scored.push((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "qishui".to_string(),
-                    provider_name: "汽水音乐".to_string(),
-                    external_id: tr.id.clone(),
-                    target,
-                    title,
-                    subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                    year,
-                    summary: None,
-                    cover_url: build_qishui_cover_url(
-                        tr.album.as_ref().and_then(|a| a.url_cover.as_ref()),
-                        500,
-                    ),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ));
-        }
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect())
+        Ok(rank_music_candidates(
+            "qishui",
+            "汽水音乐",
+            target,
+            query,
+            drafts,
+            15,
+        ))
     }
 
     async fn fetch_detail(

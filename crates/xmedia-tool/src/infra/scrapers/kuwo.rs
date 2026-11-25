@@ -16,9 +16,9 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_music_common::{
-    build_music_search_keyword, format_duration_mmss, format_kuwo_lrclist,
-    normalize_lrc_and_extract_plain, read_json_response, score_music_candidate,
-    split_music_artists, unescape_music_text,
+    MusicCandidateDraft, build_music_search_keyword, format_kuwo_lrclist,
+    music_candidate_from_detail, normalize_lrc_and_extract_plain, rank_music_candidates,
+    read_json_response, split_music_artists, unescape_music_text,
 };
 use crate::infra::scrapers::cn_novel_common::{
     build_browser_http_client, extract_numeric_id_from_query, normalize_cover_url,
@@ -469,53 +469,21 @@ impl ScraperProviderPort for KuwoMusicProvider {
         let target = query.target.unwrap_or(ScrapeTargetKind::MusicTrack);
         let is_album = target == ScrapeTargetKind::MusicAlbum;
 
-        if is_album {
-            if let Some(alb_id) = extract_numeric_id_from_query(&query.keyword, &["album_detail/"])
-                && (query.keyword.contains("kuwo.cn") || query.keyword.trim().len() >= 4)
-                && let Ok(detail) = self.fetch_detail(&alb_id, target, "zh-CN", creds).await
-                && let Some(title) = detail.title
-            {
-                return Ok(vec![ScrapeCandidate {
-                    provider_id: "kuwo".to_string(),
-                    provider_name: "酷我音乐".to_string(),
-                    external_id: detail.external_id,
-                    target,
-                    title,
-                    subtitle: (!detail.creators.is_empty()).then(|| detail.creators.join(" / ")),
-                    year: detail.year,
-                    summary: detail.summary,
-                    cover_url: detail.cover_url,
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                }]);
-            }
-        } else if let Some(rid) = extract_kuwo_rid(&query.keyword)
-            && (query.keyword.contains("kuwo.cn")
-                || query.keyword.trim().starts_with("MUSIC_")
-                || query.keyword.trim().len() >= 5)
-            && let Ok(detail) = self.fetch_detail(&rid, target, "zh-CN", creds).await
-            && let Some(title) = detail.title
+        let direct_id = if is_album {
+            extract_numeric_id_from_query(&query.keyword, &["album_detail/"])
+                .filter(|_| query.keyword.contains("kuwo.cn") || query.keyword.trim().len() >= 4)
+        } else {
+            extract_kuwo_rid(&query.keyword).filter(|_| {
+                query.keyword.contains("kuwo.cn")
+                    || query.keyword.trim().starts_with("MUSIC_")
+                    || query.keyword.trim().len() >= 5
+            })
+        };
+        if let Some(id) = direct_id
+            && let Ok(detail) = self.fetch_detail(&id, target, "zh-CN", creds).await
+            && let Some(cand) = music_candidate_from_detail("kuwo", "酷我音乐", target, detail)
         {
-            let mut sub = Vec::new();
-            if !detail.creators.is_empty() {
-                sub.push(detail.creators.join(" / "));
-            }
-            if let Some(alb) = detail.series_or_album {
-                sub.push(alb);
-            }
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "kuwo".to_string(),
-                provider_name: "酷我音乐".to_string(),
-                external_id: detail.external_id,
-                target,
-                title,
-                subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: detail.synced_lyrics,
-                plain_lyrics: detail.plain_lyrics,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let search_kw = build_music_search_keyword(query);
@@ -547,45 +515,35 @@ impl ScraperProviderPort for KuwoMusicProvider {
         let env: KwSearchEnvelope = read_json_response(resp, "酷我音乐 search").await?;
 
         if is_album {
-            let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-            for (idx, alb) in env.albumlist.into_iter().enumerate() {
+            let drafts = env.albumlist.into_iter().filter_map(|alb| {
                 let id = alb.albumid.trim().to_string();
                 if id.is_empty() || id == "0" {
-                    continue;
+                    return None;
                 }
                 let title = strip_inline_html(&unescape_music_text(&alb.name));
-                if title.is_empty() {
-                    continue;
-                }
                 let artists = split_music_artists(&alb.artist);
                 let (year, _) = parse_year_and_date(&alb.pub_date);
-                let score =
-                    score_music_candidate(query, &title, &artists, Some(&title), year, None, 0);
-                scored.push((
-                    score,
-                    idx,
-                    ScrapeCandidate {
-                        provider_id: "kuwo".to_string(),
-                        provider_name: "酷我音乐".to_string(),
-                        external_id: id,
-                        target,
-                        title,
-                        subtitle: (!artists.is_empty()).then(|| artists.join(" / ")),
-                        year,
-                        summary: None,
-                        cover_url: upgrade_kuwo_cover(&alb.hts_img, 500)
-                            .or_else(|| upgrade_kuwo_cover(&alb.pic, 500)),
-                        synced_lyrics: None,
-                        plain_lyrics: None,
-                    },
-                ));
-            }
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            return Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect());
+                Some(MusicCandidateDraft {
+                    external_id: id,
+                    title,
+                    artists,
+                    year,
+                    cover_url: upgrade_kuwo_cover(&alb.hts_img, 500)
+                        .or_else(|| upgrade_kuwo_cover(&alb.pic, 500)),
+                    ..Default::default()
+                })
+            });
+            return Ok(rank_music_candidates(
+                "kuwo",
+                "酷我音乐",
+                target,
+                query,
+                drafts,
+                15,
+            ));
         }
 
-        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-        for (idx, item) in env.abslist.into_iter().enumerate() {
+        let drafts = env.abslist.into_iter().filter_map(|item| {
             let rid = if !item.dc_targetid.trim().is_empty() {
                 item.dc_targetid.trim().to_string()
             } else {
@@ -596,7 +554,7 @@ impl ScraperProviderPort for KuwoMusicProvider {
                     .to_string()
             };
             if rid.is_empty() || rid == "0" {
-                continue;
+                return None;
             }
             let raw_t = if !item.songname.trim().is_empty() {
                 &item.songname
@@ -604,11 +562,8 @@ impl ScraperProviderPort for KuwoMusicProvider {
                 &item.name
             };
             let title = strip_inline_html(&unescape_music_text(raw_t));
-            if title.is_empty() {
-                continue;
-            }
             let artists = split_music_artists(&item.artist);
-            let album_name = {
+            let album = {
                 let a = strip_inline_html(&unescape_music_text(&item.album));
                 (!a.is_empty()).then_some(a)
             };
@@ -618,56 +573,33 @@ impl ScraperProviderPort for KuwoMusicProvider {
             } else {
                 rid
             };
-            let dur_secs = item.duration.trim().parse::<u32>().ok().filter(|&d| d > 0);
-            let pop_votes = item
+            let duration_secs = item.duration.trim().parse::<u32>().ok().filter(|&d| d > 0);
+            let popularity_votes = item
                 .score100
                 .trim()
                 .parse::<u32>()
                 .unwrap_or(0)
                 .saturating_mul(25);
+            Some(MusicCandidateDraft {
+                external_id: ext_id,
+                title,
+                artists,
+                album,
+                duration_secs,
+                cover_url: upgrade_kuwo_cover(&item.web_albumpic_short, 500),
+                popularity_votes,
+                ..Default::default()
+            })
+        });
 
-            let score = score_music_candidate(
-                query,
-                &title,
-                &artists,
-                album_name.as_deref(),
-                None,
-                dur_secs,
-                pop_votes,
-            );
-
-            let mut sub = Vec::new();
-            if !artists.is_empty() {
-                sub.push(artists.join(" / "));
-            }
-            if let Some(ref a) = album_name {
-                sub.push(a.clone());
-            }
-            if let Some(ds) = dur_secs.and_then(format_duration_mmss) {
-                sub.push(ds);
-            }
-
-            scored.push((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "kuwo".to_string(),
-                    provider_name: "酷我音乐".to_string(),
-                    external_id: ext_id,
-                    target,
-                    title,
-                    subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                    year: None,
-                    summary: None,
-                    cover_url: upgrade_kuwo_cover(&item.web_albumpic_short, 500),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ));
-        }
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect())
+        Ok(rank_music_candidates(
+            "kuwo",
+            "酷我音乐",
+            target,
+            query,
+            drafts,
+            15,
+        ))
     }
 
     async fn fetch_detail(

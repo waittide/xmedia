@@ -8,8 +8,9 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_music_common::{
-    build_music_search_keyword, format_duration_mmss, normalize_lrc_and_extract_plain,
-    parse_epoch_ms_year_and_date, read_json_response, score_music_candidate, unescape_music_text,
+    MusicCandidateDraft, build_music_search_keyword, music_candidate_from_detail,
+    normalize_lrc_and_extract_plain, parse_epoch_ms_year_and_date, rank_music_candidates,
+    read_json_response, unescape_music_text,
 };
 use crate::infra::scrapers::cn_novel_common::{
     build_browser_http_client, extract_numeric_id_from_query, normalize_cover_url,
@@ -338,28 +339,9 @@ impl ScraperProviderPort for NeteaseMusicProvider {
         if let Some(direct_id) = extract_numeric_id_from_query(&query.keyword, url_markers)
             && (query.keyword.contains("163.com") || query.keyword.trim().len() >= 6)
             && let Ok(detail) = self.fetch_detail(&direct_id, target, "zh-CN", creds).await
-            && let Some(title) = detail.title
+            && let Some(cand) = music_candidate_from_detail("netease", "网易云音乐", target, detail)
         {
-            let mut sub = Vec::new();
-            if !detail.creators.is_empty() {
-                sub.push(detail.creators.join(" / "));
-            }
-            if !is_album && let Some(alb) = detail.series_or_album {
-                sub.push(alb);
-            }
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "netease".to_string(),
-                provider_name: "网易云音乐".to_string(),
-                external_id: detail.external_id,
-                target,
-                title,
-                subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: detail.synced_lyrics,
-                plain_lyrics: detail.plain_lyrics,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let search_kw = build_music_search_keyword(query);
@@ -399,76 +381,54 @@ impl ScraperProviderPort for NeteaseMusicProvider {
         };
 
         if is_album {
-            let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-            for (idx, alb) in result.albums.into_iter().enumerate() {
+            let drafts = result.albums.into_iter().filter_map(|alb| {
                 if alb.id <= 0 {
-                    continue;
+                    return None;
                 }
                 let title = strip_inline_html(&unescape_music_text(&alb.name));
-                if title.is_empty() {
-                    continue;
-                }
                 let artists = collect_ne_artists(&alb.artists, &[], alb.artist.as_ref());
                 let (year, _) = alb
                     .publish_time
                     .map(parse_epoch_ms_year_and_date)
                     .unwrap_or((None, None));
-                let score = score_music_candidate(
-                    query,
-                    &title,
-                    &artists,
-                    Some(&title),
+                let song_count = alb
+                    .size
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|&n| n > 0);
+                Some(MusicCandidateDraft {
+                    external_id: alb.id.to_string(),
+                    title,
+                    artists,
                     year,
-                    None,
-                    u32::try_from(alb.size.unwrap_or(0))
-                        .unwrap_or(0)
-                        .saturating_mul(15),
-                );
-                let mut sub = Vec::new();
-                if !artists.is_empty() {
-                    sub.push(artists.join(" / "));
-                }
-                if let Some(sz) = alb.size.filter(|&n| n > 0) {
-                    sub.push(format!("{sz} 首"));
-                }
-                scored.push((
-                    score,
-                    idx,
-                    ScrapeCandidate {
-                        provider_id: "netease".to_string(),
-                        provider_name: "网易云音乐".to_string(),
-                        external_id: alb.id.to_string(),
-                        target,
-                        title,
-                        subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                        year,
-                        summary: alb
-                            .company
-                            .as_deref()
-                            .map(strip_inline_html)
-                            .filter(|s| !s.is_empty()),
-                        cover_url: upgrade_netease_cover(alb.pic_url.as_deref(), 500),
-                        synced_lyrics: None,
-                        plain_lyrics: None,
-                    },
-                ));
-            }
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            return Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect());
+                    song_count,
+                    summary: alb
+                        .company
+                        .as_deref()
+                        .map(strip_inline_html)
+                        .filter(|s| !s.is_empty()),
+                    cover_url: upgrade_netease_cover(alb.pic_url.as_deref(), 500),
+                    popularity_votes: song_count.unwrap_or(0).saturating_mul(15),
+                    ..Default::default()
+                })
+            });
+            return Ok(rank_music_candidates(
+                "netease",
+                "网易云音乐",
+                target,
+                query,
+                drafts,
+                15,
+            ));
         }
 
-        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-        for (idx, song) in result.songs.into_iter().enumerate() {
+        let drafts = result.songs.into_iter().filter_map(|song| {
             if song.id <= 0 {
-                continue;
+                return None;
             }
             let title = strip_inline_html(&unescape_music_text(&song.name));
-            if title.is_empty() {
-                continue;
-            }
             let artists = collect_ne_artists(&song.ar, &song.artists, None);
             let alb = song.al.as_ref().or(song.album.as_ref());
-            let album_name = alb
+            let album = alb
                 .map(|a| strip_inline_html(&unescape_music_text(&a.name)))
                 .filter(|s| !s.is_empty());
             let (year, _) = song
@@ -477,55 +437,33 @@ impl ScraperProviderPort for NeteaseMusicProvider {
                 .or_else(|| alb.and_then(|a| a.publish_time).filter(|&t| t != 0))
                 .map(parse_epoch_ms_year_and_date)
                 .unwrap_or((None, None));
-            let dur_secs = song
+            let duration_secs = song
                 .dt
                 .or(song.duration)
                 .filter(|&ms| ms > 0)
                 .map(|ms| (ms / 1000) as u32);
-            let pop_votes = (song.pop.unwrap_or(0.0).max(0.0) as u32).saturating_mul(25);
-
-            let score = score_music_candidate(
-                query,
-                &title,
-                &artists,
-                album_name.as_deref(),
+            let popularity_votes = (song.pop.unwrap_or(0.0).max(0.0) as u32).saturating_mul(25);
+            Some(MusicCandidateDraft {
+                external_id: song.id.to_string(),
+                title,
+                artists,
+                album,
                 year,
-                dur_secs,
-                pop_votes,
-            );
+                duration_secs,
+                cover_url: upgrade_netease_cover(alb.and_then(|a| a.pic_url.as_deref()), 500),
+                popularity_votes,
+                ..Default::default()
+            })
+        });
 
-            let mut sub = Vec::new();
-            if !artists.is_empty() {
-                sub.push(artists.join(" / "));
-            }
-            if let Some(ref a) = album_name {
-                sub.push(a.clone());
-            }
-            if let Some(ds) = dur_secs.and_then(format_duration_mmss) {
-                sub.push(ds);
-            }
-
-            scored.push((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "netease".to_string(),
-                    provider_name: "网易云音乐".to_string(),
-                    external_id: song.id.to_string(),
-                    target,
-                    title,
-                    subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
-                    year,
-                    summary: None,
-                    cover_url: upgrade_netease_cover(alb.and_then(|a| a.pic_url.as_deref()), 500),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ));
-        }
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        Ok(scored.into_iter().take(15).map(|(_, _, c)| c).collect())
+        Ok(rank_music_candidates(
+            "netease",
+            "网易云音乐",
+            target,
+            query,
+            drafts,
+            15,
+        ))
     }
 
     async fn fetch_detail(
