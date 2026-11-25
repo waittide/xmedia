@@ -234,7 +234,7 @@ async fn comic_komga_archive_series_group_and_series_cover_without_polluting_cbz
             MediaMetadataPatch::Comic(ComicMetaPatch {
                 series: Some("不灭钻石".into()),
                 series_group: Some("JOJO的奇妙冒险".into()),
-                volume: Some(1),
+                volume: Some(1.0),
                 ..Default::default()
             }),
         )

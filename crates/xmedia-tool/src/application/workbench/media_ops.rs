@@ -116,7 +116,7 @@ impl MediaWorkbenchService {
         output_rel_path: &str,
         series: Option<String>,
         title: Option<String>,
-        volume: Option<i32>,
+        volume: Option<f64>,
     ) -> DomainResult<(MergeComicsReportDto, MediaFileDetail)> {
         let root = self.settings.find_root(root_id).await?;
         root.ensure_writable()?;
@@ -169,7 +169,7 @@ impl MediaWorkbenchService {
             let seq = input.start_index + idx as i32;
             let (number, volume) = match input.numbering_mode.as_str() {
                 "chapter" => (Some(format!("{seq:0width$}")), None),
-                "volume" => (None, Some(seq)),
+                "volume" => (None, Some(f64::from(seq))),
                 _ => (None, None),
             };
             let patch = MediaMetadataPatch::Comic(ComicMetaPatch {

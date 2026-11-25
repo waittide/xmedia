@@ -19,7 +19,8 @@ use crate::domain::media::ComicFileMeta;
 use crate::infra::atomic_fs::atomic_write_via_temp;
 use crate::infra::inspectors::book::attr_value;
 use crate::infra::inspectors::comic::{
-    is_image_entry, natural_sort_key, read_comic_meta, render_comic_info_xml_with_pages,
+    extract_existing_comic_info_bytes, is_image_entry, natural_sort_key, read_comic_meta,
+    render_comic_info_xml_preserving, render_comic_info_xml_with_pages,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +173,15 @@ fn is_cbz_or_zip(path: &Path) -> bool {
         .and_then(|s| s.to_str())
         .map(|s| matches!(s.to_ascii_lowercase().as_str(), "cbz" | "zip"))
         .unwrap_or(false)
+}
+
+fn is_junk_zip_entry(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with('/') || lower.contains("__macosx") {
+        return true;
+    }
+    let base = lower.rsplit('/').next().unwrap_or(&lower);
+    base == ".ds_store" || base == "thumbs.db" || base == "desktop.ini" || base.starts_with("._")
 }
 
 pub fn list_comic_pages(path: &Path) -> DomainResult<ComicPagesSnapshotDto> {
@@ -451,6 +461,7 @@ pub fn save_comic_pages(
 
     let before_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut meta = read_comic_meta(path)?;
+    let existing_comic_info = extract_existing_comic_info_bytes(path);
 
     let file = File::open(path)
         .map_err(|e| DomainError::Storage(format!("open comic archive failed: {e}")))?;
@@ -511,7 +522,16 @@ pub fn save_comic_pages(
         });
     }
 
-    let original_total_entries = archive.len();
+    let mut removed_junk_entries = 0usize;
+    for idx in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(idx)
+            && !entry.is_dir()
+            && let Ok(name_raw) = entry.name()
+            && is_junk_zip_entry(&name_raw)
+        {
+            removed_junk_entries += 1;
+        }
+    }
     drop(archive);
 
     meta.page_count = page_payloads.len() as u32;
@@ -527,14 +547,39 @@ pub fn save_comic_pages(
         })
         .collect();
     let pages_xml = render_pages_xml_block(&xml_page_meta);
-    let comic_info_xml = render_comic_info_xml_with_pages(&meta, Some(&pages_xml));
+    let comic_info_xml =
+        render_comic_info_xml_preserving(&meta, existing_comic_info.as_deref(), Some(&pages_xml));
+
+    let reserved_names: std::collections::HashSet<String> = page_payloads
+        .iter()
+        .map(|p| p.target_name.to_ascii_lowercase())
+        .chain(std::iter::once("comicinfo.xml".to_string()))
+        .collect();
 
     atomic_write_via_temp(path, |tmp| {
+        let src_file = File::open(path)
+            .map_err(|e| DomainError::Storage(format!("reopen source cbz failed: {e}")))?;
+        let mut src_archive = ZipArchive::new(BufReader::new(src_file))
+            .map_err(|e| DomainError::Validation(format!("invalid comic archive: {e}")))?;
         let out = File::create(tmp)
             .map_err(|e| DomainError::Storage(format!("create temp cbz failed: {e}")))?;
         let mut writer = ZipWriter::new(BufWriter::new(out));
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        let mut preserved_mimetype = false;
+        if let Ok(mut mt_entry) = src_archive.by_name("mimetype") {
+            let mut mt_bytes = Vec::new();
+            if mt_entry.read_to_end(&mut mt_bytes).is_ok() {
+                writer
+                    .start_file("mimetype", stored)
+                    .map_err(|e| DomainError::Storage(format!("write mimetype failed: {e}")))?;
+                writer
+                    .write_all(&mt_bytes)
+                    .map_err(|e| DomainError::Storage(format!("write mimetype failed: {e}")))?;
+                preserved_mimetype = true;
+            }
+        }
 
         writer
             .start_file("ComicInfo.xml", deflated)
@@ -552,6 +597,31 @@ pub fn save_comic_pages(
                 .map_err(|e| DomainError::Storage(format!("write page bytes failed: {e}")))?;
         }
 
+        // Preserve non-image, non-ComicInfo, non-junk companion files inside the archive
+        for idx in 0..src_archive.len() {
+            let entry = src_archive
+                .by_index(idx)
+                .map_err(|e| DomainError::Storage(format!("read cbz entry failed: {e}")))?;
+            let Ok(name_raw) = entry.name() else {
+                continue;
+            };
+            let name = name_raw.to_string();
+            let lower = name.to_ascii_lowercase();
+            if entry.is_dir()
+                || (preserved_mimetype && name == "mimetype")
+                || is_image_entry(&name)
+                || is_junk_zip_entry(&name)
+                || lower == "comicinfo.xml"
+                || lower.ends_with("/comicinfo.xml")
+                || reserved_names.contains(&lower)
+            {
+                continue;
+            }
+            writer.raw_copy_file(entry).map_err(|e| {
+                DomainError::Storage(format!("copy non-image cbz entry failed: {e}"))
+            })?;
+        }
+
         writer
             .finish()
             .map_err(|e| DomainError::Storage(format!("finish cbz failed: {e}")))?;
@@ -559,7 +629,6 @@ pub fn save_comic_pages(
     })?;
 
     let after_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let removed_junk_entries = original_total_entries.saturating_sub(page_payloads.len() + 1);
 
     Ok(ComicOptimizeReportDto {
         before_bytes,
@@ -595,7 +664,7 @@ pub fn merge_comics_to_cbz(
     output_rel_path: String,
     series: Option<String>,
     title: Option<String>,
-    volume: Option<i32>,
+    volume: Option<f64>,
 ) -> DomainResult<MergeComicsReportDto> {
     if sources.len() < 2 {
         return Err(DomainError::Validation(
@@ -771,6 +840,8 @@ mod tests {
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         zw.start_file("__MACOSX/._junk", stored).unwrap();
         zw.write_all(b"junk").unwrap();
+        zw.start_file("credits.txt", stored).unwrap();
+        zw.write_all(b"Translation notes").unwrap();
         for (name, bytes) in pages {
             zw.start_file(*name, stored).unwrap();
             zw.write_all(bytes).unwrap();
@@ -823,6 +894,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.page_count, 2);
+        assert_eq!(report.removed_junk_entries, 1);
+        {
+            let rf = File::open(&cbz1).unwrap();
+            let mut za = ZipArchive::new(rf).unwrap();
+            assert!(za.by_name("__MACOSX/._junk").is_err());
+            let mut notes = String::new();
+            za.by_name("credits.txt")
+                .unwrap()
+                .read_to_string(&mut notes)
+                .unwrap();
+            assert_eq!(notes, "Translation notes");
+        }
 
         let snap2 = list_comic_pages(&cbz1).unwrap();
         assert_eq!(snap2.total_pages, 2);
@@ -837,12 +920,13 @@ mod tests {
             "omnibus.cbz".into(),
             Some("测试漫画".into()),
             Some("合订本".into()),
-            Some(1),
+            Some(1.5),
         )
         .unwrap();
         assert_eq!(merge_rep.total_pages, 3);
         let merged_meta = read_comic_meta(&merged).unwrap();
         assert_eq!(merged_meta.series.as_deref(), Some("测试漫画"));
+        assert_eq!(merged_meta.volume, Some(1.5));
         assert_eq!(merged_meta.page_count, 3);
     }
 }

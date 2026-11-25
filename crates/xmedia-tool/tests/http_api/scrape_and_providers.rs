@@ -48,7 +48,7 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
             MediaMetadataPatch::Comic(ComicMetaPatch {
                 title: Some("第一话 犬与电锯".into()),
                 number: Some("1".into()),
-                volume: Some(1),
+                volume: Some(1.0),
                 ..Default::default()
             }),
         )
@@ -79,7 +79,7 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
         assert_eq!(c.series.as_deref(), Some("链锯人"));
         assert_eq!(c.title.as_deref(), Some("第一话 犬与电锯"));
         assert_eq!(c.number.as_deref(), Some("1"));
-        assert_eq!(c.volume, Some(1));
+        assert_eq!(c.volume, Some(1.0));
     } else {
         panic!("expected comic payload");
     }

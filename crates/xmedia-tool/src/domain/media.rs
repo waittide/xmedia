@@ -88,6 +88,33 @@ pub struct BookFileMeta {
     pub writable: bool,
 }
 
+pub fn format_comic_volume(vol: f64) -> String {
+    if !vol.is_finite() {
+        return String::new();
+    }
+    if (vol - vol.round()).abs() < 1e-9 {
+        format!("{}", vol.round() as i64)
+    } else {
+        vol.to_string()
+    }
+}
+
+fn serialize_clean_opt_f64<S>(val: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match val {
+        Some(v) if v.is_finite() => {
+            if (*v - v.round()).abs() < 1e-9 && *v >= (i64::MIN as f64) && *v <= (i64::MAX as f64) {
+                serializer.serialize_some(&(v.round() as i64))
+            } else {
+                serializer.serialize_some(v)
+            }
+        }
+        _ => serializer.serialize_none(),
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComicFileMeta {
     pub format: String,
@@ -96,7 +123,8 @@ pub struct ComicFileMeta {
     pub series_group: Option<String>,
     pub title: Option<String>,
     pub number: Option<String>,
-    pub volume: Option<i32>,
+    #[serde(serialize_with = "serialize_clean_opt_f64")]
+    pub volume: Option<f64>,
     pub summary: Option<String>,
     pub writers: Vec<String>,
     pub pencillers: Vec<String>,
@@ -230,7 +258,8 @@ pub struct ComicMetaPatch {
     pub series_group: Option<String>,
     pub title: Option<String>,
     pub number: Option<String>,
-    pub volume: Option<i32>,
+    #[serde(serialize_with = "serialize_clean_opt_f64")]
+    pub volume: Option<f64>,
     pub summary: Option<String>,
     pub writers: Option<Vec<String>>,
     pub pencillers: Option<Vec<String>>,

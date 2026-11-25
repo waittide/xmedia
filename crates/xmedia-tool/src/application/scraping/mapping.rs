@@ -401,7 +401,7 @@ pub(super) fn map_scraped_to_patch(
                 title: is_chapter_scrape.then(|| s.title.clone()).flatten(),
                 number: s.track_or_episode_number.map(|n| n.to_string()),
                 volume: is_chapter_scrape
-                    .then(|| s.disc_or_season_number.and_then(|v| i32::try_from(v).ok()))
+                    .then(|| s.disc_or_season_number.map(f64::from))
                     .flatten(),
                 summary: s.summary.clone(),
                 writers: (!s.creators.is_empty()).then(|| s.creators.clone()),

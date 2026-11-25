@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::domain::media::MediaMetadataPayload;
+use crate::domain::media::{MediaMetadataPayload, format_comic_volume};
 use crate::domain::workspace::sanitize_filename_component;
 
 static RE_UNWRAP_BLOCK: LazyLock<Regex> =
@@ -104,7 +104,7 @@ fn build_token_map(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .unwrap_or("");
-            let raw_volume = c.volume.map(|v| v.to_string()).unwrap_or_default();
+            let raw_volume = c.volume.map(format_comic_volume).unwrap_or_default();
             let clean_title = c
                 .title
                 .as_deref()
@@ -486,7 +486,7 @@ mod tests {
         let vol_only = MediaMetadataPayload::Comic(ComicFileMeta {
             format: "cbz".into(),
             series: Some("葬送的芙莉莲".into()),
-            volume: Some(1),
+            volume: Some(1.0),
             number: None,
             has_comic_info_xml: true,
             ..Default::default()
@@ -524,7 +524,7 @@ mod tests {
             format: "cbz".into(),
             series: Some("JOJO的奇妙冒险 第4部 不灭钻石".into()),
             series_group: Some("JOJO的奇妙冒险".into()),
-            volume: Some(2),
+            volume: Some(2.0),
             number: Some("14".into()),
             title: Some("虹村兄弟".into()),
             has_comic_info_xml: true,

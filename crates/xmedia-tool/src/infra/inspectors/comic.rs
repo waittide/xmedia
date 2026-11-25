@@ -17,6 +17,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::domain::media::{
     ComicFileMeta, ComicMetaPatch, CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload,
+    format_comic_volume,
 };
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::atomic_write_via_temp;
@@ -248,7 +249,10 @@ fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) {
                             "title" => meta.title = Some(trimmed.to_string()),
                             "number" => meta.number = Some(trimmed.to_string()),
                             "volume" => {
-                                meta.volume = trimmed.parse::<i32>().ok().filter(|&v| v >= 0)
+                                meta.volume = trimmed
+                                    .parse::<f64>()
+                                    .ok()
+                                    .filter(|v| v.is_finite() && *v >= 0.0)
                             }
                             "summary" => meta.summary = Some(trimmed.to_string()),
                             "writer" => meta.writers = split_csv(trimmed),
@@ -302,15 +306,143 @@ fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) {
     }
 }
 
-pub(crate) fn render_comic_info_xml(meta: &ComicFileMeta) -> String {
-    render_comic_info_xml_with_pages(meta, None)
+#[derive(Default)]
+struct PreservedComicInfoNodes {
+    pages_xml: Option<String>,
+    non_webtoon_format_xml: Option<String>,
+    extra_elements: Vec<String>,
+}
+
+fn is_managed_comic_info_tag(tag_lower: &str) -> bool {
+    matches!(
+        tag_lower,
+        "series"
+            | "seriesgroup"
+            | "title"
+            | "number"
+            | "volume"
+            | "summary"
+            | "writer"
+            | "penciller"
+            | "artist"
+            | "publisher"
+            | "genre"
+            | "tags"
+            | "year"
+            | "languageiso"
+            | "pagecount"
+            | "manga"
+            | "format"
+            | "pages"
+    )
+}
+
+fn extract_preserved_comic_info_nodes(xml_bytes: &[u8]) -> PreservedComicInfoNodes {
+    let xml_str = String::from_utf8_lossy(xml_bytes);
+    let mut reader = Reader::from_str(&xml_str);
+    reader.config_mut().trim_text(false);
+
+    let mut out = PreservedComicInfoNodes::default();
+    let mut depth = 0usize;
+    let mut top_elem_start: Option<(String, usize)> = None;
+    let mut top_text = String::new();
+
+    loop {
+        let pos_before = reader.buffer_position() as usize;
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                let name = e.local_name().as_ref().to_ascii_lowercase();
+                if depth == 1 {
+                    top_elem_start = Some((name, pos_before));
+                    top_text.clear();
+                }
+                depth += 1;
+            }
+            Ok(Event::Empty(ref e)) => {
+                if depth == 1 {
+                    let pos_after = reader.buffer_position() as usize;
+                    let name = e.local_name().as_ref().to_ascii_lowercase();
+                    if let Some(raw_slice) = xml_str.get(pos_before..pos_after) {
+                        if name == "pages" {
+                            out.pages_xml = Some(format!("  {}\n", raw_slice.trim()));
+                        } else if !is_managed_comic_info_tag(&name) {
+                            out.extra_elements.push(format!("  {}\n", raw_slice.trim()));
+                        }
+                    }
+                }
+            }
+            Ok(Event::Text(ref t)) if depth == 2 && top_elem_start.is_some() => {
+                top_text.push_str(&t.xml10_content());
+            }
+            Ok(Event::End(_)) => {
+                depth = depth.saturating_sub(1);
+                if depth == 1
+                    && let Some((name, start_idx)) = top_elem_start.take()
+                {
+                    let pos_after = reader.buffer_position() as usize;
+                    if let Some(raw_slice) = xml_str.get(start_idx..pos_after) {
+                        let formatted = format!("  {}\n", raw_slice.trim());
+                        if name == "pages" {
+                            out.pages_xml = Some(formatted);
+                        } else if name == "format" {
+                            let val_low = top_text.trim().to_ascii_lowercase();
+                            if !val_low.is_empty()
+                                && !val_low.contains("webtoon")
+                                && !top_text.contains("条漫")
+                            {
+                                out.non_webtoon_format_xml = Some(formatted);
+                            }
+                        } else if !is_managed_comic_info_tag(&name) {
+                            out.extra_elements.push(formatted);
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    out
+}
+
+pub(crate) fn extract_existing_comic_info_bytes(path: &Path) -> Option<Vec<u8>> {
+    let file = File::open(path).ok()?;
+    let mut archive = ZipArchive::new(BufReader::new(file)).ok()?;
+    for idx in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(idx) else {
+            continue;
+        };
+        let Ok(name_raw) = entry.name() else {
+            continue;
+        };
+        let lower = name_raw.to_ascii_lowercase();
+        if lower == "comicinfo.xml" || lower.ends_with("/comicinfo.xml") {
+            let mut buf = Vec::new();
+            if entry.read_to_end(&mut buf).is_ok() {
+                return Some(buf);
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn render_comic_info_xml_with_pages(
     meta: &ComicFileMeta,
     pages_xml: Option<&str>,
 ) -> String {
-    let mut xml = String::with_capacity(768);
+    render_comic_info_xml_preserving(meta, None, pages_xml)
+}
+
+pub(crate) fn render_comic_info_xml_preserving(
+    meta: &ComicFileMeta,
+    existing_xml: Option<&[u8]>,
+    override_pages_xml: Option<&str>,
+) -> String {
+    let preserved = existing_xml
+        .map(extract_preserved_comic_info_nodes)
+        .unwrap_or_default();
+    let mut xml = String::with_capacity(1024);
     xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     xml.push_str("<ComicInfo xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n");
 
@@ -338,7 +470,10 @@ pub(crate) fn render_comic_info_xml_with_pages(
         xml.push_str(&format!("  <Number>{}</Number>\n", escape(n.trim())));
     }
     if let Some(v) = meta.volume {
-        xml.push_str(&format!("  <Volume>{v}</Volume>\n"));
+        let vol_str = format_comic_volume(v);
+        if !vol_str.is_empty() {
+            xml.push_str(&format!("  <Volume>{}</Volume>\n", escape(&vol_str)));
+        }
     }
     if let Some(ref sum) = meta.summary
         && !sum.trim().is_empty()
@@ -397,8 +532,14 @@ pub(crate) fn render_comic_info_xml_with_pages(
     xml.push_str(&format!("  <Manga>{manga_tag}</Manga>\n"));
     if meta.reading_direction == "webtoon" {
         xml.push_str("  <Format>Webtoon</Format>\n");
+    } else if let Some(ref fmt_xml) = preserved.non_webtoon_format_xml {
+        xml.push_str(fmt_xml);
     }
-    if let Some(pages_block) = pages_xml
+    for extra in &preserved.extra_elements {
+        xml.push_str(extra);
+    }
+    let effective_pages = override_pages_xml.or(preserved.pages_xml.as_deref());
+    if let Some(pages_block) = effective_pages
         && !pages_block.trim().is_empty()
     {
         xml.push_str(pages_block);
@@ -468,8 +609,10 @@ fn find_series_cover_path(comic_path: &Path) -> Option<PathBuf> {
 static RE_COMIC_LEADING_BRACKET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\[[^\]]*\]|\([^)]*\)|\s)+").expect("valid bracket regex"));
 static RE_COMIC_VOL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:第\s*0*(\d+)\s*[卷册]|(?:^|[\s_\-\.\[\(])(?:vol\.?|v)\s*0*(\d+))")
-        .expect("valid vol regex")
+    Regex::new(
+        r"(?i)(?:第\s*0*(\d+(?:\.\d+)?)\s*[卷册]|(?:^|[\s_\-\.\[\(])(?:vol\.?|v)\s*0*(\d+(?:\.\d+)?))",
+    )
+    .expect("valid vol regex")
 });
 static RE_COMIC_CH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -481,7 +624,7 @@ static RE_COMIC_CH: LazyLock<Regex> = LazyLock::new(|| {
 /// Infers `(series, number, volume, optional_chapter_title)` from a comic filename stem and non-generic parent folder.
 pub(crate) fn guess_comic_details(
     comic_path: &Path,
-) -> (Option<String>, Option<String>, Option<i32>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<f64>, Option<String>) {
     let raw_stem = comic_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -496,7 +639,7 @@ pub(crate) fn guess_comic_details(
 
     let mut cut_idx = cleaned_stem.len();
     let mut matched_end = 0usize;
-    let mut volume: Option<i32> = None;
+    let mut volume: Option<f64> = None;
     let mut number: Option<String> = None;
 
     if let Some(m) = RE_COMIC_VOL.captures(&cleaned_stem) {
@@ -506,7 +649,8 @@ pub(crate) fn guess_comic_details(
         volume = m
             .get(1)
             .or_else(|| m.get(2))
-            .and_then(|g| g.as_str().parse::<i32>().ok());
+            .and_then(|g| g.as_str().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0);
     }
     if let Some(m) = RE_COMIC_CH.captures(&cleaned_stem) {
         let full = m.get(0).expect("full match");
@@ -567,7 +711,7 @@ pub(crate) fn guess_comic_details(
 #[cfg(test)]
 pub(crate) fn guess_comic_from_filename(
     comic_path: &Path,
-) -> (Option<String>, Option<String>, Option<i32>) {
+) -> (Option<String>, Option<String>, Option<f64>) {
     let (series, number, volume, _) = guess_comic_details(comic_path);
     (series, number, volume)
 }
@@ -813,8 +957,8 @@ impl MediaInspectorPort for CbzComicInspector {
             if let Some(num) = cp_cloned.number {
                 meta.number = (!num.trim().is_empty()).then(|| num.trim().to_string());
             }
-            if cp_cloned.volume.is_some() {
-                meta.volume = cp_cloned.volume.filter(|&v| v >= 0);
+            if let Some(vol) = cp_cloned.volume {
+                meta.volume = (vol.is_finite() && vol >= 0.0).then_some(vol);
             }
             if let Some(sum) = cp_cloned.summary {
                 meta.summary = (!sum.trim().is_empty()).then(|| sum.trim().to_string());
@@ -862,7 +1006,8 @@ impl MediaInspectorPort for CbzComicInspector {
                 meta.reading_direction = dir.trim().to_ascii_lowercase();
             }
 
-            let xml = render_comic_info_xml(&meta);
+            let existing_xml = extract_existing_comic_info_bytes(&p);
+            let xml = render_comic_info_xml_preserving(&meta, existing_xml.as_deref(), None);
             rewrite_zip_with_replacements(
                 &p,
                 vec![("ComicInfo.xml".to_string(), xml.into_bytes())],
@@ -1001,7 +1146,7 @@ mod tests {
             "/data/samples/comic/[九井谅子] 迷宫饭 Vol.02 Ch.14.cbz",
         ));
         assert_eq!(series2.as_deref(), Some("迷宫饭"));
-        assert_eq!(volume2, Some(2));
+        assert_eq!(volume2, Some(2.0));
         assert_eq!(number2.as_deref(), Some("14"));
 
         // Bare chapter filename inside a dedicated series directory uses that series directory
@@ -1085,5 +1230,90 @@ mod tests {
         let first = za.by_index(0).unwrap();
         assert_eq!(first.name().unwrap(), "mimetype");
         assert_eq!(first.compression(), CompressionMethod::Stored);
+    }
+
+    #[tokio::test]
+    async fn write_metadata_preserves_pages_extended_comicinfo_elements_and_fractional_volume() {
+        use std::io::{Read, Write};
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
+        use super::CbzComicInspector;
+        use crate::domain::media::{ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload};
+        use crate::domain::ports::MediaInspectorPort;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cbz_path = tmp.path().join("frieren_v1.5.cbz");
+        let initial_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<ComicInfo>
+  <Series>Old Series</Series>
+  <Volume>1.5</Volume>
+  <Count>12</Count>
+  <Month>9</Month>
+  <Day>29</Day>
+  <CoverArtist>Abe Tsukasa</CoverArtist>
+  <Colorist>Color Studio</Colorist>
+  <Inker>Ink Person</Inker>
+  <Letterer>Letter Person</Letterer>
+  <Characters>Frieren, Fern</Characters>
+  <AgeRating>Teen</AgeRating>
+  <Web>https://example.com/frieren</Web>
+  <Pages>
+    <Page Image="0" Type="FrontCover" ImageWidth="800" ImageHeight="1200" />
+    <Page Image="1" DoublePage="true" ImageWidth="1600" ImageHeight="1200" />
+  </Pages>
+</ComicInfo>"#;
+        {
+            let f = std::fs::File::create(&cbz_path).unwrap();
+            let mut zw = ZipWriter::new(f);
+            let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            zw.start_file("001.png", stored).unwrap();
+            zw.write_all(b"\x89PNG\r\n\x1a\nfake1").unwrap();
+            zw.start_file("002.png", stored).unwrap();
+            zw.write_all(b"\x89PNG\r\n\x1a\nfake2").unwrap();
+            zw.start_file("ComicInfo.xml", stored).unwrap();
+            zw.write_all(initial_xml.as_bytes()).unwrap();
+            zw.finish().unwrap();
+        }
+
+        let inspector = CbzComicInspector;
+        let updated = inspector
+            .write_metadata(
+                &cbz_path,
+                &MediaMetadataPatch::Comic(ComicMetaPatch {
+                    series: Some("葬送的芙莉莲".into()),
+                    title: Some("番外篇".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let MediaMetadataPayload::Comic(c) = updated else {
+            panic!("expected comic payload");
+        };
+        assert_eq!(c.series.as_deref(), Some("葬送的芙莉莲"));
+        assert_eq!(c.volume, Some(1.5));
+
+        let rf = std::fs::File::open(&cbz_path).unwrap();
+        let mut za = ZipArchive::new(rf).unwrap();
+        let mut out_xml = String::new();
+        za.by_name("ComicInfo.xml")
+            .unwrap()
+            .read_to_string(&mut out_xml)
+            .unwrap();
+
+        assert!(out_xml.contains("<Volume>1.5</Volume>"));
+        assert!(out_xml.contains("<Count>12</Count>"));
+        assert!(out_xml.contains("<Month>9</Month>"));
+        assert!(out_xml.contains("<Day>29</Day>"));
+        assert!(out_xml.contains("<CoverArtist>Abe Tsukasa</CoverArtist>"));
+        assert!(out_xml.contains("<Colorist>Color Studio</Colorist>"));
+        assert!(out_xml.contains("<Inker>Ink Person</Inker>"));
+        assert!(out_xml.contains("<Letterer>Letter Person</Letterer>"));
+        assert!(out_xml.contains("<Characters>Frieren, Fern</Characters>"));
+        assert!(out_xml.contains("<AgeRating>Teen</AgeRating>"));
+        assert!(out_xml.contains("<Web>https://example.com/frieren</Web>"));
+        assert!(out_xml.contains("<Pages>"));
+        assert!(out_xml.contains("DoublePage=\"true\""));
     }
 }

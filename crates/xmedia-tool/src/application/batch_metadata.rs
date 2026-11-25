@@ -131,7 +131,7 @@ pub fn payload_to_restore_patch(payload: &MediaMetadataPayload) -> MediaMetadata
             series_group: Some(c.series_group.clone().unwrap_or_default()),
             title: Some(c.title.clone().unwrap_or_default()),
             number: Some(c.number.clone().unwrap_or_default()),
-            volume: Some(c.volume.unwrap_or(-1)),
+            volume: Some(c.volume.unwrap_or(-1.0)),
             summary: Some(c.summary.clone().unwrap_or_default()),
             writers: Some(c.writers.clone()),
             pencillers: Some(c.pencillers.clone()),

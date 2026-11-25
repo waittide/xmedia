@@ -132,7 +132,7 @@ struct MergeComicsRequest {
     output_rel_path: String,
     series: Option<String>,
     title: Option<String>,
-    volume: Option<i32>,
+    volume: Option<f64>,
 }
 
 #[derive(Serialize)]
