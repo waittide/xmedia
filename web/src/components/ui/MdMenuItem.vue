@@ -13,6 +13,8 @@ const props = withDefaults(
     destructive?: boolean
     disabled?: boolean
     to?: RouteLocationRaw
+    href?: string
+    download?: string
     keepOpen?: boolean
   }>(),
   {
@@ -23,6 +25,8 @@ const props = withDefaults(
     destructive: false,
     disabled: false,
     to: undefined,
+    href: undefined,
+    download: undefined,
     keepOpen: false,
   },
 )
@@ -64,25 +68,36 @@ function handleClick(ev: MouseEvent): void {
     menuCtx?.close()
   }
 }
-const isRouterLink = computed(() => Boolean(props.to && !props.disabled))
+const rootComponent = computed(() => {
+  if (props.to && !props.disabled) return RouterLink
+  if (props.href && !props.disabled) return 'a'
+  return 'button'
+})
 
-const rootAttrs = computed(() =>
-  isRouterLink.value
-    ? { to: props.to }
-    : {
-        type: 'button',
-        disabled: props.disabled,
-        'aria-disabled': props.disabled ? 'true' : undefined,
-      },
-)
+const rootAttrs = computed(() => {
+  if (props.to && !props.disabled) {
+    return { to: props.to }
+  }
+  if (props.href && !props.disabled) {
+    return {
+      href: props.href,
+      download: props.download,
+    }
+  }
+  return {
+    type: 'button',
+    disabled: props.disabled,
+    'aria-disabled': props.disabled ? 'true' : undefined,
+  }
+})
 </script>
 
 <template>
   <component
-    :is="isRouterLink ? RouterLink : 'button'"
+    :is="rootComponent"
     v-bind="rootAttrs"
     role="menuitem"
-    class="md-state text-label-large flex h-12 w-full items-center gap-3 rounded-corner-md px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
+    class="md-state text-label-large flex h-12 w-full items-center gap-3 px-3 text-left select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
     :class="toneClass"
     @click="handleClick"
   >

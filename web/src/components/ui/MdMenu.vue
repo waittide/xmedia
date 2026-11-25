@@ -12,6 +12,7 @@ const props = withDefaults(
     minWidth?: number
     maxWidth?: number
     anchorEl?: HTMLElement | null
+    anchorPos?: { top: number; left: number } | null
     teleportTo?: string | HTMLElement | null
     ariaLabel?: string
   }>(),
@@ -21,6 +22,7 @@ const props = withDefaults(
     minWidth: 180,
     maxWidth: 280,
     anchorEl: null,
+    anchorPos: null,
     teleportTo: null,
     ariaLabel: undefined,
   },
@@ -106,14 +108,36 @@ function getMenuItems(): HTMLElement[] {
 
 function updatePosition(): void {
   if (!isOpen.value || typeof window === 'undefined') return
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const margin = 8
+  const gap = 4
+
+  if (props.anchorPos) {
+    const measuredW = menuRef.value?.offsetWidth || props.minWidth
+    const measuredH = menuRef.value?.offsetHeight || 220
+    const width = Math.min(
+      Math.max(measuredW, props.minWidth),
+      Math.min(props.maxWidth, vw - margin * 2),
+    )
+    const left = Math.max(margin, Math.min(props.anchorPos.left, vw - width - margin))
+    const top = Math.max(margin, Math.min(props.anchorPos.top, vh - Math.min(measuredH, vh - margin * 2) - margin))
+    const maxHeight = Math.max(120, Math.floor(vh - top - margin))
+    menuStyle.value = {
+      position: 'fixed',
+      left: `${Math.round(left)}px`,
+      top: `${Math.round(top)}px`,
+      minWidth: `${Math.round(Math.min(props.minWidth, vw - margin * 2))}px`,
+      maxWidth: `${Math.round(Math.min(props.maxWidth, vw - margin * 2))}px`,
+      maxHeight: `${maxHeight}px`,
+    }
+    return
+  }
+
   const anchor = getAnchorElement()
   if (!anchor) return
 
   const rect = anchor.getBoundingClientRect()
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  const margin = 8
-  const gap = 6
 
   const measuredW = menuRef.value?.offsetWidth || Math.max(rect.width, props.minWidth)
   const measuredH = menuRef.value?.offsetHeight || 200
@@ -257,7 +281,7 @@ defineExpose({ open: () => setOpen(true), close, toggle, updatePosition })
         tabindex="-1"
         :aria-label="ariaLabel"
         :style="menuStyle"
-        class="z-[var(--z-popover)] overflow-y-auto rounded-corner-lg bg-surface-container p-1.5 text-on-surface shadow-elevation-2 outline-none"
+        class="z-[var(--z-popover)] overflow-y-auto rounded-corner-xs bg-surface-container py-2 text-on-surface shadow-elevation-2 outline-none"
         @keydown="onMenuKeydown"
       >
         <slot :close="() => close(true)" />

@@ -105,9 +105,9 @@ function updatePosition(): void {
   const rect = el.getBoundingClientRect()
   const viewportH = window.innerHeight
   const viewportW = window.innerWidth
-  const estimatedHeight = Math.min(
-    280,
-    filteredOptions.value.length * 40 + (showSearchBox.value ? 52 : 12),
+    const estimatedHeight = Math.min(
+    296,
+    filteredOptions.value.length * 48 + (showSearchBox.value ? 52 : 16),
   )
   const openUpward =
     rect.bottom + estimatedHeight + 12 > viewportH && rect.top > estimatedHeight
@@ -282,12 +282,12 @@ onBeforeUnmount(unbindGlobalListeners)
         ref="menuRef"
         role="listbox"
         :style="menuStyle"
-        class="z-[var(--z-popover)] overflow-hidden rounded-corner-lg bg-surface-container p-1.5 text-on-surface shadow-elevation-2"
+        class="z-[var(--z-popover)] overflow-hidden rounded-corner-xs bg-surface-container py-2 text-on-surface shadow-elevation-2"
         @keydown="onMenuKeydown"
       >
-        <div v-if="showSearchBox" class="relative mb-1.5 px-0.5 pt-0.5">
+        <div v-if="showSearchBox" class="relative px-3 pb-2">
           <LuSearch
-            class="pointer-events-none absolute top-1/2 left-3.5 h-3.5 w-3.5 -translate-y-1/2 text-on-surface-variant"
+            class="pointer-events-none absolute top-1/2 left-5.5 h-4 w-4 -translate-y-1/2 -mt-1 text-on-surface-variant"
             aria-hidden="true"
           />
           <input
@@ -295,11 +295,11 @@ onBeforeUnmount(unbindGlobalListeners)
             v-model="query"
             type="text"
             :placeholder="searchPlaceholder || t('common.filterPlaceholder')"
-            class="text-body-small h-8 w-full rounded-corner-sm border border-outline-variant bg-surface-container-lowest pr-2.5 pl-8 text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            class="text-base sm:text-body-small h-9 w-full rounded-corner-xs border border-outline bg-surface-container-lowest pr-2.5 pl-8 text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:border-primary focus:ring-1 focus:ring-inset focus:ring-primary"
           />
         </div>
 
-        <div class="max-h-60 space-y-0.5 overflow-y-auto">
+        <div class="max-h-60 overflow-y-auto">
           <button
             v-for="(opt, idx) in filteredOptions"
             :id="optionDomId(idx)"
@@ -307,7 +307,7 @@ onBeforeUnmount(unbindGlobalListeners)
             type="button"
             role="option"
             :aria-selected="opt.value === modelValue"
-            class="md-state text-body-medium flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 rounded-corner-md px-3 py-2 text-left"
+            class="md-state text-body-medium flex h-12 w-full cursor-pointer items-center justify-between gap-3 px-3 text-left"
             :class="[
               opt.value === modelValue
                 ? 'bg-secondary-container text-on-secondary-container'
