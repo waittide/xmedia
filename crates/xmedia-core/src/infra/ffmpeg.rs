@@ -3,6 +3,7 @@ use std::ffi::OsString;
 use std::path::Path;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::Stdio;
+use std::sync::Arc;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::sync::mpsc;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -102,18 +104,36 @@ pub struct ProbedMediaInfo {
     pub subtitle_streams: Vec<ProbedSubtitleStream>,
 }
 
+fn default_transcode_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().clamp(4, 16))
+        .unwrap_or(8)
+}
+
 #[derive(Clone)]
 pub struct FfmpegToolkit {
     ffmpeg_bin: String,
     ffprobe_bin: String,
+    transcode_semaphore: Arc<Semaphore>,
 }
 
 impl FfmpegToolkit {
     pub fn new(ffmpeg_bin: impl Into<String>, ffprobe_bin: impl Into<String>) -> Self {
+        let max_streams = default_transcode_concurrency();
         Self {
             ffmpeg_bin: ffmpeg_bin.into(),
             ffprobe_bin: ffprobe_bin.into(),
+            transcode_semaphore: Arc::new(Semaphore::new(max_streams)),
         }
+    }
+
+    pub fn with_max_concurrent_streams(mut self, max_streams: usize) -> Self {
+        self.transcode_semaphore = Arc::new(Semaphore::new(max_streams.max(1)));
+        self
+    }
+
+    pub fn available_stream_permits(&self) -> usize {
+        self.transcode_semaphore.available_permits()
     }
 
     pub fn from_ffmpeg_bin(ffmpeg_bin: impl Into<String>) -> Self {
@@ -430,6 +450,17 @@ impl FfmpegToolkit {
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
+            let permit = self
+                .transcode_semaphore
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| {
+                    DomainError::TooManyRequests(
+                        "too many concurrent media transcode streams; please try again shortly"
+                            .into(),
+                    )
+                })?;
+
             let mut cmd = Command::new(&self.ffmpeg_bin);
             cmd.kill_on_drop(true)
                 .stdin(Stdio::null())
@@ -453,6 +484,7 @@ impl FfmpegToolkit {
             let (tx, rx) = mpsc::channel::<DomainResult<Bytes>>(16);
 
             tokio::spawn(async move {
+                let _permit = permit;
                 const CHUNK_SIZE: usize = 32 * 1024;
                 let mut buf = BytesMut::with_capacity(CHUNK_SIZE);
                 loop {
@@ -464,6 +496,7 @@ impl FfmpegToolkit {
                         _ = tx.closed() => {
                             debug!("client disconnected while waiting on ffmpeg stdout, terminating process");
                             let _ = child.kill().await;
+                            let _ = child.wait().await;
                             break;
                         }
                         res = stdout.read_buf(&mut buf) => res,
@@ -483,6 +516,7 @@ impl FfmpegToolkit {
                             if !send_ok {
                                 debug!("client disconnected, terminating ffmpeg process");
                                 let _ = child.kill().await;
+                                let _ = child.wait().await;
                                 break;
                             }
                         }
@@ -493,6 +527,7 @@ impl FfmpegToolkit {
                                 ))))
                                 .await;
                             let _ = child.kill().await;
+                            let _ = child.wait().await;
                             break;
                         }
                     }
@@ -550,4 +585,52 @@ struct RawFfprobeDisposition {
 struct RawFfprobeTags {
     language: Option<String>,
     title: Option<String>,
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_stdout_stream_bounds_concurrency_and_releases_permit_on_drop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fake_bin = tmp.path().join("fake-ffmpeg-stream.sh");
+        std::fs::write(&fake_bin, "#!/bin/sh\nprintf 'chunk'\nsleep 5\n").unwrap();
+        let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_bin, perms).unwrap();
+
+        let bin_str = fake_bin.to_string_lossy().to_string();
+        let toolkit = FfmpegToolkit::new(&bin_str, &bin_str).with_max_concurrent_streams(2);
+        assert_eq!(toolkit.available_stream_permits(), 2);
+
+        let stream1 = toolkit.spawn_stdout_stream(&[]).unwrap();
+        let stream2 = toolkit.spawn_stdout_stream(&[]).unwrap();
+        assert_eq!(toolkit.available_stream_permits(), 0);
+
+        // 3rd concurrent stream exceeds semaphore bound -> rejected with TooManyRequests
+        let err = match toolkit.spawn_stdout_stream(&[]) {
+            Ok(_) => panic!("expected 3rd stream to fail with TooManyRequests"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, DomainError::TooManyRequests(_)));
+
+        // Dropping stream1 kills the child process and releases its permit
+        drop(stream1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while toolkit.available_stream_permits() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("semaphore permit must be released promptly after stream drop");
+
+        let stream3 = toolkit.spawn_stdout_stream(&[]).unwrap();
+        assert_eq!(toolkit.available_stream_permits(), 0);
+        drop(stream2);
+        drop(stream3);
+    }
 }
