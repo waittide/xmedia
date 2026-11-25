@@ -9,44 +9,17 @@ import {
   type Ref,
 } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { requestJson, withAuthToken } from '@/api/client'
-import { api as bookApi } from '@/domains/book/api'
-import type { BookSummaryDto, PagedResult as BookPagedResult } from '@/domains/book/types'
-import type { SeriesSummaryDto } from '@/domains/comic/types'
-import { buildCoverUrl as buildMusicCoverUrl } from '@/domains/music/api'
-import type { SearchResultDto as MusicSearchResultDto } from '@/domains/music/types'
-import { buildPosterUrl as buildVideoPosterUrl } from '@/domains/video/api'
-import type { VideoSummaryDto } from '@/domains/video/types'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { MediaKind } from '@/types/api'
-import { itemRoute, libraryRoute, playRoute } from './routes'
-import type { MediaItemVM, OnlineQuickAction, SearchGroup } from './types'
+import { ALL_DOMAIN_KINDS, getDomainPlugin } from './domainRegistry'
+import { libraryRoute } from './routes'
+import type { OnlineQuickAction, SearchGroup } from './types'
 
 export const SEARCH_RECENT_STORAGE_KEY = 'xmedia.search.recent'
 const MAX_RECENT_SEARCHES = 8
 const DEFAULT_LIMIT_PER_GROUP = 5
 const DEFAULT_DEBOUNCE_MS = 250
-const ALL_DOMAINS: readonly MediaKind[] = ['book', 'comic', 'music', 'video']
-
-const ONLINE_SEARCH_I18N: Record<MediaKind, { titleKey: string; subtitleKey: string }> = {
-  book: {
-    titleKey: 'globalSearch.onlineBookSearchTitle',
-    subtitleKey: 'globalSearch.onlineBookSearchSubtitle',
-  },
-  comic: {
-    titleKey: 'globalSearch.onlineComicSearchTitle',
-    subtitleKey: 'globalSearch.onlineComicSearchSubtitle',
-  },
-  music: {
-    titleKey: 'globalSearch.onlineMusicSearchTitle',
-    subtitleKey: 'globalSearch.onlineMusicSearchSubtitle',
-  },
-  video: {
-    titleKey: 'globalSearch.onlineVideoSearchTitle',
-    subtitleKey: 'globalSearch.onlineVideoSearchSubtitle',
-  },
-}
 
 function readStoredRecent(): string[] {
   try {
@@ -65,7 +38,10 @@ function readStoredRecent(): string[] {
 
 function writeStoredRecent(list: readonly string[]): void {
   try {
-    localStorage.setItem(SEARCH_RECENT_STORAGE_KEY, JSON.stringify(list.slice(0, MAX_RECENT_SEARCHES)))
+    localStorage.setItem(
+      SEARCH_RECENT_STORAGE_KEY,
+      JSON.stringify(list.slice(0, MAX_RECENT_SEARCHES)),
+    )
   } catch {
     // ignore storage quota / private mode errors
   }
@@ -123,8 +99,8 @@ export function useUnifiedSearch(
   let activeController: AbortController | null = null
   let searchSeq = 0
 
-  const preferredDomain = computed<MediaKind>(
-    () => (options.preferDomain !== undefined ? toValue(options.preferDomain) : domainStore.activeDomain),
+  const preferredDomain = computed<MediaKind>(() =>
+    options.preferDomain !== undefined ? toValue(options.preferDomain) : domainStore.activeDomain,
   )
 
   const orderedEnabledDomains = computed<MediaKind[]>(() => {
@@ -132,7 +108,7 @@ export function useUnifiedSearch(
     const prefer = preferredDomain.value
     const ordered: MediaKind[] = []
     if (enabled.includes(prefer)) ordered.push(prefer)
-    for (const d of ALL_DOMAINS) {
+    for (const d of ALL_DOMAIN_KINDS) {
       if (enabled.includes(d) && !ordered.includes(d)) {
         ordered.push(d)
       }
@@ -160,17 +136,13 @@ export function useUnifiedSearch(
     return failed?.error ?? null
   })
 
-  /**
-   * Online search quick actions for all enabled domains.
-   * Returns `[]` when trimmed query is empty (satisfies E2E T1-F13-04 & T2-F13-03).
-   */
   const onlineActions = computed<OnlineQuickAction[]>(() => {
     const q = query.value.trim()
     if (!q) return []
     const actions: OnlineQuickAction[] = []
-    for (const domain of ALL_DOMAINS) {
+    for (const domain of ALL_DOMAIN_KINDS) {
       if (!authStore.hasModule(domain)) continue
-      const meta = ONLINE_SEARCH_I18N[domain]
+      const meta = getDomainPlugin(domain).onlineSearchI18n
       actions.push({
         domain,
         label: t(meta.titleKey, { query: q }),
@@ -220,119 +192,6 @@ export function useUnifiedSearch(
     writeStoredRecent([])
   }
 
-  async function searchLocalDomain(
-    domain: MediaKind,
-    q: string,
-    signal: AbortSignal,
-  ): Promise<{ items: MediaItemVM[]; total?: number }> {
-    if (domain === 'book') {
-      const sp = new URLSearchParams({
-        keyword: q,
-        page: '1',
-        page_size: String(limitPerGroup),
-      })
-      const res = await requestJson<BookPagedResult<BookSummaryDto>>(`/book/books?${sp.toString()}`, {
-        signal,
-      })
-      const items: MediaItemVM[] = res.items.slice(0, limitPerGroup).map((b) => {
-        const ref = { scope: 'local' as const, domain: 'book' as const, id: b.id }
-        return {
-          ref,
-          title: b.metadata.title || b.id,
-          subtitle: b.metadata.authors.join(', ') || b.format.toUpperCase(),
-          cover: b.has_cover ? bookApi.coverUrl(b.id, b.updated_at) : undefined,
-          badge: { sourceKind: b.online_tracking ? 'online' : 'local' },
-          to: itemRoute(ref),
-          playTo: playRoute(ref),
-        }
-      })
-      return { items, total: res.total }
-    }
-
-    if (domain === 'comic') {
-      const sp = new URLSearchParams({
-        search: q,
-        limit: String(limitPerGroup),
-      })
-      const res = await requestJson<SeriesSummaryDto[]>(`/comic/series?${sp.toString()}`, {
-        signal,
-      })
-      const items: MediaItemVM[] = res.slice(0, limitPerGroup).map((s) => {
-        const ref = { scope: 'local' as const, domain: 'comic' as const, id: s.id }
-        return {
-          ref,
-          title: s.title,
-          subtitle: s.writers?.join(', ') || `${s.chapter_count} ch`,
-          cover: s.cover_url ? withAuthToken(s.cover_url) : undefined,
-          badge: { sourceKind: 'local' },
-          to: itemRoute(ref),
-        }
-      })
-      return { items, total: res.length }
-    }
-
-    if (domain === 'music') {
-      const sp = new URLSearchParams({
-        q,
-        limit: String(limitPerGroup),
-      })
-      const res = await requestJson<MusicSearchResultDto>(`/music/search?${sp.toString()}`, {
-        signal,
-      })
-      const items: MediaItemVM[] = []
-      const albumCap = Math.min(2, limitPerGroup)
-      for (const alb of res.albums.slice(0, albumCap)) {
-        const ref = { scope: 'local' as const, domain: 'music' as const, id: alb.id }
-        items.push({
-          ref,
-          title: alb.title,
-          subtitle: alb.album_artist_name || t('app.domains.music'),
-          cover: buildMusicCoverUrl(alb.cover_key) ?? undefined,
-          badge: { sourceKind: 'local' },
-          to: itemRoute(ref),
-        })
-      }
-      const trackCap = Math.max(1, limitPerGroup - items.length)
-      for (const tr of res.tracks.slice(0, trackCap)) {
-        const ref = { scope: 'local' as const, domain: 'music' as const, id: tr.id }
-        items.push({
-          ref,
-          title: tr.title,
-          subtitle: [tr.artist_name, tr.album_title].filter(Boolean).join(' · ') || undefined,
-          cover: buildMusicCoverUrl(tr.cover_key) ?? undefined,
-          badge: { sourceKind: 'local' },
-          to: tr.album_id
-            ? itemRoute({ scope: 'local', domain: 'music', id: tr.album_id })
-            : libraryRoute('music', { view: 'tracks', q }),
-        })
-      }
-      return { items, total: res.albums.length + res.tracks.length }
-    }
-
-    // video
-    const sp = new URLSearchParams({
-      search: q,
-      limit: String(limitPerGroup),
-    })
-    const res = await requestJson<VideoSummaryDto[]>(`/video/videos?${sp.toString()}`, { signal })
-    const items: MediaItemVM[] = res.slice(0, limitPerGroup).map((v) => {
-      const ref = { scope: 'local' as const, domain: 'video' as const, id: v.id }
-      const to = v.show_id
-        ? itemRoute({ scope: 'local', domain: 'video', id: v.show_id })
-        : playRoute(ref)
-      return {
-        ref,
-        title: v.title,
-        subtitle: v.year ? String(v.year) : t('app.domains.video'),
-        cover: buildVideoPosterUrl(v.poster_key) ?? undefined,
-        badge: { sourceKind: 'local' },
-        to,
-        playTo: playRoute(ref),
-      }
-    })
-    return { items, total: res.length }
-  }
-
   function executeSearch(q: string): void {
     cancel()
     const trimmed = q.trim()
@@ -364,7 +223,12 @@ export function useUnifiedSearch(
     void Promise.all(
       domains.map(async (domain) => {
         try {
-          const res = await searchLocalDomain(domain, trimmed, signal)
+          const res = await getDomainPlugin(domain).searchLocal({
+            query: trimmed,
+            limit: limitPerGroup,
+            signal,
+            t: (key, named) => (named ? t(key, named) : t(key)),
+          })
           if (signal.aborted || seq !== searchSeq) return
           groupMap.value = {
             ...groupMap.value,

@@ -7,21 +7,11 @@ import {
   type MaybeRefOrGetter,
   type Ref,
 } from 'vue'
-import { withAuthToken } from '@/api/client'
-import { fetchHomeOverview, hasHomeOverviewAvailable } from '@/config/homeCache'
-import { api as bookApi } from '@/domains/book/api'
-import type { BookSummaryDto } from '@/domains/book/types'
-import { api as comicApi } from '@/domains/comic/api'
-import type { ContinueReadingItemDto, SeriesSummaryDto } from '@/domains/comic/types'
-import { api as musicApi, buildCoverUrl as buildMusicCoverUrl } from '@/domains/music/api'
-import type { AlbumDto, BookmarkDto, TrackDto } from '@/domains/music/types'
-import { api as videoApi, buildPosterUrl as buildVideoPosterUrl } from '@/domains/video/api'
-import type { ShowSummaryDto, VideoSummaryDto } from '@/domains/video/types'
 import type { MediaKind } from '@/types/api'
-import { itemRoute, libraryRoute, playRoute } from './routes'
+import { getDomainPlugin, type MergedShelfView } from './domainRegistry'
 import type { MediaItemVM, SourceScope } from './types'
 
-export type MergedShelfView = 'continue' | 'favorites'
+export type { MergedShelfView } from './domainRegistry'
 
 export interface UseMergedShelfOptions {
   limit?: number
@@ -59,254 +49,6 @@ export function parseTimestampMs(raw: number | string | null | undefined): numbe
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function mapBookToVM(book: BookSummaryDto, view: MergedShelfView): MediaItemVM {
-  const ref = { scope: 'local' as const, domain: 'book' as const, id: book.id }
-  const progressPercent =
-    book.progress && (book.progress.progress_percent > 0 || Boolean(book.progress.locator?.trim()))
-      ? Math.min(100, Math.max(0.01, book.progress.progress_percent))
-      : undefined
-  const ts =
-    view === 'continue'
-      ? parseTimestampMs(book.last_read_at ?? book.updated_at)
-      : parseTimestampMs(book.updated_at)
-
-  return {
-    ref,
-    title: book.metadata.title || book.id,
-    subtitle: book.metadata.authors.join(', ') || book.format.toUpperCase(),
-    cover: book.has_cover ? bookApi.coverUrl(book.id, book.updated_at) : undefined,
-    badge: {
-      sourceKind: book.online_tracking ? 'online' : 'local',
-      progressPercent,
-    },
-    to: itemRoute(ref),
-    playTo: playRoute(ref, {
-      unitIndex: book.progress?.chapter_index ?? undefined,
-      position: book.progress?.progress_percent ?? 0,
-    }),
-    sortTimestamp: ts,
-  }
-}
-
-function mapComicContinueToVM(item: ContinueReadingItemDto): MediaItemVM {
-  const ref = { scope: 'local' as const, domain: 'comic' as const, id: item.series.id }
-  const ptr = item.pointer
-  const progressPercent =
-    ptr.total_pages > 0
-      ? Math.min(100, Math.max(0, Math.round((ptr.current_page / ptr.total_pages) * 100)))
-      : undefined
-  const chapterRef = { scope: 'local' as const, domain: 'comic' as const, id: ptr.chapter_id }
-  return {
-    ref,
-    title: item.series.title,
-    subtitle: ptr.chapter_title || `#${ptr.chapter_number}`,
-    cover: item.series.cover_url ? withAuthToken(item.series.cover_url) : undefined,
-    badge: {
-      sourceKind: item.series.online_tracking ? 'online' : 'local',
-      progressPercent,
-    },
-    to: itemRoute(ref),
-    playTo: playRoute(chapterRef, { position: ptr.current_page, duration: ptr.total_pages }),
-    sortTimestamp: parseTimestampMs(ptr.last_read_at),
-  }
-}
-
-function mapComicSeriesToVM(series: SeriesSummaryDto): MediaItemVM {
-  const ref = { scope: 'local' as const, domain: 'comic' as const, id: series.id }
-  const progressPercent =
-    series.chapter_count > 0
-      ? Math.min(100, Math.max(0, Math.round((series.completed_chapters / series.chapter_count) * 100)))
-      : undefined
-  return {
-    ref,
-    title: series.title,
-    subtitle: series.writers.join(', ') || undefined,
-    cover: series.cover_url ? withAuthToken(series.cover_url) : undefined,
-    badge: {
-      sourceKind: series.online_tracking ? 'online' : 'local',
-      progressPercent,
-    },
-    to: itemRoute(ref),
-    sortTimestamp: parseTimestampMs(series.updated_at),
-  }
-}
-
-function mapMusicTrackToVM(track: TrackDto, bookmark?: BookmarkDto): MediaItemVM {
-  const ref = { scope: 'local' as const, domain: 'music' as const, id: track.id }
-  const cover = buildMusicCoverUrl(track.cover_key) ?? undefined
-  const progressPercent =
-    bookmark && track.duration_secs > 0
-      ? Math.min(100, Math.max(0, Math.round((bookmark.position_ms / 1000 / track.duration_secs) * 100)))
-      : undefined
-  const to = track.album_id
-    ? itemRoute({ scope: 'local', domain: 'music', id: track.album_id })
-    : libraryRoute('music', { view: 'tracks', q: track.title })
-  const ts = bookmark
-    ? parseTimestampMs(bookmark.updated_at)
-    : parseTimestampMs(track.last_played_at ?? track.starred_at ?? track.created_at)
-
-  return {
-    ref,
-    title: track.title,
-    subtitle: [track.artist_name, track.album_title].filter(Boolean).join(' · ') || undefined,
-    cover,
-    badge: {
-      sourceKind: track.online_tracking ? 'online' : 'local',
-      progressPercent,
-    },
-    to,
-    sortTimestamp: ts,
-  }
-}
-
-function mapMusicAlbumToVM(album: AlbumDto): MediaItemVM {
-  const ref = { scope: 'local' as const, domain: 'music' as const, id: album.id }
-  return {
-    ref,
-    title: album.title,
-    subtitle: album.album_artist_name || undefined,
-    cover: buildMusicCoverUrl(album.cover_key) ?? undefined,
-    badge: {
-      sourceKind: 'local',
-    },
-    to: itemRoute(ref),
-    sortTimestamp: parseTimestampMs(album.starred_at ?? album.created_at),
-  }
-}
-
-function mapVideoToVM(video: VideoSummaryDto, view: MergedShelfView): MediaItemVM {
-  const ref = { scope: 'local' as const, domain: 'video' as const, id: video.id }
-  const progressPercent =
-    video.progress && video.progress.duration_secs > 0
-      ? Math.min(
-          100,
-          Math.max(0, Math.round((video.progress.position_secs / video.progress.duration_secs) * 100)),
-        )
-      : undefined
-  const to = video.show_id
-    ? itemRoute({ scope: 'local', domain: 'video', id: video.show_id })
-    : playRoute(ref)
-  const ts =
-    view === 'continue'
-      ? parseTimestampMs(video.progress?.updated_at ?? video.created_at)
-      : parseTimestampMs(video.created_at)
-
-  return {
-    ref,
-    title: video.show_title ? `${video.show_title} · ${video.title}` : video.title,
-    subtitle: video.year ? String(video.year) : undefined,
-    cover: buildVideoPosterUrl(video.poster_key) ?? undefined,
-    badge: {
-      sourceKind: video.online_tracking ? 'online' : 'local',
-      progressPercent,
-    },
-    to,
-    playTo: playRoute(ref, {
-      position: video.progress?.position_secs ?? 0,
-      duration: video.progress?.duration_secs ?? video.duration_secs,
-    }),
-    sortTimestamp: ts,
-  }
-}
-
-function mapShowToVM(show: ShowSummaryDto): MediaItemVM {
-  const ref = { scope: 'local' as const, domain: 'video' as const, id: show.id }
-  const progressPercent =
-    show.episode_count > 0
-      ? Math.min(100, Math.max(0, Math.round((show.watched_episode_count / show.episode_count) * 100)))
-      : undefined
-  return {
-    ref,
-    title: show.title,
-    subtitle: show.year ? String(show.year) : undefined,
-    cover: buildVideoPosterUrl(show.poster_key) ?? undefined,
-    badge: {
-      sourceKind: show.online_tracking ? 'online' : 'local',
-      progressPercent,
-    },
-    to: itemRoute(ref),
-    sortTimestamp: parseTimestampMs(show.created_at),
-  }
-}
-
-async function fetchLocalShelfItems(
-  domain: MediaKind,
-  view: MergedShelfView,
-  limit: number,
-): Promise<MediaItemVM[]> {
-  if (domain === 'book') {
-    if (view === 'continue') {
-      if (hasHomeOverviewAvailable('book') || limit <= 6) {
-        const home = await fetchHomeOverview('book')
-        if (
-          home.stats.reading_count <= home.continue_reading.length ||
-          limit <= home.continue_reading.length
-        ) {
-          return home.continue_reading.slice(0, limit).map((b) => mapBookToVM(b, view))
-        }
-      }
-      const recent = await bookApi.listRecent(limit)
-      return recent.map((b) => mapBookToVM(b, view))
-    }
-    const res = await bookApi.searchBooks({
-      favorites_only: true,
-      page: 1,
-      page_size: limit,
-      sort_by: 'updated_at',
-      sort_order: 'desc',
-    })
-    return res.items.map((b) => mapBookToVM(b, view))
-  }
-
-  if (domain === 'comic') {
-    if (view === 'continue') {
-      const home = await fetchHomeOverview('comic')
-      return home.continue_reading.map(mapComicContinueToVM)
-    }
-    const list = await comicApi.listSeries({
-      favorites_only: true,
-      sort_by: 'updated_at',
-      sort_dir: 'desc',
-    })
-    return list.map(mapComicSeriesToVM)
-  }
-
-  if (domain === 'music') {
-    if (view === 'continue') {
-      const home = await fetchHomeOverview('music')
-      const seen = new Set<string>()
-      const out: MediaItemVM[] = []
-      for (const bm of home.bookmarks) {
-        seen.add(bm.track.id)
-        out.push(mapMusicTrackToVM(bm.track, bm))
-      }
-      for (const tr of home.recent_played_tracks) {
-        if (!seen.has(tr.id)) {
-          seen.add(tr.id)
-          out.push(mapMusicTrackToVM(tr))
-        }
-      }
-      return out
-    }
-    const starred = await musicApi.getStarred()
-    return [
-      ...starred.albums.filter((a) => Boolean(a.starred_at)).map(mapMusicAlbumToVM),
-      ...starred.tracks.filter((tr) => Boolean(tr.starred_at)).map((tr) => mapMusicTrackToVM(tr)),
-    ]
-  }
-
-  // video
-  if (view === 'continue') {
-    const home = await fetchHomeOverview('video')
-    return home.continue_watching.map((v) => mapVideoToVM(v, view))
-  }
-  const favs = await videoApi.listFavorites()
-  return [
-    ...favs.shows.filter((s) => s.is_favorite).map(mapShowToVM),
-    ...favs.videos.filter((v) => v.is_favorite).map((v) => mapVideoToVM(v, view)),
-  ]
-}
-
 export function useMergedShelf(
   domain: MaybeRefOrGetter<MediaKind>,
   view: MaybeRefOrGetter<MergedShelfView>,
@@ -334,7 +76,6 @@ export function useMergedShelf(
     const q = activeQuery.value
     const seq = ++reqSeq
 
-    // Only bound local library items persist continue/favorites state.
     if (scope !== 'all' && scope !== 'local') {
       rawItems.value = []
       error.value = null
@@ -346,7 +87,7 @@ export function useMergedShelf(
     error.value = null
 
     try {
-      const localItems = await fetchLocalShelfItems(d, v, limit)
+      const localItems = await getDomainPlugin(d).fetchLocalShelfItems(v, limit)
       if (seq !== reqSeq) return
 
       const needle = q.toLowerCase()

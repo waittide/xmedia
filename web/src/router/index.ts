@@ -5,10 +5,7 @@ import {
   type LocationQueryRaw,
 } from 'vue-router'
 import { setUnauthorizedHandler } from '@/api/client'
-import { ensureBookLocale } from '@/domains/book/i18n'
-import { ensureComicLocale } from '@/domains/comic/i18n'
-import { ensureMusicLocale } from '@/domains/music/i18n'
-import { ensureVideoLocale } from '@/domains/video/i18n'
+import { getDomainPlugin } from '@/sources/domainRegistry'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
@@ -17,16 +14,7 @@ import type { MediaKind } from '@/types/api'
 const DESKTOP_SETTINGS_MEDIA_QUERY = '(min-width: 840px)'
 
 export function ensureDomainLocale(domain: MediaKind): Promise<void> {
-  switch (domain) {
-    case 'book':
-      return ensureBookLocale()
-    case 'comic':
-      return ensureComicLocale()
-    case 'music':
-      return ensureMusicLocale()
-    case 'video':
-      return ensureVideoLocale()
-  }
+  return getDomainPlugin(domain).ensureLocale()
 }
 
 function resolvePreferredDomain(

@@ -1,28 +1,24 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+  type Component,
+} from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuLoader2, LuLock } from 'vue-icons-plus/lu'
-import type { RemoteProtocol } from '@/api/appHost'
 import OnlineSourceManagerPanel from '@/components/online-sources/OnlineSourceManagerPanel.vue'
 import {
   extractApiError,
-  type OnlineSourceManagerAdapter,
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
 import { MdCard, MdChip, MdSwitch } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
-import OnlineSourceDebugSheet from '@/domains/book/components/OnlineSourceDebugSheet.vue'
-import OnlineSourceEditSheet from '@/domains/book/components/OnlineSourceEditSheet.vue'
-import { bookSourceAdapter, type BookSourceSummaryDto } from '@/domains/book/onlineApi'
-import ComicSourceDebugSheet from '@/domains/comic/components/ComicSourceDebugSheet.vue'
-import ComicSourceEditSheet from '@/domains/comic/components/ComicSourceEditSheet.vue'
-import { comicSourceAdapter, type ComicSourceSummaryDto } from '@/domains/comic/onlineApi'
-import MusicSourceDebugSheet from '@/domains/music/components/MusicSourceDebugSheet.vue'
-import MusicSourceEditSheet from '@/domains/music/components/MusicSourceEditSheet.vue'
-import { musicSourceAdapter, type MusicSourceSummaryDto } from '@/domains/music/onlineApi'
-import VideoSourceDebugSheet from '@/domains/video/components/VideoSourceDebugSheet.vue'
-import VideoSourceEditSheet from '@/domains/video/components/VideoSourceEditSheet.vue'
-import { videoSourceAdapter, type VideoSourceSummaryDto } from '@/domains/video/onlineApi'
+import { getDomainPlugin } from '@/sources'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import type { MediaKind } from '@/types/api'
@@ -56,6 +52,8 @@ const authStore = useAuthStore()
 const appClientStore = useAppClientStore()
 
 const remoteSectionRef = ref<HTMLElement | null>(null)
+const asyncEditSheetCache = new Map<MediaKind, Component>()
+const asyncDebugSheetCache = new Map<MediaKind, Component>()
 
 const sourcesByDomain = reactive<Record<MediaKind, OnlineSourceSummaryDto[]>>({
   book: [],
@@ -78,35 +76,40 @@ const loadedByDomain = reactive<Record<MediaKind, boolean>>({
   video: false,
 })
 
+const activePlugin = computed(() => getDomainPlugin(props.domain))
 const isActiveLoading = computed(() => loadingByDomain[props.domain])
 const isActiveLoaded = computed(() => loadedByDomain[props.domain])
+const activeAdapter = computed(() => activePlugin.value.onlineSources.getAdapter())
+const remoteProtocol = computed(() => activePlugin.value.onlineSources.remoteProtocol)
 
-const activeAdapter = computed<OnlineSourceManagerAdapter<OnlineSourceSummaryDto>>(() => {
-  if (props.domain === 'book') return bookSourceAdapter
-  if (props.domain === 'comic') return comicSourceAdapter
-  if (props.domain === 'music') return musicSourceAdapter
-  return videoSourceAdapter
+const activeEditSheet = computed<Component>(() => {
+  const kind = props.domain
+  let cached = asyncEditSheetCache.get(kind)
+  if (!cached) {
+    cached = defineAsyncComponent(getDomainPlugin(kind).onlineSources.loadEditSheet)
+    asyncEditSheetCache.set(kind, cached)
+  }
+  return cached
 })
 
-const remoteProtocol = computed<RemoteProtocol | null>(() => {
-  if (props.domain === 'book' || props.domain === 'comic') return 'opds'
-  if (props.domain === 'music') return 'subsonic'
-  return null
+const activeDebugSheet = computed<Component>(() => {
+  const kind = props.domain
+  let cached = asyncDebugSheetCache.get(kind)
+  if (!cached) {
+    cached = defineAsyncComponent(getDomainPlugin(kind).onlineSources.loadDebugSheet)
+    asyncDebugSheetCache.set(kind, cached)
+  }
+  return cached
 })
-
-async function fetchDomainSources(targetDomain: MediaKind): Promise<OnlineSourceSummaryDto[]> {
-  if (targetDomain === 'book') return bookSourceAdapter.listSources()
-  if (targetDomain === 'comic') return comicSourceAdapter.listSources()
-  if (targetDomain === 'music') return musicSourceAdapter.listSources()
-  return videoSourceAdapter.listSources()
-}
 
 async function refreshDomainSources(targetDomain: MediaKind = props.domain): Promise<void> {
   if (!authStore.isAdmin) return
   emit('error', '')
   loadingByDomain[targetDomain] = true
   try {
-    sourcesByDomain[targetDomain] = await fetchDomainSources(targetDomain)
+    sourcesByDomain[targetDomain] = await getDomainPlugin(targetDomain)
+      .onlineSources.getAdapter()
+      .listSources()
     loadedByDomain[targetDomain] = true
   } catch (err) {
     emit('error', extractApiError(err))
@@ -222,107 +225,33 @@ watch(
     />
 
     <!-- Advanced Mode: Full Rule Authoring / Debug / Paste JSON / Batch / Login Variables -->
-    <template v-else>
-      <OnlineSourceManagerPanel
-        v-if="domain === 'book'"
-        :sources="sourcesByDomain.book as BookSourceSummaryDto[]"
-        :adapter="bookSourceAdapter"
-        @refresh="refreshDomainSources('book')"
-      >
-        <template #edit-sheet="{ open, source, close, saved, savedAndDebug }">
-          <OnlineSourceEditSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @saved="saved"
-            @saved-and-debug="savedAndDebug"
-          />
-        </template>
-        <template #debug-sheet="{ open, source, close, tested }">
-          <OnlineSourceDebugSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @tested="tested"
-          />
-        </template>
-      </OnlineSourceManagerPanel>
-
-      <OnlineSourceManagerPanel
-        v-else-if="domain === 'comic'"
-        :sources="sourcesByDomain.comic as ComicSourceSummaryDto[]"
-        :adapter="comicSourceAdapter"
-        @refresh="refreshDomainSources('comic')"
-      >
-        <template #edit-sheet="{ open, source, close, saved, savedAndDebug }">
-          <ComicSourceEditSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @saved="saved"
-            @saved-and-debug="savedAndDebug"
-          />
-        </template>
-        <template #debug-sheet="{ open, source, close, tested }">
-          <ComicSourceDebugSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @tested="tested"
-          />
-        </template>
-      </OnlineSourceManagerPanel>
-
-      <OnlineSourceManagerPanel
-        v-else-if="domain === 'music'"
-        :sources="sourcesByDomain.music as MusicSourceSummaryDto[]"
-        :adapter="musicSourceAdapter"
-        @refresh="refreshDomainSources('music')"
-      >
-        <template #edit-sheet="{ open, source, close, saved, savedAndDebug }">
-          <MusicSourceEditSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @saved="saved"
-            @saved-and-debug="savedAndDebug"
-          />
-        </template>
-        <template #debug-sheet="{ open, source, close, tested }">
-          <MusicSourceDebugSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @tested="tested"
-          />
-        </template>
-      </OnlineSourceManagerPanel>
-
-      <OnlineSourceManagerPanel
-        v-else-if="domain === 'video'"
-        :sources="sourcesByDomain.video as VideoSourceSummaryDto[]"
-        :adapter="videoSourceAdapter"
-        @refresh="refreshDomainSources('video')"
-      >
-        <template #edit-sheet="{ open, source, close, saved, savedAndDebug }">
-          <VideoSourceEditSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @saved="saved"
-            @saved-and-debug="savedAndDebug"
-          />
-        </template>
-        <template #debug-sheet="{ open, source, close, tested }">
-          <VideoSourceDebugSheet
-            :open="open"
-            :source="source"
-            @close="close"
-            @tested="tested"
-          />
-        </template>
-      </OnlineSourceManagerPanel>
-    </template>
+    <OnlineSourceManagerPanel
+      v-else
+      :key="domain"
+      :sources="sourcesByDomain[domain]"
+      :adapter="activeAdapter"
+      @refresh="refreshDomainSources(domain)"
+    >
+      <template #edit-sheet="{ open, source, close, saved, savedAndDebug }">
+        <component
+          :is="activeEditSheet"
+          :open="open"
+          :source="source"
+          @close="close"
+          @saved="saved"
+          @saved-and-debug="savedAndDebug"
+        />
+      </template>
+      <template #debug-sheet="{ open, source, close, tested }">
+        <component
+          :is="activeDebugSheet"
+          :open="open"
+          :source="source"
+          @close="close"
+          @tested="tested"
+        />
+      </template>
+    </OnlineSourceManagerPanel>
 
     <!-- Group 2: Remote Servers (Standalone mode only; no embedded browser) -->
     <div

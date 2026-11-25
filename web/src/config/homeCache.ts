@@ -1,11 +1,8 @@
-import { api as bookApi } from '@/domains/book/api'
 import type { BookHomeOverviewDto } from '@/domains/book/types'
-import { api as comicApi } from '@/domains/comic/api'
 import type { HomeOverviewDto as ComicHomeOverviewDto } from '@/domains/comic/types'
-import { api as musicApi } from '@/domains/music/api'
 import type { HomeOverviewDto as MusicHomeOverviewDto } from '@/domains/music/types'
-import { api as videoApi } from '@/domains/video/api'
 import type { VideoHomeOverviewDto } from '@/domains/video/types'
+import { getDomainPlugin } from '@/sources/domainRegistry'
 import type { MediaKind } from '@/types/api'
 
 export interface DomainHomeMap {
@@ -78,11 +75,7 @@ export function fetchHomeOverview<K extends MediaKind>(
   }
 
   const req = (async (): Promise<DomainHomeMap[K]> => {
-    let data: unknown
-    if (kind === 'book') data = await bookApi.homeOverview()
-    else if (kind === 'comic') data = await comicApi.homeOverview()
-    else if (kind === 'music') data = await musicApi.homeOverview()
-    else data = await videoApi.homeOverview()
+    const data = await getDomainPlugin(kind).fetchHomeOverview()
 
     if (reqEpoch === cacheEpoch && userKey === currentUserKey) {
       const bucket = (cacheByUser[userKey] ??= {})

@@ -31,9 +31,9 @@ import { usePlayerStore } from '@/domains/music/player'
 import { ensureDomainLocale } from '@/router'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
+import { useBackgroundDownloadTasks } from '@/stores/backgroundTasks'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
-import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
 import { useThemeStore } from '@/stores/theme'
 import { useUploadStore } from '@/stores/uploads'
 import type { ThemeMode } from '@/theme/md3'
@@ -57,7 +57,7 @@ const appClientStore = useAppClientStore()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
-const onlineDownloadsStore = useOnlineDownloadsStore()
+const backgroundDownloads = useBackgroundDownloadTasks()
 const playerStore = usePlayerStore()
 const mediaFocus = useMediaFocus()
 const themeStore = useThemeStore()
@@ -75,8 +75,8 @@ let lastMainScrollTop = 0
 watch(
   () => [authStore.isAuthenticated, authStore.user?.id] as const,
   ([isAuth]) => {
-    if (isAuth && authStore.hasModule('book')) {
-      void onlineDownloadsStore.refresh()
+    if (isAuth) {
+      void backgroundDownloads.refreshAll()
     }
   },
   { immediate: true },
@@ -220,18 +220,18 @@ const globalActiveTaskCount = computed(() => {
   const activeUploads = uploadStore.tasks.filter(
     (task) => task.status === 'queued' || task.status === 'uploading',
   ).length
-  return activeScans + activeUploads + onlineDownloadsStore.activeJobs.length
+  return activeScans + activeUploads + backgroundDownloads.activeCount.value
 })
 
 const globalFailedTaskCount = computed(() => {
   const failedScans = eventsStore.scanTaskList.filter((sc) => sc.status === 'failed').length
-  return failedScans + uploadStore.failedCount + onlineDownloadsStore.failedCount
+  return failedScans + uploadStore.failedCount + backgroundDownloads.failedCount.value
 })
 
 function openTasksDrawer(): void {
   tasksDrawerOpen.value = true
-  if (authStore.isAuthenticated && authStore.hasModule('book')) {
-    void onlineDownloadsStore.refresh()
+  if (authStore.isAuthenticated) {
+    void backgroundDownloads.refreshAll()
   }
 }
 

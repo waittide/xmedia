@@ -27,16 +27,12 @@ import {
   MdLinearProgress,
   MdSheet,
 } from '@/components/ui'
-import { buildOnlineDownloadFileUrl } from '@/domains/book/onlineApi'
 import { useAuthStore } from '@/stores/auth'
+import { useBackgroundDownloadTasks } from '@/stores/backgroundTasks'
 import { useEventsStore } from '@/stores/events'
-import {
-  formatDownloadSpeed,
-  isOnlineDownloadJobActive,
-  useOnlineDownloadsStore,
-} from '@/stores/onlineDownloads'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
+import type { MediaKind } from '@/types/api'
 import { formatBytes } from '@/utils/format'
 
 const props = defineProps<{
@@ -65,6 +61,7 @@ interface UnifiedTaskItem {
   progress: number | null
   targetRoute?: string
   uploadTaskId?: string
+  downloadDomain?: MediaKind
   downloadJobId?: string
   downloadFileUrl?: string
   downloadFileName?: string
@@ -79,7 +76,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const eventsStore = useEventsStore()
 const uploadStore = useUploadStore()
-const onlineDownloadsStore = useOnlineDownloadsStore()
+const backgroundDownloads = useBackgroundDownloadTasks()
 
 const showCompleted = ref(false)
 const clearing = ref(false)
@@ -110,17 +107,11 @@ watch(
 watch(
   () => props.open,
   (isOpen) => {
-    if (isOpen && authStore.isAuthenticated && authStore.hasModule('book')) {
-      void onlineDownloadsStore.refresh()
+    if (isOpen && authStore.isAuthenticated) {
+      void backgroundDownloads.refreshAll()
     }
   },
 )
-
-function parseIsoTimestamp(iso?: string): number {
-  if (!iso) return 0
-  const parsed = Date.parse(iso)
-  return Number.isFinite(parsed) ? parsed : 0
-}
 
 const allTasks = computed<UnifiedTaskItem[]>(() => {
   const items: UnifiedTaskItem[] = []
@@ -222,62 +213,29 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
     })
   })
 
-  for (const job of onlineDownloadsStore.jobs) {
-    const isActive = isOnlineDownloadJobActive(job.status)
-    const status: UnifiedTaskStatus = job.status === 'pending' ? 'queued' : job.status
-    const progress =
-      job.status === 'completed'
-        ? 100
-        : job.total_chapters > 0
-          ? Math.min(100, Math.round((job.processed_chapters / job.total_chapters) * 100))
-          : null
-
-    const chaptersText = t('transfers.chaptersProgress', {
-      processed: job.processed_chapters.toLocaleString(),
-      total: job.total_chapters > 0 ? job.total_chapters.toLocaleString() : '?',
-    })
-    const speed = isActive ? formatDownloadSpeed(job.chapters_per_sec) : ''
-
-    let metaText = ''
-    if (isActive) {
-      metaText = speed ? `${chaptersText} · ${speed}` : chaptersText
-    } else if (job.status === 'completed') {
-      const sizeText = job.file_size ? ` · ${formatBytes(job.file_size)}` : ''
-      metaText = `${t('transfers.statusPacked')} · ${chaptersText}${sizeText}`
-    } else if (job.status === 'cancelled') {
-      metaText = `${t('transfers.statusCancelled')} · ${chaptersText}`
-    } else {
-      metaText = `${t('transfers.statusFailed')} · ${chaptersText}`
-    }
-
+  for (const job of backgroundDownloads.getTasks((key, named) => (named ? t(key, named) : t(key)))) {
     items.push({
-      id: `download:${job.id}`,
+      id: `download:${job.domain}:${job.id}`,
       kind: 'download',
-      status,
-      isActive,
-      sortTime: parseIsoTimestamp(job.updated_at || job.created_at),
-      title: job.book_name,
-      badge: job.format.toUpperCase(),
-      metaText,
-      secondaryText: isActive && job.current_chapter_title ? job.current_chapter_title : undefined,
-      warningText:
-        job.failed_chapters > 0
-          ? t('transfers.failedChaptersNote', { count: job.failed_chapters })
-          : undefined,
-      errorText: job.status === 'failed' ? job.error || undefined : undefined,
-      progress,
-      targetRoute:
-        job.status === 'completed' && job.imported_book_id
-          ? `/book/item/${job.imported_book_id}`
-          : undefined,
+      status: job.status,
+      isActive: job.isActive,
+      sortTime: job.sortTime,
+      title: job.title,
+      badge: job.badge,
+      metaText: job.metaText,
+      secondaryText: job.secondaryText,
+      warningText: job.warningText,
+      errorText: job.errorText,
+      progress: job.progress,
+      targetRoute: job.targetRoute,
+      downloadDomain: job.domain,
       downloadJobId: job.id,
-      downloadFileUrl:
-        job.status === 'completed' ? buildOnlineDownloadFileUrl(job.id) : undefined,
-      downloadFileName: job.output_file_name || undefined,
-      canCancel: isActive,
+      downloadFileUrl: job.downloadFileUrl,
+      downloadFileName: job.downloadFileName,
+      canCancel: job.canCancel,
       canRetry: false,
-      canDelete: !isActive,
-      busy: onlineDownloadsStore.busyJobId === job.id,
+      canDelete: job.canDelete,
+      busy: job.busy,
     })
   }
 
@@ -287,12 +245,10 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
   })
 })
 
-/** Active + failed tasks are always visible by default. */
 const priorityTasks = computed(() =>
   allTasks.value.filter((item) => item.isActive || item.status === 'failed'),
 )
 
-/** Completed + cancelled tasks are collapsed behind a disclosure toggle by default. */
 const finishedTasks = computed(() =>
   allTasks.value.filter((item) => !item.isActive && item.status !== 'failed'),
 )
@@ -303,8 +259,7 @@ const canClearFinished = computed(() => {
     uploadStore.activeCount === 0
       ? uploadStore.tasks.length > 0
       : uploadStore.completedCount > 0
-  const hasFinishedDownload = onlineDownloadsStore.finishedCount > 0
-  return hasFinishedScan || hasClearableUpload || hasFinishedDownload
+  return hasFinishedScan || hasClearableUpload || backgroundDownloads.finishedCount.value > 0
 })
 
 function kindLabel(kind: UnifiedTaskKind): string {
@@ -322,8 +277,8 @@ function handleNavigate(route?: string): void {
 function handleCancel(item: UnifiedTaskItem): void {
   if (item.uploadTaskId) {
     uploadStore.cancelTask(item.uploadTaskId)
-  } else if (item.downloadJobId) {
-    void onlineDownloadsStore.cancelJob(item.downloadJobId)
+  } else if (item.downloadDomain && item.downloadJobId) {
+    void backgroundDownloads.cancelTask(item.downloadDomain, item.downloadJobId)
   }
 }
 
@@ -335,8 +290,8 @@ function handleRetry(item: UnifiedTaskItem): void {
 }
 
 function handleDelete(item: UnifiedTaskItem): void {
-  if (item.downloadJobId) {
-    void onlineDownloadsStore.deleteJob(item.downloadJobId)
+  if (item.downloadDomain && item.downloadJobId) {
+    void backgroundDownloads.deleteTask(item.downloadDomain, item.downloadJobId)
   }
 }
 
@@ -344,9 +299,7 @@ async function handleRefresh(): Promise<void> {
   if (refreshing.value) return
   refreshing.value = true
   try {
-    if (authStore.isAuthenticated && authStore.hasModule('book')) {
-      await onlineDownloadsStore.refresh()
-    }
+    await backgroundDownloads.refreshAll()
   } finally {
     refreshing.value = false
   }
@@ -362,8 +315,8 @@ async function handleClearFinished(): Promise<void> {
     } else {
       uploadStore.clearCompleted()
     }
-    if (onlineDownloadsStore.finishedCount > 0) {
-      await onlineDownloadsStore.clearFinished()
+    if (backgroundDownloads.finishedCount.value > 0) {
+      await backgroundDownloads.clearFinished()
     }
   } catch (err) {
     useSnackbarStore().show({
@@ -385,7 +338,7 @@ async function handleClearFinished(): Promise<void> {
   >
     <template #headerActions>
       <MdIconButton
-        v-if="authStore.hasModule('book')"
+        v-if="backgroundDownloads.hasProviders.value"
         size="sm"
         :icon="LuRefreshCw"
         :loading="refreshing"
@@ -595,7 +548,6 @@ async function handleClearFinished(): Promise<void> {
     <template v-if="canClearFinished" #footer>
       <MdButton
         variant="text"
-        size="sm"
         :icon="LuTrash2"
         :loading="clearing"
         @click="handleClearFinished"

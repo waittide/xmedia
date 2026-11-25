@@ -5,165 +5,37 @@ import {
   ref,
   toValue,
   watch,
-  type ComputedRef,
-  type MaybeRefOrGetter,
   type Ref,
 } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   useOnlineItemStates,
   type MediaItemVM,
-  type OnlineItemSnapshot,
   type TrackedItemRef,
-  type UseOnlineItemStatesReturn,
 } from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
-  extractApiError,
-  type OnlineDomain,
-  type OnlineSourceSummaryDto,
-} from './types'
+  dedupeAppendItems,
+  hydrateMediaItemVMWithState,
+  isAbortError,
+  type OnlineBrowseCategory,
+  type OnlineSearchBrowseAdapter,
+  type OnlineSearchErrorItem,
+  type UseOnlineSearchBrowseOptions,
+  type UseOnlineSearchBrowseReturn,
+} from './onlineSearchBrowseTypes'
+import { extractApiError, type OnlineSourceSummaryDto } from './types'
 
-export interface OnlineBrowseCategory {
-  id: string
-  name: string
-  url?: string
-}
-
-export interface OnlineSearchErrorItem {
-  source_id: string
-  source_name: string
-  error: string
-}
-
-export interface OnlineSearchResultPage<T> {
-  results: T[]
-  page?: number
-  hasMore?: boolean
-  errors?: OnlineSearchErrorItem[]
-  toasts?: string[]
-}
-
-export interface OnlineExploreCategoriesResult {
-  categories: OnlineBrowseCategory[]
-  /** Structured backend capability flag; avoids brittle message matching. */
-  hasExplore?: boolean
-}
-
-export interface OnlineBrowseResultPage<T> {
-  results: T[]
-  page?: number
-  pageCount?: number | null
-  hasMore?: boolean
-  sourceId?: string
-  sourceName?: string
-}
-
-export interface OnlineSearchBrowseAdapter<
-  T,
-  S extends OnlineSourceSummaryDto = OnlineSourceSummaryDto,
-> {
-  domain: OnlineDomain
-  /** Member-readable source list endpoint (`GET /{domain}/sources`, never admin-only). */
-  listSources: () => Promise<S[]>
-  /** Aggregated or source-scoped online search. */
-  search: (params: {
-    keyword: string
-    sourceIds: string[]
-    page: number
-    signal: AbortSignal
-  }) => Promise<OnlineSearchResultPage<T>>
-  /** Optional explore/category metadata for a source when `q` is empty. */
-  listCategories?: (
-    sourceId: string,
-    signal: AbortSignal,
-  ) => Promise<OnlineExploreCategoriesResult>
-  /** Optional explore/category browse items for a source when `q` is empty. */
-  browse?: (params: {
-    sourceId: string
-    category: OnlineBrowseCategory | null
-    page: number
-    signal: AbortSignal
-  }) => Promise<OnlineBrowseResultPage<T>>
-  /** Stable deduplication key used when appending paginated results. */
-  getItemKey: (item: T) => string
-  /** Optional mapper to `TrackedItemRef` for batch `useOnlineItemStates` hydration. */
-  toTrackedRef?: (item: T) => TrackedItemRef | null
-  /** Optional mapper to unified `MediaItemVM` with hydrated favorite/progress state. */
-  toMediaItemVM?: (item: T, state: OnlineItemSnapshot | null) => MediaItemVM
-  /** Automatically browse explore/categories when keyword is empty. Default: `Boolean(browse)`. */
-  autoExploreOnEmpty?: boolean
-  /** Pick first enabled source for explore when "All sources" is selected. Default: `true`. */
-  defaultExploreFirstSource?: boolean
-  /** Keyword input debounce (ms). Default: `250`. */
-  debounceMs?: number
-  /** Auto-initialize on mount. Default: `true`. */
-  autoInit?: boolean
-}
-
-export interface UseOnlineSearchBrowseOptions {
-  keyword?: MaybeRefOrGetter<string>
-  initialSourceId?: MaybeRefOrGetter<string | null | undefined>
-  onKeywordChange?: (keyword: string) => void
-  onSourceIdChange?: (sourceId: string | null) => void
-}
-
-export interface UseOnlineSearchBrowseReturn<
-  T,
-  S extends OnlineSourceSummaryDto = OnlineSourceSummaryDto,
-> {
-  loadingInit: Ref<boolean>
-  sources: Ref<S[]>
-  enabledSources: ComputedRef<S[]>
-  sourcesLoadError: Ref<string | null>
-  keyword: Ref<string>
-  selectedSourceIds: Ref<string[]>
-  activeBrowseSourceId: ComputedRef<string | null>
-  searching: Ref<boolean>
-  loadingMore: Ref<boolean>
-  searchPage: Ref<number>
-  hasMoreResults: Ref<boolean>
-  hasSearched: Ref<boolean>
-  lastSearchKeyword: Ref<string>
-  searchResults: Ref<T[]>
-  searchErrors: Ref<OnlineSearchErrorItem[]>
-  searchToasts: Ref<string[]>
-  browsing: Ref<boolean>
-  loadingMoreBrowse: Ref<boolean>
-  browsePage: Ref<number>
-  hasMoreBrowse: Ref<boolean>
-  browseCategories: Ref<OnlineBrowseCategory[]>
-  activeCategoryId: Ref<string | null>
-  browseItems: Ref<T[]>
-  browseError: Ref<string | null>
-  exploreSupported: Ref<boolean>
-  showBrowseView: ComputedRef<boolean>
-  displayItems: ComputedRef<T[]>
-  displayVMs: ComputedRef<MediaItemVM[]>
-  itemStates: UseOnlineItemStatesReturn
-  isBusy: ComputedRef<boolean>
-  isLoadingPrimary: ComputedRef<boolean>
-  activeHasMore: ComputedRef<boolean>
-  activeLoadingMore: ComputedRef<boolean>
-  init: () => Promise<void>
-  retryInit: () => Promise<void>
-  setKeyword: (value: string, opts?: { debounce?: boolean }) => void
-  submitSearch: (overrideKeyword?: string) => Promise<void>
-  clearSearch: () => void
-  retrySearch: () => Promise<void>
-  toggleSource: (sourceId: string) => void
-  selectSingleSource: (sourceId: string | null) => void
-  clearSourceFilter: () => void
-  selectCategory: (categoryId: string | null) => Promise<void>
-  triggerExplore: (sourceId?: string | null) => Promise<void>
-  retryBrowse: () => Promise<void>
-  loadMore: () => Promise<void>
-}
-
-function isAbortError(err: unknown): boolean {
-  if (err instanceof DOMException && err.name === 'AbortError') return true
-  return err instanceof Error && err.name === 'AbortError'
-}
+export type {
+  OnlineBrowseCategory,
+  OnlineBrowseResultPage,
+  OnlineExploreCategoriesResult,
+  OnlineSearchBrowseAdapter,
+  OnlineSearchErrorItem,
+  OnlineSearchResultPage,
+  UseOnlineSearchBrowseOptions,
+  UseOnlineSearchBrowseReturn,
+} from './onlineSearchBrowseTypes'
 
 export function useOnlineSearchBrowse<
   T,
@@ -268,23 +140,7 @@ export function useOnlineSearchBrowse<
     return displayItems.value.map((item) => {
       const tracked = adapter.toTrackedRef ? adapter.toTrackedRef(item) : null
       const state = tracked ? itemStates.getState(tracked) : null
-      const vm = adapter.toMediaItemVM!(item, state)
-      if (!state) return vm
-      const ratioPct =
-        state.progressRatio !== null && Number.isFinite(state.progressRatio)
-          ? Math.round(state.progressRatio * 100)
-          : undefined
-      return {
-        ...vm,
-        badge: {
-          ...vm.badge,
-          source: vm.badge?.source || state.sourceName || undefined,
-          sourceKind: vm.badge?.sourceKind ?? state.sourceKind,
-          progressPercent: vm.badge?.progressPercent ?? ratioPct,
-          availability: vm.badge?.availability ?? state.availability,
-          blocked: vm.badge?.blocked ?? state.blocked,
-        },
-      }
+      return hydrateMediaItemVMWithState(adapter.toMediaItemVM!(item, state), state)
     })
   })
 
@@ -378,9 +234,7 @@ export function useOnlineSearchBrowse<
     if (mode === 'append' && (browsing.value || loadingMoreBrowse.value)) return
 
     const seq = ++browseSeq
-    if (mode === 'replace') {
-      abortBrowse()
-    }
+    if (mode === 'replace') abortBrowse()
     const controller = new AbortController()
     browseAbort = controller
 
@@ -402,7 +256,11 @@ export function useOnlineSearchBrowse<
         browseCategories.value = catRes.categories ?? []
         const hasExplore = catRes.hasExplore ?? (browseCategories.value.length > 0 || true)
         exploreSupported.value = hasExplore
-        if (browseCategories.value.length === 0 && catRes.hasExplore === false && categoryId === null) {
+        if (
+          browseCategories.value.length === 0 &&
+          catRes.hasExplore === false &&
+          categoryId === null
+        ) {
           browseItems.value = []
           hasMoreBrowse.value = false
           browsePage.value = 1
@@ -410,10 +268,9 @@ export function useOnlineSearchBrowse<
         }
       }
 
-      const targetCategory = findCategory(categoryId)
       const res = await adapter.browse({
         sourceId,
-        category: targetCategory,
+        category: findCategory(categoryId),
         page,
         signal: controller.signal,
       })
@@ -430,11 +287,14 @@ export function useOnlineSearchBrowse<
             : incoming.length > 0
 
       if (mode === 'append') {
-        const seen = new Set(browseItems.value.map(adapter.getItemKey))
-        const appended = incoming.filter((item) => !seen.has(adapter.getItemKey(item)))
-        browseItems.value = [...browseItems.value, ...appended]
-        hasMoreBrowse.value = appended.length > 0 && hasMoreByPage
-        if (appended.length === 0) {
+        const { merged, appendedCount } = dedupeAppendItems(
+          browseItems.value,
+          incoming,
+          adapter.getItemKey,
+        )
+        browseItems.value = merged
+        hasMoreBrowse.value = appendedCount > 0 && hasMoreByPage
+        if (appendedCount === 0) {
           snackbar.show({ message: t('common.noMoreResults') })
         }
       } else {
@@ -449,9 +309,7 @@ export function useOnlineSearchBrowse<
         hasMoreBrowse.value = false
       }
     } finally {
-      if (browseAbort === controller) {
-        browseAbort = null
-      }
+      if (browseAbort === controller) browseAbort = null
       if (!disposed && seq === browseSeq) {
         browsing.value = false
         loadingMoreBrowse.value = false
@@ -479,12 +337,12 @@ export function useOnlineSearchBrowse<
     if (mode === 'append' && (searching.value || loadingMore.value)) return
 
     const srcIds =
-      mode === 'replace' && page === 1 ? [...selectedSourceIds.value] : [...lastSearchSourceIds.value]
+      mode === 'replace' && page === 1
+        ? [...selectedSourceIds.value]
+        : [...lastSearchSourceIds.value]
 
     const seq = ++searchSeq
-    if (mode === 'replace') {
-      abortSearch()
-    }
+    if (mode === 'replace') abortSearch()
     const controller = new AbortController()
     searchAbort = controller
 
@@ -516,11 +374,14 @@ export function useOnlineSearchBrowse<
       const incoming = res.results ?? []
 
       if (mode === 'append') {
-        const seen = new Set(searchResults.value.map(adapter.getItemKey))
-        const appended = incoming.filter((item) => !seen.has(adapter.getItemKey(item)))
-        searchResults.value = [...searchResults.value, ...appended]
-        hasMoreResults.value = (res.hasMore ?? true) && appended.length > 0
-        if (appended.length === 0) {
+        const { merged, appendedCount } = dedupeAppendItems(
+          searchResults.value,
+          incoming,
+          adapter.getItemKey,
+        )
+        searchResults.value = merged
+        hasMoreResults.value = (res.hasMore ?? true) && appendedCount > 0
+        if (appendedCount === 0) {
           snackbar.show({ message: t('common.noMoreResults') })
         }
       } else {
@@ -546,9 +407,7 @@ export function useOnlineSearchBrowse<
       }
       snackbar.show({ message: msg, tone: 'error' })
     } finally {
-      if (searchAbort === controller) {
-        searchAbort = null
-      }
+      if (searchAbort === controller) searchAbort = null
       if (!disposed && seq === searchSeq) {
         searching.value = false
         loadingMore.value = false
@@ -620,9 +479,7 @@ export function useOnlineSearchBrowse<
 
   async function submitSearch(overrideKeyword?: string): Promise<void> {
     clearDebounce()
-    if (overrideKeyword !== undefined) {
-      keyword.value = overrideKeyword
-    }
+    if (overrideKeyword !== undefined) keyword.value = overrideKeyword
     notifyKeywordChange(keyword.value)
     if (loadingInit.value) return
     await runSearch(1, 'replace')
@@ -647,9 +504,7 @@ export function useOnlineSearchBrowse<
     notifySourceIdChange(next.length === 1 ? (next[0] ?? null) : null)
 
     if (keyword.value.trim()) {
-      if (hasSearched.value) {
-        void runSearch(1, 'replace')
-      }
+      if (hasSearched.value) void runSearch(1, 'replace')
       return
     }
 
@@ -685,7 +540,10 @@ export function useOnlineSearchBrowse<
   async function triggerExplore(sourceId?: string | null): Promise<void> {
     const targetId = sourceId ?? activeBrowseSourceId.value ?? enabledSources.value[0]?.id ?? null
     if (!targetId) return
-    if (sourceId && (selectedSourceIds.value.length !== 1 || selectedSourceIds.value[0] !== sourceId)) {
+    if (
+      sourceId &&
+      (selectedSourceIds.value.length !== 1 || selectedSourceIds.value[0] !== sourceId)
+    ) {
       selectedSourceIds.value = [sourceId]
       notifySourceIdChange(sourceId)
     }

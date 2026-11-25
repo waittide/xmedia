@@ -88,6 +88,28 @@ export {
 } from './useMergedShelf'
 
 export {
+  ALL_DOMAIN_KINDS,
+  getDomainPlugin,
+  listDomainPlugins,
+  registerDomainPlugin,
+  tryGetDomainPlugin,
+  type DomainBackgroundDownloadTask,
+  type DomainBackgroundTasksProvider,
+  type DomainOnlineSourceComponentsAdapter,
+  type DomainPlugin,
+  type DomainPoolAdapter,
+  type DomainPoolBindInput,
+  type DomainPoolFetchResult,
+  type DomainPoolQueryParams,
+  type DomainUploadConfig,
+  type DomainUploadEnqueueOptions,
+  type DomainUploadExecutionContext,
+  type PoolPosterCardVM,
+  type PoolTrackItemVM,
+  type TranslateFn,
+} from './domainRegistry'
+
+export {
   SEARCH_RECENT_STORAGE_KEY,
   useUnifiedSearch,
   type UseUnifiedSearchOptions,
