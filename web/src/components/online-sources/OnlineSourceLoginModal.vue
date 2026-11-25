@@ -266,18 +266,18 @@ async function saveRawVariable(): Promise<void> {
     <template #header>
       <div v-if="source" class="flex min-w-0 items-start gap-3.5">
         <div
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
         >
           <LuKeyRound class="h-5 w-5" />
         </div>
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
-            <h3 class="truncate text-base leading-snug font-semibold text-[var(--md-sys-color-on-surface)]">
+            <h3 class="text-title-medium truncate text-on-surface">
               {{ t('onlineSources.login.title', { domain: domainLabel, name: source.name }) }}
             </h3>
             <span
               v-if="source.cookie_hosts.length > 0"
-              class="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
+              class="text-label-small inline-flex shrink-0 items-center gap-1 rounded-corner-full bg-success-container px-2 py-0.5 text-on-success-container"
             >
               <LuCheckCircle2 class="h-3 w-3" />
               <span>{{ t('onlineSources.login.cookieStored', { count: source.cookie_hosts.length }) }}</span>
@@ -377,7 +377,7 @@ async function saveRawVariable(): Promise<void> {
 
       <div
         v-else
-        class="rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+        class="text-body-small rounded-corner-lg bg-surface-container p-4 text-center text-on-surface-variant"
       >
         <p>{{ t('onlineSources.login.noLoginUi', { domain: domainLabel }) }}</p>
         <button
@@ -402,10 +402,10 @@ async function saveRawVariable(): Promise<void> {
       </div>
 
       <!-- Advanced Raw Source Variable Editor -->
-      <div class="border-t border-[var(--md-sys-color-outline-variant)]/40 pt-3">
+      <div class="border-t border-outline-variant/40 pt-3">
         <button
           type="button"
-          class="text-[11px] font-medium text-[var(--md-sys-color-primary)] hover:underline"
+          class="text-label-small cursor-pointer text-primary hover:underline"
           @click="toggleVarEditor"
         >
           {{
@@ -418,14 +418,14 @@ async function saveRawVariable(): Promise<void> {
         <div v-if="showVarEditor" class="mt-2 space-y-2">
           <div
             v-if="loadingVar"
-            class="flex items-center gap-2 rounded-xl bg-[var(--md-sys-color-surface-container)] px-3 py-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+            class="text-label-small flex items-center gap-2 rounded-corner-md bg-surface-container px-3 py-2 text-on-surface-variant"
           >
             <LuLoader2 class="h-3.5 w-3.5 animate-spin" />
             <span>{{ t('onlineSources.login.loadingVariable') }}</span>
           </div>
           <div
             v-else-if="varLoadError"
-            class="flex items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 text-[11px] text-[var(--md-sys-color-on-error-container)]"
+            class="text-label-small flex items-center justify-between gap-2 rounded-corner-md bg-error-container px-3 py-2 text-on-error-container"
           >
             <span class="min-w-0 truncate">
               {{ t('onlineSources.login.loadVariableFailed', { error: varLoadError }) }}

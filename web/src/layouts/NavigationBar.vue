@@ -40,18 +40,18 @@ const { t } = useI18n()
           class="md-state md-state-target flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             !isSettingsRoute && activeDomain === tab.kind
-              ? 'bg-secondary-container text-on-secondary-container'
-              : 'text-on-surface-variant group-hover:text-on-surface'
+              ? 'bg-secondary-container text-on-secondary-container [&_svg]:stroke-[2.25]'
+              : 'text-on-surface-variant group-hover:text-on-surface [&_svg]:stroke-[1.75]'
           "
         >
-          <component :is="tab.icon" class="h-5 w-5 shrink-0" aria-hidden="true" />
+          <component :is="tab.icon" class="h-6 w-6 shrink-0" aria-hidden="true" />
         </span>
         <span
           class="text-label-medium max-w-full truncate px-1"
           :class="
             !isSettingsRoute && activeDomain === tab.kind
-              ? 'text-on-surface'
-              : 'text-on-surface-variant'
+              ? 'font-semibold text-on-surface'
+              : 'text-on-surface-variant group-hover:text-on-surface'
           "
         >
           {{ tab.label }}

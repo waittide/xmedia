@@ -137,7 +137,7 @@ function onRemoveClick(): void {
       type="button"
       :disabled="disabled"
       :aria-label="t('common.delete')"
-      class="md-state mr-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-corner-full"
+      class="md-state md-touch-target mr-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-corner-full"
       :class="disabled ? 'cursor-not-allowed' : 'cursor-pointer'"
       @click.stop="onRemoveClick"
     >

@@ -283,10 +283,10 @@ defineExpose({
   <div>
     <div
       v-if="appClientStore.opdsSources.length === 0"
-      class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] px-6 py-16 text-center"
+      class="rounded-corner-lg bg-surface-container-low px-6 py-16 text-center"
     >
       <div
-        class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
+        class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
       >
         <LuBookOpen class="h-6 w-6" />
       </div>
@@ -353,12 +353,12 @@ defineExpose({
         </div>
 
         <div v-if="opdsFeed" class="flex min-w-0 flex-1 items-center gap-2">
-          <span class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+          <span class="text-title-small truncate text-on-surface">
             {{ opdsFeed.title }}
           </span>
           <span
             v-if="opdsFeed.opds_version"
-            class="shrink-0 rounded-full bg-[var(--md-sys-color-secondary-container)] px-2 py-0.5 font-mono text-[10px] font-medium text-[var(--md-sys-color-on-secondary-container)]"
+            class="text-label-small shrink-0 rounded-corner-full bg-secondary-container px-2 py-0.5 font-mono text-on-secondary-container"
           >
             {{ opdsFeed.opds_version }}
           </span>
@@ -393,7 +393,7 @@ defineExpose({
       <!-- Error Banner -->
       <div
         v-if="opdsError"
-        class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs font-medium text-[var(--md-sys-color-on-error-container)]"
+        class="text-body-small flex items-center justify-between gap-3 rounded-corner-lg bg-error-container px-4 py-3 font-medium text-on-error-container"
       >
         <div class="flex min-w-0 items-center gap-2">
           <LuAlertCircle class="h-4 w-4 shrink-0" />
@@ -429,14 +429,14 @@ defineExpose({
               v-for="link in opdsFeed.nav_links"
               :key="`${link.href}-${link.title}`"
               type="button"
-              class="md-state inline-flex cursor-pointer items-center gap-2 rounded-full border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2 text-xs font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)]/50 hover:bg-[var(--md-sys-color-surface-container-high)]"
+              class="md-state text-label-medium inline-flex cursor-pointer items-center gap-2 rounded-corner-full bg-surface-container-low px-3.5 py-2 text-on-surface transition-colors hover:bg-surface-container-high"
               @click="handleOpdsNavClick(link.href)"
             >
-              <LuFolder class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-primary)]" />
+              <LuFolder class="h-3.5 w-3.5 shrink-0 text-primary" />
               <span class="max-w-[16rem] truncate">{{ link.title }}</span>
               <span
                 v-if="link.count !== null && link.count !== undefined"
-                class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] tabular-nums text-[var(--md-sys-color-on-surface-variant)]"
+                class="text-label-small rounded-corner-full bg-surface-container-highest px-1.5 py-0.5 tabular-nums text-on-surface-variant"
               >
                 {{ link.count }}
               </span>
@@ -565,7 +565,7 @@ defineExpose({
         <!-- Empty Feed -->
         <div
           v-if="opdsFeed.nav_links.length === 0 && opdsFeed.entries.length === 0"
-          class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container-low py-14 text-center text-on-surface-variant"
         >
           {{ t('remote.opdsEmptyFeed') }}
         </div>
@@ -598,7 +598,7 @@ defineExpose({
         <div class="space-y-5">
           <div class="flex gap-4">
             <div
-              class="book-shadow relative aspect-[2/3] w-28 shrink-0 overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container)]"
+              class="book-shadow relative aspect-[2/3] w-28 shrink-0 overflow-hidden rounded-corner-md bg-surface-container"
             >
               <img
                 v-if="opdsDetailEntry.cover_url && !opdsCoverFailed[opdsDetailEntry.id]"
@@ -637,7 +637,7 @@ defineExpose({
             </h4>
             <div
               v-if="opdsDetailEntry.downloads.length === 0"
-              class="rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+              class="text-body-small rounded-corner-lg bg-surface-container p-4 text-center text-on-surface-variant"
             >
               {{ t('remote.opdsNoDownload') }}
             </div>
@@ -645,12 +645,12 @@ defineExpose({
               <div
                 v-for="dl in opdsDetailEntry.downloads"
                 :key="dl.href"
-                class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-3.5 py-2.5"
+                class="flex items-center justify-between gap-3 rounded-corner-lg bg-surface-container px-3.5 py-2.5"
               >
                 <div class="min-w-0">
                   <div class="flex items-center gap-2">
                     <span
-                      class="rounded-md bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-primary-container)]"
+                      class="text-label-small rounded-corner-xs bg-primary-container px-1.5 py-0.5 font-mono uppercase text-on-primary-container"
                     >
                       {{ dl.format || 'FILE' }}
                     </span>

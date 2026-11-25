@@ -195,7 +195,7 @@ function onKeydown(ev: KeyboardEvent): void {
     @keydown="onKeydown"
   >
     <div
-      class="relative h-1 w-full overflow-hidden rounded-corner-full bg-secondary-container"
+      class="relative h-1 w-full overflow-hidden rounded-corner-full bg-surface-container-highest"
     >
       <div
         v-if="bufferedPercent > 0"

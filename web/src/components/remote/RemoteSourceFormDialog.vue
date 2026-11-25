@@ -240,7 +240,7 @@ async function handleSubmit(): Promise<void> {
     <form id="remote-source-form" class="space-y-4 py-1" @submit.prevent="handleSubmit">
       <div
         v-if="errorMsg"
-        class="flex items-start gap-2 rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs font-medium text-[var(--md-sys-color-on-error-container)]"
+        class="text-body-small flex items-start gap-2 rounded-corner-md bg-error-container px-3.5 py-2.5 font-medium text-on-error-container"
       >
         <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
         <span class="break-all">{{ errorMsg }}</span>
@@ -252,7 +252,7 @@ async function handleSubmit(): Promise<void> {
         </label>
         <div
           v-if="lockedProtocol"
-          class="inline-flex h-9 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-secondary-container)] px-3.5 text-xs font-semibold text-[var(--md-sys-color-on-secondary-container)]"
+          class="text-label-medium inline-flex h-9 items-center gap-1.5 rounded-corner-full bg-secondary-container px-3.5 text-on-secondary-container"
         >
           <LuBookOpen v-if="lockedProtocol === 'opds'" class="h-4 w-4 shrink-0" />
           <LuDisc3 v-else class="h-4 w-4 shrink-0" />
@@ -353,7 +353,7 @@ async function handleSubmit(): Promise<void> {
       </div>
 
       <div
-        class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-4 py-3"
+        class="flex items-center justify-between gap-3 rounded-corner-lg bg-surface-container px-4 py-3"
       >
         <MdSwitch
           v-model="allowInsecureTls"

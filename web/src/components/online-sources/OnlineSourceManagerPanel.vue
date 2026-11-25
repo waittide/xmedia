@@ -135,12 +135,12 @@ function closeDebugSheet(): void {
     <!-- Empty State -->
     <div
       v-if="localSources.length === 0"
-      class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center"
+      class="rounded-corner-lg bg-surface-container-low py-14 text-center"
     >
-      <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+      <p class="text-title-small text-on-surface">
         {{ t('onlineSources.panel.emptyTitle', { domain: domainLabel }) }}
       </p>
-      <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+      <p class="text-body-small mt-1 text-on-surface-variant">
         {{ t('onlineSources.panel.emptyHint', { domain: domainLabel }) }}
       </p>
     </div>
@@ -148,9 +148,9 @@ function closeDebugSheet(): void {
     <!-- Empty Filter Result -->
     <div
       v-else-if="filteredSources.length === 0"
-      class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-12 text-center"
+      class="rounded-corner-lg bg-surface-container-low py-12 text-center"
     >
-      <p class="text-sm font-medium text-[var(--md-sys-color-on-surface)]">
+      <p class="text-title-small text-on-surface">
         {{ t('onlineSources.panel.noMatchTitle', { domain: domainLabel }) }}
       </p>
       <button

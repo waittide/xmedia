@@ -28,10 +28,10 @@ const clampedPercent = computed(() => {
 })
 
 const indicatorClass = computed(() => {
-  if (props.tone === 'success') return 'bg-[var(--md-sys-color-success)]'
-  if (props.tone === 'error') return 'bg-[var(--md-sys-color-error)]'
-  if (props.tone === 'neutral') return 'bg-[var(--md-sys-color-outline)]'
-  return 'bg-[var(--md-sys-color-primary)]'
+  if (props.tone === 'success') return 'bg-success'
+  if (props.tone === 'error') return 'bg-error'
+  if (props.tone === 'neutral') return 'bg-outline'
+  return 'bg-primary'
 })
 </script>
 
@@ -42,23 +42,23 @@ const indicatorClass = computed(() => {
     :aria-valuemin="isIndeterminate ? undefined : 0"
     :aria-valuemax="isIndeterminate ? undefined : max"
     :aria-valuenow="isIndeterminate ? undefined : Math.round(Number(value ?? 0))"
-    class="relative h-1 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-secondary-container)]"
+    class="relative h-1 w-full overflow-hidden rounded-corner-full bg-secondary-container"
   >
     <div
       v-if="!isIndeterminate"
-      class="h-full rounded-full transition-[width] duration-[var(--md-sys-motion-duration-medium)] ease-[var(--md-sys-motion-easing-standard)]"
+      class="h-full rounded-corner-full transition-[width] duration-[var(--md-sys-motion-duration-medium)] ease-standard"
       :class="indicatorClass"
       :style="{ width: `${clampedPercent}%` }"
     />
     <div
       v-else
-      class="md-linear-indeterminate h-full w-2/5 rounded-full"
+      class="md-linear-indeterminate h-full w-2/5 rounded-corner-full"
       :class="indicatorClass"
     />
     <span
       v-if="!isIndeterminate && clampedPercent < 98"
       aria-hidden="true"
-      class="pointer-events-none absolute top-0 right-0 h-1 w-1 rounded-full"
+      class="pointer-events-none absolute top-0 right-0 h-1 w-1 rounded-corner-full"
       :class="indicatorClass"
     />
   </div>

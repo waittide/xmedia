@@ -537,7 +537,7 @@ onBeforeUnmount(() => {
             />
             <span
               v-if="isTargetingSelf && book.bound"
-              class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-sm"
+              class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-elevation-1"
             >
               <LuCheck class="h-3 w-3" aria-hidden="true" />
               {{ t('pool.boundLabel') }}
@@ -621,7 +621,7 @@ onBeforeUnmount(() => {
             />
             <span
               v-if="isTargetingSelf && series.bound"
-              class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-sm"
+              class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-elevation-1"
             >
               <LuCheck class="h-3 w-3" aria-hidden="true" />
               {{ t('pool.boundLabel') }}
@@ -782,7 +782,7 @@ onBeforeUnmount(() => {
                 />
                 <span
                   v-if="isTargetingSelf && show.bound"
-                  class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-sm"
+                  class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-elevation-1"
                 >
                   <LuCheck class="h-3 w-3" aria-hidden="true" />
                   {{ t('pool.boundLabel') }}
@@ -863,7 +863,7 @@ onBeforeUnmount(() => {
                 />
                 <span
                   v-if="isTargetingSelf && movie.bound"
-                  class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-sm"
+                  class="text-label-small absolute top-2 left-2 inline-flex items-center gap-1 rounded-corner-full bg-primary px-2 py-0.5 text-on-primary shadow-elevation-1"
                 >
                   <LuCheck class="h-3 w-3" aria-hidden="true" />
                   {{ t('pool.boundLabel') }}
