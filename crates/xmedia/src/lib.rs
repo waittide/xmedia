@@ -976,6 +976,32 @@ mod tests {
                 .unwrap(),
             0
         );
+
+        // Verify /system/overview exposes host root_path to Admin but redacts it for Member
+        let admin_mount_lib = ov_admin["libraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["name"] == "Local Books")
+            .unwrap();
+        assert!(
+            !admin_mount_lib["kind"]["root_path"]
+                .as_str()
+                .unwrap()
+                .is_empty(),
+            "admin should see local mount root_path in /system/overview"
+        );
+        let member_mount_lib = ov_member["libraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["name"] == "Local Books")
+            .unwrap();
+        assert_eq!(
+            member_mount_lib["kind"]["root_path"].as_str().unwrap(),
+            "",
+            "member must never see host root_path in /system/overview"
+        );
     }
 }
 

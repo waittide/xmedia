@@ -339,10 +339,30 @@ async fn delete_user(
     Ok(Json(OkResponse { ok: true }))
 }
 
+fn redact_scan_message_for_non_admin(message: &str) -> String {
+    match message.trim() {
+        "library deleted"
+        | "scan interrupted by server restart"
+        | "library scan aborted or terminated unexpectedly"
+        | "library scan finished without reporting completion" => message.to_string(),
+        _ => "library scan failed".to_string(),
+    }
+}
+
 fn redact_library_for_non_admin(lib: &mut LibraryDto) {
     if let LibraryKind::LocalMount { root_path } = &mut lib.kind {
         root_path.clear();
     }
+    if let ScanStatus::Failed { message } = &mut lib.scan_status {
+        *message = redact_scan_message_for_non_admin(message);
+    }
+}
+
+fn sanitize_sse_event_for_role(mut event: SystemEvent, is_admin: bool) -> SystemEvent {
+    if !is_admin && let SystemEvent::LibraryScanFailed { message, .. } = &mut event {
+        *message = redact_scan_message_for_non_admin(message);
+    }
+    event
 }
 
 async fn list_libraries(
@@ -441,7 +461,7 @@ async fn system_overview(
         .ffmpeg_status_cache
         .get_or_refresh(&state.ffmpeg)
         .await;
-    let libraries = state.libraries.list_libraries(None).await?;
+    let mut libraries = state.libraries.list_libraries(None).await?;
     let mut domains = Vec::with_capacity(state.enabled_modules.len());
 
     for &kind in state.enabled_modules.iter() {
@@ -455,6 +475,12 @@ async fn system_overview(
             item_count,
             scanning,
         });
+    }
+
+    if !user.role.is_admin() {
+        for lib in &mut libraries {
+            redact_library_for_non_admin(lib);
+        }
     }
 
     Ok(Json(SystemOverviewDto {
@@ -485,17 +511,19 @@ fn spawn_sse_event_stream(
     mut rx: tokio::sync::broadcast::Receiver<SystemEvent>,
     initial_events: Vec<SystemEvent>,
     resync_modules: Vec<MediaKind>,
+    is_admin: bool,
     permit: Option<SseConnectionPermit>,
 ) -> SseEventStream {
     let (tx, stream_rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
         for ev in initial_events {
-            let Ok(event) = Event::default().json_data(&ev) else {
+            let safe_ev = sanitize_sse_event_for_role(ev, is_admin);
+            let Ok(event) = Event::default().json_data(&safe_ev) else {
                 continue;
             };
             if tx.send(Ok(event)).await.is_err() {
                 return;
-            }
+            };
         }
         loop {
             tokio::select! {
@@ -503,7 +531,8 @@ fn spawn_sse_event_stream(
                 _ = tx.closed() => break,
                 recv = rx.recv() => match recv {
                     Ok(event) => {
-                        let Ok(sse_event) = Event::default().json_data(&event) else {
+                        let safe_ev = sanitize_sse_event_for_role(event, is_admin);
+                        let Ok(sse_event) = Event::default().json_data(&safe_ev) else {
                             continue;
                         };
                         if tx.send(Ok(sse_event)).await.is_err() {
@@ -582,6 +611,7 @@ async fn events_stream(
         rx,
         initial_scans,
         (*state.enabled_modules).clone(),
+        user.role.is_admin(),
         Some(permit),
     );
     let mut res = Sse::new(stream)
@@ -614,7 +644,7 @@ mod tests {
             scanned: 3,
             total: Some(10),
         }];
-        let mut stream = spawn_sse_event_stream(rx, initial, vec![MediaKind::Book], None);
+        let mut stream = spawn_sse_event_stream(rx, initial, vec![MediaKind::Book], true, None);
 
         let first = tokio::time::timeout(Duration::from_secs(2), next_event(&mut stream))
             .await
@@ -639,6 +669,74 @@ mod tests {
         })
         .await
         .expect("broadcast receiver should be dropped promptly after SSE client disconnect");
+    }
+
+    #[tokio::test]
+    async fn sse_stream_redacts_scan_failure_host_paths_for_non_admin_only() {
+        use axum::body::to_bytes;
+
+        let (tx, rx_member) = broadcast::channel(16);
+        let rx_admin = tx.subscribe();
+
+        let mut member_stream =
+            spawn_sse_event_stream(rx_member, Vec::new(), vec![MediaKind::Video], false, None);
+        let mut admin_stream =
+            spawn_sse_event_stream(rx_admin, Vec::new(), vec![MediaKind::Video], true, None);
+
+        tx.send(SystemEvent::LibraryScanFailed {
+            library_id: LibraryId::new(),
+            library_name: "Movies".into(),
+            media_kind: MediaKind::Video,
+            message: "mount directory '/srv/secret-nas/movies' is offline or missing".into(),
+        })
+        .unwrap();
+
+        let member_ev =
+            tokio::time::timeout(Duration::from_secs(2), next_event(&mut member_stream))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        let admin_ev = tokio::time::timeout(Duration::from_secs(2), next_event(&mut admin_stream))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let member_sse = Sse::new(futures_stream_once(member_ev)).into_response();
+        let member_body = String::from_utf8(
+            to_bytes(member_sse.into_body(), 4096)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            !member_body.contains("/srv/secret-nas"),
+            "non-admin SSE frame must never leak host path: {member_body}"
+        );
+        assert!(member_body.contains("library scan failed"));
+
+        let admin_sse = Sse::new(futures_stream_once(admin_ev)).into_response();
+        let admin_body = String::from_utf8(
+            to_bytes(admin_sse.into_body(), 4096)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            admin_body.contains("/srv/secret-nas/movies"),
+            "admin SSE frame should retain full diagnostic message: {admin_body}"
+        );
+    }
+
+    fn futures_stream_once(
+        ev: Event,
+    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
+        let (tx, rx) = mpsc::channel(1);
+        let _ = tx.try_send(Ok(ev));
+        SseEventStream { rx, _permit: None }
     }
 
     #[cfg(unix)]
