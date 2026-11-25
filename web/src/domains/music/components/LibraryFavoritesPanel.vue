@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LuHeart, LuPlay, LuShuffle } from 'vue-icons-plus/lu'
 import { MediaErrorState } from '@/components/domain'
 import { MdButton, MdChip, MdEmptyState, MdSkeleton } from '@/components/ui'
@@ -62,17 +62,29 @@ const visibleArtists = computed(() =>
   ),
 )
 
+let loadSeq = 0
+
 async function loadStarred(): Promise<void> {
+  const seq = ++loadSeq
   loadingLocal.value = true
   localError.value = null
   try {
-    starred.value = await api.getStarred()
+    const res = await api.getStarred()
+    if (seq !== loadSeq) return
+    starred.value = res
   } catch (err) {
+    if (seq !== loadSeq) return
     localError.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loadingLocal.value = false
+    if (seq === loadSeq) {
+      loadingLocal.value = false
+    }
   }
 }
+
+onBeforeUnmount(() => {
+  loadSeq += 1
+})
 
 async function refresh(): Promise<void> {
   await loadStarred()

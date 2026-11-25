@@ -188,10 +188,23 @@ export const usePlayerStore = defineStore('player', () => {
   let scrobbledCurrent = false
   let queueSyncTimer: ReturnType<typeof setTimeout> | null = null
   let pendingSeekHandler: (() => void) | null = null
+  let trackResolveAbort: AbortController | null = null
+  let lyricsAbort: AbortController | null = null
+  let restoreQueueAbort: AbortController | null = null
   let lyricsLoadedTrackId: string | null = null
   let playHistory: number[] = []
   let shufflePool: number[] = []
   let queueHadLocalOnClear = false
+
+  function abortTrackResolve(): void {
+    trackResolveAbort?.abort()
+    trackResolveAbort = null
+  }
+
+  function abortLyricsFetch(): void {
+    lyricsAbort?.abort()
+    lyricsAbort = null
+  }
 
   const trackingCurrentOnline = ref(false)
   const trackedOnlineKeys = ref<Record<string, boolean>>({})
@@ -421,7 +434,7 @@ export const usePlayerStore = defineStore('player', () => {
     }
   })
 
-  audio.addEventListener('timeupdate', () => {
+  const handleAudioTimeUpdate = (): void => {
     const t = streamOffsetSecs.value + (audio.currentTime || 0)
     currentTimeSecs.value = t
 
@@ -439,32 +452,32 @@ export const usePlayerStore = defineStore('player', () => {
         void api.scrobble(item.track.id, true).catch(() => {})
       }
     }
-  })
+  }
 
-  audio.addEventListener('durationchange', () => {
+  const handleAudioDurationChange = (): void => {
     rawAudioDuration.value = audio.duration || 0
-  })
+  }
 
-  audio.addEventListener('play', () => {
+  const handleAudioPlay = (): void => {
     isPlaying.value = true
     playbackError.value = null
-  })
+  }
 
-  audio.addEventListener('pause', () => {
+  const handleAudioPause = (): void => {
     isPlaying.value = false
     scheduleQueueSync()
-  })
+  }
 
-  audio.addEventListener('ended', () => {
+  const handleAudioEnded = (): void => {
     if (playMode.value === 'loop_one' && currentTrack.value) {
       scrobbledCurrent = false
       void loadAndPlayCurrent(0, true)
       return
     }
     playNext()
-  })
+  }
 
-  audio.addEventListener('error', () => {
+  const handleAudioError = (): void => {
     if (!audio.src || !currentItem.value) return
     isPlaying.value = false
     const msg = audio.error?.message || tMusic('player.playbackError')
@@ -472,7 +485,14 @@ export const usePlayerStore = defineStore('player', () => {
     if (currentItem.value.kind !== 'online') {
       useSnackbarStore().show({ message: msg, tone: 'error' })
     }
-  })
+  }
+
+  audio.addEventListener('timeupdate', handleAudioTimeUpdate)
+  audio.addEventListener('durationchange', handleAudioDurationChange)
+  audio.addEventListener('play', handleAudioPlay)
+  audio.addEventListener('pause', handleAudioPause)
+  audio.addEventListener('ended', handleAudioEnded)
+  audio.addEventListener('error', handleAudioError)
 
   function updateMediaSession(track: PlayerTrackDisplay | null): void {
     if (!('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') return
@@ -519,6 +539,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function fetchLyricsFor(item: PlayerQueueItem): Promise<void> {
+    abortLyricsFetch()
     const targetKey = item.key
     if (item.kind === 'remote') {
       if (currentItem.value?.key === targetKey) {
@@ -538,32 +559,42 @@ export const usePlayerStore = defineStore('player', () => {
       }
       return
     }
+    const controller = new AbortController()
+    lyricsAbort = controller
     lyricsLoading.value = true
     try {
       const res =
         item.kind === 'local'
-          ? await api.getTrackLyrics(item.track.id)
-          : await onlineMusicApi.fetchLyrics({
-              source_id: item.source_id,
-              track_id: item.track.track_id || null,
-              lyric_id: item.track.lyric_id || null,
-              title: item.track.title || null,
-              artist: item.track.artist || null,
-              detail_url: item.track.detail_url || null,
-            })
+          ? await api.getTrackLyrics(item.track.id, { signal: controller.signal })
+          : await onlineMusicApi.fetchLyrics(
+              {
+                source_id: item.source_id,
+                track_id: item.track.track_id || null,
+                lyric_id: item.track.lyric_id || null,
+                title: item.track.title || null,
+                artist: item.track.artist || null,
+                detail_url: item.track.detail_url || null,
+              },
+              { signal: controller.signal },
+            )
+      if (controller.signal.aborted) return
       if (currentItem.value?.key === targetKey) {
         lyrics.value = res
         translatedLyrics.value = null
         lyricsLoadedTrackId = targetKey
       }
-    } catch {
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) return
       if (currentItem.value?.key === targetKey) {
         lyrics.value = null
         translatedLyrics.value = null
         lyricsLoadedTrackId = targetKey
       }
     } finally {
-      if (currentItem.value?.key === targetKey) {
+      if (lyricsAbort === controller) {
+        lyricsAbort = null
+      }
+      if (!controller.signal.aborted && currentItem.value?.key === targetKey) {
         lyricsLoading.value = false
       }
     }
@@ -612,8 +643,12 @@ export const usePlayerStore = defineStore('player', () => {
   ): Promise<void> {
     const item = currentItem.value
     if (!item) return
+    abortTrackResolve()
     const seq = ++loadSeq
     const targetKey = item.key
+    if (lyricsLoadedTrackId !== targetKey) {
+      abortLyricsFetch()
+    }
 
     if (item.kind === 'local') {
       onlineResolving.value = false
@@ -779,25 +814,32 @@ export const usePlayerStore = defineStore('player', () => {
       !needsFullInfo && overrideQuality !== undefined && overrideQuality !== item.selectedQuality
 
     if (needsFullInfo || needsQualitySwitch) {
+      const resolveController = new AbortController()
+      trackResolveAbort = resolveController
       onlineResolving.value = true
       try {
         if (needsFullInfo) {
-          const resolved = await onlineMusicApi.fetchTrackInfo({
-            source_id: item.source_id,
-            track_id: item.track.track_id || null,
-            detail_url: item.track.detail_url || null,
-            quality: requestedQuality,
-            title: item.track.title || null,
-            artist: item.track.artist || null,
-            album: item.track.album ?? null,
-            duration_secs: item.track.duration_secs ?? null,
-            cover_url: item.track.cover_url ?? null,
-            cover_id: item.track.cover_id ?? null,
-            url_id: item.track.url_id ?? null,
-            lyric_id: item.track.lyric_id ?? null,
-            play_url: item.track.play_url ?? null,
-          })
-          if (seq !== loadSeq || currentItem.value?.key !== targetKey) return
+          const resolved = await onlineMusicApi.fetchTrackInfo(
+            {
+              source_id: item.source_id,
+              track_id: item.track.track_id || null,
+              detail_url: item.track.detail_url || null,
+              quality: requestedQuality,
+              title: item.track.title || null,
+              artist: item.track.artist || null,
+              album: item.track.album ?? null,
+              duration_secs: item.track.duration_secs ?? null,
+              cover_url: item.track.cover_url ?? null,
+              cover_id: item.track.cover_id ?? null,
+              url_id: item.track.url_id ?? null,
+              lyric_id: item.track.lyric_id ?? null,
+              play_url: item.track.play_url ?? null,
+            },
+            { signal: resolveController.signal },
+          )
+          if (resolveController.signal.aborted || seq !== loadSeq || currentItem.value?.key !== targetKey) {
+            return
+          }
           item.resolved = resolved
           item.resolvedAtMs = Date.now()
           item.selectedQuality = requestedQuality
@@ -808,17 +850,22 @@ export const usePlayerStore = defineStore('player', () => {
           lyricsLoadedTrackId = targetKey
           lyricsLoading.value = false
         } else if (needsQualitySwitch && item.resolved) {
-          const streamRes = await onlineMusicApi.fetchStream({
-            source_id: item.source_id,
-            track_id: item.resolved.track.track_id || item.track.track_id || null,
-            url_id: item.resolved.track.url_id ?? item.track.url_id ?? null,
-            play_url: item.resolved.track.play_url ?? item.track.play_url ?? null,
-            quality: overrideQuality ?? null,
-            detail_url: item.resolved.track.detail_url ?? item.track.detail_url ?? null,
-            title: item.resolved.track.title || item.track.title || null,
-            artist: item.resolved.track.artist || item.track.artist || null,
-          })
-          if (seq !== loadSeq || currentItem.value?.key !== targetKey) return
+          const streamRes = await onlineMusicApi.fetchStream(
+            {
+              source_id: item.source_id,
+              track_id: item.resolved.track.track_id || item.track.track_id || null,
+              url_id: item.resolved.track.url_id ?? item.track.url_id ?? null,
+              play_url: item.resolved.track.play_url ?? item.track.play_url ?? null,
+              quality: overrideQuality ?? null,
+              detail_url: item.resolved.track.detail_url ?? item.track.detail_url ?? null,
+              title: item.resolved.track.title || item.track.title || null,
+              artist: item.resolved.track.artist || item.track.artist || null,
+            },
+            { signal: resolveController.signal },
+          )
+          if (resolveController.signal.aborted || seq !== loadSeq || currentItem.value?.key !== targetKey) {
+            return
+          }
           item.resolved = {
             ...item.resolved,
             stream_url: streamRes.stream_url,
@@ -833,13 +880,23 @@ export const usePlayerStore = defineStore('player', () => {
           item.activeBitrate = streamRes.bitrate ?? item.activeBitrate
         }
       } catch (err) {
-        if (seq !== loadSeq || currentItem.value?.key !== targetKey) return
+        if (
+          resolveController.signal.aborted ||
+          seq !== loadSeq ||
+          currentItem.value?.key !== targetKey ||
+          (err instanceof Error && err.name === 'AbortError')
+        ) {
+          return
+        }
         const msg = err instanceof Error ? err.message : String(err)
         playbackError.value = msg
         isPlaying.value = false
         useSnackbarStore().show({ message: msg, tone: 'error' })
         return
       } finally {
+        if (trackResolveAbort === resolveController) {
+          trackResolveAbort = null
+        }
         if (seq === loadSeq) {
           onlineResolving.value = false
         }
@@ -1282,6 +1339,8 @@ export const usePlayerStore = defineStore('player', () => {
     }
     if (queue.value.length === 0) {
       loadSeq += 1
+      abortTrackResolve()
+      abortLyricsFetch()
       clearPendingSeek()
       audio.pause()
       audio.removeAttribute('src')
@@ -1291,6 +1350,7 @@ export const usePlayerStore = defineStore('player', () => {
       bufferedRatio.value = 0
       onlineResolving.value = false
       playbackError.value = null
+      lyricsLoading.value = false
       lyrics.value = null
       translatedLyrics.value = null
       lyricsLoadedTrackId = null
@@ -1316,6 +1376,8 @@ export const usePlayerStore = defineStore('player', () => {
 
   function clearQueue(): void {
     loadSeq += 1
+    abortTrackResolve()
+    abortLyricsFetch()
     queueHadLocalOnClear = queue.value.some((i) => i.kind === 'local')
     clearPendingSeek()
     audio.pause()
@@ -1327,6 +1389,7 @@ export const usePlayerStore = defineStore('player', () => {
     bufferedRatio.value = 0
     onlineResolving.value = false
     playbackError.value = null
+    lyricsLoading.value = false
     lyrics.value = null
     translatedLyrics.value = null
     lyricsLoadedTrackId = null
@@ -1337,6 +1400,10 @@ export const usePlayerStore = defineStore('player', () => {
   function resetForLogout(): void {
     loadSeq += 1
     queueEpoch += 1
+    abortTrackResolve()
+    abortLyricsFetch()
+    restoreQueueAbort?.abort()
+    restoreQueueAbort = null
     queueDirty = false
     queueHadLocalOnClear = false
     if (queueSyncTimer) {
@@ -1432,17 +1499,41 @@ export const usePlayerStore = defineStore('player', () => {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', flushQueueOnPageHide)
-    onScopeDispose(() => {
-      window.removeEventListener('pagehide', flushQueueOnPageHide)
-    })
   }
+
+  onScopeDispose(() => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', flushQueueOnPageHide)
+    }
+    if (queueSyncTimer) {
+      clearTimeout(queueSyncTimer)
+      queueSyncTimer = null
+    }
+    abortTrackResolve()
+    abortLyricsFetch()
+    restoreQueueAbort?.abort()
+    restoreQueueAbort = null
+    clearPendingSeek()
+    audio.removeEventListener('timeupdate', handleAudioTimeUpdate)
+    audio.removeEventListener('durationchange', handleAudioDurationChange)
+    audio.removeEventListener('play', handleAudioPlay)
+    audio.removeEventListener('pause', handleAudioPause)
+    audio.removeEventListener('ended', handleAudioEnded)
+    audio.removeEventListener('error', handleAudioError)
+    audio.pause()
+    audio.removeAttribute('src')
+    detachAudioElement()
+  })
 
   async function restoreRemoteQueue(force = false): Promise<void> {
     if (!force && queue.value.length > 0) return
+    restoreQueueAbort?.abort()
+    const controller = new AbortController()
+    restoreQueueAbort = controller
     const epoch = queueEpoch
     try {
-      const saved = await api.getPlayQueue()
-      if (epoch !== queueEpoch) return
+      const saved = await api.getPlayQueue({ signal: controller.signal })
+      if (controller.signal.aborted || epoch !== queueEpoch) return
       if (!force && queue.value.length > 0) return
       if (!saved || saved.tracks.length === 0) return
       queueHadLocalOnClear = false
@@ -1456,6 +1547,10 @@ export const usePlayerStore = defineStore('player', () => {
       await loadAndPlayCurrent(resumeSecs, false)
     } catch {
       // ignore
+    } finally {
+      if (restoreQueueAbort === controller) {
+        restoreQueueAbort = null
+      }
     }
   }
 

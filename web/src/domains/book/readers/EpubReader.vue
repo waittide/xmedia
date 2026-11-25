@@ -55,6 +55,7 @@ let locationsReady = false
 let lastKnownCfi = ''
 let unmounted = false
 let renderSeq = 0
+let fetchAbortController: AbortController | null = null
 let touchStartX = 0
 let touchStartY = 0
 
@@ -406,13 +407,17 @@ function handleRelocated(...args: unknown[]): void {
 }
 
 async function loadEpub(): Promise<void> {
+  fetchAbortController?.abort()
+  const controller = new AbortController()
+  fetchAbortController = controller
   loading.value = true
   errorMsg.value = ''
   try {
     const resp = await fetch(api.fileUrl(props.bookId), {
       credentials: 'include',
+      signal: controller.signal,
     })
-    if (unmounted) return
+    if (unmounted || controller.signal.aborted) return
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`)
     }
@@ -498,7 +503,13 @@ async function loadEpub(): Promise<void> {
     destroyRendition()
     book?.destroy()
     book = null
-    if (unmounted) return
+    if (
+      unmounted ||
+      controller.signal.aborted ||
+      (err instanceof Error && err.name === 'AbortError')
+    ) {
+      return
+    }
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
   }
@@ -537,6 +548,8 @@ watch(
 onBeforeUnmount(() => {
   unmounted = true
   renderSeq += 1
+  fetchAbortController?.abort()
+  fetchAbortController = null
   window.removeEventListener('keydown', handleKeydown)
   destroyRendition()
   book?.destroy()

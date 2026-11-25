@@ -167,8 +167,10 @@ export const api = {
   recentTracks: (limit = 50) =>
     requestJson<TrackDto[]>(`/music/tracks/recent${toQuery({ limit })}`),
   getTrack: (id: string) => requestJson<TrackDto>(`/music/tracks/${encodeURIComponent(id)}`),
-  getTrackLyrics: (id: string) =>
-    requestJson<StructuredLyricsDto>(`/music/tracks/${encodeURIComponent(id)}/lyrics`),
+  getTrackLyrics: (id: string, options?: { signal?: AbortSignal }) =>
+    requestJson<StructuredLyricsDto>(`/music/tracks/${encodeURIComponent(id)}/lyrics`, {
+      signal: options?.signal,
+    }),
   listAlbums: (params: {
     type?: AlbumListType
     library_id?: string
@@ -253,7 +255,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ track_id, submission, played_at_ms: Date.now() }),
     }),
-  getPlayQueue: () => requestJson<PlayQueueDto | null>('/music/play-queue'),
+  getPlayQueue: (options?: { signal?: AbortSignal }) =>
+    requestJson<PlayQueueDto | null>('/music/play-queue', { signal: options?.signal }),
   savePlayQueue: (payload: {
     track_ids: string[]
     current_track_id: string | null

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   LuBookmark,
   LuClock,
@@ -152,7 +152,10 @@ const hasAnyContent = computed(
     filteredRecentTracks.value.length > 0,
 )
 
+let loadSeq = 0
+
 async function loadLocalContinue(): Promise<void> {
+  const seq = ++loadSeq
   loadingLocal.value = true
   localError.value = null
   try {
@@ -162,6 +165,7 @@ async function loadLocalContinue(): Promise<void> {
       api.listAlbums({ type: 'recent', size: 6 }),
       api.recentTracks(50),
     ])
+    if (seq !== loadSeq) return
     if (qRes.status === 'fulfilled') savedQueue.value = qRes.value
     if (bmRes.status === 'fulfilled') bookmarks.value = bmRes.value
     if (alRes.status === 'fulfilled') recentAlbums.value = alRes.value.items
@@ -176,9 +180,15 @@ async function loadLocalContinue(): Promise<void> {
         trRes.reason instanceof Error ? trRes.reason.message : String(trRes.reason)
     }
   } finally {
-    loadingLocal.value = false
+    if (seq === loadSeq) {
+      loadingLocal.value = false
+    }
   }
 }
+
+onBeforeUnmount(() => {
+  loadSeq += 1
+})
 
 async function refresh(): Promise<void> {
   await loadLocalContinue()

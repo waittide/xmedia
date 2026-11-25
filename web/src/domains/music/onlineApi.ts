@@ -331,52 +331,64 @@ export const onlineMusicApi = {
       signal: options?.signal,
     }),
 
-  fetchTrackInfo: (payload: {
-    source_id: string
-    track_id?: string | null
-    detail_url?: string | null
-    quality?: string | null
-    title?: string | null
-    artist?: string | null
-    album?: string | null
-    duration_secs?: number | null
-    cover_url?: string | null
-    cover_id?: string | null
-    url_id?: string | null
-    lyric_id?: string | null
-    play_url?: string | null
-  }): Promise<OnlineMusicResolvedTrackDto> =>
+  fetchTrackInfo: (
+    payload: {
+      source_id: string
+      track_id?: string | null
+      detail_url?: string | null
+      quality?: string | null
+      title?: string | null
+      artist?: string | null
+      album?: string | null
+      duration_secs?: number | null
+      cover_url?: string | null
+      cover_id?: string | null
+      url_id?: string | null
+      lyric_id?: string | null
+      play_url?: string | null
+    },
+    options?: { signal?: AbortSignal },
+  ): Promise<OnlineMusicResolvedTrackDto> =>
     requestJson('/music/online/track-info', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: options?.signal,
     }),
 
-  fetchStream: (payload: {
-    source_id: string
-    track_id?: string | null
-    url_id?: string | null
-    play_url?: string | null
-    quality?: string | null
-    detail_url?: string | null
-    title?: string | null
-    artist?: string | null
-  }): Promise<OnlineMusicStreamResponseDto> =>
+  fetchStream: (
+    payload: {
+      source_id: string
+      track_id?: string | null
+      url_id?: string | null
+      play_url?: string | null
+      quality?: string | null
+      detail_url?: string | null
+      title?: string | null
+      artist?: string | null
+    },
+    options?: { signal?: AbortSignal },
+  ): Promise<OnlineMusicStreamResponseDto> =>
     requestJson('/music/online/stream', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: options?.signal,
     }),
 
-  fetchLyrics: (payload: {
-    source_id: string
-    track_id?: string | null
-    lyric_id?: string | null
-    title?: string | null
-    artist?: string | null
-    detail_url?: string | null
-  }): Promise<StructuredLyricsDto> =>
+  fetchLyrics: (
+    payload: {
+      source_id: string
+      track_id?: string | null
+      lyric_id?: string | null
+      title?: string | null
+      artist?: string | null
+      detail_url?: string | null
+    },
+    options?: { signal?: AbortSignal },
+  ): Promise<StructuredLyricsDto> =>
     requestJson('/music/online/lyrics', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: options?.signal,
     }),
 
   trackOnlineTrack: (payload: TrackOnlineMusicInput): Promise<TrackDto> =>

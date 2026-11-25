@@ -297,17 +297,27 @@ async function handleTrackToLibrary(): Promise<void> {
   }
 }
 
+let detailAbortController: AbortController | null = null
+let playAbortController: AbortController | null = null
+
 async function fetchDetailFallbackIfNeeded(): Promise<boolean> {
   if (playGroups.value.length > 0 && currentPlayUrl.value) return false
   if (!sourceId.value || (!videoId.value && !detailUrl.value)) return false
 
+  detailAbortController?.abort()
+  const controller = new AbortController()
+  detailAbortController = controller
   const seq = ++detailSeq
   try {
-    const res = await onlineVideoApi.detail(sourceId.value, {
-      video_id: videoId.value || null,
-      detail_url: detailUrl.value || null,
-    })
-    if (unmounted || seq !== detailSeq) return false
+    const res = await onlineVideoApi.detail(
+      sourceId.value,
+      {
+        video_id: videoId.value || null,
+        detail_url: detailUrl.value || null,
+      },
+      { signal: controller.signal },
+    )
+    if (unmounted || controller.signal.aborted || seq !== detailSeq) return false
 
     if (!title.value && res.title) title.value = res.title
     if (!sourceName.value && res.source_name) sourceName.value = res.source_name
@@ -371,6 +381,9 @@ function syncMediaSession(): void {
 }
 
 async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> {
+  playAbortController?.abort()
+  const controller = new AbortController()
+  playAbortController = controller
   const seq = ++playSeq
   const requestedPreserve = options?.preserveTimeSecs ?? 0
 
@@ -413,8 +426,9 @@ async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> 
       sourceId.value,
       currentPlayUrl.value,
       activeGroupName.value || null,
+      { signal: controller.signal },
     )
-    if (unmounted || seq !== playSeq) return
+    if (unmounted || controller.signal.aborted || seq !== playSeq) return
     playResult.value = res
 
     const isHls = res.stream_type === 'hls' || /\.m3u8(\?|$)/i.test(res.stream_url)
@@ -471,12 +485,19 @@ async function loadPlay(options?: { preserveTimeSecs?: number }): Promise<void> 
 
     shellRef.value?.showHud()
   } catch (err) {
-    if (unmounted || seq !== playSeq) return
+    if (
+      unmounted ||
+      controller.signal.aborted ||
+      seq !== playSeq ||
+      (err instanceof Error && err.name === 'AbortError')
+    ) {
+      return
+    }
     isPlaying.value = false
     isBuffering.value = false
     loadError.value = err instanceof Error && err.message ? err.message : t('online.streamLoadFailed')
   } finally {
-    if (!unmounted && seq === playSeq) {
+    if (!unmounted && !controller.signal.aborted && seq === playSeq) {
       loadingStream.value = false
     }
   }
@@ -700,6 +721,10 @@ onBeforeUnmount(() => {
   unmounted = true
   playSeq += 1
   detailSeq += 1
+  playAbortController?.abort()
+  playAbortController = null
+  detailAbortController?.abort()
+  detailAbortController = null
   stopAndClearVideoElement()
   clearVideoMediaSession()
 })
