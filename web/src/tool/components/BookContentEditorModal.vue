@@ -1,14 +1,5 @@
 <script setup lang="ts">
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  ref,
-  shallowRef,
-  toRef,
-  triggerRef,
-  watch,
-} from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuLoader2, LuX } from 'vue-icons-plus/lu'
 import MdDialog from '@/components/ui/MdDialog.vue'
@@ -16,10 +7,12 @@ import MdIconButton from '@/components/ui/MdIconButton.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
+import type { MediaFileDetail, MediaFileEntry } from '../types'
 import BookEditorCssPanel from './book-editor/BookEditorCssPanel.vue'
 import BookEditorFindReplaceBar from './book-editor/BookEditorFindReplaceBar.vue'
 import BookEditorHeader from './book-editor/BookEditorHeader.vue'
 import BookEditorProofreadPanel from './book-editor/BookEditorProofreadPanel.vue'
+import BookEditorSurfacePane from './book-editor/BookEditorSurfacePane.vue'
 import BookEditorTocSidebar from './book-editor/BookEditorTocSidebar.vue'
 import BookEditorToolbar from './book-editor/BookEditorToolbar.vue'
 import { buildLivePreviewSrcdoc as buildPreviewDoc } from './book-editor/previewDoc'
@@ -30,19 +23,7 @@ import {
 } from './book-editor/useBookEditorChapters'
 import { useBookEditorDocument } from './book-editor/useBookEditorDocument'
 import { useBookEditorFindReplace } from './book-editor/useBookEditorFindReplace'
-import {
-  countNonWhitespace,
-  extractPlainFromXhtml,
-  hydrateXhtmlForBrowser as hydrateXhtmlForBrowserRaw,
-  serializeContainerToValidXhtml,
-} from './book-editor/xhtmlUtils'
-import {
-  formatSelectionBlock,
-  insertHorizontalRuleAtSelection,
-  removeInlineFormatAtSelection,
-  toggleInlineTagAtSelection,
-} from './book-editor/wysiwygDom'
-import type { MediaFileDetail, MediaFileEntry } from '../types'
+import { useBookEditorSurface } from './book-editor/useBookEditorSurface'
 
 const props = defineProps<{
   open: boolean
@@ -68,12 +49,10 @@ const docStylesheets = shallowRef<string[]>([])
 const forceHorizontalSpine = ref(false)
 const primaryCssDraft = ref('')
 
-// Shallow array avoids deep reactive proxy overhead on 1,000+ chapters
 const chapters = shallowRef<ChapterRecord[]>([])
 const activeIndex = ref(0)
 const hasUnsavedEdits = ref(false)
 
-// Active chapter isolated buffers for 0ms keystroke latency
 const surfaceMode = ref<SurfaceMode>('wysiwyg')
 const showLivePreview = ref(false)
 const indentParagraphs = ref(true)
@@ -82,13 +61,17 @@ const activeCharCount = ref(0)
 const sourceBuffer = ref('')
 const previewSrcdoc = ref('')
 
-const wysiwygRef = ref<HTMLDivElement | null>(null)
-const sourceTextareaRef = ref<HTMLTextAreaElement | null>(null)
+const surfacePaneRef = ref<InstanceType<typeof BookEditorSurfacePane> | null>(null)
+const wysiwygRef = computed<HTMLDivElement | null>({
+  get: () => surfacePaneRef.value?.wysiwygEl ?? null,
+  set: () => {},
+})
+const sourceTextareaRef = computed<HTMLTextAreaElement | null>({
+  get: () => surfacePaneRef.value?.sourceTextareaEl ?? null,
+  set: () => {},
+})
 const findBarRef = ref<InstanceType<typeof BookEditorFindReplaceBar> | null>(null)
 const epubImageInputRef = ref<HTMLInputElement | null>(null)
-
-let isComposing = false
-let idleSyncTimer: ReturnType<typeof setTimeout> | null = null
 
 const tocResetKey = ref(0)
 const deleteSourceTxt = ref(false)
@@ -105,10 +88,6 @@ function epubAssetContext() {
   return entry && docFormat.value === 'epub'
     ? { rootId: entry.root_id, relPath: entry.rel_path }
     : null
-}
-
-function hydrateXhtmlForBrowser(xhtmlBody: string, sourceHref: string | null): string {
-  return hydrateXhtmlForBrowserRaw(xhtmlBody, sourceHref, epubAssetContext())
 }
 
 function buildLivePreviewSrcdoc(xhtmlBody: string, sourceHref: string | null): string {
@@ -132,58 +111,42 @@ const currentRecord = computed<ChapterRecord | null>(
   () => chapters.value[activeIndex.value] ?? null,
 )
 
-function clearIdleSyncTimer(): void {
-  if (idleSyncTimer) {
-    clearTimeout(idleSyncTimer)
-    idleSyncTimer = null
-  }
-}
-
-function flushActiveSurfaceToRecord(): void {
-  clearIdleSyncTimer()
-  const rec = chapters.value[activeIndex.value]
-  if (!rec) return
-
-  rec.title = activeTitle.value.trim() || rec.title
-  if (surfaceMode.value === 'wysiwyg') {
-    const el = wysiwygRef.value
-    if (el) {
-      const serialized = serializeContainerToValidXhtml(el)
-      rec.xhtmlBody = serialized || `  <p><br/></p>`
-      const plain = extractPlainFromXhtml(rec.xhtmlBody, rec.title)
-      rec.plainCache = plain
-      rec.charCount = countNonWhitespace(plain)
-      rec.hasRichMedia = /<(?:img|svg|image|table|video|audio|figure)\b/i.test(rec.xhtmlBody)
-      activeCharCount.value = rec.charCount
-    }
-  } else {
-    rec.xhtmlBody = sourceBuffer.value
-    const plain = extractPlainFromXhtml(rec.xhtmlBody, rec.title)
-    rec.plainCache = plain
-    rec.charCount = countNonWhitespace(plain)
-    rec.hasRichMedia = /<(?:img|svg|image|table|video|audio|figure)\b/i.test(rec.xhtmlBody)
-    activeCharCount.value = rec.charCount
-  }
-  triggerRef(chapters)
-}
-
-async function mountActiveChapterIntoSurface(): Promise<void> {
-  const rec = chapters.value[activeIndex.value]
-  if (!rec) return
-
-  activeTitle.value = rec.title
-  activeCharCount.value = rec.charCount
-  sourceBuffer.value = rec.xhtmlBody
-
-  if (showLivePreview.value) {
-    previewSrcdoc.value = buildLivePreviewSrcdoc(rec.xhtmlBody, rec.sourceHref)
-  }
-
-  await nextTick()
-  if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
-    wysiwygRef.value.innerHTML = hydrateXhtmlForBrowser(rec.xhtmlBody, rec.sourceHref)
-  }
-}
+const {
+  clearIdleSyncTimer,
+  flushActiveSurfaceToRecord,
+  mountActiveChapterIntoSurface,
+  onWysiwygFocus,
+  onWysiwygCompositionStart,
+  onWysiwygInput,
+  onWysiwygCompositionEnd,
+  onSourceTextareaInput,
+  onSourceKeydown,
+  onActiveTitleInput,
+  selectChapter,
+  switchSurfaceMode,
+  toggleLivePreview,
+  execWysiwygCmd,
+  formatBlockTag,
+  wrapInlineCode,
+  insertHorizontalRule,
+} = useBookEditorSurface({
+  chapters,
+  activeIndex,
+  currentRecord,
+  hasUnsavedEdits,
+  surfaceMode,
+  showLivePreview,
+  indentParagraphs,
+  activeTitle,
+  activeCharCount,
+  sourceBuffer,
+  previewSrcdoc,
+  wysiwygRef,
+  sourceTextareaRef,
+  epubAssetContext,
+  buildLivePreviewSrcdoc,
+  themeDeps: () => [indentParagraphs.value, themeStore.isDark, themeStore.effectiveSeedColor],
+})
 
 const {
   mapDtoList,
@@ -299,257 +262,6 @@ const {
   onConverted: (detail, deleted) => emit('converted', detail, deleted),
 })
 
-function scheduleIdleMetricsUpdate(): void {
-  clearIdleSyncTimer()
-  idleSyncTimer = setTimeout(() => {
-    idleSyncTimer = null
-    const rec = chapters.value[activeIndex.value]
-    if (!rec) return
-    if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
-      const text = wysiwygRef.value.innerText ?? ''
-      activeCharCount.value = countNonWhitespace(text)
-      if (showLivePreview.value) {
-        const xhtml = serializeContainerToValidXhtml(wysiwygRef.value)
-        previewSrcdoc.value = buildLivePreviewSrcdoc(xhtml, rec.sourceHref)
-      }
-    } else if (surfaceMode.value === 'xhtml') {
-      const plain = extractPlainFromXhtml(sourceBuffer.value, activeTitle.value)
-      activeCharCount.value = countNonWhitespace(plain)
-      if (showLivePreview.value) {
-        previewSrcdoc.value = buildLivePreviewSrcdoc(sourceBuffer.value, rec.sourceHref)
-      }
-    }
-  }, 160)
-}
-
-const MAX_UNDO_HISTORY = 50
-let undoStack: string[] = []
-let redoStack: string[] = []
-let lastRecordedHtml = ''
-
-function resetWysiwygHistory(): void {
-  undoStack = []
-  redoStack = []
-  lastRecordedHtml = wysiwygRef.value?.innerHTML ?? ''
-}
-
-function recordWysiwygUndoSnapshot(): void {
-  if (!wysiwygRef.value) return
-  const current = wysiwygRef.value.innerHTML
-  if (lastRecordedHtml && current !== lastRecordedHtml) {
-    undoStack.push(lastRecordedHtml)
-    if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
-    redoStack = []
-  }
-  lastRecordedHtml = current
-}
-
-function onWysiwygInput(): void {
-  hasUnsavedEdits.value = true
-  if (isComposing) return
-  recordWysiwygUndoSnapshot()
-  scheduleIdleMetricsUpdate()
-}
-
-function onWysiwygCompositionEnd(): void {
-  isComposing = false
-  hasUnsavedEdits.value = true
-  recordWysiwygUndoSnapshot()
-  scheduleIdleMetricsUpdate()
-}
-
-function onSourceTextareaInput(): void {
-  hasUnsavedEdits.value = true
-  scheduleIdleMetricsUpdate()
-}
-
-function onSourceKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Tab') {
-    ev.preventDefault()
-    const ta = sourceTextareaRef.value
-    if (!ta) return
-    const start = ta.selectionStart
-    const end = ta.selectionEnd
-    sourceBuffer.value = `${sourceBuffer.value.slice(0, start)}  ${sourceBuffer.value.slice(end)}`
-    hasUnsavedEdits.value = true
-    void nextTick(() => {
-      ta.selectionStart = start + 2
-      ta.selectionEnd = start + 2
-    })
-  }
-}
-
-function onActiveTitleInput(val: string): void {
-  activeTitle.value = val
-  const rec = chapters.value[activeIndex.value]
-  if (rec) {
-    rec.title = val
-    triggerRef(chapters)
-  }
-  hasUnsavedEdits.value = true
-}
-
-async function selectChapter(idx: number): Promise<void> {
-  if (idx === activeIndex.value || idx < 0 || idx >= chapters.value.length) return
-  flushActiveSurfaceToRecord()
-  activeIndex.value = idx
-  await mountActiveChapterIntoSurface()
-  resetWysiwygHistory()
-}
-
-async function switchSurfaceMode(next: SurfaceMode): Promise<void> {
-  if (surfaceMode.value === next) return
-  flushActiveSurfaceToRecord()
-  surfaceMode.value = next
-  await mountActiveChapterIntoSurface()
-  resetWysiwygHistory()
-}
-
-function toggleLivePreview(): void {
-  flushActiveSurfaceToRecord()
-  showLivePreview.value = !showLivePreview.value
-  if (showLivePreview.value && currentRecord.value) {
-    previewSrcdoc.value = buildLivePreviewSrcdoc(
-      currentRecord.value.xhtmlBody,
-      currentRecord.value.sourceHref,
-    )
-  }
-}
-
-watch(
-  () => [indentParagraphs.value, themeStore.isDark, themeStore.effectiveSeedColor] as const,
-  async () => {
-    await nextTick()
-    if (showLivePreview.value && currentRecord.value) {
-      flushActiveSurfaceToRecord()
-      previewSrcdoc.value = buildLivePreviewSrcdoc(
-        currentRecord.value.xhtmlBody,
-        currentRecord.value.sourceHref,
-      )
-    }
-  },
-)
-
-function execWysiwygCmd(command: string): void {
-  if (surfaceMode.value !== 'wysiwyg' || !wysiwygRef.value) return
-  const container = wysiwygRef.value
-  container.focus()
-
-  if (command === 'undo') {
-    const prev = undoStack.pop()
-    if (prev === undefined) return
-    redoStack.push(container.innerHTML)
-    container.innerHTML = prev
-    lastRecordedHtml = prev
-    hasUnsavedEdits.value = true
-    scheduleIdleMetricsUpdate()
-    return
-  }
-
-  if (command === 'redo') {
-    const next = redoStack.pop()
-    if (next === undefined) return
-    undoStack.push(container.innerHTML)
-    container.innerHTML = next
-    lastRecordedHtml = next
-    hasUnsavedEdits.value = true
-    scheduleIdleMetricsUpdate()
-    return
-  }
-
-  const before = container.innerHTML
-  let changed = false
-  if (command === 'bold') {
-    changed = toggleInlineTagAtSelection(container, 'strong')
-  } else if (command === 'italic') {
-    changed = toggleInlineTagAtSelection(container, 'em')
-  } else if (command === 'underline') {
-    changed = toggleInlineTagAtSelection(container, 'u')
-  } else if (command === 'removeFormat') {
-    changed = removeInlineFormatAtSelection(container)
-  }
-
-  if (changed) {
-    undoStack.push(before)
-    if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
-    redoStack = []
-    lastRecordedHtml = container.innerHTML
-    hasUnsavedEdits.value = true
-    scheduleIdleMetricsUpdate()
-  }
-}
-
-function formatBlockTag(tag: 'P' | 'H1' | 'H2' | 'H3' | 'BLOCKQUOTE'): void {
-  if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
-    const container = wysiwygRef.value
-    container.focus()
-    const before = container.innerHTML
-    const lower = tag.toLowerCase() as 'p' | 'h1' | 'h2' | 'h3' | 'blockquote'
-    if (formatSelectionBlock(container, lower)) {
-      undoStack.push(before)
-      if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
-      redoStack = []
-      lastRecordedHtml = container.innerHTML
-      hasUnsavedEdits.value = true
-      scheduleIdleMetricsUpdate()
-    }
-  } else if (sourceTextareaRef.value) {
-    const ta = sourceTextareaRef.value
-    const start = ta.selectionStart
-    const end = ta.selectionEnd
-    const sel = sourceBuffer.value.slice(start, end) || activeTitle.value || '...'
-    const lower = tag.toLowerCase()
-    const wrapped = `<${lower}>${sel}</${lower}>`
-    sourceBuffer.value = `${sourceBuffer.value.slice(0, start)}${wrapped}${sourceBuffer.value.slice(end)}`
-    hasUnsavedEdits.value = true
-    scheduleIdleMetricsUpdate()
-  }
-}
-
-function wrapInlineCode(): void {
-  if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
-    const container = wysiwygRef.value
-    container.focus()
-    const before = container.innerHTML
-    if (toggleInlineTagAtSelection(container, 'code')) {
-      undoStack.push(before)
-      if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
-      redoStack = []
-      lastRecordedHtml = container.innerHTML
-      hasUnsavedEdits.value = true
-      scheduleIdleMetricsUpdate()
-    }
-  } else if (sourceTextareaRef.value) {
-    const ta = sourceTextareaRef.value
-    const s = ta.selectionStart
-    const e = ta.selectionEnd
-    const text = sourceBuffer.value.slice(s, e)
-    sourceBuffer.value = `${sourceBuffer.value.slice(0, s)}<code>${text}</code>${sourceBuffer.value.slice(e)}`
-    hasUnsavedEdits.value = true
-  }
-}
-
-function insertHorizontalRule(): void {
-  if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
-    const container = wysiwygRef.value
-    container.focus()
-    const before = container.innerHTML
-    insertHorizontalRuleAtSelection(container)
-    undoStack.push(before)
-    if (undoStack.length > MAX_UNDO_HISTORY) undoStack.shift()
-    redoStack = []
-    lastRecordedHtml = container.innerHTML
-    hasUnsavedEdits.value = true
-    scheduleIdleMetricsUpdate()
-  } else if (sourceTextareaRef.value) {
-    const ta = sourceTextareaRef.value
-    const pos = ta.selectionStart
-    sourceBuffer.value = `${sourceBuffer.value.slice(0, pos)}\n  <hr/>\n${sourceBuffer.value.slice(pos)}`
-    hasUnsavedEdits.value = true
-    scheduleIdleMetricsUpdate()
-  }
-}
-
 function triggerEpubImageUpload(): void {
   if (docFormat.value !== 'epub' || uploadingImage.value) return
   epubImageInputRef.value?.click()
@@ -594,11 +306,8 @@ function handleWorkbenchKeydown(ev: KeyboardEvent): void {
 watch(
   () => props.open,
   (isOpen) => {
-    if (isOpen) {
-      window.addEventListener('keydown', handleWorkbenchKeydown)
-    } else {
-      window.removeEventListener('keydown', handleWorkbenchKeydown)
-    }
+    if (isOpen) window.addEventListener('keydown', handleWorkbenchKeydown)
+    else window.removeEventListener('keydown', handleWorkbenchKeydown)
   },
   { immediate: true },
 )
@@ -650,21 +359,17 @@ onBeforeUnmount(() => {
 
       <div
         v-if="errorMsg"
-        class="flex shrink-0 items-center justify-between gap-2 bg-error-container px-4 py-1.5 text-body-small text-on-error-container"
+        class="text-body-small flex shrink-0 items-center justify-between gap-2 bg-error-container px-4 py-1.5 text-on-error-container"
       >
         <span>{{ errorMsg }}</span>
-        <MdIconButton
-          size="sm"
-          :aria-label="t('tool.actions.close')"
-          @click="errorMsg = null"
-        >
+        <MdIconButton size="sm" :aria-label="t('tool.actions.close')" @click="errorMsg = null">
           <LuX class="h-4 w-4" />
         </MdIconButton>
       </div>
 
       <div
         v-if="loading"
-        class="flex flex-1 flex-col items-center justify-center gap-3 text-body-small text-on-surface-variant"
+        class="text-body-small flex flex-1 flex-col items-center justify-center gap-3 text-on-surface-variant"
       >
         <LuLoader2 class="h-6 w-6 animate-spin text-primary" />
         <span>{{ t('tool.bookEditor.modal.loadingBook') }}</span>
@@ -709,8 +414,14 @@ onBeforeUnmount(() => {
             @split-chapter="splitChapterAtCursor"
             @clean-typography="cleanChapterTypography"
             @upload-image="triggerEpubImageUpload"
-            @toggle-proofread="proofreadPanelOpen = !proofreadPanelOpen; if (proofreadPanelOpen) cssPanelOpen = false"
-            @toggle-css="cssPanelOpen = !cssPanelOpen; if (cssPanelOpen) proofreadPanelOpen = false"
+            @toggle-proofread="
+              proofreadPanelOpen = !proofreadPanelOpen;
+              if (proofreadPanelOpen) cssPanelOpen = false
+            "
+            @toggle-css="
+              cssPanelOpen = !cssPanelOpen;
+              if (cssPanelOpen) proofreadPanelOpen = false
+            "
             @toggle-find="findBarOpen = !findBarOpen"
             @toggle-indent="indentParagraphs = !indentParagraphs"
             @switch-surface-mode="switchSurfaceMode"
@@ -729,7 +440,10 @@ onBeforeUnmount(() => {
           <BookEditorCssPanel
             v-if="cssPanelOpen"
             :model-value="primaryCssDraft"
-            @update:model-value="primaryCssDraft = $event; syncPrimaryCssDraftToStylesheets()"
+            @update:model-value="
+              primaryCssDraft = $event;
+              syncPrimaryCssDraftToStylesheets()
+            "
             @apply-preset="(css, label) => applyCssPreset(css, label)"
             @close="cssPanelOpen = false"
           />
@@ -753,57 +467,34 @@ onBeforeUnmount(() => {
             @close="findBarOpen = false"
           />
 
-          <div class="flex shrink-0 items-center gap-3 border-b border-outline-variant/40 px-6 py-2.5">
-            <span class="shrink-0 font-mono text-label-small text-on-surface-variant">
-              #{{ activeIndex + 1 }}
-            </span>
-            <input
-              :value="activeTitle"
-              type="text"
-              :aria-label="t('tool.bookEditor.modal.chapterTitlePlaceholder')"
-              :placeholder="t('tool.bookEditor.modal.chapterTitlePlaceholder')"
-              class="min-w-0 flex-1 bg-transparent text-title-medium font-semibold text-on-surface outline-none placeholder:text-on-surface-variant/50"
-              @input="onActiveTitleInput(($event.target as HTMLInputElement).value)"
-            />
-            <span class="shrink-0 font-mono text-label-small text-on-surface-variant">
-              {{ t('tool.bookEditor.modal.chapterChars', { count: activeCharCount.toLocaleString() }) }}
-            </span>
-          </div>
-
-          <div class="relative min-h-0 flex-1 overflow-y-auto">
-            <div v-show="surfaceMode === 'wysiwyg'" class="mx-auto max-w-3xl px-6 py-6 sm:px-10">
-              <div
-                ref="wysiwygRef"
-                contenteditable="true"
-                spellcheck="false"
-                class="epub-wysiwyg-surface min-h-[65vh] outline-none"
-                :class="indentParagraphs ? 'indent-paras' : ''"
-                @focus="lastRecordedHtml = wysiwygRef?.innerHTML ?? ''"
-                @input="onWysiwygInput"
-                @compositionstart="isComposing = true"
-                @compositionend="onWysiwygCompositionEnd"
-              />
-            </div>
-
-            <textarea
-              v-show="surfaceMode === 'xhtml'"
-              ref="sourceTextareaRef"
-              v-model="sourceBuffer"
-              spellcheck="false"
-              :aria-label="t('tool.bookEditor.modal.xhtmlPlaceholder')"
-              :placeholder="t('tool.bookEditor.modal.xhtmlPlaceholder')"
-              class="h-full w-full resize-none bg-transparent p-5 font-mono text-body-small leading-relaxed text-on-surface outline-none"
-              @input="onSourceTextareaInput"
-              @keydown="onSourceKeydown"
-            />
-          </div>
+          <BookEditorSurfacePane
+            ref="surfacePaneRef"
+            :active-index="activeIndex"
+            :active-title="activeTitle"
+            :active-char-count="activeCharCount"
+            :surface-mode="surfaceMode"
+            :indent-paragraphs="indentParagraphs"
+            :source-buffer="sourceBuffer"
+            :show-live-preview="showLivePreview"
+            :preview-srcdoc="previewSrcdoc"
+            @update:active-title="onActiveTitleInput"
+            @update:source-buffer="sourceBuffer = $event"
+            @wysiwyg-focus="onWysiwygFocus"
+            @wysiwyg-input="onWysiwygInput"
+            @wysiwyg-composition-start="onWysiwygCompositionStart"
+            @wysiwyg-composition-end="onWysiwygCompositionEnd"
+            @source-input="onSourceTextareaInput"
+            @source-keydown="onSourceKeydown"
+          />
         </div>
 
         <aside
           v-if="showLivePreview"
           class="hidden w-[38%] max-w-xl shrink-0 flex-col border-l border-outline-variant/50 bg-surface-container-low lg:flex"
         >
-          <div class="flex h-10 shrink-0 items-center justify-between border-b border-outline-variant/40 px-4">
+          <div
+            class="flex h-10 shrink-0 items-center justify-between border-b border-outline-variant/40 px-4"
+          >
             <span class="text-label-large font-semibold text-on-surface">
               {{ t('tool.bookEditor.modal.livePreviewTitle') }}
             </span>
@@ -822,77 +513,3 @@ onBeforeUnmount(() => {
     </div>
   </MdDialog>
 </template>
-
-<style scoped>
-@reference "tailwindcss";
-
-.epub-wysiwyg-surface {
-  font-family: "Noto Serif CJK SC", "Songti SC", "PingFang SC", "Microsoft YaHei", Georgia, serif;
-  font-size: 16px;
-  line-height: 1.9;
-  color: var(--md-sys-color-on-surface);
-  word-break: break-word;
-}
-
-.epub-wysiwyg-surface :deep(h1) {
-  font-size: 1.6em;
-  font-weight: 800;
-  line-height: 1.35;
-  margin: 0.6em 0 0.75em;
-}
-
-.epub-wysiwyg-surface :deep(h2) {
-  font-size: 1.35em;
-  font-weight: 700;
-  line-height: 1.4;
-  margin: 0.6em 0 0.7em;
-}
-
-.epub-wysiwyg-surface :deep(h3) {
-  font-size: 1.15em;
-  font-weight: 700;
-  line-height: 1.45;
-  margin: 0.6em 0 0.6em;
-}
-
-.epub-wysiwyg-surface :deep(p),
-.epub-wysiwyg-surface :deep(div) {
-  margin: 0 0 0.85em;
-  text-align: justify;
-}
-
-.epub-wysiwyg-surface.indent-paras :deep(p) {
-  text-indent: 2em;
-}
-
-.epub-wysiwyg-surface :deep(blockquote) {
-  margin: 1em 0;
-  padding: 0.5em 1em;
-  border-left: 3px solid var(--md-sys-color-primary);
-  background: var(--md-sys-color-surface-container-low);
-  border-radius: 0 0.5rem 0.5rem 0;
-}
-
-.epub-wysiwyg-surface :deep(code) {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.88em;
-  padding: 0.15em 0.4em;
-  border-radius: 0.35rem;
-  background: var(--md-sys-color-surface-container-high);
-}
-
-.epub-wysiwyg-surface :deep(hr) {
-  border: none;
-  border-top: 1px solid var(--md-sys-color-outline-variant);
-  margin: 1.5em 0;
-}
-
-.epub-wysiwyg-surface :deep(img),
-.epub-wysiwyg-surface :deep(svg) {
-  max-width: 100%;
-  height: auto;
-  border-radius: 0.5rem;
-  margin: 0.75em auto;
-  display: block;
-}
-</style>

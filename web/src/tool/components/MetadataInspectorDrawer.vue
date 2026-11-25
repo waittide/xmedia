@@ -30,15 +30,7 @@ const props = withDefaults(
     positionLabel?: string
     shortcutsDisabled?: boolean
   }>(),
-  {
-    open: true,
-    modal: false,
-    loading: false,
-    hasPrev: false,
-    hasNext: false,
-    positionLabel: '',
-    shortcutsDisabled: false,
-  },
+  { open: true, modal: false, loading: false, hasPrev: false, hasNext: false, positionLabel: '', shortcutsDisabled: false },
 )
 
 const emit = defineEmits<{
@@ -63,20 +55,9 @@ const snackbar = useSnackbarStore()
 const inspectorStore = useToolInspectorStore()
 
 const {
-  bookForm,
-  comicForm,
-  musicForm,
-  videoForm,
-  pendingCoverUrl,
-  pendingBackdropUrl,
-  videoArtworkSlot,
-  isDirty,
-  isBookFieldLocked,
-  toggleBookFieldLock,
-  isVideoFieldLocked,
-  toggleVideoFieldLock,
-  hydrateForm,
-  buildPatchEnvelope,
+  bookForm, comicForm, musicForm, videoForm, pendingCoverUrl, pendingBackdropUrl,
+  videoArtworkSlot, isDirty, isBookFieldLocked, toggleBookFieldLock,
+  isVideoFieldLocked, toggleVideoFieldLock, hydrateForm, buildPatchEnvelope,
 } = useMetadataForm()
 
 const saving = ref(false)
