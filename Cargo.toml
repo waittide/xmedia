@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/xmedia-formats",
     "crates/xmedia-core",
     "crates/xmedia-source",
     "crates/xmedia-book",

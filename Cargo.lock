@@ -6061,6 +6061,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "xmedia-formats"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "blake3",
+ "chardetng",
+ "encoding_rs",
+ "hex",
+ "image",
+ "jiff",
+ "lopdf",
+ "quick-xml",
+ "regex",
+ "serde",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "xmedia-music"
 version = "0.1.0"
 dependencies = [
