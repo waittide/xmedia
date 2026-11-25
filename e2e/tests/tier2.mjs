@@ -1361,14 +1361,14 @@ function buildTier2Cases() {
       id: 'T2-F12-01',
       feature: 'F12',
       domain: 'ui',
-      title: 'Browser (Non-Admin): /settings?tab=domain-datasources shows admin-only lock for comic/music/video',
+      title: 'Browser (Non-Admin): /:domain/settings?tab=sources&advanced=1 shows admin-only lock for comic/music/video',
       async run(ctx) {
         await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(
@@ -1376,7 +1376,7 @@ function buildTier2Cases() {
             { timeoutMs: 8000, label: 'non-admin lock card displayed' },
           );
           for (const d of ['music', 'video']) {
-            await cdp.goto(`${ctx.baseUrl}/settings?tab=domain-datasources&domain=${d}`);
+            await cdp.goto(`${ctx.baseUrl}/${d}/settings?tab=sources&advanced=1`);
             await cdp.waitForFn(`/管理员|admin/i.test(document.body.innerText)`, { timeoutMs: 8000 });
           }
           cdp.assertNoErrors('T2-F12-01');
@@ -1395,7 +1395,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await clickButtonMatching(cdp, [/导入|import/i]);
@@ -1428,7 +1428,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Edge Slow Timeout Source')`, {
@@ -1475,7 +1475,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock XKCD')`, { timeoutMs: 10000 });
@@ -1520,7 +1520,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(
@@ -1608,7 +1608,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Edge Cookie Gated Comic')`, {
@@ -1652,7 +1652,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           for (const locale of ['en-US', 'zh-CN']) {
@@ -1660,7 +1660,7 @@ function buildTier2Cases() {
               body: { locale },
               expectedStatus: 200,
             });
-            await cdp.goto(`${ctx.baseUrl}/settings?tab=domain-datasources&domain=comic`);
+            await cdp.goto(`${ctx.baseUrl}/comic/settings?tab=sources&advanced=1`);
             await cdp.waitForSelector('[data-domain-settings-tab="sources"], [data-settings-tab="sources"]', {
               visible: true,
             });
@@ -1692,7 +1692,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/comic/series?scope=online',
+          '/comic/library?scope=online',
         );
         try {
           await cdp.waitForFn(
@@ -1716,7 +1716,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series',
+          '/comic/library',
         );
         try {
           await clickButtonMatching(cdp, [/在线|online/i]);
@@ -1739,7 +1739,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series',
+          '/comic/library',
         );
         try {
           await cdp.pressKey('k', { modifiers: 2 });
@@ -1766,7 +1766,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -1792,7 +1792,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Strip',
+          '/comic/library?scope=online&q=Strip',
         );
         try {
           await cdp.waitForFn(
@@ -1839,7 +1839,7 @@ function buildTier2Cases() {
             }
           });
 
-          await cdp.goto(`${ctx.baseUrl}/comic/series?scope=online`);
+          await cdp.goto(`${ctx.baseUrl}/comic/library?scope=online`);
           await cdp.waitForFn(
             `(() => {
               const alert = document.querySelector('main [role="alert"]');
@@ -1902,7 +1902,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Strip',
+          '/comic/library?scope=online&q=Strip',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock XKCD Strip')`, { timeoutMs: 10000 });
@@ -1928,7 +1928,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/online/read?source_id=99999999-9999-4999-8999-999999999999&chapter_url=invalid',
+          '/comic/play/online?source=99999999-9999-4999-8999-999999999999&chapter=invalid',
         );
         try {
           await cdp.waitForFn(
@@ -1952,7 +1952,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -1982,7 +1982,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -2020,7 +2020,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Empty',
+          '/comic/library?scope=online&q=Empty',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Empty Webtoon')`, { timeoutMs: 10000 });
@@ -2045,7 +2045,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -2104,7 +2104,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Fragments',
+          '/music/library?scope=online&q=Fragments',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Fragments Mock')`, { timeoutMs: 10000 });
@@ -2131,7 +2131,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Fragments',
+          '/music/library?scope=online&q=Fragments',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Fragments Mock')`, { timeoutMs: 10000 });
@@ -2154,7 +2154,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -2182,7 +2182,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Fragments',
+          '/music/library?scope=online&q=Fragments',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Fragments Mock')`, { timeoutMs: 10000 });
@@ -2223,7 +2223,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ephemeralMember,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -2277,7 +2277,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -2334,7 +2334,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -2378,7 +2378,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Earth',
+          '/video/library?scope=online&q=Earth',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Wandering Earth')`, {
@@ -2430,7 +2430,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Blender',
+          '/video/library?scope=online&q=Blender',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Blender Open Movie')`, {
@@ -2478,7 +2478,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Blender',
+          '/video/library?scope=online&q=Blender',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Blender Open Movie')`, {
@@ -2505,7 +2505,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Blender',
+          '/video/library?scope=online&q=Blender',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Blender Open Movie')`, {
@@ -2535,7 +2535,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -2632,7 +2632,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online',
+          '/video/library?scope=online',
         );
         try {
           // 1. Category-less rule source returns categories: [] yet still executes /browse cleanly
@@ -2664,7 +2664,7 @@ function buildTier2Cases() {
             }
           });
 
-          await cdp.goto(`${ctx.baseUrl}/video/catalog?scope=online`);
+          await cdp.goto(`${ctx.baseUrl}/video/library?scope=online`);
           await cdp.waitForFn(
             `(() => {
               const alert = document.querySelector('main [role="alert"]');
@@ -2700,19 +2700,19 @@ function buildTier2Cases() {
         const scenarios = [
           {
             domain: 'video',
-            path: '/video/catalog?scope=online&q=Earth',
+            path: '/video/library?scope=online&q=Earth',
             expectedItem: 'Mock Wandering Earth',
             pattern: '*/api/v1/video/online/search',
           },
           {
             domain: 'comic',
-            path: '/comic/series?scope=online&q=Strip',
+            path: '/comic/library?scope=online&q=Strip',
             expectedItem: 'Mock XKCD Strip',
             pattern: '*/api/v1/comic/online/search',
           },
           {
             domain: 'music',
-            path: '/music/songs?scope=online&q=Mojito',
+            path: '/music/library?scope=online&q=Mojito',
             expectedItem: 'Mock Mojito',
             pattern: '*/api/v1/music/online/search',
           },
@@ -2793,7 +2793,7 @@ function buildTier2Cases() {
           }
 
           // Music /online/explore 400 (initial, hasSearched=false) & 500 (after results, hasSearched=true)
-          await cdp.goto(`${ctx.baseUrl}/music/songs?scope=online&source=${musicMocks.audius.id}`);
+          await cdp.goto(`${ctx.baseUrl}/music/library?scope=online&source=${musicMocks.audius.id}`);
           await cdp.waitForFn(
             `[...document.querySelectorAll('main button')].some((b) => /浏览榜单|Explore/i.test(b.innerText || ''))`,
             { timeoutMs: 10000, label: 'music single-source Explore button visible' },
@@ -2866,7 +2866,7 @@ function buildTier2Cases() {
           await cdp.send('Fetch.enable', {
             patterns: [{ urlPattern: '*/api/v1/comic/online/explore', requestStage: 'Request' }],
           });
-          await cdp.goto(`${ctx.baseUrl}/comic/series?scope=online&source=${comicMocks.xkcd.id}`);
+          await cdp.goto(`${ctx.baseUrl}/comic/library?scope=online&source=${comicMocks.xkcd.id}`);
           await cdp.waitForFn(
             `(() => {
               const main = document.querySelector('main');
@@ -2929,7 +2929,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          `/video/online/watch?sourceId=${encodeURIComponent(sid)}&playUrl=${encodeURIComponent(playUrl)}&title=${encodeURIComponent('Subtitled Movie')}`,
+          `/video/play/online?source=${encodeURIComponent(sid)}&ref=${encodeURIComponent(playUrl)}&play=${encodeURIComponent(playUrl)}&title=${encodeURIComponent('Subtitled Movie')}`,
         );
         try {
           await cdp.waitForFn(
@@ -3005,7 +3005,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Earth',
+          '/video/library?scope=online&q=Earth',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Wandering Earth')`, {
@@ -3103,7 +3103,7 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Subtitled',
+          '/video/library?scope=online&q=Subtitled',
         );
         try {
           await cdp.waitForFn(
@@ -3467,6 +3467,25 @@ function buildTier2Cases() {
           { expectedStatus: 200 },
         );
         assert.ok(typeof ch.json.content === 'string');
+
+        // Unified OnlineLibraryService /api/v1/book/online/items roundtrip
+        const onlineItem = await ctx.admin.failLoudlyRequest('POST', '/api/v1/book/online/items', {
+          body: {
+            source_id: srcId,
+            item_key: bookUrl,
+            title: 'Tracked NonReg Book',
+            subtitle: 'SIU Mock',
+            is_tracked: true,
+          },
+          expectedStatus: 200,
+        });
+        assert.ok(onlineItem.json?.id, 'Expected unified OnlineLibraryItemDto id');
+        const listOnlineItems = await ctx.admin.failLoudlyRequest(
+          'GET',
+          '/api/v1/book/online/items?tracked=true',
+          { expectedStatus: 200 },
+        );
+        assert.ok(Array.isArray(listOnlineItems.json) && listOnlineItems.json.length >= 1);
       },
     },
     {
@@ -3495,16 +3514,16 @@ function buildTier2Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          `/comic/read/${chapterId}`,
+          `/comic/play/${chapterId}`,
         );
         try {
           await cdp.waitForFn(
             `[...document.querySelectorAll('img')].some((i) => i.complete && i.naturalWidth > 0)`,
             { timeoutMs: 10000, label: 'local comic reader page loaded' },
           );
-          await cdp.goto(`${ctx.baseUrl}/music/songs`);
+          await cdp.goto(`${ctx.baseUrl}/music/library?view=tracks`);
           await cdp.waitForSelector('#app', { visible: true });
-          await cdp.goto(`${ctx.baseUrl}/video/catalog`);
+          await cdp.goto(`${ctx.baseUrl}/video/library`);
           await cdp.waitForSelector('#app', { visible: true });
           cdp.assertNoErrors('T2-F18-03');
         } finally {
@@ -3516,7 +3535,7 @@ function buildTier2Cases() {
       id: 'T2-F18-04',
       feature: 'F18',
       domain: 'nonreg',
-      title: 'Non-privileged user access across local /comic/series and online /comic/sources enforces consistent RBAC',
+      title: 'Non-privileged user access across local /api/v1/comic/series and online /api/v1/comic/sources enforces consistent RBAC',
       async run(ctx) {
         await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
         await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/series', { expectedStatus: 200 });

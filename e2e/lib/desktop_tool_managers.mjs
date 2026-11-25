@@ -254,6 +254,67 @@ async function waitForHttpReady(url, proc, stderrChunks, timeoutMs = 20000) {
   );
 }
 
+export async function ensureToolWebDir(explicitWebDir = null, { buildIfMissing = false } = {}) {
+  const candidates = [
+    explicitWebDir,
+    process.env.XMEDIA_TOOL_WEB_DIR,
+    path.join(REPO_ROOT, 'web/dist-tool'),
+  ].filter(Boolean);
+
+  for (const dir of candidates) {
+    if (existsSync(path.join(dir, 'tool.html')) || existsSync(path.join(dir, 'index.html'))) {
+      return path.resolve(dir);
+    }
+  }
+
+  if (!buildIfMissing) {
+    return null;
+  }
+
+  await execFileAsync('pnpm', ['--dir', 'web', 'run', 'build:tool'], {
+    cwd: REPO_ROOT,
+    timeout: 240000,
+  });
+
+  for (const dir of candidates) {
+    if (existsSync(path.join(dir, 'tool.html')) || existsSync(path.join(dir, 'index.html'))) {
+      return path.resolve(dir);
+    }
+  }
+  throw new Error(`xmedia-tool web build not found after build:tool. Checked: ${candidates.join(', ')}`);
+}
+
+export async function ensureStandaloneWebDir(explicitWebDir = null, { buildIfMissing = false } = {}) {
+  const candidates = [
+    explicitWebDir,
+    process.env.XMEDIA_APP_DIST_DIR,
+    process.env.XMEDIA_WEB_DIR,
+    path.join(REPO_ROOT, 'web/dist'),
+  ].filter(Boolean);
+
+  for (const dir of candidates) {
+    if (existsSync(path.join(dir, 'index.html'))) {
+      return path.resolve(dir);
+    }
+  }
+
+  if (!buildIfMissing) {
+    return null;
+  }
+
+  await execFileAsync('pnpm', ['--dir', 'web', 'run', 'build'], {
+    cwd: REPO_ROOT,
+    timeout: 240000,
+  });
+
+  for (const dir of candidates) {
+    if (existsSync(path.join(dir, 'index.html'))) {
+      return path.resolve(dir);
+    }
+  }
+  throw new Error(`xmedia web dist not found after build. Checked: ${candidates.join(', ')}`);
+}
+
 export class ToolServerManager {
   constructor({ keepTmp = false } = {}) {
     this.keepTmp = keepTmp;
@@ -265,8 +326,15 @@ export class ToolServerManager {
     this.proc = null;
   }
 
-  async start({ password = null, lockRoots = false, includeDefaultRoot = true } = {}) {
+  async start({
+    password = null,
+    lockRoots = false,
+    includeDefaultRoot = true,
+    webDir = null,
+    requireWebUi = false,
+  } = {}) {
     const bin = await ensureToolBinary();
+    const resolvedWebDir = await ensureToolWebDir(webDir, { buildIfMissing: requireWebUi });
     this.port = await allocateFreePort('127.0.0.1');
     this.tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'xmedia-e2e-tool-'));
     this.dataDir = path.join(this.tmpRoot, 'data');
@@ -283,6 +351,9 @@ export class ToolServerManager {
     }
     if (password) {
       args.push('--password', password);
+    }
+    if (resolvedWebDir) {
+      args.push('--web-dir', resolvedWebDir);
     }
 
     const stderrChunks = [];
@@ -361,20 +432,26 @@ export class StandaloneGatewayManager {
     this.proc = null;
   }
 
-  async start() {
+  async start({ webDir = null, requireWebUi = false } = {}) {
     const bin = await ensureStandaloneBinary();
+    const resolvedWebDir = await ensureStandaloneWebDir(webDir, { buildIfMissing: requireWebUi });
     this.port = await allocateFreePort('127.0.0.1');
     this.tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'xmedia-e2e-standalone-'));
     this.dataDir = path.join(this.tmpRoot, 'data');
     mkdirSync(this.dataDir, { recursive: true });
 
+    const env = {
+      ...process.env,
+      XMEDIA_APP_DATA_DIR: this.dataDir,
+    };
+    if (resolvedWebDir) {
+      env.XMEDIA_APP_DIST_DIR = resolvedWebDir;
+    }
+
     const stderrChunks = [];
     this.proc = spawn(bin, ['--headless-gateway', `127.0.0.1:${this.port}`], {
       cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        XMEDIA_APP_DATA_DIR: this.dataDir,
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.proc.stderr.on('data', (chunk) => stderrChunks.push(chunk));

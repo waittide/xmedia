@@ -12,7 +12,7 @@ import {
   buildMockMusicSources,
   buildMockVideoSources,
 } from '../fixtures/mock_sources.mjs';
-import { CdpClient } from '../lib/cdp.mjs';
+import { CdpClient, DEFAULT_ALLOWED_ERROR_PATTERNS } from '../lib/cdp.mjs';
 import {
   ApiClient,
   REPO_ROOT,
@@ -1425,7 +1425,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForSelector('[data-domain-settings-tab="sources"], [data-settings-tab="sources"]', {
@@ -1460,7 +1460,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=music',
+          '/music/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(
@@ -1468,7 +1468,7 @@ function buildTier1Cases() {
             { timeoutMs: 10000, label: 'music source card rendered' },
           );
           await cdp.waitForSelector('main input[type="text"], main input[type="search"]', { visible: true });
-          await cdp.goto(`${ctx.baseUrl}/settings?tab=domain-datasources&domain=video`);
+          await cdp.goto(`${ctx.baseUrl}/video/settings?tab=sources&advanced=1`);
           await cdp.waitForFn(
             `document.body.innerText.includes('Mock AppleCMS')`,
             { timeoutMs: 10000, label: 'video source card rendered' },
@@ -1490,7 +1490,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock MangaDex')`, {
@@ -1534,7 +1534,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock MangaDex')`, {
@@ -1567,7 +1567,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.admin,
-          '/settings?tab=domain-datasources&domain=comic',
+          '/comic/settings?tab=sources&advanced=1',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock MangaDex')`, {
@@ -1595,14 +1595,14 @@ function buildTier1Cases() {
       id: 'T1-F13-01',
       feature: 'F13',
       domain: 'ui',
-      title: 'Browser: /comic/series local|online switcher updates scope=online and searches mock comics',
+      title: 'Browser: /comic/library local|online switcher updates scope=online and searches mock comics',
       async run(ctx) {
         await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series',
+          '/comic/library',
         );
         try {
           await clickButtonMatching(cdp, [/在线|online/i]);
@@ -1623,14 +1623,14 @@ function buildTier1Cases() {
       id: 'T1-F13-02',
       feature: 'F13',
       domain: 'ui',
-      title: 'Browser: /music/songs local|online switcher searches and renders mock online tracks',
+      title: 'Browser: /music/library local|online switcher searches and renders mock online tracks',
       async run(ctx) {
         await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs',
+          '/music/library',
         );
         try {
           await clickButtonMatching(cdp, [/在线|online/i]);
@@ -1651,14 +1651,14 @@ function buildTier1Cases() {
       id: 'T1-F13-03',
       feature: 'F13',
       domain: 'ui',
-      title: 'Browser: /video/catalog local|online switcher renders AppleCMS categories and cards',
+      title: 'Browser: /video/library local|online switcher renders AppleCMS categories and cards',
       async run(ctx) {
         await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog',
+          '/video/library',
         );
         try {
           await clickButtonMatching(cdp, [/在线|online/i]);
@@ -1682,7 +1682,7 @@ function buildTier1Cases() {
       domain: 'ui',
       title: 'Browser: GlobalSearchModal (Ctrl+K) shows online quick actions for all 4 domains',
       async run(ctx) {
-        const cdp = await openAuthenticatedPage(ctx.CdpClient, ctx.baseUrl, ctx.member, '/comic/series');
+        const cdp = await openAuthenticatedPage(ctx.CdpClient, ctx.baseUrl, ctx.member, '/comic/library');
         try {
           await cdp.pressKey('k', { modifiers: 2 }); // Ctrl+K
           await cdp.waitForSelector('[role="dialog"] input', { visible: true });
@@ -1704,10 +1704,10 @@ function buildTier1Cases() {
       id: 'T1-F13-05',
       feature: 'F13',
       domain: 'ui',
-      title: 'Browser: Clicking Comic online quick action in GlobalSearchModal routes to /comic/series?q=Mock&scope=online',
+      title: 'Browser: Clicking Comic online quick action in GlobalSearchModal routes to /comic/library?q=Naruto&scope=online',
       async run(ctx) {
         await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
-        const cdp = await openAuthenticatedPage(ctx.CdpClient, ctx.baseUrl, ctx.member, '/music/songs');
+        const cdp = await openAuthenticatedPage(ctx.CdpClient, ctx.baseUrl, ctx.member, '/music/library');
         try {
           await cdp.pressKey('k', { modifiers: 2 });
           await cdp.waitForSelector('[role="dialog"] input', { visible: true });
@@ -1740,7 +1740,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -1771,7 +1771,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -1802,7 +1802,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -1837,7 +1837,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Naruto',
+          '/comic/library?scope=online&q=Naruto',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
@@ -1869,7 +1869,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/comic/series?scope=online&q=Tower',
+          '/comic/library?scope=online&q=Tower',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Tower of Mock')`, { timeoutMs: 10000 });
@@ -1904,7 +1904,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -1933,7 +1933,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -1959,7 +1959,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -1994,7 +1994,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -2024,14 +2024,14 @@ function buildTier1Cases() {
       id: 'T1-F15-05',
       feature: 'F15',
       domain: 'ui',
-      title: 'Browser: PlayerBar persists across Workspace route navigation (/music/songs -> /comic/series)',
+      title: 'Browser: PlayerBar persists across Workspace route navigation (/music/library -> /comic)',
       async run(ctx) {
         await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/music/songs?scope=online&q=Mojito',
+          '/music/library?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
@@ -2065,7 +2065,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Earth',
+          '/video/library?scope=online&q=Earth',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Wandering Earth')`, {
@@ -2098,7 +2098,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Earth',
+          '/video/library?scope=online&q=Earth',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Wandering Earth')`, {
@@ -2137,7 +2137,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Earth',
+          '/video/library?scope=online&q=Earth',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Wandering Earth')`, {
@@ -2178,7 +2178,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Blender',
+          '/video/library?scope=online&q=Blender',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Blender Open Movie')`, {
@@ -2210,7 +2210,7 @@ function buildTier1Cases() {
           ctx.CdpClient,
           ctx.baseUrl,
           ctx.member,
-          '/video/catalog?scope=online&q=Blender',
+          '/video/library?scope=online&q=Blender',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Blender Open Movie')`, {
@@ -2583,7 +2583,7 @@ function buildTier1Cases() {
         });
         assert.ok((assetRes.headers.get('cache-control') || '').includes('immutable'));
 
-        const spaDeep = await ctx.admin.failLoudlyRequest('GET', '/comic/series', {
+        const spaDeep = await ctx.admin.failLoudlyRequest('GET', '/comic/library', {
           authMode: 'none',
           expectedStatus: 200,
         });
@@ -3119,6 +3119,268 @@ function buildTier1Cases() {
         }
       },
     },
+    {
+      id: 'T1-F19-04',
+      feature: 'F19',
+      domain: 'ui',
+      sut: 'tool',
+      title: 'Browser: xmedia-tool hash vue-router (#/comic/items), MdSheet metadata inspector open/save & ScrapeWorkbenchView',
+      async run(ctx) {
+        const toolMgr = new ToolServerManager({ keepTmp: ctx.keepTmp });
+        let cdp = null;
+        try {
+          const toolBaseUrl = await toolMgr.start({
+            includeDefaultRoot: false,
+            requireWebUi: true,
+          });
+          const comicsDir = path.join(toolMgr.mediaDir, 'comics');
+          mkdirSync(comicsDir, { recursive: true });
+          const cbzPath = path.join(comicsDir, 'Starlight_Ch01.cbz');
+          writeFileSync(
+            cbzPath,
+            buildMinimalZip([
+              { name: '001.png', data: MOCK_PNG_BYTES },
+              {
+                name: 'ComicInfo.xml',
+                data: `<?xml version="1.0" encoding="utf-8"?>
+<ComicInfo>
+  <Title>Initial Chapter</Title>
+  <Series>Starlight Saga</Series>
+  <Number>1</Number>
+</ComicInfo>`,
+              },
+            ]),
+          );
+
+          const addRootRes = await rawHttpRequest(toolBaseUrl, 'POST', '/api/v1/tool/roots', {
+            body: {
+              name: 'Comics',
+              path: comicsDir,
+              default_kind: 'comic',
+            },
+          });
+          assert.ok(
+            addRootRes.status === 200 || addRootRes.status === 201,
+            `Expected POST /api/v1/tool/roots 200/201, got ${addRootRes.status}: ${addRootRes.text}`,
+          );
+          const rootId = addRootRes.json?.roots?.[0]?.id || addRootRes.json?.id;
+          assert.ok(rootId, 'Expected created comic root id in xmedia-tool');
+
+          // Use 1024x768 (<1200px) so MetadataInspectorDrawer renders adaptive MdSheet modal
+          cdp = new ctx.CdpClient();
+          await cdp.launch();
+          await cdp.send('Emulation.setDeviceMetricsOverride', {
+            width: 1024,
+            height: 768,
+            deviceScaleFactor: 1,
+            mobile: false,
+          });
+          await cdp.goto(`${toolBaseUrl}/#/comic/items`);
+
+          await cdp.waitForFn(
+            `location.hash.startsWith('#/comic/items') && (document.body.innerText.includes('Starlight') || document.body.innerText.includes('Initial Chapter'))`,
+            { timeoutMs: 12000, label: 'xmedia-tool #/comic/items rendered seeded comic row' },
+          );
+
+          // Click the seeded comic row inspect button (skipping the leading role="checkbox" button)
+          await cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('main button:not([role="checkbox"])')].find((b) => {
+              const txt = b.innerText || '';
+              return txt.includes('Starlight') || txt.includes('Initial Chapter');
+            });
+            if (!btn) throw new Error('Seeded comic inspect button not found in #/comic/items');
+            btn.click();
+          })()`);
+
+          await cdp.waitForFn(
+            `(() => {
+              const dlg = document.querySelector('[role="dialog"][aria-modal="true"]');
+              if (!dlg || !location.hash.includes('item=')) return false;
+              return [...dlg.querySelectorAll('input')].some((inp) => inp.value === 'Initial Chapter');
+            })()`,
+            { timeoutMs: 10000, label: 'MdSheet metadata inspector opened and hydrated comic form' },
+          );
+
+          // Edit Title inside MdSheet and save
+          await cdp.evalJs(`(() => {
+            const dlg = document.querySelector('[role="dialog"][aria-modal="true"]');
+            const titleInput = [...dlg.querySelectorAll('input')].find((inp) => inp.value === 'Initial Chapter');
+            if (!titleInput) throw new Error('Title input not found in MdSheet');
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+            setter.call(titleInput, 'Edited Via MdSheet');
+            titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+            titleInput.dispatchEvent(new Event('change', { bubbles: true }));
+          })()`);
+
+          await clickButtonMatching(cdp, [/保存更改|Save Changes|^保存$|^Save$/i], {
+            rootSelector: '[role="dialog"][aria-modal="true"]',
+          });
+
+          const saveDeadline = Date.now() + 10000;
+          while (
+            Date.now() < saveDeadline &&
+            !cdp.networkResponses.some(
+              (r) => r.url.includes('/api/v1/tool/files/metadata') && r.status === 200,
+            )
+          ) {
+            await new Promise((r) => setTimeout(r, 80));
+          }
+
+          const verifyInspect = await rawHttpRequest(
+            toolBaseUrl,
+            'GET',
+            `/api/v1/tool/files/inspect?root_id=${encodeURIComponent(rootId)}&path=${encodeURIComponent('Starlight_Ch01.cbz')}`,
+          );
+          assert.equal(verifyInspect.status, 200);
+          assert.equal(verifyInspect.json?.metadata?.data?.title, 'Edited Via MdSheet');
+
+          // Transition from MdSheet header action into ScrapeWorkbenchView (#/comic/scrape)
+          await clickButtonMatching(cdp, [/刮削工作台|Scrape Workbench/i], {
+            rootSelector: '[role="dialog"][aria-modal="true"]',
+          });
+
+          await cdp.waitForFn(
+            `location.hash.startsWith('#/comic/scrape') && (document.body.innerText.includes('Edited Via MdSheet') || document.body.innerText.includes('Starlight_Ch01.cbz'))`,
+            { timeoutMs: 10000, label: 'ScrapeWorkbenchView mounted via #/comic/scrape' },
+          );
+
+          cdp.assertNoErrors('T1-F19-04');
+        } finally {
+          if (cdp) await cdp.close();
+          await toolMgr.cleanup();
+        }
+      },
+    },
+    {
+      id: 'T1-F19-05',
+      feature: 'F19',
+      domain: 'ui',
+      sut: 'standalone',
+      title: 'Browser: xmedia-app --headless-gateway auto-session bootstrap, workspace shell & remote OPDS/Subsonic UI',
+      async run(ctx) {
+        const opdsPort = await allocateFreePort('127.0.0.1');
+        const opdsBaseUrl = `http://127.0.0.1:${opdsPort}`;
+        const opdsServer = http.createServer((req, res) => {
+          const reqUrl = new URL(req.url || '/', opdsBaseUrl);
+          if (reqUrl.pathname === '/opds') {
+            res.writeHead(200, { 'Content-Type': 'application/atom+xml;profile=opds-catalog' });
+            res.end(`<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:xmedia:e2e:standalone-ui</id>
+  <title>Standalone Browser OPDS</title>
+  <updated>2026-01-01T00:00:00Z</updated>
+  <entry>
+    <id>urn:xmedia:e2e:book:nebula</id>
+    <title>Nebula Chronicles</title>
+    <author><name>Nova Writer</name></author>
+    <updated>2026-01-01T00:00:00Z</updated>
+    <link rel="http://opds-spec.org/acquisition" type="text/plain" href="/nebula.txt" />
+  </entry>
+</feed>`);
+            return;
+          }
+          if (reqUrl.pathname === '/nebula.txt') {
+            res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Chapter 1\n\nNebula Chronicles standalone import content.');
+            return;
+          }
+          res.writeHead(404);
+          res.end('Not Found');
+        });
+        await new Promise((resolve) => opdsServer.listen(opdsPort, '127.0.0.1', resolve));
+
+        const appMgr = new StandaloneGatewayManager({ keepTmp: ctx.keepTmp });
+        let cdp = null;
+        try {
+          const gwUrl = await appMgr.start({ webDir: ctx.webDir, requireWebUi: true });
+
+          // Seed a remote OPDS source on the standalone gateway
+          const seedSession = await rawHttpRequest(gwUrl, 'POST', '/_app/auto-session', {
+            headers: {
+              Origin: gwUrl,
+              'Sec-Fetch-Site': 'same-origin',
+              'X-XMedia-App': 'standalone',
+            },
+          });
+          assert.equal(seedSession.status, 200);
+          const seedCookie = extractSetCookiePair(seedSession.rawSetCookies, 'xmedia_token');
+          assert.ok(seedCookie);
+          const createSource = await rawHttpRequest(gwUrl, 'POST', '/_app/remote-sources', {
+            headers: { Cookie: `xmedia_token=${seedCookie.value}` },
+            body: {
+              name: 'Browser OPDS Feed',
+              protocol: 'opds',
+              url: `${opdsBaseUrl}/opds`,
+            },
+          });
+          assert.equal(createSource.status, 201);
+
+          // Launch clean Chromium profile (zero pre-injected cookies/JWT) to test real auto-session bootstrap
+          cdp = new ctx.CdpClient({
+            allowedErrorUrls: [
+              ...DEFAULT_ALLOWED_ERROR_PATTERNS,
+              /\/api\/v1\/auth\/me(?:$|\?)/,
+              /\/_app\/icon(?:$|\?)/,
+            ],
+          });
+          await cdp.launch();
+          await cdp.goto(`${gwUrl}/book/settings?tab=sources&kind=remote`);
+
+          await cdp.waitForFn(
+            `!location.pathname.includes('/login') && !location.pathname.includes('/setup') && Boolean(document.querySelector('#remote-servers')?.innerText.includes('Browser OPDS Feed'))`,
+            { timeoutMs: 12000, label: 'standalone auto-session bootstrapped and rendered Browser OPDS Feed card' },
+          );
+
+          assert.ok(
+            cdp.networkResponses.some((r) => r.url.includes('/_app/health') && r.status === 200),
+            'Expected GET /_app/health 200 during standalone bootstrap',
+          );
+          assert.ok(
+            cdp.networkResponses.some((r) => r.url.includes('/_app/auto-session') && r.status === 200),
+            'Expected POST /_app/auto-session 200 during standalone bootstrap',
+          );
+
+          // Click "Open in Library" on the OPDS source card -> navigates to /book/library?scope=remote
+          await clickButtonMatching(cdp, [/库|浏览|打开|library|browse|open/i], {
+            rootSelector: '#remote-servers',
+          });
+
+          await cdp.waitForFn(
+            `location.pathname.includes('/book/library') && location.search.includes('scope=remote') && document.body.innerText.includes('Nebula Chronicles')`,
+            { timeoutMs: 12000, label: 'RemoteOpdsBrowser rendered Nebula Chronicles entry' },
+          );
+
+          // Click one-click Import in RemoteOpdsBrowser -> exercises in-process LocalMediaImporter!
+          await clickButtonMatching(cdp, [/导入|下载|import/i], {
+            rootSelector: 'main',
+          });
+          const importDeadline = Date.now() + 10000;
+          while (
+            Date.now() < importDeadline &&
+            !cdp.networkResponses.some((r) => r.url.includes('/_app/opds/') && r.url.includes('/import') && r.status === 201)
+          ) {
+            await new Promise((r) => setTimeout(r, 80));
+          }
+          assert.ok(
+            cdp.networkResponses.some((r) => r.url.includes('/_app/opds/') && r.url.includes('/import') && r.status === 201),
+            'Expected 201 from POST /_app/opds/{id}/import via LocalMediaImporter',
+          );
+
+          // Also verify Subsonic remote server settings section renders cleanly
+          await cdp.goto(`${gwUrl}/music/settings?tab=sources&kind=remote`);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('#remote-servers'))`,
+            { timeoutMs: 10000, label: 'music Subsonic #remote-servers section rendered' },
+          );
+
+          cdp.assertNoErrors('T1-F19-05');
+        } finally {
+          if (cdp) await cdp.close();
+          await appMgr.cleanup();
+          await new Promise((resolve) => opdsServer.close(resolve));
+        }
+      },
+    },
   ];
 }
 
@@ -3133,6 +3395,7 @@ export async function runTier1(context = {}) {
     webDir = resolveWebDir(),
     keepTmp = false,
     domain = null,
+    caseIds = null,
     silent = false,
     MockOriginServer: MockCtor = MockOriginServer,
     XMediaServerManager: ManagerCtor = XMediaServerManager,
@@ -3141,7 +3404,9 @@ export async function runTier1(context = {}) {
   } = context;
 
   const allCases = buildTier1Cases();
-  const selectedCases = domain ? allCases.filter((c) => c.domain === domain) : allCases;
+  const selectedCases = allCases.filter(
+    (c) => (!domain || c.domain === domain) && (!caseIds || caseIds.includes(c.id)),
+  );
   const results = [];
 
   if (selectedCases.length === 0) {

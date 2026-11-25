@@ -876,7 +876,7 @@ export async function runLiveTests(context = {}) {
               ? `&source=${encodeURIComponent(liveComicSample.sourceId)}`
               : '';
             await cdp.goto(
-              `${baseUrl}/comic/series?scope=online&q=${encodeURIComponent(liveComicSample.keyword)}${sourceQuery}`,
+              `${baseUrl}/comic/library?scope=online&q=${encodeURIComponent(liveComicSample.keyword)}${sourceQuery}`,
             );
             const waitForComicSearch = async (timeoutMs = 30000) => {
               const deadline = Date.now() + timeoutMs;
@@ -991,7 +991,7 @@ export async function runLiveTests(context = {}) {
 
           if (liveMusicSample) {
             await cdp.goto(
-              `${baseUrl}/music/songs?scope=online&q=${encodeURIComponent(liveMusicSample.keyword)}`,
+              `${baseUrl}/music/library?scope=online&q=${encodeURIComponent(liveMusicSample.keyword)}`,
             );
             await cdp.waitForFn(
               `document.body.textContent.includes(${JSON.stringify(liveMusicSample.title)})`,
@@ -1018,7 +1018,7 @@ export async function runLiveTests(context = {}) {
 
           if (liveVideoSample) {
             await cdp.goto(
-              `${baseUrl}/video/catalog?scope=online&q=${encodeURIComponent(liveVideoSample.keyword)}`,
+              `${baseUrl}/video/library?scope=online&q=${encodeURIComponent(liveVideoSample.keyword)}`,
             );
             await cdp.waitForFn(
               `document.body.textContent.includes(${JSON.stringify(liveVideoSample.title)})`,

@@ -307,7 +307,7 @@ export async function runTier4(context = {}) {
             );
 
             // 4. Switch to MangaDex comic in rtl_double mode
-            await cdp.goto(`${baseUrl}/comic/series?scope=online&q=Naruto`);
+            await cdp.goto(`${baseUrl}/comic/library?scope=online&q=Naruto`);
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock Naruto')`,
               { timeoutMs: 12000, label: 'MangaDex Mock Naruto rendered' },
@@ -372,7 +372,7 @@ export async function runTier4(context = {}) {
 
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
-            await cdp.goto(`${baseUrl}/music/songs`);
+            await cdp.goto(`${baseUrl}/music/library`);
             await clickButtonByText(cdp, ['在线', 'Online'], { timeoutMs: 8000 });
 
             // Search "Mock"
@@ -488,7 +488,7 @@ export async function runTier4(context = {}) {
           // Chromium UI journey
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
-            await cdp.goto(`${baseUrl}/video/catalog`);
+            await cdp.goto(`${baseUrl}/video/library`);
             await clickButtonByText(cdp, ['在线', 'Online'], { timeoutMs: 8000 });
 
             await cdp.waitForSelector('main input[type="search"], main input[type="text"]', {
@@ -533,7 +533,7 @@ export async function runTier4(context = {}) {
             );
 
             // Play PeerTube MP4
-            await cdp.goto(`${baseUrl}/video/catalog?scope=online&q=Blender`);
+            await cdp.goto(`${baseUrl}/video/library?scope=online&q=Blender`);
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock Blender Open Movie')`,
               { timeoutMs: 12000, label: 'PeerTube search card rendered' },
@@ -565,7 +565,7 @@ export async function runTier4(context = {}) {
       async () => {
         await withCdpBrowser(async (cdp) => {
           await browserLogin(cdp, baseUrl, ADMIN_CREDS);
-          await cdp.goto(`${baseUrl}/settings?tab=domain-datasources&domain=comic`);
+          await cdp.goto(`${baseUrl}/comic/settings?tab=sources&advanced=1`);
           await cdp.waitForFn(
             `document.body.textContent.includes('导入') || document.body.textContent.toLowerCase().includes('import')`,
             { timeoutMs: 10000, label: 'Comic data sources manager rendered in Settings' },
@@ -609,7 +609,7 @@ export async function runTier4(context = {}) {
           );
           assert.equal(testResp.json?.ok, true, `Debug test failed: ${testResp.text}`);
 
-          await cdp.goto(`${baseUrl}/settings?tab=domain-datasources&domain=comic`);
+          await cdp.goto(`${baseUrl}/comic/settings?tab=sources&advanced=1`);
           await cdp.waitForFn(
             `document.body.textContent.includes('Edge Cookie Gated Comic')`,
             { timeoutMs: 10000, label: 'Source still visible after test' },

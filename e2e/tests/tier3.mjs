@@ -948,7 +948,7 @@ export async function runTier3(context = {}) {
         try {
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, ADMIN_CREDS);
-            await cdp.goto(`${baseUrl}/settings?tab=domain-datasources&domain=comic`);
+            await cdp.goto(`${baseUrl}/comic/settings?tab=sources&advanced=1`);
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock XKCD')`,
               { timeoutMs: 10000, label: 'Mock XKCD visible in Settings comic datasources' },
@@ -960,13 +960,13 @@ export async function runTier3(context = {}) {
               body: { group_name: 'UI-Group-T3', weight: 150 },
               expectedStatus: 200,
             });
-            await cdp.goto(`${baseUrl}/settings?tab=domain-datasources&domain=comic`);
+            await cdp.goto(`${baseUrl}/comic/settings?tab=sources&advanced=1`);
             await cdp.waitForFn(
               `document.body.textContent.includes('UI-Group-T3')`,
               { timeoutMs: 10000, label: 'Updated group chip visible in Settings' },
             );
 
-            await cdp.goto(`${baseUrl}/comic/series?scope=online&q=Mock`);
+            await cdp.goto(`${baseUrl}/comic/library?scope=online&q=Mock`);
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock XKCD Strip')`,
               { timeoutMs: 12000, label: 'Online comic search renders Mock XKCD Strip' },
@@ -1084,7 +1084,7 @@ export async function runTier3(context = {}) {
         try {
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
-            await cdp.goto(`${baseUrl}/music/songs?scope=online&q=Mojito`);
+            await cdp.goto(`${baseUrl}/music/library?scope=online&q=Mojito`);
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock Mojito')`,
               { timeoutMs: 12000, label: 'Online music track rendered' },
@@ -1169,7 +1169,7 @@ export async function runTier3(context = {}) {
         try {
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
-            await cdp.goto(`${baseUrl}/comic/series?scope=online&q=Tower`);
+            await cdp.goto(`${baseUrl}/comic/library?scope=online&q=Tower`);
             await cdp.waitForFn(
               `document.body.textContent.includes('Tower of Mock')`,
               { timeoutMs: 12000, label: 'WEBTOON search card rendered' },
@@ -1311,14 +1311,14 @@ export async function runTier3(context = {}) {
         await withCdpBrowser(async (cdp) => {
           await browserLogin(cdp, baseUrl, MEMBER_CREDS);
           const routes = [
-            '/comic/series',
-            '/music/songs',
-            '/video/catalog',
+            '/comic/library',
+            '/music/library',
+            '/video/library',
             '/settings',
-            '/comic/series?p=1',
-            '/music/songs?p=2',
-            '/video/catalog?p=3',
-            '/book/books',
+            '/comic/library?page=1',
+            '/music/library?page=2',
+            '/video/library?page=3',
+            '/book/library',
           ];
           for (const route of routes) {
             await cdp.goto(`${baseUrl}${route}`);
