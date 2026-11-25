@@ -344,10 +344,43 @@ const viewModeOptions = computed<SegmentedOption<BookBrowseView>[]>(() => [
   { value: 'tags', label: t('catalog.viewTags') },
 ])
 
-const layoutOptions = computed<SegmentedOption<'grid' | 'list'>[]>(() => [
-  { value: 'grid', label: '', icon: LuLayoutGrid, title: t('catalog.gridView') },
-  { value: 'list', label: '', icon: LuList, title: t('catalog.tableView') },
+const layoutOptions = computed(() => [
+  {
+    value: 'grid' as const,
+    label: '',
+    icon: LuLayoutGrid,
+    title: t('catalog.gridView'),
+    ariaLabel: t('catalog.gridView'),
+  },
+  {
+    value: 'list' as const,
+    label: '',
+    icon: LuList,
+    title: t('catalog.tableView'),
+    ariaLabel: t('catalog.tableView'),
+  },
 ])
+
+function handleLayoutKeydown(event: KeyboardEvent, currentIdx: number): void {
+  if (
+    event.key !== 'ArrowLeft' &&
+    event.key !== 'ArrowRight' &&
+    event.key !== 'ArrowUp' &&
+    event.key !== 'ArrowDown'
+  ) {
+    return
+  }
+  event.preventDefault()
+  const opts = layoutOptions.value
+  const delta = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1
+  const nextIdx = (currentIdx + delta + opts.length) % opts.length
+  const nextOpt = opts[nextIdx]
+  if (!nextOpt) return
+  handleLayoutModeChange(nextOpt.value)
+  const group = (event.currentTarget as HTMLElement | null)?.parentElement
+  const buttons = group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+  buttons?.[nextIdx]?.focus()
+}
 
 const tagModeOptions = computed<SegmentedOption<TagMatchMode>[]>(() => [
   { value: 'any', label: t('search.tagModeAny') },
@@ -1104,13 +1137,33 @@ function onUploadFilesChange(ev: Event): void {
             @click="toggleSortOrder"
           />
 
-          <MdSegmentedButton
-            :model-value="catalogStore.viewMode"
-            :options="layoutOptions"
-            size="sm"
-            :show-check="false"
-            @update:model-value="handleLayoutModeChange"
-          />
+          <div
+            role="radiogroup"
+            :aria-label="t('catalog.gridView')"
+            class="inline-flex h-9 items-stretch overflow-hidden rounded-corner-full border border-outline"
+          >
+            <button
+              v-for="(opt, idx) in layoutOptions"
+              :key="opt.value"
+              type="button"
+              role="radio"
+              :aria-checked="catalogStore.viewMode === opt.value"
+              :aria-label="opt.ariaLabel"
+              :title="opt.title"
+              :tabindex="catalogStore.viewMode === opt.value ? 0 : -1"
+              class="md-state md-touch-target inline-flex cursor-pointer items-center justify-center px-3 transition-colors duration-150 ease-standard focus-visible:outline-3 focus-visible:-outline-offset-2 focus-visible:outline-secondary"
+              :class="[
+                idx > 0 ? 'border-l border-outline' : '',
+                catalogStore.viewMode === opt.value
+                  ? 'bg-secondary-container text-on-secondary-container'
+                  : 'bg-transparent text-on-surface hover:bg-surface-container-high/50',
+              ]"
+              @click="handleLayoutModeChange(opt.value)"
+              @keydown="handleLayoutKeydown($event, idx)"
+            >
+              <component :is="opt.icon" class="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
         </template>
 
         <MdIconButton

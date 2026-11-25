@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import {
-  LuAlertCircle,
+  LuAlertTriangle,
   LuArrowLeft,
   LuCheck,
   LuDownload,
@@ -475,7 +475,7 @@ defineExpose({
                 :max="Math.max(1, duration)"
                 :step="0.5"
                 commit-on-release
-                aria-label="Video timeline"
+                :aria-label="t('player.timeline')"
                 @update:model-value="handleSliderInput"
                 @change="handleSliderCommit"
               />
@@ -598,9 +598,7 @@ defineExpose({
           @close="handleBack"
         >
           <template #icon>
-            <div class="flex h-12 w-12 items-center justify-center rounded-corner-lg bg-error-container text-on-error-container">
-              <LuAlertCircle class="h-6 w-6" aria-hidden="true" />
-            </div>
+            <LuAlertTriangle class="h-6 w-6 text-error" aria-hidden="true" />
           </template>
 
           <p role="alert" class="text-body-medium text-on-surface-variant">

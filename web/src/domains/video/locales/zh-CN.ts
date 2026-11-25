@@ -180,6 +180,7 @@ export default {
     quality: '画质',
     subtitles: '字幕',
     volume: '音量',
+    timeline: '视频进度条',
     loading: '正在加载视频…',
     loadErrorTitle: '视频加载失败',
     loadErrorDesc: '无法获取视频信息或播放流，请检查网络后重试。',

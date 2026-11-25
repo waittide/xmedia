@@ -180,6 +180,7 @@ export default {
     quality: 'Quality',
     subtitles: 'Subtitles',
     volume: 'Volume',
+    timeline: 'Video timeline',
     loading: 'Loading video…',
     loadErrorTitle: 'Failed to load video',
     loadErrorDesc: 'Unable to fetch video metadata or media stream. Please try again.',

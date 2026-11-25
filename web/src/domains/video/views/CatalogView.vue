@@ -20,7 +20,6 @@ import {
 import { DomainLibraryTemplate, DomainPoolSection, MediaItemCard } from '@/components/domain'
 import {
   MdButton,
-  MdCard,
   MdChip,
   MdIconButton,
   MdMenu,
@@ -1115,36 +1114,38 @@ onBeforeUnmount(() => {
         v-else-if="activeTab === 'collections'"
         class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
       >
-        <MdCard
+        <div
           v-for="sh in filteredShelves"
           :key="sh.id"
-          variant="filled"
-          padding="sm"
-          clickable
-          class="flex items-center gap-3.5"
-          @click="updateLibraryQuery({ collection: sh.id, tab: null })"
+          class="group flex items-center gap-3.5 rounded-corner-md bg-surface-container-low p-3 transition-colors duration-150 ease-standard hover:bg-surface-container"
         >
-          <div class="h-12 w-20 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
-            <MediaCoverImage
-              :src="buildPosterUrl(sh.poster_key, 240)"
-              :alt="sh.name"
-              aspect-class="aspect-video"
-              rounded="rounded-corner-sm"
-              :fallback-icon="LuFolderHeart"
-              fallback-icon-class="h-5 w-5 text-on-surface-variant/60"
-            />
-          </div>
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 cursor-pointer items-center gap-3.5 rounded-corner-sm text-left outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
+            @click="updateLibraryQuery({ collection: sh.id, tab: null })"
+          >
+            <div class="h-12 w-20 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
+              <MediaCoverImage
+                :src="buildPosterUrl(sh.poster_key, 240)"
+                :alt="sh.name"
+                aspect-class="aspect-video"
+                rounded="rounded-corner-sm"
+                :fallback-icon="LuFolderHeart"
+                fallback-icon-class="h-5 w-5 text-on-surface-variant/60"
+              />
+            </div>
 
-          <div class="min-w-0 flex-1">
-            <h3 class="text-title-small truncate text-on-surface">
-              {{ sh.name }}
-            </h3>
-            <p class="text-body-small mt-0.5 truncate text-on-surface-variant">
-              {{ t('common.videosCount', { count: sh.video_count }) }}
-            </p>
-          </div>
+            <div class="min-w-0 flex-1">
+              <h3 class="text-title-small truncate text-on-surface">
+                {{ sh.name }}
+              </h3>
+              <p class="text-body-small mt-0.5 truncate text-on-surface-variant">
+                {{ t('common.videosCount', { count: sh.video_count }) }}
+              </p>
+            </div>
+          </button>
 
-          <div class="shrink-0" @click.stop>
+          <div class="shrink-0">
             <MdMenu placement="bottom-end" :aria-label="t('common.moreActions')">
               <template #trigger="{ toggle, triggerAttrs }">
                 <MdIconButton
@@ -1179,7 +1180,7 @@ onBeforeUnmount(() => {
               </template>
             </MdMenu>
           </div>
-        </MdCard>
+        </div>
       </div>
 
       <!-- Mode 5: Genres / Tags Dimension Browser (view=genres | view=tags) -->

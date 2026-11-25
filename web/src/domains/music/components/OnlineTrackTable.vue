@@ -249,7 +249,7 @@ async function handleTrackAllToLibrary(): Promise<void> {
               :aria-label="
                 isCurrentTrack(tr) && playerStore.isPlaying ? t('player.pause') : t('player.play')
               "
-              class="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-corner-full"
+              class="md-touch-target inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-corner-full"
               @click.stop="handlePlayRow(idx)"
             >
               <LuPause

@@ -13,6 +13,7 @@ import {
   MdCircularProgress,
   MdDialog,
   MdLinearProgress,
+  MdRadio,
   MdTextField,
 } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
@@ -60,6 +61,42 @@ const onlineDownloadsStore = useOnlineDownloadsStore()
 const router = useRouter()
 
 const format = ref<OnlineDownloadFormat>('epub')
+const formatGroupRef = ref<HTMLElement | null>(null)
+const formatOptions = computed<
+  Array<{ value: OnlineDownloadFormat; title: string; desc: string }>
+>(() => [
+  {
+    value: 'epub',
+    title: t('online.formatEpubTitle'),
+    desc: t('online.formatEpubDesc'),
+  },
+  {
+    value: 'txt',
+    title: t('online.formatTxtTitle'),
+    desc: t('online.formatTxtDesc'),
+  },
+])
+
+function handleFormatKeydown(event: KeyboardEvent, currentIdx: number): void {
+  const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']
+  if (!keys.includes(event.key)) return
+  event.preventDefault()
+  const opts = formatOptions.value
+  let nextIdx = currentIdx
+  if (event.key === 'Home') {
+    nextIdx = 0
+  } else if (event.key === 'End') {
+    nextIdx = opts.length - 1
+  } else {
+    const delta = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1
+    nextIdx = (currentIdx + delta + opts.length) % opts.length
+  }
+  const nextOpt = opts[nextIdx]
+  if (!nextOpt) return
+  format.value = nextOpt.value
+  const radios = formatGroupRef.value?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+  radios?.[nextIdx]?.focus()
+}
 const useRange = ref(false)
 const startChapter = ref('1')
 const endChapter = ref('100')
@@ -263,69 +300,37 @@ function openImportedBook(): void {
             {{ t('online.exportFormat') }}
           </div>
           <div
+            ref="formatGroupRef"
             role="radiogroup"
             :aria-label="t('online.exportFormat')"
             class="grid grid-cols-1 gap-2 sm:grid-cols-2"
           >
-            <button
-              type="button"
-              role="radio"
-              :aria-checked="format === 'epub'"
-              class="md-state cursor-pointer rounded-corner-md border px-3.5 py-3 text-left transition-colors duration-150 ease-standard"
+            <div
+              v-for="(opt, idx) in formatOptions"
+              :key="opt.value"
+              class="flex cursor-pointer items-start gap-2.5 rounded-corner-md px-3.5 py-3 transition-colors duration-150 ease-standard"
               :class="
-                format === 'epub'
-                  ? 'border-primary bg-primary-container/40'
-                  : 'border-outline-variant bg-surface-container'
+                format === opt.value
+                  ? 'bg-primary-container/50 text-on-surface'
+                  : 'bg-surface-container text-on-surface hover:bg-surface-container-high'
               "
-              @click="format = 'epub'"
+              @click="format = opt.value"
             >
-              <span class="flex items-center gap-2.5 text-label-large text-on-surface">
-                <span
-                  aria-hidden="true"
-                  class="flex h-4 w-4 shrink-0 items-center justify-center rounded-corner-full border-2"
-                  :class="format === 'epub' ? 'border-primary' : 'border-outline'"
-                >
-                  <span
-                    v-if="format === 'epub'"
-                    class="h-2 w-2 rounded-corner-full bg-primary"
-                  />
-                </span>
-                <span>{{ t('online.formatEpubTitle') }}</span>
-              </span>
-              <p class="text-body-small mt-1 pl-6.5 text-on-surface-variant">
-                {{ t('online.formatEpubDesc') }}
-              </p>
-            </button>
-
-            <button
-              type="button"
-              role="radio"
-              :aria-checked="format === 'txt'"
-              class="md-state cursor-pointer rounded-corner-md border px-3.5 py-3 text-left transition-colors duration-150 ease-standard"
-              :class="
-                format === 'txt'
-                  ? 'border-primary bg-primary-container/40'
-                  : 'border-outline-variant bg-surface-container'
-              "
-              @click="format = 'txt'"
-            >
-              <span class="flex items-center gap-2.5 text-label-large text-on-surface">
-                <span
-                  aria-hidden="true"
-                  class="flex h-4 w-4 shrink-0 items-center justify-center rounded-corner-full border-2"
-                  :class="format === 'txt' ? 'border-primary' : 'border-outline'"
-                >
-                  <span
-                    v-if="format === 'txt'"
-                    class="h-2 w-2 rounded-corner-full bg-primary"
-                  />
-                </span>
-                <span>{{ t('online.formatTxtTitle') }}</span>
-              </span>
-              <p class="text-body-small mt-1 pl-6.5 text-on-surface-variant">
-                {{ t('online.formatTxtDesc') }}
-              </p>
-            </button>
+              <MdRadio
+                :checked="format === opt.value"
+                :aria-label="opt.title"
+                :tabindex="format === opt.value ? 0 : -1"
+                class="mt-0.5"
+                @select="format = opt.value"
+                @keydown="handleFormatKeydown($event, idx)"
+              />
+              <div class="min-w-0 flex-1">
+                <div class="text-label-large text-on-surface">{{ opt.title }}</div>
+                <p class="text-body-small mt-1 text-on-surface-variant">
+                  {{ opt.desc }}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
 

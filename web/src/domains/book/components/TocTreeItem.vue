@@ -43,7 +43,7 @@ const emit = defineEmits<{
           type="button"
           :aria-expanded="expandedKeys.has(node.key)"
           :aria-label="node.item.title"
-          class="md-state flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-corner-sm text-on-surface-variant hover:text-on-surface focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
+          class="md-state md-touch-target flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-corner-sm text-on-surface-variant hover:text-on-surface focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
           @click.stop="emit('toggleExpand', node.key)"
         >
           <LuChevronRight
