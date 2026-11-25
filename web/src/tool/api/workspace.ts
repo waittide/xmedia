@@ -14,7 +14,6 @@ import type {
   WebhookTestReportDto,
 } from '../types'
 import {
-  clearLegacyToolToken,
   toolRequest,
   toolStreamRequest,
   type StreamProgressCallback,
@@ -31,12 +30,10 @@ export const workspaceApi = {
       method: 'POST',
       body: JSON.stringify({ password }),
     })
-    clearLegacyToolToken()
     return res.token
   },
 
   async lock(): Promise<void> {
-    clearLegacyToolToken()
     await toolRequest<{ ok: boolean }>('/auth/lock', { method: 'POST' })
   },
 

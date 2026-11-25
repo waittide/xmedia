@@ -11,18 +11,6 @@ type NdjsonStreamFrame<T> =
   | { type: 'done'; data: T }
   | { type: 'error'; message: string }
 
-const LEGACY_TOKEN_STORAGE_KEY = 'xmedia_tool.token'
-
-export function clearLegacyToolToken(): void {
-  try {
-    localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY)
-  } catch {
-    // ignore storage errors
-  }
-}
-
-clearLegacyToolToken()
-
 export interface ToolRequestError extends Error {
   status?: number
   streamRouteMissing?: boolean

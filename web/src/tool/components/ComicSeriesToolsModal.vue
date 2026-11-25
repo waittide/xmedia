@@ -1,29 +1,40 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuCheck, LuCombine, LuLayers } from 'vue-icons-plus/lu'
+import { LuCheck, LuCombine, LuFileArchive, LuLayers } from 'vue-icons-plus/lu'
+import AppSlider from '@/components/ui/AppSlider.vue'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSelect from '@/components/ui/MdSelect.vue'
 import MdTabs from '@/components/ui/MdTabs.vue'
 import MdTextField from '@/components/ui/MdTextField.vue'
+import { formatBytes } from '@/utils/format'
 import { toolApi } from '../api'
-import type { MediaFileEntry } from '../types'
+import type { ComicImageReencodeFormat, MediaFileDetail, MediaFileEntry } from '../types'
 
-const props = defineProps<{
-  open: boolean
-  rootId: string | null
-  entries: MediaFileEntry[]
-}>()
+export type ComicToolsTab = 'sync' | 'merge' | 'optimize'
+
+const props = withDefaults(
+  defineProps<{
+    open: boolean
+    rootId: string | null
+    entries: MediaFileEntry[]
+    initialTab?: ComicToolsTab
+  }>(),
+  {
+    initialTab: 'sync',
+  },
+)
 
 const emit = defineEmits<{
   close: []
+  updated: [detail: MediaFileDetail]
   completed: []
 }>()
 
 const { t } = useI18n()
 
-const activeTab = ref<'sync' | 'merge'>('sync')
+const activeTab = ref<ComicToolsTab>('sync')
 const busy = ref(false)
 const errorMsg = ref('')
 const successMsg = ref('')
@@ -41,9 +52,25 @@ const numberingMode = ref<'none' | 'chapter' | 'volume'>('chapter')
 const startIndex = ref('1')
 const padWidth = ref('2')
 
+// Merge state
+const mergeOutputName = ref('')
+const mergeSeries = ref('')
+const mergeTitle = ref('')
+const mergeVolume = ref('1')
+
+// Optimize Archive state
+const optReencode = ref<ComicImageReencodeFormat>('keep')
+const optJpegQuality = ref(84)
+const optMaxWidth = ref('')
+
 const tabOptions = computed(() => [
   { value: 'sync' as const, label: t('tool.modals.comicSeries.tabSync'), icon: LuLayers },
   { value: 'merge' as const, label: t('tool.modals.comicSeries.tabMerge'), icon: LuCombine },
+  {
+    value: 'optimize' as const,
+    label: t('tool.modals.comicSeries.tabOptimize'),
+    icon: LuFileArchive,
+  },
 ])
 
 const directionOptions = computed(() => [
@@ -59,20 +86,34 @@ const numberingOptions = computed(() => [
   { value: 'volume', label: t('tool.modals.comicSeries.numVolume') },
 ])
 
-// Merge state
-const mergeOutputName = ref('')
-const mergeSeries = ref('')
-const mergeTitle = ref('')
-const mergeVolume = ref('1')
+const reencodeOptions = computed(() => [
+  { value: 'keep', label: t('tool.modals.comicPages.encKeep') },
+  { value: 'jpeg', label: t('tool.modals.comicPages.encJpeg') },
+  { value: 'webp', label: t('tool.modals.comicPages.encWebp') },
+])
+
+const maxWidthOptions = computed(() => [
+  { value: '', label: t('tool.modals.comicPages.widthNone') },
+  { value: '2000', label: t('tool.modals.comicPages.width2000') },
+  { value: '1600', label: t('tool.modals.comicPages.width1600') },
+  { value: '1280', label: t('tool.modals.comicPages.width1280') },
+])
 
 const sortedEntries = computed(() =>
-  [...props.entries].sort((a, b) => a.file_name.localeCompare(b.file_name, undefined, { numeric: true })),
+  [...props.entries].sort((a, b) =>
+    a.file_name.localeCompare(b.file_name, undefined, { numeric: true }),
+  ),
+)
+
+const optimizableEntries = computed(() =>
+  sortedEntries.value.filter((e) => e.extension === 'cbz' || e.extension === 'zip'),
 )
 
 watch(
-  () => props.open,
-  (isOpen) => {
+  () => [props.open, props.initialTab] as const,
+  ([isOpen, initTab]) => {
     if (!isOpen) return
+    activeTab.value = initTab
     errorMsg.value = ''
     successMsg.value = ''
     const first = sortedEntries.value[0]
@@ -167,6 +208,44 @@ async function handleMerge(): Promise<void> {
     busy.value = false
   }
 }
+
+async function handleOptimize(): Promise<void> {
+  if (!props.rootId || optimizableEntries.value.length === 0) return
+  busy.value = true
+  errorMsg.value = ''
+  successMsg.value = ''
+  try {
+    const maxWidth = toOptInt(optMaxWidth.value) ?? null
+    let totalBefore = 0
+    let totalAfter = 0
+    let lastDetail: MediaFileDetail | null = null
+    for (const entry of optimizableEntries.value) {
+      const res = await toolApi.optimizeComic(
+        props.rootId,
+        entry.rel_path,
+        optReencode.value,
+        optJpegQuality.value,
+        maxWidth,
+      )
+      totalBefore += res.report.before_bytes
+      totalAfter += res.report.after_bytes
+      lastDetail = res.detail
+    }
+    if (lastDetail && optimizableEntries.value.length === 1) {
+      emit('updated', lastDetail)
+    }
+    successMsg.value = t('tool.modals.comicSeries.optimizedReport', {
+      count: optimizableEntries.value.length,
+      before: formatBytes(totalBefore),
+      after: formatBytes(totalAfter),
+    })
+    emit('completed')
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
@@ -196,42 +275,18 @@ async function handleMerge(): Promise<void> {
           size="sm"
           :label="t('tool.modals.comicSeries.seriesKeepEmpty')"
         />
-        <MdTextField
-          v-model="seriesGroup"
-          size="sm"
-          :label="t('tool.forms.comic.seriesGroup')"
-        />
-        <MdTextField
-          v-model="writers"
-          size="sm"
-          :label="t('tool.forms.comic.writers')"
-        />
-        <MdTextField
-          v-model="pencillers"
-          size="sm"
-          :label="t('tool.forms.comic.pencillers')"
-        />
-        <MdTextField
-          v-model="publisher"
-          size="sm"
-          :label="t('tool.forms.common.publisher')"
-        />
+        <MdTextField v-model="seriesGroup" size="sm" :label="t('tool.forms.comic.seriesGroup')" />
+        <MdTextField v-model="writers" size="sm" :label="t('tool.forms.comic.writers')" />
+        <MdTextField v-model="pencillers" size="sm" :label="t('tool.forms.comic.pencillers')" />
+        <MdTextField v-model="publisher" size="sm" :label="t('tool.forms.common.publisher')" />
         <div class="flex flex-col gap-1">
           <span class="text-label-medium text-on-surface-variant">
             {{ t('tool.forms.comic.direction') }}
           </span>
           <MdSelect v-model="readingDirection" :options="directionOptions" size="sm" />
         </div>
-        <MdTextField
-          v-model="genres"
-          size="sm"
-          :label="t('tool.forms.comic.genres')"
-        />
-        <MdTextField
-          v-model="tags"
-          size="sm"
-          :label="t('tool.forms.comic.tags')"
-        />
+        <MdTextField v-model="genres" size="sm" :label="t('tool.forms.comic.genres')" />
+        <MdTextField v-model="tags" size="sm" :label="t('tool.forms.comic.tags')" />
 
         <div class="space-y-2.5 rounded-corner-lg bg-surface p-4 sm:col-span-2">
           <div class="text-title-small text-on-surface">
@@ -272,18 +327,14 @@ async function handleMerge(): Promise<void> {
         </div>
       </div>
 
-      <div v-else class="space-y-3">
+      <div v-else-if="activeTab === 'merge'" class="space-y-3">
         <MdTextField
           v-model="mergeOutputName"
           size="sm"
           :label="t('tool.modals.comicSeries.outputRelPath')"
         />
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <MdTextField
-            v-model="mergeSeries"
-            size="sm"
-            :label="t('tool.forms.comic.series')"
-          />
+          <MdTextField v-model="mergeSeries" size="sm" :label="t('tool.forms.comic.series')" />
           <MdTextField
             v-model="mergeTitle"
             size="sm"
@@ -309,6 +360,68 @@ async function handleMerge(): Promise<void> {
         </div>
       </div>
 
+      <div v-else class="space-y-3.5">
+        <div class="space-y-3 rounded-corner-lg bg-surface p-4">
+          <p class="text-body-small text-on-surface-variant">
+            {{ t('tool.modals.comicSeries.optimizeDesc') }}
+          </p>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div class="flex flex-col gap-1">
+              <span class="text-label-medium text-on-surface-variant">
+                {{ t('tool.modals.comicPages.imageEncoding') }}
+              </span>
+              <MdSelect
+                :model-value="optReencode"
+                :options="reencodeOptions"
+                @update:model-value="(v) => (optReencode = v as ComicImageReencodeFormat)"
+              />
+            </div>
+            <div class="flex flex-col gap-1">
+              <span class="text-label-medium text-on-surface-variant">
+                {{ t('tool.modals.comicPages.maxWidth') }}
+              </span>
+              <MdSelect v-model="optMaxWidth" :options="maxWidthOptions" />
+            </div>
+          </div>
+
+          <div v-if="optReencode === 'jpeg'" class="space-y-1 pt-1">
+            <div class="text-label-medium flex items-center justify-between text-on-surface-variant">
+              <span>{{ t('tool.modals.comicPages.quality', { q: optJpegQuality }) }}</span>
+              <span class="font-mono">{{ optJpegQuality }}%</span>
+            </div>
+            <AppSlider v-model="optJpegQuality" :min="55" :max="98" :step="1" />
+          </div>
+        </div>
+
+        <div class="rounded-corner-lg bg-surface p-4">
+          <div class="text-label-medium mb-1.5 text-on-surface-variant">
+            {{
+              t('tool.modals.comicSeries.optimizeTargetsHeading', {
+                count: optimizableEntries.length,
+              })
+            }}
+          </div>
+          <ul
+            v-if="optimizableEntries.length > 0"
+            class="text-body-small max-h-36 space-y-1 overflow-y-auto"
+          >
+            <li
+              v-for="e in optimizableEntries"
+              :key="e.rel_path"
+              class="flex items-center justify-between gap-2"
+            >
+              <span class="truncate">{{ e.file_name }}</span>
+              <span class="text-label-small shrink-0 font-mono text-on-surface-variant">
+                {{ formatBytes(e.file_size) }}
+              </span>
+            </li>
+          </ul>
+          <p v-else class="text-body-small text-on-surface-variant">
+            {{ t('tool.modals.comicSeries.noCbzTargets') }}
+          </p>
+        </div>
+      </div>
+
       <div
         v-if="errorMsg"
         role="alert"
@@ -327,13 +440,12 @@ async function handleMerge(): Promise<void> {
 
     <template #footer>
       <div class="ml-auto flex items-center gap-2">
-        <MdButton variant="text" size="sm" @click="emit('close')">
+        <MdButton variant="text" :disabled="busy" @click="emit('close')">
           {{ t('tool.common.close') }}
         </MdButton>
         <MdButton
           v-if="activeTab === 'sync'"
           variant="filled"
-          size="sm"
           :loading="busy"
           :disabled="sortedEntries.length === 0"
           @click="handleBatchSync"
@@ -341,14 +453,23 @@ async function handleMerge(): Promise<void> {
           {{ t('tool.modals.comicSeries.executeSync') }}
         </MdButton>
         <MdButton
-          v-else
+          v-else-if="activeTab === 'merge'"
           variant="filled"
-          size="sm"
           :loading="busy"
           :disabled="sortedEntries.length < 2"
           @click="handleMerge"
         >
           {{ t('tool.modals.comicSeries.executeMerge') }}
+        </MdButton>
+        <MdButton
+          v-else
+          variant="filled"
+          :icon="LuFileArchive"
+          :loading="busy"
+          :disabled="optimizableEntries.length === 0"
+          @click="handleOptimize"
+        >
+          {{ t('tool.modals.comicSeries.executeOptimize', { count: optimizableEntries.length }) }}
         </MdButton>
       </div>
     </template>

@@ -92,8 +92,14 @@ const scrapeStore = useToolScrapeStore()
     v-if="workspaceStore.comicSeriesToolsOpen"
     :open="workspaceStore.comicSeriesToolsOpen"
     :root-id="workspaceStore.effectiveComicRootId"
-    :entries="workspaceStore.selectedComicEntries"
-    @close="workspaceStore.comicSeriesToolsOpen = false"
+    :entries="workspaceStore.effectiveComicEntries"
+    :initial-tab="
+      workspaceStore.comicSeriesInitialTab === 'series'
+        ? 'sync'
+        : workspaceStore.comicSeriesInitialTab
+    "
+    @close="workspaceStore.closeComicSeriesToolsModal()"
+    @updated="(detail) => scrapeStore.handleDetailUpdated(detail, true)"
     @completed="workspaceStore.reloadCurrentScope()"
   />
 
