@@ -141,7 +141,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
 
 <template>
   <!-- Create New User -->
-  <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
+  <MdCard as="section" variant="tonal" padding="lg" class="space-y-4">
     <div>
       <h2 class="text-title-medium text-on-surface">
         {{ t('admin.createUserTitle') }}
@@ -202,8 +202,8 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
   </MdCard>
 
   <!-- System Users List -->
-  <MdCard as="section" variant="outlined" padding="none" class="overflow-hidden">
-    <div class="flex items-center justify-between gap-3 border-b border-outline-variant/60 px-5 py-4">
+  <MdCard as="section" variant="tonal" padding="none" class="overflow-hidden">
+    <div class="flex items-center justify-between gap-3 px-5 pt-4 pb-2">
       <div class="flex items-center gap-2">
         <h2 class="text-title-medium text-on-surface">
           {{ t('admin.usersListTitle') }}
@@ -217,7 +217,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
       <RefreshButton size="sm" :action="loadUsers" />
     </div>
 
-    <ul class="divide-y divide-outline-variant/50">
+    <ul class="divide-y divide-on-surface/6">
       <li
         v-for="u in users"
         :key="u.id"

@@ -137,7 +137,7 @@ watch(
       v-if="showDomain('book')"
       id="book"
       as="section"
-      variant="outlined"
+      variant="tonal"
       padding="lg"
       class="scroll-mt-20 space-y-5"
     >
@@ -260,7 +260,7 @@ watch(
       v-if="showDomain('comic')"
       id="comic"
       as="section"
-      variant="outlined"
+      variant="tonal"
       padding="lg"
       class="scroll-mt-20 space-y-5"
     >
@@ -314,7 +314,7 @@ watch(
         </div>
       </div>
 
-      <div class="flex flex-col gap-3 border-t border-outline-variant/50 pt-4 sm:flex-row sm:flex-wrap sm:gap-8">
+      <div class="flex flex-col gap-3 rounded-corner-md bg-surface-container px-4 py-3 sm:flex-row sm:flex-wrap sm:gap-8">
         <MdSwitch
           :model-value="prefsStore.comic.offset_cover_page"
           :label="t('settings.comicOffsetCover')"
@@ -343,7 +343,7 @@ watch(
       v-if="showDomain('music')"
       id="music"
       as="section"
-      variant="outlined"
+      variant="tonal"
       padding="lg"
       class="scroll-mt-20 space-y-5"
     >
@@ -382,7 +382,7 @@ watch(
       v-if="showDomain('video')"
       id="video"
       as="section"
-      variant="outlined"
+      variant="tonal"
       padding="lg"
       class="scroll-mt-20 space-y-5"
     >
@@ -415,7 +415,7 @@ watch(
         />
       </div>
 
-      <div class="border-t border-outline-variant/50 pt-4">
+      <div class="rounded-corner-md bg-surface-container px-4 py-3">
         <MdSwitch
           :model-value="prefsStore.video.autoplay_next"
           :label="t('settings.videoAutoplayNext')"

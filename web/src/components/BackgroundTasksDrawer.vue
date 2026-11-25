@@ -408,7 +408,7 @@ async function handleClearFinished(): Promise<void> {
         <MdCard
           v-for="item in priorityTasks"
           :key="item.id"
-          variant="outlined"
+          variant="tonal"
           padding="md"
           class="space-y-2.5"
         >

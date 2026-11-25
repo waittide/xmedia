@@ -150,7 +150,7 @@ watch(
 
 <template>
   <!-- Admin-only lock card across ALL domains (T2-F12-01: must include 管理员/admin and list 0 sources) -->
-  <MdCard v-if="!authStore.isAdmin" variant="outlined" padding="lg" class="py-14 text-center">
+  <MdCard v-if="!authStore.isAdmin" variant="tonal" padding="lg" class="py-14 text-center">
     <div
       class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-corner-lg bg-surface-container-high text-on-surface-variant"
     >

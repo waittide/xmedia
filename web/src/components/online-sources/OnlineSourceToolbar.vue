@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuBan,
@@ -17,7 +17,7 @@ import {
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
-import { useEscapeStack } from '@/composables/useEscapeStack'
+import { MdMenu, MdMenuItem } from '@/components/ui'
 
 defineProps<{
   domainLabel: string
@@ -58,89 +58,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const escapeStack = useEscapeStack()
 const fileInputRef = ref<HTMLInputElement | null>(null)
-const importMenuRef = ref<HTMLElement | null>(null)
 const importMenuOpen = ref(false)
-const importOpenedByHover = ref(false)
-let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null
-
-escapeStack.register(
-  () => importMenuOpen.value,
-  () => {
-    clearHoverCloseTimer()
-    importMenuOpen.value = false
-    importOpenedByHover.value = false
-  },
-)
-
-function clearHoverCloseTimer(): void {
-  if (hoverCloseTimer !== null) {
-    clearTimeout(hoverCloseTimer)
-    hoverCloseTimer = null
-  }
-}
-
-function handleImportMouseEnter(): void {
-  clearHoverCloseTimer()
-  importMenuOpen.value = true
-  importOpenedByHover.value = true
-}
-
-function handleImportMouseLeave(): void {
-  clearHoverCloseTimer()
-  hoverCloseTimer = setTimeout(() => {
-    importMenuOpen.value = false
-    importOpenedByHover.value = false
-    hoverCloseTimer = null
-  }, 140)
-}
-
-function handleImportTriggerClick(): void {
-  clearHoverCloseTimer()
-  if (importMenuOpen.value && !importOpenedByHover.value) {
-    importMenuOpen.value = false
-  } else {
-    importMenuOpen.value = true
-    importOpenedByHover.value = false
-  }
-}
 
 function openPasteImportBox(): void {
-  clearHoverCloseTimer()
   importMenuOpen.value = false
-  importOpenedByHover.value = false
   emit('update:showImportBox', true)
 }
 
 function triggerFileImport(): void {
-  clearHoverCloseTimer()
   importMenuOpen.value = false
-  importOpenedByHover.value = false
   fileInputRef.value?.click()
 }
-
-function handleOutsideClick(ev: MouseEvent): void {
-  const target = ev.target as Node
-  if (
-    importMenuOpen.value &&
-    importMenuRef.value &&
-    !importMenuRef.value.contains(target)
-  ) {
-    clearHoverCloseTimer()
-    importMenuOpen.value = false
-    importOpenedByHover.value = false
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('mousedown', handleOutsideClick)
-})
-
-onBeforeUnmount(() => {
-  clearHoverCloseTimer()
-  document.removeEventListener('mousedown', handleOutsideClick)
-})
 </script>
 
 <template>
@@ -149,22 +78,23 @@ onBeforeUnmount(() => {
     <div class="flex flex-wrap items-center justify-between gap-2.5">
       <div class="relative min-w-[13rem] flex-1 sm:max-w-xs">
         <LuSearch
-          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
+          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-on-surface-variant"
+          aria-hidden="true"
         />
         <input
           :value="searchQuery"
           type="text"
           :placeholder="t('onlineSources.toolbar.searchPlaceholder', { domain: domainLabel })"
-          class="md-input h-9 w-full !rounded-full pr-8 pl-9 text-xs"
+          class="sm:text-body-small h-9 w-full rounded-corner-full bg-surface-container-high pr-9 pl-9 text-base text-on-surface placeholder:text-on-surface-variant caret-primary outline-none transition-shadow duration-150 ease-standard focus:ring-2 focus:ring-primary"
           @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
         />
         <button
           v-if="searchQuery"
           type="button"
-          class="absolute top-1/2 right-2 -translate-y-1/2 rounded-full p-0.5 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-highest)]"
+          class="md-state md-touch-target absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-corner-full text-on-surface-variant hover:text-on-surface"
           @click="emit('update:searchQuery', '')"
         >
-          <LuX class="h-3.5 w-3.5" />
+          <LuX class="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 
@@ -198,66 +128,46 @@ onBeforeUnmount(() => {
           @change="emit('file-selected', $event)"
         />
 
-        <!-- Primary Import hover/click dropdown (MUST be first button matching /导入|import/i; hidden when import box is open) -->
-        <div
+        <!-- Primary Import dropdown (MUST be first button matching /导入|import/i; hidden when import box is open) -->
+        <MdMenu
           v-if="!showImportBox"
-          ref="importMenuRef"
-          class="relative"
-          @mouseenter="handleImportMouseEnter"
-          @mouseleave="handleImportMouseLeave"
+          v-model:open="importMenuOpen"
+          placement="bottom-end"
+          :min-width="192"
+          :aria-label="t('onlineSources.toolbar.importJsonBtn')"
         >
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-filled md-state"
-            :title="t('onlineSources.toolbar.importJsonTitle', { domain: domainLabel })"
-            aria-haspopup="menu"
-            :aria-expanded="importMenuOpen"
-            @click="handleImportTriggerClick"
-          >
-            <LuPlus class="h-3.5 w-3.5" />
-            <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
-            <LuChevronDown
-              class="h-3.5 w-3.5 transition-transform duration-150 ease-standard"
-              :class="importMenuOpen ? 'rotate-180' : ''"
-              aria-hidden="true"
-            />
-          </button>
-
-          <Transition name="md-dialog">
-            <div
-              v-if="importMenuOpen"
-              class="absolute top-full right-0 z-[var(--z-popover)] pt-1.5"
+          <template #trigger="{ open, toggle, triggerAttrs }">
+            <button
+              type="button"
+              v-bind="triggerAttrs"
+              class="md-btn md-btn-sm md-btn-filled md-state"
+              :title="t('onlineSources.toolbar.importJsonTitle', { domain: domainLabel })"
+              @click="toggle"
             >
-              <div
-                role="menu"
-                :aria-label="t('onlineSources.toolbar.importJsonBtn')"
-                class="w-44 rounded-corner-lg border border-outline-variant/40 bg-surface-container-high p-1.5 shadow-elevation-3"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="md-state flex w-full cursor-pointer items-center gap-2.5 rounded-corner-md px-3 py-2 text-left text-xs font-medium text-on-surface"
-                  :title="t('onlineSources.toolbar.pasteJsonTitle', { domain: domainLabel })"
-                  @click="openPasteImportBox"
-                >
-                  <LuClipboardPaste class="h-4 w-4 shrink-0 text-on-surface-variant" />
-                  <span>{{ t('onlineSources.toolbar.pasteJsonOption') }}</span>
-                </button>
+              <LuPlus class="h-3.5 w-3.5" />
+              <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
+              <LuChevronDown
+                class="h-3.5 w-3.5 transition-transform duration-150 ease-standard"
+                :class="open ? 'rotate-180' : ''"
+                aria-hidden="true"
+              />
+            </button>
+          </template>
 
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="md-state flex w-full cursor-pointer items-center gap-2.5 rounded-corner-md px-3 py-2 text-left text-xs font-medium text-on-surface"
-                  :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
-                  @click="triggerFileImport"
-                >
-                  <LuFileJson class="h-4 w-4 shrink-0 text-on-surface-variant" />
-                  <span>{{ t('onlineSources.toolbar.importJsonFileOption') }}</span>
-                </button>
-              </div>
-            </div>
-          </Transition>
-        </div>
+          <MdMenuItem
+            :icon="LuClipboardPaste"
+            :label="t('onlineSources.toolbar.pasteJsonOption')"
+            :title="t('onlineSources.toolbar.pasteJsonTitle', { domain: domainLabel })"
+            @select="openPasteImportBox"
+          />
+
+          <MdMenuItem
+            :icon="LuFileJson"
+            :label="t('onlineSources.toolbar.importJsonFileOption')"
+            :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
+            @select="triggerFileImport"
+          />
+        </MdMenu>
       </div>
     </div>
 
@@ -265,8 +175,12 @@ onBeforeUnmount(() => {
     <div v-if="totalCount > 0 && !selectionMode" class="flex flex-wrap items-center gap-1.5">
       <button
         type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
+        class="md-chip md-state"
+        :class="
+          statusFilter === 'all' && groupFilter === '__all__'
+            ? 'md-chip-selected'
+            : 'border-transparent bg-surface-container-low text-on-surface-variant hover:text-on-surface'
+        "
         @click="
           emit('update:statusFilter', 'all');
           emit('update:groupFilter', '__all__')
@@ -276,32 +190,39 @@ onBeforeUnmount(() => {
       </button>
       <button
         type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
+        class="md-chip md-state"
+        :class="
+          statusFilter === 'enabled'
+            ? 'md-chip-selected'
+            : 'border-transparent bg-surface-container-low text-on-surface-variant hover:text-on-surface'
+        "
         @click="emit('update:statusFilter', statusFilter === 'enabled' ? 'all' : 'enabled')"
       >
         {{ t('onlineSources.toolbar.enabledCount', { count: enabledCount }) }}
       </button>
       <button
         type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
+        class="md-chip md-state"
+        :class="
+          statusFilter === 'disabled'
+            ? 'md-chip-selected'
+            : 'border-transparent bg-surface-container-low text-on-surface-variant hover:text-on-surface'
+        "
         @click="emit('update:statusFilter', statusFilter === 'disabled' ? 'all' : 'disabled')"
       >
         {{ t('onlineSources.toolbar.disabledCount', { count: disabledCount }) }}
       </button>
 
-      <span
-        v-if="availableGroups.length > 0"
-        class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
-      />
-
       <button
         v-for="grp in availableGroups"
         :key="grp"
         type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="groupFilter === grp ? 'md-chip-selected' : ''"
+        class="md-chip md-state"
+        :class="
+          groupFilter === grp
+            ? 'md-chip-selected'
+            : 'border-transparent bg-surface-container-low text-on-surface-variant hover:text-on-surface'
+        "
         @click="emit('update:groupFilter', groupFilter === grp ? '__all__' : grp)"
       >
         {{ grp }}
@@ -311,7 +232,7 @@ onBeforeUnmount(() => {
     <!-- Multi-Select Bulk Action Bar -->
     <div
       v-if="selectionMode"
-      class="flex flex-wrap items-center justify-between gap-2.5 rounded-2xl bg-[var(--md-sys-color-secondary-container)] px-4 py-2.5 text-xs text-[var(--md-sys-color-on-secondary-container)]"
+      class="text-body-small flex flex-wrap items-center justify-between gap-2.5 rounded-corner-lg bg-secondary-container px-4 py-2.5 text-on-secondary-container"
     >
       <div class="flex flex-wrap items-center gap-2">
         <span class="font-semibold">
@@ -324,7 +245,7 @@ onBeforeUnmount(() => {
         </span>
         <button
           type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-[var(--md-sys-color-on-secondary-container)]"
+          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-on-secondary-container"
           @click="emit('toggle-select-all')"
         >
           {{
@@ -335,7 +256,7 @@ onBeforeUnmount(() => {
         </button>
         <button
           type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-[var(--md-sys-color-on-secondary-container)]"
+          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-on-secondary-container"
           @click="emit('invert-select')"
         >
           {{ t('onlineSources.toolbar.invertSelect') }}
@@ -346,37 +267,37 @@ onBeforeUnmount(() => {
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
           @click="emit('batch-enable', true)"
         >
-          <LuCheckCircle2 class="h-3.5 w-3.5 text-[var(--md-sys-color-success)]" />
+          <LuCheckCircle2 class="h-3.5 w-3.5 text-success" />
           <span>{{ t('onlineSources.toolbar.enableBtn') }}</span>
         </button>
 
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
           @click="emit('batch-enable', false)"
         >
-          <LuBan class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
+          <LuBan class="h-3.5 w-3.5 text-on-surface-variant" />
           <span>{{ t('onlineSources.toolbar.disableBtn') }}</span>
         </button>
 
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
           @click="emit('batch-set-group')"
         >
-          <LuFolder class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+          <LuFolder class="h-3.5 w-3.5 text-primary" />
           <span>{{ t('onlineSources.toolbar.groupBtn') }}</span>
         </button>
 
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          class="md-btn md-btn-sm md-state bg-surface-container-lowest text-on-surface disabled:opacity-45"
           @click="emit('batch-export')"
         >
           <LuDownload class="h-3.5 w-3.5" />
@@ -386,7 +307,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           :disabled="selectedCount === 0 || batchBusy"
-          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] shadow-sm disabled:opacity-45"
+          class="md-btn md-btn-sm md-state bg-error-container text-on-error-container disabled:opacity-45"
           @click="emit('batch-delete')"
         >
           <LuLoader2 v-if="batchBusy" class="h-3.5 w-3.5 animate-spin" />
@@ -399,13 +320,13 @@ onBeforeUnmount(() => {
     <!-- Paste JSON Import Form (matches `[role="dialog"], form, .space-y-4` deterministically) -->
     <form
       v-if="showImportBox"
-      class="md-card-filled flex flex-col gap-3 p-4"
+      class="flex flex-col gap-3 rounded-corner-lg bg-surface-container-low p-4"
       @submit.prevent="emit('submit-import')"
     >
       <div
         v-if="importError"
         role="alert"
-        class="rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
+        class="text-body-small rounded-corner-md bg-error-container px-3 py-2 text-on-error-container"
       >
         {{ importError }}
       </div>
@@ -413,7 +334,7 @@ onBeforeUnmount(() => {
         :value="importJsonText"
         rows="7"
         :placeholder="t('onlineSources.toolbar.importPlaceholder', { domain: domainLabel })"
-        class="md-input w-full py-2.5 font-mono text-xs"
+        class="sm:text-body-small w-full rounded-corner-xs bg-surface-container-highest px-3.5 py-2.5 font-mono text-base text-on-surface placeholder:text-on-surface-variant caret-primary outline-none focus:ring-2 focus:ring-primary"
         @input="emit('update:importJsonText', ($event.target as HTMLTextAreaElement).value)"
       />
       <div class="flex flex-wrap items-center justify-between gap-2">

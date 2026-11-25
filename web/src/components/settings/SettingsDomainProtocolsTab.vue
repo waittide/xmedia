@@ -94,11 +94,11 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
     v-if="protocolEndpoints.length > 0"
     id="protocols"
     as="section"
-    variant="outlined"
+    variant="tonal"
     padding="none"
     class="scroll-mt-20 overflow-hidden"
   >
-    <div class="border-b border-outline-variant/60 px-6 py-4">
+    <div class="px-6 pt-5 pb-2">
       <div class="flex items-center gap-2">
         <LuRadio class="h-4 w-4 text-primary" />
         <h2 class="text-title-medium text-on-surface">
@@ -110,7 +110,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       </p>
     </div>
 
-    <ul class="divide-y divide-outline-variant/50">
+    <ul class="divide-y divide-on-surface/6">
       <li
         v-for="ep in protocolEndpoints"
         :key="ep.key"
@@ -143,7 +143,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
 
     <div
       v-if="includeDomain('book') || includeDomain('comic')"
-      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-6 py-3"
     >
       <span class="text-label-medium text-on-surface">
         {{ t('settings.opdsAuthModes') }}:
@@ -155,7 +155,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
 
     <div
       v-if="includeDomain('music')"
-      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-6 py-3"
     >
       <span class="text-label-medium text-on-surface">
         {{ t('settings.subsonicAuthModes') }}:
@@ -167,7 +167,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
 
     <div
       v-if="includeDomain('video')"
-      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-outline-variant/50 bg-surface-container-low px-6 py-3"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-6 py-3"
     >
       <span class="text-label-medium text-on-surface">
         {{ t('settings.jellyfinAuthModes') }}:
@@ -178,7 +178,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
     </div>
   </MdCard>
 
-  <MdCard v-else id="protocols" as="section" variant="outlined" padding="none" class="scroll-mt-20">
+  <MdCard v-else id="protocols" as="section" variant="tonal" padding="none" class="scroll-mt-20">
     <MdEmptyState
       compact
       :icon="LuRadio"

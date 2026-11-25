@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 
-export type MdCardVariant = 'filled' | 'elevated' | 'outlined'
+export type MdCardVariant = 'filled' | 'tonal' | 'elevated' | 'outlined'
 export type MdCardPadding = 'none' | 'sm' | 'md' | 'lg'
 
 const props = withDefaults(
@@ -28,6 +28,10 @@ const isInteractive = computed(() => !props.disabled && (props.clickable || Bool
 
 const variantClass = computed(() => {
   switch (props.variant) {
+    case 'tonal':
+      return isInteractive.value
+        ? 'bg-surface-container-low text-on-surface hover:bg-surface-container'
+        : 'bg-surface-container-low text-on-surface'
     case 'elevated':
       return isInteractive.value
         ? 'bg-surface-container-low text-on-surface shadow-elevation-1 hover:shadow-elevation-2'

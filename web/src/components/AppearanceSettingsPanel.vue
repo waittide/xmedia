@@ -40,7 +40,7 @@ function onHexInputChange(raw: string): void {
 
 <template>
   <!-- Language -->
-  <section class="md-card-outlined p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-6">
     <h2 class="text-title-small text-on-surface">
       {{ t('theme.languageTitle') }}
     </h2>
@@ -51,11 +51,11 @@ function onHexInputChange(raw: string): void {
         :key="loc.code"
         type="button"
         :aria-pressed="themeStore.locale === loc.code"
-        class="md-state flex cursor-pointer items-center justify-between rounded-corner-md border px-4 py-3 text-left"
+        class="md-state flex cursor-pointer items-center justify-between rounded-corner-md px-4 py-3 text-left transition-colors duration-150 ease-standard"
         :class="
           themeStore.locale === loc.code
-            ? 'border-primary bg-secondary-container text-on-secondary-container'
-            : 'border-outline-variant bg-surface-container-low text-on-surface hover:border-outline'
+            ? 'bg-secondary-container text-on-secondary-container'
+            : 'bg-surface-container text-on-surface hover:bg-surface-container-high'
         "
         @click="themeStore.setLocale(loc.code)"
       >
@@ -76,7 +76,7 @@ function onHexInputChange(raw: string): void {
   </section>
 
   <!-- Theme Mode -->
-  <section class="md-card-outlined p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-6">
     <h2 class="text-title-small text-on-surface">
       {{ t('theme.modeTitle') }}
     </h2>
@@ -93,7 +93,7 @@ function onHexInputChange(raw: string): void {
   </section>
 
   <!-- Dynamic Seed Color -->
-  <section class="md-card-outlined p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-6">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 class="text-title-small text-on-surface">
         {{ t('theme.seedColorTitle') }}
@@ -118,7 +118,11 @@ function onHexInputChange(raw: string): void {
         :aria-pressed="isSeedSelected(preset.hex)"
         :title="t(`theme.seeds.${preset.id}`)"
         class="md-touch-target flex h-10 w-10 cursor-pointer items-center justify-center rounded-corner-full transition-transform duration-150 ease-standard hover:scale-105 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
-        :class="isSeedSelected(preset.hex) ? 'ring-2 ring-primary ring-offset-2 ring-offset-surface' : ''"
+        :class="
+          isSeedSelected(preset.hex)
+            ? 'ring-2 ring-primary ring-offset-2 ring-offset-surface-container-low'
+            : ''
+        "
         :style="{ backgroundColor: preset.hex }"
         @click="themeStore.setSeedColor(preset.hex)"
       >
@@ -130,7 +134,7 @@ function onHexInputChange(raw: string): void {
       </button>
     </div>
 
-    <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-outline-variant pt-4">
+    <div class="mt-5 flex flex-wrap items-center gap-3 rounded-corner-md bg-surface-container px-4 py-3">
       <span class="text-label-medium text-on-surface-variant">
         {{ t('theme.customSeedLabel') }}
       </span>
@@ -143,14 +147,14 @@ function onHexInputChange(raw: string): void {
         :value="themeStore.effectiveSeedColor"
         :aria-label="t('theme.hexInputLabel')"
         maxlength="7"
-        class="md-input text-body-small h-9 w-28 font-mono"
+        class="md-input sm:text-body-small h-9 w-28 font-mono"
         @change="onHexInputChange(($event.target as HTMLInputElement).value)"
       />
     </div>
   </section>
 
   <!-- App Icon -->
-  <section class="md-card-outlined p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-6">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
         <h2 class="text-title-small text-on-surface">
@@ -177,11 +181,11 @@ function onHexInputChange(raw: string): void {
         :key="preset.id"
         type="button"
         :aria-pressed="themeStore.effectiveAppIcon === preset.id"
-        class="md-state relative flex cursor-pointer flex-col items-center gap-2.5 rounded-corner-md border px-3 py-4 text-center transition-colors duration-150 ease-standard"
+        class="md-state relative flex cursor-pointer flex-col items-center gap-2.5 rounded-corner-md px-3 py-4 text-center transition-colors duration-150 ease-standard"
         :class="
           themeStore.effectiveAppIcon === preset.id
-            ? 'border-primary bg-secondary-container text-on-secondary-container'
-            : 'border-outline-variant bg-surface-container-low text-on-surface hover:border-outline'
+            ? 'bg-secondary-container text-on-secondary-container'
+            : 'bg-surface-container text-on-surface hover:bg-surface-container-high'
         "
         @click="themeStore.setAppIcon(preset.id)"
       >

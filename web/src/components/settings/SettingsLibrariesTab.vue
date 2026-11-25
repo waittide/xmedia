@@ -338,7 +338,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
 
 <template>
   <!-- Admin-only Gate -->
-  <MdCard v-if="!authStore.isAdmin" variant="outlined" padding="lg" class="py-14 text-center">
+  <MdCard v-if="!authStore.isAdmin" variant="tonal" padding="lg" class="py-14 text-center">
     <div
       class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-corner-lg bg-surface-container-high text-on-surface-variant"
     >
@@ -401,7 +401,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
     </div>
 
     <!-- Unified Library List -->
-    <MdCard variant="outlined" padding="none" class="overflow-hidden">
+    <MdCard variant="tonal" padding="none" class="overflow-hidden">
       <MdEmptyState
         v-if="filteredLibraries.length === 0 && !loading"
         compact
@@ -416,11 +416,11 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         </template>
       </MdEmptyState>
 
-      <ul v-else class="divide-y divide-outline-variant/50">
+      <ul v-else class="divide-y divide-on-surface/6">
         <li
           v-for="lib in filteredLibraries"
           :key="lib.id"
-          class="flex flex-col justify-between gap-3 px-5 py-4 transition-colors hover:bg-surface-container-low sm:flex-row sm:items-center"
+          class="flex flex-col justify-between gap-3 px-5 py-4 transition-colors hover:bg-surface-container sm:flex-row sm:items-center"
         >
           <div class="min-w-0 flex-1 space-y-1">
             <div class="flex flex-wrap items-center gap-2">

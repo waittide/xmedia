@@ -112,8 +112,8 @@ function handleMobileBack(): void {
         :class="mobileShowDetail ? 'hidden md:block' : 'block'"
       >
         <!-- Mobile List Card (<840px) -->
-        <MdCard variant="outlined" padding="none" class="overflow-hidden md:hidden">
-          <div class="divide-y divide-outline-variant/50">
+        <MdCard variant="tonal" padding="none" class="overflow-hidden md:hidden">
+          <div class="divide-y divide-on-surface/6">
             <button
               v-for="item in visibleSections"
               :key="`mobile-${item.id}`"

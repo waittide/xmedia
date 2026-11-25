@@ -265,9 +265,9 @@ function switchToAdvanced(): void {
 </script>
 
 <template>
-  <MdCard variant="outlined" padding="none" class="overflow-hidden">
+  <MdCard variant="tonal" padding="none" class="overflow-hidden">
     <!-- Section Header -->
-    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant/60 px-5 py-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 px-5 pt-4 pb-2">
       <div class="flex items-center gap-2.5">
         <h3 class="text-title-medium text-on-surface">
           {{ t('settings.onlineSourcesHeading') }}
@@ -303,12 +303,12 @@ function switchToAdvanced(): void {
     </MdEmptyState>
 
     <!-- Clean Consumer List -->
-    <ul v-else class="divide-y divide-outline-variant/50">
+    <ul v-else class="divide-y divide-on-surface/6">
       <li
         v-for="src in sources"
         :key="src.id"
         data-source-row
-        class="flex items-center justify-between gap-3 px-5 py-3.5 transition-colors hover:bg-surface-container-low"
+        class="flex items-center justify-between gap-3 px-5 py-3.5 transition-colors hover:bg-surface-container"
         :class="src.enabled ? '' : 'opacity-65'"
       >
         <div class="min-w-0 flex-1">

@@ -675,11 +675,11 @@ onBeforeUnmount(() => {
 
     <!-- Music Pool Track List -->
     <template v-else-if="domain === 'music'">
-      <div class="divide-y divide-outline-variant/50 overflow-hidden rounded-corner-lg bg-surface-container-low">
+      <div class="space-y-1 rounded-corner-lg bg-surface-container-low p-1.5">
         <div
           v-for="track in poolTracks"
           :key="track.id"
-          class="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-surface-container"
+          class="flex items-center gap-3 rounded-corner-md px-3 py-2.5 transition-colors hover:bg-surface-container"
         >
           <div class="h-10 w-10 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
             <MediaCoverImage

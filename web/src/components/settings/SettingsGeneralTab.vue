@@ -21,7 +21,7 @@ const displayVersion = computed(
 <template>
   <div class="flex flex-col gap-5">
     <!-- Application Version & Runtime Mode -->
-    <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
+    <MdCard as="section" variant="tonal" padding="lg" class="space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3.5">
           <img
@@ -58,7 +58,7 @@ const displayVersion = computed(
         </span>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2 border-t border-outline-variant/50 pt-3.5">
+      <div class="flex flex-wrap items-center gap-2 rounded-corner-md bg-surface-container px-3.5 py-2.5">
         <span class="text-label-medium mr-1 text-on-surface-variant">
           {{ t('settings.enabledDomainsLabel') }}:
         </span>
@@ -74,7 +74,7 @@ const displayVersion = computed(
     </MdCard>
 
     <!-- FFmpeg Engine Status -->
-    <MdCard as="section" variant="outlined" padding="lg">
+    <MdCard as="section" variant="tonal" padding="lg">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="min-w-0">
           <h2 class="text-title-medium text-on-surface">

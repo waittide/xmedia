@@ -213,8 +213,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <MdCard variant="outlined" padding="none" class="overflow-hidden">
-    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant/60 px-5 py-4">
+  <MdCard variant="tonal" padding="none" class="overflow-hidden">
+    <div class="flex flex-wrap items-center justify-between gap-3 px-5 pt-4 pb-2">
       <div class="min-w-0">
         <div class="flex items-center gap-2">
           <LuCloud class="h-4 w-4 shrink-0 text-primary" />
@@ -283,7 +283,7 @@ onMounted(async () => {
       </template>
     </MdEmptyState>
 
-    <ul v-else class="divide-y divide-outline-variant/50">
+    <ul v-else class="divide-y divide-on-surface/6">
       <li
         v-for="source in managedSources"
         :key="source.id"

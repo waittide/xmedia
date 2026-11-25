@@ -85,7 +85,7 @@ async function handleRotateApiKey(): Promise<void> {
 
 <template>
   <!-- Profile Summary -->
-  <MdCard v-if="authStore.user" as="section" variant="outlined" padding="lg">
+  <MdCard v-if="authStore.user" as="section" variant="tonal" padding="lg">
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div class="flex min-w-0 items-center gap-3.5">
         <div
@@ -132,7 +132,7 @@ async function handleRotateApiKey(): Promise<void> {
   </MdCard>
 
   <!-- API Key -->
-  <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
+  <MdCard as="section" variant="tonal" padding="lg" class="space-y-4">
     <div>
       <h2 class="text-title-medium text-on-surface">
         {{ t('settings.apiKeyTitle') }}
@@ -187,7 +187,7 @@ async function handleRotateApiKey(): Promise<void> {
   </MdCard>
 
   <!-- Change Password -->
-  <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
+  <MdCard as="section" variant="tonal" padding="lg" class="space-y-4">
     <div>
       <h2 class="text-title-medium text-on-surface">
         {{ t('settings.changePasswordTitle') }}
