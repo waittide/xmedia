@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue'
 import {
   LuAlertTriangle,
   LuArrowLeft,
-  LuCheck,
-  LuDownload,
   LuFastForward,
   LuListVideo,
   LuMaximize,
@@ -24,30 +22,23 @@ import { ImmersiveMediaTemplate } from '@/components/domain'
 import {
   AppSlider,
   MdButton,
-  MdChip,
   MdCircularProgress,
   MdDialog,
   MdIconButton,
   MdSelect,
-  MdTextField,
   type SelectOption,
 } from '@/components/ui'
 import { formatTime } from '@/utils/format'
-import {
-  VIDEO_SPEED_OPTIONS,
-  type VideoElementBindings,
-  type VideoSubtitleTrackSpec,
+import type {
+  VideoElementBindings,
+  VideoSubtitleTrackSpec,
 } from '../composables/useVideoPlayerCore'
 import { useVideoI18n as useI18n } from '../i18n'
+import VideoPlayerSheetContent, {
+  type VideoPlayerEpisodeItem,
+} from './player/VideoPlayerSheetContent.vue'
 
-export interface VideoPlayerEpisodeItem {
-  id: string
-  label: string
-  subtitle?: string
-  active: boolean
-  watched?: boolean
-  disabled?: boolean
-}
+export type { VideoPlayerEpisodeItem }
 
 const INTERACTIVE_SELECTOR =
   'button, a, input, select, textarea, label, [role="button"], [role="combobox"], [role="slider"], [role="menuitem"], [role="tab"], [role="option"], [data-immersive-ignore]'
@@ -160,13 +151,11 @@ function bindInternalVideo(el: unknown): void {
   internalVideoEl.value = video
   props.videoBindings?.bindElement(video)
 }
+
 const immersiveRef = ref<InstanceType<typeof ImmersiveMediaTemplate> | null>(null)
 const activeSheet = ref<'settings' | 'episodes' | null>(null)
 const isFullscreen = ref(false)
 const lastPointerType = ref<string>('mouse')
-const episodeFilter = ref('')
-
-// Real-time scrubbing preview without mutating video until release
 const scrubbingTime = ref<number | null>(null)
 
 const displayedTime = computed(() =>
@@ -199,22 +188,6 @@ const sheetSubtitle = computed(() => {
     return t('common.episodesCount', { count: props.episodes.length })
   }
   return ''
-})
-
-const filteredEpisodes = computed(() => {
-  const q = episodeFilter.value.trim().toLowerCase()
-  if (!q) return props.episodes
-  return props.episodes.filter(
-    (ep) =>
-      ep.label.toLowerCase().includes(q) ||
-      (ep.subtitle?.toLowerCase().includes(q) ?? false),
-  )
-})
-
-watch(activeSheet, (sheet) => {
-  if (sheet !== 'episodes') {
-    episodeFilter.value = ''
-  }
 })
 
 function showOsd(text: string, icon?: Component): void {
@@ -279,7 +252,6 @@ function handleStageClick(ev: MouseEvent): void {
   const target = ev.target as HTMLElement | null
   if (!target || target.closest(INTERACTIVE_SELECTOR)) return
 
-  // Touch tap toggles HUD without accidentally pausing playback (V-03)
   if (lastPointerType.value === 'touch') {
     immersiveRef.value?.toggleHud()
     return
@@ -342,7 +314,10 @@ function onKeydown(ev: KeyboardEvent): void {
   if (ev.code === 'Space') {
     ev.preventDefault()
     emit('toggle-play')
-    showOsd(props.isPlaying ? t('player.pause') : t('player.play'), props.isPlaying ? LuPause : LuPlay)
+    showOsd(
+      props.isPlaying ? t('player.pause') : t('player.play'),
+      props.isPlaying ? LuPause : LuPlay,
+    )
     immersiveRef.value?.showHud()
   } else if (ev.code === 'ArrowRight') {
     ev.preventDefault()
@@ -369,7 +344,10 @@ function onKeydown(ev: KeyboardEvent): void {
   } else if (ev.key === 'm' || ev.key === 'M') {
     ev.preventDefault()
     emit('toggle-mute')
-    showOsd(props.muted ? t('player.unmute') : t('player.mute'), props.muted ? LuVolume2 : LuVolumeX)
+    showOsd(
+      props.muted ? t('player.unmute') : t('player.mute'),
+      props.muted ? LuVolume2 : LuVolumeX,
+    )
     immersiveRef.value?.showHud()
   } else if (ev.key === 'f' || ev.key === 'F') {
     ev.preventDefault()
@@ -424,7 +402,6 @@ defineExpose({
       @update:active-sheet="activeSheet = ($event as 'settings' | 'episodes' | null)"
       @back="handleBack"
     >
-      <!-- Stage Slot (wraps `<video>` with clean mouse vs touch gesture handling) -->
       <template #default="{ hudVisible }">
         <div
           class="relative flex h-full w-full items-center justify-center bg-black"
@@ -462,7 +439,6 @@ defineExpose({
             </video>
           </slot>
 
-          <!-- Touch Center Play/Pause Button (visible when HUD is open on touch devices) -->
           <div
             v-if="hudVisible && !loading && !buffering && !error && lastPointerType === 'touch'"
             class="pointer-events-none absolute inset-0 flex items-center justify-center"
@@ -480,7 +456,6 @@ defineExpose({
         </div>
       </template>
 
-      <!-- Top HUD Controls -->
       <template #header-controls>
         <slot name="header-actions" />
 
@@ -505,10 +480,8 @@ defineExpose({
         />
       </template>
 
-      <!-- Bottom HUD Controls -->
       <template v-if="showFooter && !error" #footer>
         <div class="space-y-2">
-          <!-- Seek Timeline -->
           <div class="flex items-center gap-3">
             <span class="text-label-medium w-14 text-right font-mono tabular-nums text-on-surface">
               {{ formatTime(displayedTime) }}
@@ -530,7 +503,6 @@ defineExpose({
             </span>
           </div>
 
-          <!-- Transport & Utility Row -->
           <div class="flex items-center justify-between gap-3">
             <div class="flex items-center gap-1.5 sm:gap-2">
               <MdIconButton
@@ -590,7 +562,6 @@ defineExpose({
               <MdButton
                 v-if="hasEpisodes"
                 variant="text"
-                size="sm"
                 :icon="LuListVideo"
                 :aria-label="t('player.episodes')"
                 @click="activeSheet = activeSheet === 'episodes' ? null : 'episodes'"
@@ -621,7 +592,6 @@ defineExpose({
         </div>
       </template>
 
-      <!-- Loading / Buffering & Error Overlays -->
       <template #overlay>
         <div
           v-if="(loading || buffering) && !error"
@@ -651,13 +621,12 @@ defineExpose({
           </p>
 
           <template #footer>
-            <MdButton variant="outlined" size="sm" :icon="LuArrowLeft" @click="handleBack">
+            <MdButton variant="outlined" :icon="LuArrowLeft" @click="handleBack">
               {{ backLabel || t('player.back') }}
             </MdButton>
             <MdButton
               v-if="showRetry"
               variant="filled"
-              size="sm"
               :icon="LuRefreshCw"
               @click="emit('retry')"
             >
@@ -667,142 +636,30 @@ defineExpose({
         </MdDialog>
       </template>
 
-      <!-- Mutually-Exclusive MdSheet: Episodes OR Playback Settings -->
       <template #sheet="{ activeSheet: sheetKey }">
-        <!-- Episodes Drawer -->
-        <div v-if="sheetKey === 'episodes'" class="space-y-4">
-          <div v-if="episodeGroupOptions.length > 1" class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('player.lineLabel') }}
-            </span>
-            <MdSelect
-              :model-value="episodeGroupValue"
-              :options="episodeGroupOptions"
-              size="sm"
-              :teleport-to="shellRootRef"
-              @change="emit('update:line', $event)"
-            />
-          </div>
-
-          <MdTextField
-            v-if="episodes.length > 12"
-            v-model="episodeFilter"
-            type="search"
-            size="sm"
-            clearable
-            :placeholder="t('online.filterEpisodesPlaceholder')"
-          />
-
-          <div class="space-y-1.5">
-            <button
-              v-for="ep in filteredEpisodes"
-              :key="ep.id"
-              type="button"
-              :disabled="ep.disabled"
-              class="md-state flex w-full cursor-pointer items-center justify-between gap-3 rounded-corner-md px-3.5 py-2.5 text-left transition-colors duration-150 ease-standard disabled:cursor-not-allowed disabled:opacity-38"
-              :class="
-                ep.active
-                  ? 'bg-primary-container text-on-primary-container'
-                  : 'bg-surface-container-low text-on-surface hover:bg-surface-container-high'
-              "
-              @click="handlePickEpisode(ep.id)"
-            >
-              <div class="min-w-0 flex-1">
-                <div class="text-title-small truncate">{{ ep.label }}</div>
-                <div
-                  v-if="ep.subtitle"
-                  class="text-body-small mt-0.5 truncate opacity-80"
-                >
-                  {{ ep.subtitle }}
-                </div>
-              </div>
-              <LuCheck v-if="ep.active || ep.watched" class="h-4 w-4 shrink-0" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-
-        <!-- Settings Drawer (Speed / Quality / Line / Audio / Subtitles / Download) -->
-        <div v-else-if="sheetKey === 'settings'" class="space-y-5">
-          <div class="space-y-2">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('player.speed') }}
-            </span>
-            <div class="flex flex-wrap gap-1.5">
-              <MdChip
-                v-for="opt in VIDEO_SPEED_OPTIONS"
-                :key="opt.value"
-                variant="filter"
-                :label="opt.label"
-                :selected="String(playbackRate) === opt.value"
-                hide-check
-                @click="handleSpeedSelect(opt.value)"
-              />
-            </div>
-          </div>
-
-          <div v-if="qualityOptions.length > 0" class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('player.quality') }}
-            </span>
-            <MdSelect
-              :model-value="qualityValue"
-              :options="qualityOptions"
-              size="sm"
-              :teleport-to="shellRootRef"
-              @change="emit('update:quality', $event)"
-            />
-          </div>
-
-          <div v-if="lineOptions.length > 1" class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('player.lineLabel') }}
-            </span>
-            <MdSelect
-              :model-value="lineValue"
-              :options="lineOptions"
-              size="sm"
-              :teleport-to="shellRootRef"
-              @change="emit('update:line', $event)"
-            />
-          </div>
-
-          <div v-if="audioOptions.length > 1" class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('player.audioTrack') }}
-            </span>
-            <MdSelect
-              :model-value="audioValue"
-              :options="audioOptions"
-              size="sm"
-              :teleport-to="shellRootRef"
-              @change="emit('update:audio', $event)"
-            />
-          </div>
-
-          <div v-if="subtitleOptions.length > 1" class="space-y-1.5">
-            <span class="text-label-medium block text-on-surface-variant">
-              {{ t('player.subtitles') }}
-            </span>
-            <MdSelect
-              :model-value="subtitleValue"
-              :options="subtitleOptions"
-              size="sm"
-              :teleport-to="shellRootRef"
-              @change="emit('update:subtitle', $event)"
-            />
-          </div>
-
-          <div v-if="downloadUrl" class="border-t border-outline-variant pt-4">
-            <MdButton
-              variant="tonal"
-              :icon="LuDownload"
-              :href="downloadUrl"
-              block
-            >
-              {{ t('common.download') }}
-            </MdButton>
-          </div>
-        </div>
+        <VideoPlayerSheetContent
+          :sheet-key="sheetKey"
+          :teleport-to="shellRootRef"
+          :playback-rate="playbackRate"
+          :quality-value="qualityValue"
+          :quality-options="qualityOptions"
+          :line-value="lineValue"
+          :line-options="lineOptions"
+          :audio-value="audioValue"
+          :audio-options="audioOptions"
+          :subtitle-value="subtitleValue"
+          :subtitle-options="subtitleOptions"
+          :download-url="downloadUrl"
+          :episodes="episodes"
+          :episode-group-value="episodeGroupValue"
+          :episode-group-options="episodeGroupOptions"
+          @select-speed="handleSpeedSelect"
+          @update:quality="emit('update:quality', $event)"
+          @update:line="emit('update:line', $event)"
+          @update:audio="emit('update:audio', $event)"
+          @update:subtitle="emit('update:subtitle', $event)"
+          @select-episode="handlePickEpisode"
+        />
       </template>
     </ImmersiveMediaTemplate>
   </div>
