@@ -131,7 +131,7 @@ function triggerDelete(): void {
             :title="t('tool.selectionBar.workbenchTitle')"
             @click="emit('openScrapeWorkbench', checkedFiles)"
           >
-            {{ t('tool.selectionBar.workbench') }}
+            {{ t('tool.selectionBar.workbenchBtn') }}
           </MdButton>
 
           <MdButton

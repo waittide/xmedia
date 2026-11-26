@@ -49,7 +49,7 @@ export function createModalCompletionHandlers(ctx: ModalEffectsContext) {
       await directoryStore.reloadCurrentScope()
       snackbar.show({
         message: `已完成 ${movedCount} 个文件的整理与归档`,
-        actionLabel: '撤销历史',
+        actionLabel: '历史',
         onAction: () => ctx.openHistoryModal('rename'),
       })
     }

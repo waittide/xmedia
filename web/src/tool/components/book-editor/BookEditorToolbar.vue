@@ -210,7 +210,7 @@ const surfaceModeOptions = computed(
         @mousedown.prevent="emit('splitChapter')"
       >
         <LuScissors class="h-3.5 w-3.5 text-primary" />
-        <span>{{ t('tool.bookEditor.toolbar.splitChapter') }}</span>
+        <span>{{ t('tool.bookEditor.toolbar.splitChapterBtn') }}</span>
       </button>
 
       <button
@@ -220,7 +220,7 @@ const surfaceModeOptions = computed(
         @click="emit('cleanTypography')"
       >
         <LuSparkles class="h-3.5 w-3.5 text-primary" />
-        <span>{{ t('tool.bookEditor.toolbar.cleanTypography') }}</span>
+        <span>{{ t('tool.bookEditor.toolbar.cleanTypographyBtn') }}</span>
       </button>
 
       <button
@@ -232,7 +232,7 @@ const surfaceModeOptions = computed(
         @mousedown.prevent="emit('uploadImage')"
       >
         <LuImage class="h-3.5 w-3.5 text-primary" />
-        <span>{{ uploadingImage ? t('tool.common.loading') : t('tool.bookEditor.toolbar.insertImage') }}</span>
+        <span>{{ uploadingImage ? t('tool.workbench.local.uploading') : t('tool.bookEditor.toolbar.insertImageBtn') }}</span>
       </button>
 
       <MdChip

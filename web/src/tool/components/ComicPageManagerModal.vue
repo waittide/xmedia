@@ -611,7 +611,7 @@ async function handleSave(): Promise<void> {
       >
         <template v-if="lightboxPage && lightboxIdx !== null && isCbzEditable" #headerActions>
           <MdButton variant="tonal" @click="setAsCover(lightboxIdx)">
-            {{ t('tool.modals.comicPages.setAsCover') }}
+            {{ t('tool.modals.comicPages.setAsCoverBtn') }}
           </MdButton>
           <MdButton
             :variant="lightboxPage.double_page ? 'filled' : 'outlined'"
@@ -630,8 +630,8 @@ async function handleSave(): Promise<void> {
           >
             {{
               lightboxPage.deleted
-                ? t('tool.modals.comicPages.restorePage')
-                : t('tool.modals.comicPages.deletePage')
+                ? t('tool.modals.comicPages.restorePageBtn')
+                : t('tool.modals.comicPages.deletePageBtn')
             }}
           </MdButton>
         </template>

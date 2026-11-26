@@ -212,7 +212,7 @@ function relativeDirBadge(relPath: string): string | null {
     >
       <template #action>
         <MdButton variant="filled" :icon="LuFolderPlus" @click="workspaceStore.openSettingsTab('roots')">
-          {{ t('tool.roots.add') }}
+          {{ t('tool.roots.addBtn') }}
         </MdButton>
       </template>
     </MdEmptyState>

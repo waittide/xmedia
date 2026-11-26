@@ -80,7 +80,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
     >
       <template #action>
         <MdButton variant="filled" :icon="LuFolderPlus" @click="workspaceStore.openSettingsTab('roots')">
-          {{ t('tool.roots.add') }}
+          {{ t('tool.roots.addBtn') }}
         </MdButton>
       </template>
     </MdEmptyState>
@@ -117,7 +117,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
             :title="t('tool.home.batchRenameTitle')"
             @click="workspaceStore.openRenameModal(snapshot?.files ?? [])"
           >
-            {{ t('tool.actions.batchRename') }} ({{ unorganizedFiles.length }})
+            {{ t('tool.home.organizeBtn', { count: unorganizedFiles.length }) }}
           </MdButton>
         </div>
       </div>

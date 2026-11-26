@@ -166,10 +166,11 @@ const { t } = useI18n()
         <MdButton
           variant="filled"
           :disabled="saving || polishing || chapterCount === 0"
+          :title="t('tool.bookEditor.header.saveCtrlS')"
           @click="emit('save')"
         >
           <LuSave class="h-4 w-4" />
-          <span>{{ saving ? t('tool.actions.saving') : t('tool.bookEditor.header.saveCtrlS') }}</span>
+          <span>{{ saving ? t('tool.actions.saving') : t('tool.common.save') }}</span>
         </MdButton>
       </template>
 

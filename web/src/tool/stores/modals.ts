@@ -131,7 +131,7 @@ export const useToolModalsStore = defineStore('toolModals', () => {
     const confirmed = await dialogStore.confirm({
       title,
       message: `${modeHint}\n此操作不可撤销：\n${previewList}${moreHint}`,
-      confirmText: `永久删除 (${unique.length})`,
+      confirmText: `删除 (${unique.length})`,
       cancelText: '取消',
       danger: true,
     })

@@ -559,7 +559,7 @@ defineExpose({
     >
       <template #action>
         <MdButton variant="tonal" @click="requestExit">
-          {{ t('tool.workbench.view.backToMedia') }}
+          {{ t('tool.common.back') }}
         </MdButton>
       </template>
     </MdEmptyState>

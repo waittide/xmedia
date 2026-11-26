@@ -55,7 +55,7 @@ export const useToolScrapeStore = defineStore('toolScrape', () => {
     enqueueScrapeFiles(targets, undefined, autoOpts)
     snackbar.show({
       message: `已按「${formatAutoScrapeSummary(autoOpts)}」策略提交 ${targets.length} 项快刮任务`,
-      actionLabel: '调整策略',
+      actionLabel: '策略',
       onAction: () => {
         workspaceStore.autoScrapeTargetEntries = targets
         workspaceStore.autoScrapeModalOpen = true

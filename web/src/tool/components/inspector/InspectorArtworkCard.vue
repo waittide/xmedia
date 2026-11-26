@@ -266,7 +266,7 @@ const videoSlotOptions = computed(() => [
           :loading="uploadingArtwork"
           @click="emit('uploadArtwork', 'cover')"
         >
-          {{ t('tool.actions.uploadCover') }}
+          {{ t('tool.actions.uploadCoverBtn') }}
         </MdButton>
 
         <InspectorQuickActionsMenu

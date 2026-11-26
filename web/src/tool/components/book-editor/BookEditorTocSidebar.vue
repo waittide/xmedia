@@ -291,15 +291,30 @@ function onTocDrop(targetIdx: number): void {
       class="mx-2 mb-2 space-y-1.5 rounded-corner-md bg-surface-container p-2.5"
     >
       <div class="grid grid-cols-2 gap-1.5">
-        <MdButton variant="outlined" class="w-full" @click="emit('autoDetectHierarchy')">
-          {{ t('tool.bookEditor.toc.autoHierarchy') }}
+        <MdButton
+          variant="outlined"
+          class="w-full"
+          :title="t('tool.bookEditor.toc.autoHierarchy')"
+          @click="emit('autoDetectHierarchy')"
+        >
+          {{ t('tool.bookEditor.toc.autoHierarchyBtn') }}
         </MdButton>
-        <MdButton variant="outlined" class="w-full" @click="emit('flattenLevels')">
-          {{ t('tool.bookEditor.toc.flattenLevels') }}
+        <MdButton
+          variant="outlined"
+          class="w-full"
+          :title="t('tool.bookEditor.toc.flattenLevels')"
+          @click="emit('flattenLevels')"
+        >
+          {{ t('tool.bookEditor.toc.flattenLevelsBtn') }}
         </MdButton>
       </div>
-      <MdButton variant="tonal" class="w-full" @click="emit('syncTitlesFromBody')">
-        {{ t('tool.bookEditor.toc.syncFromHeadings') }}
+      <MdButton
+        variant="tonal"
+        class="w-full"
+        :title="t('tool.bookEditor.toc.syncFromHeadings')"
+        @click="emit('syncTitlesFromBody')"
+      >
+        {{ t('tool.bookEditor.toc.syncFromHeadingsBtn') }}
       </MdButton>
     </div>
 

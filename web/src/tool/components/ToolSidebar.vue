@@ -210,7 +210,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
             @click="emit('openSettingsRoots')"
           >
             <LuFolderPlus class="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-            <span>{{ t('tool.roots.add') }}</span>
+            <span>{{ t('tool.roots.addBtn') }}</span>
           </button>
 
           <button
