@@ -32,12 +32,4 @@ export function formatDuration(secs: number, emptyFallback = ''): string {
   return formatTime(secs)
 }
 
-export function resolveFontStack(key: string): string {
-  if (key === 'serif') {
-    return '"Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", Georgia, serif'
-  }
-  if (key === 'mono') {
-    return '"JetBrains Mono", "Sarasa Mono SC", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
-  }
-  return '"Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif'
-}
+export { resolveFontStack, sanitizeFontFamilyName } from '@/theme/customFonts'

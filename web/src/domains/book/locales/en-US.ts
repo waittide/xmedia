@@ -264,6 +264,7 @@ export default {
     lineHeight: 'Line Height',
     margin: 'Page Margin',
     fontFamily: 'Font Family',
+    fontInherit: 'Match UI',
     fontSystem: 'Sans-serif',
     fontSerif: 'Literary Serif',
     fontMono: 'Monospace',

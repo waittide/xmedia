@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuMonitor, LuMoon, LuRotateCw, LuSun } from 'vue-icons-plus/lu'
+import FontPickerField from '@/components/FontPickerField.vue'
 import AppColorPicker from '@/components/ui/AppColorPicker.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import { useThemeStore } from '@/stores/theme'
@@ -89,6 +90,41 @@ function onHexInputChange(raw: string): void {
           @update:model-value="themeStore.setThemeMode($event)"
         />
       </div>
+    </div>
+  </section>
+
+  <!-- UI Font -->
+  <section
+    data-appearance-ui-font
+    class="rounded-corner-lg bg-surface-container-low p-6"
+  >
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="text-title-small text-on-surface">
+          {{ t('theme.uiFontTitle') }}
+        </h2>
+        <p class="text-body-small mt-0.5 text-on-surface-variant">
+          {{ t('theme.uiFontHint') }}
+        </p>
+      </div>
+      <button
+        v-if="themeStore.uiFont !== null"
+        type="button"
+        data-reset-ui-font
+        class="md-btn md-btn-text md-state"
+        @click="themeStore.resetUiFont()"
+      >
+        <LuRotateCw class="h-3.5 w-3.5" />
+        <span>{{ t('theme.resetDefaults') }}</span>
+      </button>
+    </div>
+
+    <div class="mt-4">
+      <FontPickerField
+        :model-value="themeStore.uiFont ?? 'system-ui'"
+        :aria-label="t('theme.uiFontTitle')"
+        @update:model-value="themeStore.setUiFont($event === 'system-ui' ? null : $event)"
+      />
     </div>
   </section>
 

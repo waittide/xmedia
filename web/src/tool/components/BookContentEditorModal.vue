@@ -7,6 +7,7 @@ import MdIconButton from '@/components/ui/MdIconButton.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
+import { uploadedFonts } from '@/theme/customFonts'
 import type { MediaFileDetail, MediaFileEntry } from '../types'
 import BookEditorCssPanel from './book-editor/BookEditorCssPanel.vue'
 import BookEditorFindReplaceBar from './book-editor/BookEditorFindReplaceBar.vue'
@@ -145,7 +146,13 @@ const {
   sourceTextareaRef,
   epubAssetContext,
   buildLivePreviewSrcdoc,
-  themeDeps: () => [indentParagraphs.value, themeStore.isDark, themeStore.effectiveSeedColor],
+  themeDeps: () => [
+    indentParagraphs.value,
+    themeStore.isDark,
+    themeStore.effectiveSeedColor,
+    themeStore.uiFont,
+    uploadedFonts.value,
+  ],
 })
 
 const {

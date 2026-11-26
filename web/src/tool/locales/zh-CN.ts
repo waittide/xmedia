@@ -1089,6 +1089,7 @@ export default {
     tabTemplates: '重命名模板',
     savedBanner: '设置已保存',
     domainsAriaLabel: '媒体领域',
+    appearanceFontHint: '上传的自定义字体保存在工具数据目录中，工作台界面与电子书实时预览均可立即生效',
     scrapers: {
       priorityTitle: '「{domain}」刮削源与优先级',
       priorityDesc: '按顺序依次补齐缺失字段；可单独启停任意刮削源或点击设置图标独立配置密钥、语言与代理',

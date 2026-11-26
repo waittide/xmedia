@@ -9,6 +9,13 @@ import {
   type AppIconId,
 } from '@/theme/appIcons'
 import {
+  ensureCustomFontsLoaded,
+  normalizeStoredUiFont,
+  onCustomFontDeleted,
+  resolveFontStack,
+  uploadedFonts,
+} from '@/theme/customFonts'
+import {
   applyMd3Theme,
   DEFAULT_SEED_COLOR,
   generateMd3Schemes,
@@ -45,6 +52,7 @@ function loadInitialVisualPrefs(): VisualPreferencesSnapshot {
     theme_mode: normalizeThemeMode(parsed.theme_mode),
     seed_color: resolveSeedColor(parsed.seed_color),
     app_icon: resolveStoredAppIcon(parsed.app_icon),
+    ui_font: normalizeStoredUiFont(parsed.ui_font),
     locale: parsed.locale ?? ((i18n.global.locale.value as LocaleCode) || 'zh-CN'),
   }
 }
@@ -56,6 +64,7 @@ export const useThemeStore = defineStore('theme', () => {
   const themeMode = ref<ThemeMode>(initial.theme_mode)
   const seedColor = ref<string | null>(initial.seed_color ?? null)
   const appIcon = ref<AppIconId | null>(resolveStoredAppIcon(initial.app_icon))
+  const uiFont = ref<string | null>(normalizeStoredUiFont(initial.ui_font))
   const locale = ref<LocaleCode>(initial.locale)
 
   function getVisualSnapshot(): VisualPreferencesSnapshot {
@@ -63,6 +72,7 @@ export const useThemeStore = defineStore('theme', () => {
       theme_mode: themeMode.value,
       seed_color: seedColor.value,
       app_icon: appIcon.value,
+      ui_font: uiFont.value,
       locale: locale.value,
     }
   }
@@ -117,16 +127,29 @@ export const useThemeStore = defineStore('theme', () => {
     persistAndNotifyVisualChange()
   }
 
+  function applyDocumentUiFont(): void {
+    if (typeof document === 'undefined') return
+    const normalized = normalizeStoredUiFont(uiFont.value)
+    if (normalized) {
+      document.documentElement.style.setProperty('--font-sans', resolveFontStack(normalized))
+    } else {
+      document.documentElement.style.removeProperty('--font-sans')
+    }
+  }
+
   function hydrateFromUser(prefs: UserPreferences): void {
     themeMode.value = normalizeThemeMode(prefs.theme_mode)
     seedColor.value = resolveSeedColor(prefs.seed_color)
     appIcon.value = resolveStoredAppIcon(prefs.app_icon)
+    uiFont.value = normalizeStoredUiFont(prefs.ui_font)
     locale.value = prefs.locale
 
     applyThemeIfChanged()
+    applyDocumentUiFont()
     setAppLocale(locale.value)
     writeStoredVisualPreferences(getVisualSnapshot())
     cloudSyncBridge?.onHydrateUser(prefs)
+    void ensureCustomFontsLoaded(true)
   }
 
   function setThemeMode(mode: ThemeMode): void {
@@ -159,11 +182,30 @@ export const useThemeStore = defineStore('theme', () => {
     persistAndNotifyVisualChange()
   }
 
+  function setUiFont(next: string | null): void {
+    uiFont.value = normalizeStoredUiFont(next)
+    applyDocumentUiFont()
+    persistAndNotifyVisualChange()
+  }
+
+  function resetUiFont(): void {
+    uiFont.value = null
+    applyDocumentUiFont()
+    persistAndNotifyVisualChange()
+  }
+
   function setLocale(next: LocaleCode): void {
     locale.value = next
     setAppLocale(locale.value)
     persistAndNotifyVisualChange()
   }
+
+  const disposeFontDeleted = onCustomFontDeleted((deletedId) => {
+    if (uiFont.value === `font:${deletedId}`) {
+      resetUiFont()
+    }
+  })
+  onScopeDispose(disposeFontDeleted)
 
   if (typeof window !== 'undefined') {
     const onStorageChange = (ev: StorageEvent): void => {
@@ -172,11 +214,13 @@ export const useThemeStore = defineStore('theme', () => {
       themeMode.value = next.theme_mode
       seedColor.value = next.seed_color ?? null
       appIcon.value = resolveStoredAppIcon(next.app_icon)
+      uiFont.value = normalizeStoredUiFont(next.ui_font)
       if (next.locale && next.locale !== locale.value) {
         locale.value = next.locale
         setAppLocale(locale.value)
       }
       applyThemeIfChanged()
+      applyDocumentUiFont()
     }
     window.addEventListener('storage', onStorageChange)
     onScopeDispose(() => {
@@ -188,6 +232,14 @@ export const useThemeStore = defineStore('theme', () => {
     [seedColor, isDark],
     () => {
       applyThemeIfChanged()
+    },
+    { immediate: true },
+  )
+
+  watch(
+    [uiFont, uploadedFonts],
+    () => {
+      applyDocumentUiFont()
     },
     { immediate: true },
   )
@@ -216,6 +268,7 @@ export const useThemeStore = defineStore('theme', () => {
     appIcon,
     effectiveAppIcon,
     appIconSrc,
+    uiFont,
     locale,
     isDark,
     activeScheme,
@@ -226,6 +279,8 @@ export const useThemeStore = defineStore('theme', () => {
     resetSeedColor,
     setAppIcon,
     resetAppIcon,
+    setUiFont,
+    resetUiFont,
     setLocale,
   }
 })

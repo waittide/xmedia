@@ -1,3 +1,4 @@
+import { buildUploadedFontFaceCss } from '@/theme/customFonts'
 import {
   hydrateXhtmlForBrowser as hydrateXhtmlForBrowserRaw,
   sanitizeEpubCssForPreview,
@@ -38,13 +39,15 @@ export function buildLivePreviewSrcdoc(params: {
     typeof window !== 'undefined' && window.location.origin && window.location.origin !== 'null'
       ? `${window.location.origin} `
       : ''
+  const customFontCss = buildUploadedFontFaceCss()
 
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${originImgSrc}data: blob:; style-src 'unsafe-inline';"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${originImgSrc}data: blob:; font-src ${originImgSrc}data: blob:; style-src 'unsafe-inline';"/>
 <style>
+  ${customFontCss}
   html, body {
     margin: 0;
     padding: 20px 26px 48px;

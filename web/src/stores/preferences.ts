@@ -4,6 +4,7 @@ import { api, postKeepaliveJson } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { resolveStoredAppIcon } from '@/theme/appIcons'
+import { normalizeStoredUiFont, onCustomFontDeleted } from '@/theme/customFonts'
 import { normalizeThemeMode, resolveSeedColor } from '@/theme/md3'
 import {
   PREFS_STORAGE_KEY,
@@ -60,6 +61,7 @@ function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
     theme_mode: normalizeThemeMode(parsed.theme_mode),
     seed_color: resolveSeedColor(parsed.seed_color),
     app_icon: resolveStoredAppIcon(parsed.app_icon),
+    ui_font: normalizeStoredUiFont(parsed.ui_font),
     locale: (parsed.locale ?? (localStorage.getItem('xmedia.locale') as LocaleCode | null)) || 'zh-CN',
   }
 }
@@ -213,6 +215,13 @@ export const usePreferencesStore = defineStore('preferences', () => {
     reader.value = { ...reader.value, ...patch }
     persistAndSync(options)
   }
+
+  const disposeFontDeleted = onCustomFontDeleted((deletedId) => {
+    if (reader.value.font_family === `font:${deletedId}`) {
+      updateReaderPreferences({ font_family: 'system-ui' }, { immediate: true })
+    }
+  })
+  onScopeDispose(disposeFontDeleted)
 
   function updateComicPreferences(
     patch: Partial<ComicReaderPreferences>,

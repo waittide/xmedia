@@ -12,6 +12,8 @@ import { MediaErrorState } from '@/components/domain'
 import { MdButton, MdCircularProgress, MdIconButton } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { usePreferencesStore } from '@/stores/preferences'
+import { useThemeStore } from '@/stores/theme'
+import { uploadedFonts } from '@/theme/customFonts'
 import { resolveFontStack } from '@/utils/format'
 import type { ContinuousChapterSection } from './useContinuousChapterReader'
 
@@ -60,10 +62,14 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const preferencesStore = usePreferencesStore()
+const themeStore = useThemeStore()
 
 const scrollContainerRef = ref<HTMLElement | null>(null)
 
-const fontFamilyStyle = computed(() => resolveFontStack(preferencesStore.reader.font_family))
+const fontFamilyStyle = computed(() => {
+  void uploadedFonts.value.length
+  return resolveFontStack(preferencesStore.reader.font_family, themeStore.uiFont)
+})
 
 const fontSizePx = computed(() => preferencesStore.reader.font_size || 18)
 const lineHeightVal = computed(() => preferencesStore.reader.line_height || 1.85)

@@ -9,6 +9,18 @@ export type ComicFitMode = 'fit_height' | 'fit_width' | 'original'
 export type TranscodeProfile = 'raw' | 'opus128' | 'mp3192' | 'mp3320' | 'aac256'
 export type PlayMode = 'sequence' | 'loop_one' | 'shuffle'
 export type VideoQualityProfile = 'auto' | 'direct' | 'p1080' | 'p720' | 'p480'
+export type CustomFontFormat = 'ttf' | 'otf' | 'ttc' | 'woff' | 'woff2'
+
+export interface CustomFontDto {
+  id: string
+  name: string
+  file_name: string
+  format: CustomFontFormat
+  css_format: string
+  mime_type: string
+  size_bytes: number
+  created_at: string
+}
 
 export interface ReaderPreferences {
   font_family: string
@@ -47,6 +59,7 @@ export interface UserPreferences {
   theme_mode: ThemeMode
   seed_color?: string | null
   app_icon?: string | null
+  ui_font?: string | null
   locale: LocaleCode
   book: ReaderPreferences
   comic: ComicReaderPreferences

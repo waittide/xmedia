@@ -264,6 +264,7 @@ export default {
     lineHeight: '行高',
     margin: '页边距',
     fontFamily: '字体',
+    fontInherit: '跟随界面',
     fontSystem: '系统无衬线',
     fontSerif: '人文衬线体',
     fontMono: '等宽字体',

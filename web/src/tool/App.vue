@@ -9,6 +9,7 @@ import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
 import MdSnackbarHost from '@/components/ui/MdSnackbarHost.vue'
 import MdTextField from '@/components/ui/MdTextField.vue'
 import { useThemeStore } from '@/stores/theme'
+import { ensureCustomFontsLoaded } from '@/theme/customFonts'
 import { toolApi } from './api'
 import ToolWorkspace from './components/ToolWorkspace.vue'
 import { useToolTaskStore } from './tasks'
@@ -56,6 +57,7 @@ async function handleUnlock(): Promise<void> {
     await toolApi.unlock(passwordInput.value.trim())
     passwordInput.value = ''
     await fetchStatus()
+    void ensureCustomFontsLoaded(true)
   } catch (err) {
     unlockError.value = err instanceof Error ? err.message : String(err)
   } finally {

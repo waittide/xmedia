@@ -9,6 +9,11 @@ import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import type { ReadingLocation } from '@/domains/book/types'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useThemeStore } from '@/stores/theme'
+import {
+  buildUploadedFontFaceCss,
+  ensureCustomFontsLoaded,
+  uploadedFonts,
+} from '@/theme/customFonts'
 import { resolveFontStack } from '@/utils/format'
 
 const LOCATIONS_CACHE_PREFIX = 'xmedia.epub.locations:'
@@ -73,9 +78,19 @@ interface EpubBookWithSpine extends Book {
   }
 }
 
+interface EpubContentViewLike {
+  document?: Document | null
+}
+
 interface EpubRenditionWithOff extends Rendition {
   off?: (event: string, handler: (...args: unknown[]) => void) => void
   currentLocation?: () => EpubRelocatedLocation | undefined
+  getContents?: () => EpubContentViewLike[] | EpubContentViewLike
+  hooks?: {
+    content?: {
+      register?: (cb: (contents: EpubContentViewLike) => void) => void
+    }
+  }
 }
 
 function buildLocationsCacheKey(bookId: string, byteLength: number): string {
@@ -143,12 +158,53 @@ function writeCachedLocations(key: string, serialized: string): void {
   }
 }
 
+function syncIframeCustomFonts(doc: Document | null | undefined): void {
+  if (!doc || !doc.head) return
+  const css = buildUploadedFontFaceCss(uploadedFonts.value)
+  let styleEl = doc.head.querySelector<HTMLStyleElement>('style[data-xmedia-custom-fonts]')
+  if (!css) {
+    styleEl?.remove()
+    return
+  }
+  if (!styleEl) {
+    styleEl = doc.createElement('style')
+    styleEl.setAttribute('data-xmedia-custom-fonts', 'true')
+    doc.head.appendChild(styleEl)
+  }
+  if (styleEl.textContent !== css) {
+    styleEl.textContent = css
+  }
+}
+
+function syncActiveRenditionCustomFonts(): void {
+  const r = rendition as EpubRenditionWithOff | null
+  const rawContents = r?.getContents?.()
+  if (Array.isArray(rawContents)) {
+    for (const item of rawContents) {
+      syncIframeCustomFonts(item?.document)
+    }
+  } else if (rawContents && typeof rawContents === 'object') {
+    syncIframeCustomFonts(rawContents.document)
+  }
+  const iframes = mountEl.value?.querySelectorAll('iframe')
+  if (iframes) {
+    for (const frame of iframes) {
+      try {
+        syncIframeCustomFonts(frame.contentDocument)
+      } catch {
+        // ignore cross-origin or detached iframe errors
+      }
+    }
+  }
+}
+
 function applyRenditionTheme(): void {
   if (!rendition) return
+  syncActiveRenditionCustomFonts()
   const scheme = themeStore.activeScheme
   const r = preferencesStore.reader
   const verticalPad = r.flow === 'scrolled' ? 64 : 16
-  const fontStack = resolveFontStack(r.font_family)
+  const fontStack = resolveFontStack(r.font_family, themeStore.uiFont)
   rendition.themes.default({
     body: {
       background: `${scheme.surface} !important`,
@@ -255,6 +311,9 @@ async function mountRendition(target?: string): Promise<void> {
   })
   rendition = localRendition
 
+  ;(localRendition as EpubRenditionWithOff).hooks?.content?.register?.((contents) => {
+    syncIframeCustomFonts(contents?.document)
+  })
   localRendition.on('keydown', handleRenditionKeydown)
   localRendition.on('click', handleRenditionClick)
   localRendition.on('touchstart', handleRenditionTouchStart)
@@ -520,12 +579,15 @@ defineExpose({ navigateTo, prevPage, nextPage })
 onMounted(() => {
   unmounted = false
   window.addEventListener('keydown', handleKeydown)
+  void ensureCustomFontsLoaded()
   void loadEpub()
 })
 
 watch(
   () => [
     themeStore.activeScheme,
+    themeStore.uiFont,
+    uploadedFonts.value,
     preferencesStore.reader.font_family,
     preferencesStore.reader.font_size,
     preferencesStore.reader.line_height,

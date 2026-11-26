@@ -1089,6 +1089,7 @@ export default {
     tabTemplates: 'Rename Templates',
     savedBanner: 'Settings saved',
     domainsAriaLabel: 'Media domain',
+    appearanceFontHint: 'Uploaded custom fonts are stored in the tool data directory and apply across the workbench and live preview',
     scrapers: {
       priorityTitle: '{domain} Providers & Priority',
       priorityDesc: 'Fills missing fields in waterfall order; toggle any provider or configure credentials, locale, and proxy independently',

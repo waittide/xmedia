@@ -2,10 +2,14 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import { i18n } from '@/i18n'
+import { configureCustomFontsApiBase, ensureCustomFontsLoaded } from '@/theme/customFonts'
 import toolEnUS from './locales/en-US'
 import toolZhCN from './locales/zh-CN'
 import { toolRouter } from './router'
 import '@/styles/main.css'
+
+configureCustomFontsApiBase('/api/fonts')
+void ensureCustomFontsLoaded()
 
 i18n.global.mergeLocaleMessage('zh-CN', { tool: toolZhCN })
 i18n.global.mergeLocaleMessage('en-US', { tool: toolEnUS })

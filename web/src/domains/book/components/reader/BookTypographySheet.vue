@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import FontPickerField from '@/components/FontPickerField.vue'
 import { AppSlider, MdSegmentedButton, type SegmentedOption } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { usePreferencesStore } from '@/stores/preferences'
@@ -19,12 +20,6 @@ const preferencesStore = usePreferencesStore()
 const flowOptions = computed<SegmentedOption<'paginated' | 'scrolled'>[]>(() => [
   { value: 'paginated', label: t('reader.paginated') },
   { value: 'scrolled', label: t('reader.scrolled') },
-])
-
-const fontOptions = computed<SegmentedOption<string>[]>(() => [
-  { value: 'system-ui', label: t('reader.fontSystem') },
-  { value: 'serif', label: t('reader.fontSerif') },
-  { value: 'mono', label: t('reader.fontMono') },
 ])
 </script>
 
@@ -47,11 +42,11 @@ const fontOptions = computed<SegmentedOption<string>[]>(() => [
       <label class="text-label-medium block text-on-surface-variant">
         {{ t('reader.fontFamily') }}
       </label>
-      <MdSegmentedButton
+      <FontPickerField
         :model-value="preferencesStore.reader.font_family"
-        :options="fontOptions"
-        size="sm"
-        full-width
+        allow-inherit
+        compact
+        :aria-label="t('reader.fontFamily')"
         @update:model-value="(v) => preferencesStore.updateReaderPreferences({ font_family: v })"
       />
     </div>

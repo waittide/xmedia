@@ -62,6 +62,206 @@ import { MockOriginServer } from '../lib/mock_origin.mjs';
 
 const execFileAsync = promisify(execFile);
 
+function encodeUtf16Be(str) {
+  const buf = Buffer.alloc(str.length * 2);
+  for (let i = 0; i < str.length; i += 1) {
+    buf.writeUInt16BE(str.charCodeAt(i), i * 2);
+  }
+  return buf;
+}
+
+function calcSfntChecksum(buf) {
+  const padded =
+    buf.length % 4 === 0 ? buf : Buffer.concat([buf, Buffer.alloc(4 - (buf.length % 4), 0)]);
+  let sum = 0;
+  for (let i = 0; i < padded.length; i += 4) {
+    sum = (sum + padded.readUInt32BE(i)) >>> 0;
+  }
+  return sum;
+}
+
+function buildMinimalE2eTtf(family = 'XMedia Custom Sans') {
+  const head = Buffer.alloc(54, 0);
+  head.writeUInt32BE(0x00010000, 0);
+  head.writeUInt32BE(0x00010000, 4);
+  head.writeUInt32BE(0x5f0f3cf5, 12);
+  head.writeUInt16BE(0x000b, 16);
+  head.writeUInt16BE(1000, 18);
+  head.writeInt16BE(500, 40);
+  head.writeInt16BE(700, 42);
+  head.writeUInt16BE(8, 46);
+  head.writeInt16BE(2, 48);
+
+  const hhea = Buffer.alloc(36, 0);
+  hhea.writeUInt32BE(0x00010000, 0);
+  hhea.writeInt16BE(800, 4);
+  hhea.writeInt16BE(-200, 6);
+  hhea.writeUInt16BE(500, 10);
+  hhea.writeInt16BE(500, 16);
+  hhea.writeInt16BE(1, 18);
+  hhea.writeUInt16BE(2, 34);
+
+  const maxp = Buffer.alloc(32, 0);
+  maxp.writeUInt32BE(0x00010000, 0);
+  maxp.writeUInt16BE(2, 4);
+  maxp.writeUInt16BE(4, 6);
+  maxp.writeUInt16BE(1, 8);
+  maxp.writeUInt16BE(2, 14);
+
+  const os2 = Buffer.alloc(86, 0);
+  os2.writeUInt16BE(1, 0);
+  os2.writeInt16BE(500, 2);
+  os2.writeUInt16BE(400, 4);
+  os2.writeUInt16BE(5, 6);
+  os2.writeInt16BE(650, 10);
+  os2.writeInt16BE(600, 12);
+  os2.writeInt16BE(75, 16);
+  os2.writeInt16BE(650, 18);
+  os2.writeInt16BE(600, 20);
+  os2.writeInt16BE(350, 24);
+  os2.writeInt16BE(50, 26);
+  os2.writeInt16BE(300, 28);
+  os2.writeUInt32BE(1, 42);
+  os2.write('XMED', 58, 4, 'ascii');
+  os2.writeUInt16BE(0x0040, 62);
+  os2.writeUInt16BE(0x0041, 64);
+  os2.writeUInt16BE(0x0041, 66);
+  os2.writeInt16BE(800, 68);
+  os2.writeInt16BE(-200, 70);
+  os2.writeUInt16BE(800, 74);
+  os2.writeUInt16BE(200, 76);
+  os2.writeUInt32BE(1, 78);
+
+  const hmtx = Buffer.alloc(8, 0);
+  hmtx.writeUInt16BE(500, 0);
+  hmtx.writeInt16BE(50, 2);
+  hmtx.writeUInt16BE(500, 4);
+  hmtx.writeInt16BE(50, 6);
+
+  const singleGlyph = Buffer.alloc(34, 0);
+  singleGlyph.writeInt16BE(1, 0);
+  singleGlyph.writeInt16BE(50, 2);
+  singleGlyph.writeInt16BE(0, 4);
+  singleGlyph.writeInt16BE(450, 6);
+  singleGlyph.writeInt16BE(700, 8);
+  singleGlyph.writeUInt16BE(3, 10);
+  singleGlyph.writeUInt16BE(0, 12);
+  singleGlyph[14] = 0x01;
+  singleGlyph[15] = 0x01;
+  singleGlyph[16] = 0x01;
+  singleGlyph[17] = 0x01;
+  singleGlyph.writeInt16BE(50, 18);
+  singleGlyph.writeInt16BE(0, 20);
+  singleGlyph.writeInt16BE(400, 22);
+  singleGlyph.writeInt16BE(0, 24);
+  singleGlyph.writeInt16BE(0, 26);
+  singleGlyph.writeInt16BE(700, 28);
+  singleGlyph.writeInt16BE(0, 30);
+  singleGlyph.writeInt16BE(-700, 32);
+  const glyf = Buffer.concat([singleGlyph, singleGlyph]);
+
+  const loca = Buffer.alloc(6, 0);
+  loca.writeUInt16BE(0, 0);
+  loca.writeUInt16BE(17, 2);
+  loca.writeUInt16BE(34, 4);
+
+  const cmap = Buffer.alloc(44, 0);
+  cmap.writeUInt16BE(0, 0);
+  cmap.writeUInt16BE(1, 2);
+  cmap.writeUInt16BE(3, 4);
+  cmap.writeUInt16BE(1, 6);
+  cmap.writeUInt32BE(12, 8);
+  cmap.writeUInt16BE(4, 12);
+  cmap.writeUInt16BE(32, 14);
+  cmap.writeUInt16BE(0, 16);
+  cmap.writeUInt16BE(4, 18);
+  cmap.writeUInt16BE(4, 20);
+  cmap.writeUInt16BE(1, 22);
+  cmap.writeUInt16BE(0, 24);
+  cmap.writeUInt16BE(0x0041, 26);
+  cmap.writeUInt16BE(0xffff, 28);
+  cmap.writeUInt16BE(0, 30);
+  cmap.writeUInt16BE(0x0041, 32);
+  cmap.writeUInt16BE(0xffff, 34);
+  cmap.writeInt16BE(-64, 36);
+  cmap.writeInt16BE(1, 38);
+  cmap.writeUInt16BE(0, 40);
+  cmap.writeUInt16BE(0, 42);
+
+  const psName = `${family.replace(/[^A-Za-z0-9]/g, '')}-Regular`;
+  const nameEntries = [
+    [1, encodeUtf16Be(family)],
+    [2, encodeUtf16Be('Regular')],
+    [4, encodeUtf16Be(`${family} Regular`)],
+    [6, encodeUtf16Be(psName)],
+  ];
+  const nameHdr = Buffer.alloc(6 + nameEntries.length * 12, 0);
+  nameHdr.writeUInt16BE(0, 0);
+  nameHdr.writeUInt16BE(nameEntries.length, 2);
+  nameHdr.writeUInt16BE(nameHdr.length, 4);
+  let strOff = 0;
+  const strChunks = [];
+  nameEntries.forEach(([nameId, strBuf], idx) => {
+    const recOff = 6 + idx * 12;
+    nameHdr.writeUInt16BE(3, recOff);
+    nameHdr.writeUInt16BE(1, recOff + 2);
+    nameHdr.writeUInt16BE(0x0409, recOff + 4);
+    nameHdr.writeUInt16BE(nameId, recOff + 6);
+    nameHdr.writeUInt16BE(strBuf.length, recOff + 8);
+    nameHdr.writeUInt16BE(strOff, recOff + 10);
+    strChunks.push(strBuf);
+    strOff += strBuf.length;
+  });
+  const name = Buffer.concat([nameHdr, ...strChunks]);
+
+  const post = Buffer.alloc(32, 0);
+  post.writeUInt32BE(0x00030000, 0);
+  post.writeInt16BE(-100, 8);
+  post.writeInt16BE(50, 10);
+
+  const tables = [
+    ['OS/2', os2],
+    ['cmap', cmap],
+    ['glyf', glyf],
+    ['head', head],
+    ['hhea', hhea],
+    ['hmtx', hmtx],
+    ['loca', loca],
+    ['maxp', maxp],
+    ['name', name],
+    ['post', post],
+  ];
+
+  const numTables = tables.length;
+  const sfntHdr = Buffer.alloc(12 + numTables * 16, 0);
+  sfntHdr.writeUInt32BE(0x00010000, 0);
+  sfntHdr.writeUInt16BE(numTables, 4);
+  sfntHdr.writeUInt16BE(128, 6);
+  sfntHdr.writeUInt16BE(3, 8);
+  sfntHdr.writeUInt16BE(numTables * 16 - 128, 10);
+
+  let dataOffset = sfntHdr.length;
+  const bodyChunks = [];
+  let headGlobalOffset = 0;
+  tables.forEach(([tag, data], idx) => {
+    const dirOff = 12 + idx * 16;
+    sfntHdr.write(tag, dirOff, 4, 'ascii');
+    sfntHdr.writeUInt32BE(calcSfntChecksum(data), dirOff + 4);
+    sfntHdr.writeUInt32BE(dataOffset, dirOff + 8);
+    sfntHdr.writeUInt32BE(data.length, dirOff + 12);
+    if (tag === 'head') headGlobalOffset = dataOffset;
+    const padLen = (4 - (data.length % 4)) % 4;
+    bodyChunks.push(data);
+    if (padLen > 0) bodyChunks.push(Buffer.alloc(padLen, 0));
+    dataOffset += data.length + padLen;
+  });
+
+  const full = Buffer.concat([sfntHdr, ...bodyChunks]);
+  const adj = (0xb1b0afba - calcSfntChecksum(full)) >>> 0;
+  full.writeUInt32BE(adj, headGlobalOffset + 8);
+  return full;
+}
+
 // ---------------------------------------------------------------------------
 // Tier 1 Case Registry (90 cases: T1-F01-01 .. T1-F18-05)
 // ---------------------------------------------------------------------------
@@ -3378,6 +3578,214 @@ function buildTier1Cases() {
           if (cdp) await cdp.close();
           await appMgr.cleanup();
           await new Promise((resolve) => opdsServer.close(resolve));
+        }
+      },
+    },
+    {
+      id: 'T1-F19-06',
+      feature: 'F19',
+      domain: 'ui',
+      title: 'Custom fonts API upload/list/file/delete, ui_font & book.font_family persistence, and AppearanceSettingsPanel UI',
+      async run(ctx) {
+        const ttfBuf = buildMinimalE2eTtf('XMedia Custom Sans');
+        const meInitial = (
+          await ctx.admin.failLoudlyRequest('GET', '/api/v1/auth/me', { expectedStatus: 200 })
+        ).json;
+        const savedPrefs = meInitial.preferences;
+        let uploadedFontId = null;
+        let cdp = null;
+
+        try {
+          // 1. Disguised non-font payload with .ttf extension must be rejected by magic-byte sniffing.
+          const badForm = buildMultipartForm([
+            {
+              filename: 'disguised.ttf',
+              contentType: 'font/ttf',
+              data: Buffer.from('<!doctype html><html><body>not a font</body></html>', 'utf8'),
+            },
+          ]);
+          const badRes = await ctx.admin.request('POST', '/api/v1/fonts', {
+            headers: { 'Content-Type': badForm.contentType },
+            body: badForm.body,
+          });
+          if (badRes.status === 404 || badRes.status === 405) {
+            throw new SutEndpointMissingError('POST', '/api/v1/fonts', badRes.status, badRes.text);
+          }
+          assert.ok(
+            badRes.status >= 400 && badRes.status < 500,
+            `Expected 4xx rejecting disguised non-font upload, got ${badRes.status}`,
+          );
+
+          // 2. Upload valid TrueType font -> 201 CustomFontDto[] with parsed family name.
+          const goodForm = buildMultipartForm([
+            {
+              filename: 'XMediaCustomSans.ttf',
+              contentType: 'font/ttf',
+              data: ttfBuf,
+            },
+          ]);
+          const uploadRes = await ctx.admin.failLoudlyRequest('POST', '/api/v1/fonts', {
+            headers: { 'Content-Type': goodForm.contentType },
+            body: goodForm.body,
+            expectedStatus: 201,
+          });
+          assert.ok(
+            Array.isArray(uploadRes.json) && uploadRes.json.length === 1,
+            'Expected 1 uploaded CustomFontDto',
+          );
+          const fontDto = uploadRes.json[0];
+          uploadedFontId = fontDto.id;
+          assert.ok(uploadedFontId, 'Expected non-empty font id');
+          assert.equal(fontDto.name, 'XMedia Custom Sans');
+          assert.equal(fontDto.format, 'ttf');
+          assert.equal(fontDto.css_format, 'truetype');
+          assert.equal(fontDto.mime_type, 'font/ttf');
+          assert.equal(fontDto.size_bytes, ttfBuf.length);
+
+          // 3. List & binary file stream roundtrip.
+          const listRes = await ctx.admin.failLoudlyRequest('GET', '/api/v1/fonts', {
+            expectedStatus: 200,
+          });
+          assert.ok(
+            Array.isArray(listRes.json) && listRes.json.some((f) => f.id === uploadedFontId),
+            'GET /api/v1/fonts should list uploaded font',
+          );
+
+          const fileRes = await ctx.admin.failLoudlyRequest(
+            'GET',
+            `/api/v1/fonts/${encodeURIComponent(uploadedFontId)}/file`,
+            { expectedStatus: 200 },
+          );
+          assert.ok(
+            String(fileRes.headers.get('content-type') || '').includes('font/ttf'),
+            `Expected font/ttf Content-Type, got ${fileRes.headers.get('content-type')}`,
+          );
+          assert.ok(
+            String(fileRes.headers.get('x-content-type-options') || '')
+              .toLowerCase()
+              .includes('nosniff'),
+            'Expected X-Content-Type-Options: nosniff on font file stream',
+          );
+          assert.ok(fileRes.buffer.equals(ttfBuf), 'Downloaded font bytes must match uploaded TTF');
+
+          // 4. Persist ui_font & book.font_family on /api/v1/auth/preferences.
+          const fontSpec = `font:${uploadedFontId}`;
+          await ctx.admin.failLoudlyRequest('PUT', '/api/v1/auth/preferences', {
+            body: {
+              ...savedPrefs,
+              ui_font: fontSpec,
+              book: {
+                ...savedPrefs.book,
+                font_family: fontSpec,
+              },
+            },
+            expectedStatus: 200,
+          });
+          const meAfter = (
+            await ctx.admin.failLoudlyRequest('GET', '/api/v1/auth/me', { expectedStatus: 200 })
+          ).json;
+          assert.equal(meAfter.preferences.ui_font, fontSpec);
+          assert.equal(meAfter.preferences.book.font_family, fontSpec);
+
+          // 5. Browser verification: AppearanceSettingsPanel & DomainSettingsView UI + max-w-7xl alignment.
+          cdp = await openAuthenticatedPage(
+            ctx.CdpClient,
+            ctx.baseUrl,
+            ctx.admin,
+            '/settings/appearance',
+          );
+          await cdp.send('Emulation.setDeviceMetricsOverride', {
+            width: 1440,
+            height: 900,
+            deviceScaleFactor: 1,
+            mobile: false,
+          });
+
+          const expectedCssFamily = `xmedia-font-${uploadedFontId}`;
+          await cdp.waitForFn(
+            `(() => {
+              const sec = document.querySelector('[data-appearance-ui-font]');
+              const chip = document.querySelector('[data-uploaded-font-id=${JSON.stringify(uploadedFontId)}]');
+              const styleTag = document.getElementById('xmedia-custom-fonts');
+              const bodyFont = getComputedStyle(document.body).fontFamily || '';
+              return Boolean(
+                sec &&
+                chip &&
+                styleTag &&
+                styleTag.textContent.includes(${JSON.stringify(expectedCssFamily)}) &&
+                bodyFont.includes(${JSON.stringify(expectedCssFamily)})
+              );
+            })()`,
+            { timeoutMs: 12000, label: 'AppearanceSettingsPanel custom font injected and applied to body' },
+          );
+
+          const appearanceWidth = await cdp.evalJs(
+            `Math.round(document.querySelector('main .max-w-7xl')?.getBoundingClientRect().width || 0)`,
+          );
+          assert.equal(appearanceWidth, 1280, 'Expected /settings/appearance container width 1280px at 1440x900');
+
+          // Apply a typed local font family via inline text input + Apply button, then switch back via chip.
+          await cdp.type('[data-appearance-ui-font] input[maxlength="128"]', 'LXGW WenKai Mono');
+          await cdp.click('[data-appearance-ui-font] [data-font-apply-local-btn]');
+          await cdp.waitForFn(
+            `getComputedStyle(document.body).fontFamily.includes('LXGW WenKai Mono')`,
+            { timeoutMs: 8000, label: 'Inline local font family applied to body' },
+          );
+
+          await cdp.click(
+            `[data-appearance-ui-font] [data-uploaded-font-id=${JSON.stringify(uploadedFontId)}] > button:first-child`,
+          );
+          await cdp.waitForFn(
+            `getComputedStyle(document.body).fontFamily.includes(${JSON.stringify(expectedCssFamily)})`,
+            { timeoutMs: 8000, label: 'Uploaded font chip re-selected' },
+          );
+
+          // Navigate to /book/settings and verify max-w-7xl alignment + FontPickerField in Book preferences.
+          await cdp.goto(`${ctx.baseUrl}/book/settings`);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('#book [data-font-picker] [data-uploaded-font-id=${JSON.stringify(uploadedFontId)}]'))`,
+            { timeoutMs: 10000, label: '/book/settings rendered FontPickerField with uploaded font' },
+          );
+          const bookSettingsWidth = await cdp.evalJs(
+            `Math.round(document.querySelector('main .max-w-7xl')?.getBoundingClientRect().width || 0)`,
+          );
+          assert.equal(bookSettingsWidth, 1280, 'Expected /book/settings container width 1280px at 1440x900');
+
+          // Delete uploaded font via UI chip remove button -> resets active ui_font and deletes on server.
+          await cdp.goto(`${ctx.baseUrl}/settings/appearance`);
+          await cdp.waitForSelector(
+            `[data-appearance-ui-font] [data-delete-font-id=${JSON.stringify(uploadedFontId)}]`,
+            { visible: true, timeoutMs: 10000 },
+          );
+          await cdp.click(
+            `[data-appearance-ui-font] [data-delete-font-id=${JSON.stringify(uploadedFontId)}]`,
+          );
+          await cdp.waitForFn(
+            `!document.querySelector('[data-uploaded-font-id=${JSON.stringify(uploadedFontId)}]') && !getComputedStyle(document.body).fontFamily.includes(${JSON.stringify(expectedCssFamily)})`,
+            { timeoutMs: 10000, label: 'Deleted custom font removed from DOM and reset from body fontFamily' },
+          );
+
+          const listAfterDelete = await ctx.admin.failLoudlyRequest('GET', '/api/v1/fonts', {
+            expectedStatus: 200,
+          });
+          assert.ok(
+            Array.isArray(listAfterDelete.json) &&
+              !listAfterDelete.json.some((f) => f.id === uploadedFontId),
+            'Deleted font must no longer appear in GET /api/v1/fonts',
+          );
+          uploadedFontId = null;
+
+          cdp.assertNoErrors('T1-F19-06');
+        } finally {
+          if (cdp) await cdp.close();
+          if (uploadedFontId) {
+            await ctx.admin
+              .request('DELETE', `/api/v1/fonts/${encodeURIComponent(uploadedFontId)}`)
+              .catch(() => {});
+          }
+          await ctx.admin
+            .request('PUT', '/api/v1/auth/preferences', { body: savedPrefs })
+            .catch(() => {});
         }
       },
     },

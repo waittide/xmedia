@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import FontPickerField from '@/components/FontPickerField.vue'
 import { useBookI18n } from '@/domains/book/i18n'
 import { useComicI18n } from '@/domains/comic/i18n'
 import { AppSlider, MdCard, MdChip, MdSelect, MdSwitch } from '@/components/ui'
@@ -49,12 +50,6 @@ const activeAnchorDomain = computed<MediaKind | null>(() => {
   }
   return null
 })
-
-const bookFontOptions = computed(() => [
-  { value: 'system-ui', label: bookT('reader.fontSystem') },
-  { value: 'serif', label: bookT('reader.fontSerif') },
-  { value: 'mono', label: bookT('reader.fontMono') },
-])
 
 const bookFlowOptions = computed(() => [
   { value: 'paginated', label: t('settings.bookFlowPaginated') },
@@ -158,13 +153,14 @@ watch(
       </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:gap-x-8">
-        <div>
+        <div class="sm:col-span-2">
           <label class="text-label-medium mb-1.5 block text-on-surface-variant">
             {{ bookT('reader.fontFamily') }}
           </label>
-          <MdSelect
+          <FontPickerField
             :model-value="prefsStore.reader.font_family"
-            :options="bookFontOptions"
+            allow-inherit
+            :aria-label="bookT('reader.fontFamily')"
             @update:model-value="
               prefsStore.updateReaderPreferences(
                 { font_family: $event },
