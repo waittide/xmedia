@@ -2,6 +2,7 @@ pub mod book;
 pub mod comic;
 pub mod common;
 pub mod error;
+pub mod font;
 pub mod music;
 pub mod video;
 
@@ -10,3 +11,4 @@ pub use common::{
     sniff_image_mime, sniff_raster_image_mime,
 };
 pub use error::{FormatError, FormatResult};
+pub use font::{DetectedFontInfo, FontFormat, inspect_font_bytes, sniff_font_format};
