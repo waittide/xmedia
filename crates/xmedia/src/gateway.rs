@@ -34,10 +34,11 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{UserId, UserPreferences};
 use xmedia_core::http::{
     AUTH_COOKIE_NAME, ApiError, ApiResult, ClientIp, attach_cookie, build_clear_cookie,
-    build_session_cookie, error_json_response, verify_cookie_csrf,
+    build_session_cookie, core_fonts_router, error_json_response, verify_cookie_csrf,
 };
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_core::infra::fonts::FsFontStore;
 
 const FFMPEG_STATUS_CACHE_TTL: Duration = Duration::from_secs(60);
 const MAX_SSE_STREAMS_PER_USER: usize = 8;
@@ -141,6 +142,7 @@ pub struct GatewayState {
     pub libraries_repo: Arc<dyn LibraryRepository>,
     pub bindings: Arc<MediaBindingService>,
     pub activity: Arc<ActivityService>,
+    pub fonts: Arc<FsFontStore>,
     pub events: Arc<BroadcastEventHub>,
     pub sse_limiter: SseConnectionLimiter,
     pub ffmpeg: FfmpegToolkit,
@@ -152,6 +154,12 @@ pub struct GatewayState {
 impl FromRef<GatewayState> for Arc<AuthService> {
     fn from_ref(state: &GatewayState) -> Self {
         state.auth.clone()
+    }
+}
+
+impl FromRef<GatewayState> for Arc<FsFontStore> {
+    fn from_ref(state: &GatewayState) -> Self {
+        state.fonts.clone()
     }
 }
 
@@ -182,6 +190,7 @@ pub fn core_api_router() -> Router<GatewayState> {
         .route("/activity/heartbeat", post(record_activity_heartbeat))
         .route("/activity/heatmap", get(get_activity_heatmap))
         .route("/events/stream", get(events_stream))
+        .merge(core_fonts_router())
 }
 
 #[derive(Serialize)]

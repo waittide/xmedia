@@ -12,7 +12,7 @@ use rust_embed::RustEmbed;
 
 use crate::http::ToolHttpState;
 
-const TOOL_SPA_HTML_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'";
+const TOOL_SPA_HTML_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'";
 
 #[derive(RustEmbed)]
 #[folder = "../../web/dist-tool"]

@@ -32,7 +32,7 @@ use uuid::Uuid;
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::http::ApiResult;
+use xmedia_core::http::{ApiResult, port_fonts_router};
 
 use crate::application::workbench::WorkbenchProgress;
 use crate::http::ToolHttpState;
@@ -55,9 +55,15 @@ pub fn tool_api_router(state: ToolHttpState) -> Router<ToolHttpState> {
         .merge(comics::router())
         .merge(music::router())
         .merge(video::router())
+        .merge(port_fonts_router::<ToolHttpState>())
         .route_layer(middleware::from_fn_with_state(state, require_tool_auth));
 
     public_routes.merge(protected_routes)
+}
+
+pub fn tool_fonts_api_router(state: ToolHttpState) -> Router<ToolHttpState> {
+    port_fonts_router::<ToolHttpState>()
+        .route_layer(middleware::from_fn_with_state(state, require_tool_auth))
 }
 
 #[derive(Deserialize)]

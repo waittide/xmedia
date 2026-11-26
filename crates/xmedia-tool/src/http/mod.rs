@@ -6,6 +6,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::extract::FromRef;
+use xmedia_core::application::ports::FontRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 
 use crate::application::auth::ToolAuthService;
@@ -51,7 +53,14 @@ pub struct ToolHttpState {
     pub workbench: MediaWorkbenchService,
     pub scraping: ScrapingOrchestratorService,
     pub webhook: Arc<dyn HttpWebhookPort>,
+    pub fonts: Arc<dyn FontRepository>,
     pub ffmpeg: FfmpegToolkit,
     pub external_web_dir: Option<PathBuf>,
     pub security: ToolRequestSecurityPolicy,
+}
+
+impl FromRef<ToolHttpState> for Arc<dyn FontRepository> {
+    fn from_ref(state: &ToolHttpState) -> Self {
+        state.fonts.clone()
+    }
 }

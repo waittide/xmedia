@@ -1311,3 +1311,349 @@ mod gateway_integration_tests {
         );
     }
 }
+
+mod custom_font_and_preferences_tests {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode, header};
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    use crate::{XMediaApp, XMediaConfig};
+
+    fn build_multipart_body(boundary: &str, parts: &[(&str, Option<&str>, &[u8])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (field, filename, data) in parts {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            match filename {
+                Some(fname) => body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{field}\"; filename=\"{fname}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+                    )
+                    .as_bytes(),
+                ),
+                None => body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{field}\"\r\n\r\n").as_bytes(),
+                ),
+            }
+            body.extend_from_slice(data);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        body
+    }
+
+    #[tokio::test]
+    async fn custom_fonts_crud_csp_and_ui_font_preferences_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("xmedia_fonts.db");
+        let app_instance = XMediaApp::connect_and_init(XMediaConfig {
+            data_dir: tmp.path().to_path_buf(),
+            database_url: format!("sqlite:{}", db_path.display()),
+            secret: "fonts-integration-secret".into(),
+            jwt_ttl_secs: 3600,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let app = app_instance.router;
+
+        // 1. SPA HTML CSP allows blob: in font-src
+        let spa_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(spa_res.status(), StatusCode::OK);
+        let csp = spa_res
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            csp.contains("font-src 'self' data: blob:"),
+            "unexpected SPA CSP: {csp}"
+        );
+
+        // 2. Unauthenticated GET /api/v1/fonts is rejected
+        let unauth_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/fonts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth_res.status(), StatusCode::UNAUTHORIZED);
+
+        // 3. Setup initial admin
+        let setup_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/setup")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","display_name":"Admin","password":"password123"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(setup_res.status(), StatusCode::CREATED);
+        let cookie_hdr = setup_res
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let setup_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(setup_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let token = setup_json["token"].as_str().unwrap().to_string();
+
+        // 4. Cookie CSRF blocks cross-origin POST /api/v1/fonts
+        let boundary = "XMediaFontBoundary";
+        let valid_ttf = b"\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00synthetic-ttf";
+        let csrf_body = build_multipart_body(
+            boundary,
+            &[("file", Some("LXGWWenKai-Regular.ttf"), valid_ttf)],
+        );
+        let csrf_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fonts")
+                    .header(header::COOKIE, &cookie_hdr)
+                    .header(header::HOST, "127.0.0.1:8090")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(csrf_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(csrf_res.status(), StatusCode::FORBIDDEN);
+
+        // 5. Reject disguised non-font payload (415 Unsupported Media Type)
+        let bad_body = build_multipart_body(
+            boundary,
+            &[(
+                "file",
+                Some("disguised.ttf"),
+                b"<!doctype html><script>alert(1)</script>",
+            )],
+        );
+        let bad_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fonts")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(bad_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        // 6. Upload valid TTF + WOFF2 fonts
+        let valid_woff2 = b"wOF2\x00\x01\x00\x00synthetic-woff2-data";
+        let upload_body = build_multipart_body(
+            boundary,
+            &[
+                ("file", Some("LXGWWenKai-Regular.ttf"), valid_ttf),
+                ("files", Some("JetBrainsMono.woff2"), valid_woff2),
+            ],
+        );
+        let upload_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fonts")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(upload_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload_res.status(), StatusCode::CREATED);
+        let uploaded: serde_json::Value =
+            serde_json::from_slice(&to_bytes(upload_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let arr = uploaded.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let font_id = arr[0]["id"].as_str().unwrap().to_string();
+        assert_eq!(arr[0]["name"], "LXGWWenKai-Regular");
+        assert_eq!(arr[0]["format"], "ttf");
+        assert_eq!(arr[0]["css_format"], "truetype");
+        assert_eq!(arr[0]["mime_type"], "font/ttf");
+        assert_eq!(arr[0]["size_bytes"], valid_ttf.len());
+        assert_eq!(arr[1]["format"], "woff2");
+        assert_eq!(arr[1]["css_format"], "woff2");
+        assert_eq!(arr[1]["mime_type"], "font/woff2");
+
+        // 7. List fonts & fetch binary font stream
+        let list_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/fonts")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_res.status(), StatusCode::OK);
+        let listed: serde_json::Value =
+            serde_json::from_slice(&to_bytes(list_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 2);
+
+        let file_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/fonts/{font_id}/file"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file_res.status(), StatusCode::OK);
+        assert_eq!(
+            file_res
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("font/ttf")
+        );
+        assert_eq!(
+            file_res
+                .headers()
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            file_res
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("private, max-age=31536000, immutable")
+        );
+        let fetched_bytes = to_bytes(file_res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(fetched_bytes.as_ref(), valid_ttf);
+
+        // 8. Roundtrip ui_font and book.font_family on /api/v1/auth/preferences
+        let prefs_payload = serde_json::json!({
+            "theme_mode": "dark",
+            "ui_font": format!("  font:{font_id};{{}}<>\"'\\  "),
+            "book": {
+                "font_family": "inherit"
+            }
+        });
+        let put_prefs_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/auth/preferences")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(prefs_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put_prefs_res.status(), StatusCode::OK);
+        let updated_user: serde_json::Value = serde_json::from_slice(
+            &to_bytes(put_prefs_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let expected_spec = format!("font:{font_id}");
+        assert_eq!(
+            updated_user["preferences"]["ui_font"].as_str(),
+            Some(expected_spec.as_str())
+        );
+        assert_eq!(
+            updated_user["preferences"]["book"]["font_family"].as_str(),
+            Some("inherit")
+        );
+
+        let me_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/me")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let me_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(me_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            me_json["preferences"]["ui_font"].as_str(),
+            Some(expected_spec.as_str())
+        );
+
+        // 9. Delete font and confirm 404 on subsequent file fetch
+        let del_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/fonts/{font_id}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del_res.status(), StatusCode::OK);
+        let del_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(del_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(del_json["ok"], true);
+
+        let gone_res = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/fonts/{font_id}/file"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(gone_res.status(), StatusCode::NOT_FOUND);
+    }
+}

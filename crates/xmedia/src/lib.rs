@@ -23,6 +23,7 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::UserRepository;
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_core::infra::fonts::FsFontStore;
 use xmedia_core::infra::persistence::repositories::{
     ToastyLibraryRepository, ToastyOnlineLibraryItemRepository, ToastyUserActivityRepository,
     ToastyUserMediaBindingRepository, ToastyUserRepository,
@@ -472,12 +473,15 @@ impl XMediaApp {
 
         let _ = (db, opts.allow_private_ips);
 
+        let fonts = Arc::new(FsFontStore::new(cfg.data_dir.join("fonts")));
+
         let gateway_state = GatewayState {
             auth: auth.clone(),
             libraries: libraries.clone(),
             libraries_repo,
             bindings,
             activity,
+            fonts,
             events: events.clone(),
             sse_limiter: SseConnectionLimiter::new(),
             ffmpeg,
@@ -492,6 +496,7 @@ impl XMediaApp {
             .and(NotForContentType::const_new("audio/"))
             .and(NotForContentType::const_new("video/"))
             .and(NotForContentType::const_new("image/"))
+            .and(NotForContentType::const_new("font/"))
             .and(NotForContentType::const_new("application/octet-stream"))
             .and(NotForContentType::const_new("application/epub+zip"))
             .and(NotForContentType::const_new("application/pdf"))

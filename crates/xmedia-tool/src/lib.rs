@@ -15,7 +15,9 @@ use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
+use xmedia_core::application::ports::FontRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_core::infra::fonts::FsFontStore;
 
 use crate::application::auth::ToolAuthService;
 use crate::application::scraping::ScrapingOrchestratorService;
@@ -26,7 +28,7 @@ use crate::domain::ports::{
     WorkspaceFsPort,
 };
 use crate::http::auth::guard_tool_http_request;
-use crate::http::routes::tool_api_router;
+use crate::http::routes::{tool_api_router, tool_fonts_api_router};
 use crate::http::static_files::serve_tool_spa;
 use crate::http::{ToolHttpState, ToolRequestSecurityPolicy};
 use crate::infra::config_store::JsonFileConfigRepository;
@@ -169,6 +171,7 @@ impl XMediaToolApp {
         );
         let auth = ToolAuthService::new(cfg.password);
         let security = ToolRequestSecurityPolicy::new(bind_addr, cors_allow_origins);
+        let fonts: Arc<dyn FontRepository> = Arc::new(FsFontStore::new(cfg.data_dir.join("fonts")));
 
         let state = ToolHttpState {
             auth,
@@ -176,6 +179,7 @@ impl XMediaToolApp {
             workbench: workbench.clone(),
             scraping: scraping.clone(),
             webhook,
+            fonts,
             ffmpeg,
             external_web_dir: cfg.external_web_dir,
             security,
@@ -183,15 +187,17 @@ impl XMediaToolApp {
 
         let compression_predicate = DefaultPredicate::new()
             .and(NotForContentType::const_new("image/"))
+            .and(NotForContentType::const_new("font/"))
             .and(NotForContentType::const_new("application/octet-stream"));
 
         let spa_service = axum::routing::any(serve_tool_spa).with_state(state.clone());
+        let api_router = Router::new()
+            .merge(tool_fonts_api_router(state.clone()))
+            .nest("/v1/tool", tool_api_router(state.clone()))
+            .with_state(state.clone());
 
         let mut router = Router::new()
-            .nest(
-                "/api/v1/tool",
-                tool_api_router(state.clone()).with_state(state.clone()),
-            )
+            .nest("/api", api_router)
             .fallback_service(spa_service)
             .layer(middleware::from_fn_with_state(
                 state,
