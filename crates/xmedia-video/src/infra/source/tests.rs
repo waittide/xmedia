@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use url::Url;
 use uuid::Uuid;
+use xmedia_source::crud::SourceSpecAdapter;
 use xmedia_source::http::{HttpClientConfig, LegadoHttpClient};
 
 use crate::domain::online::{SourceRuntimeState, VideoSourceFormat, VideoSourceSpec};
@@ -32,7 +33,7 @@ fn test_hls_proxy_url(target_url: &str, source_id: Option<Uuid>, token: Option<&
 #[test]
 fn parse_seeds_video_json_succeeds_with_all_six_verified_sources() {
     let raw = include_str!("../../../testdata/online_sources.json");
-    let batch = VideoSourceSpec::parse_json_batch(raw).expect("video.json must parse");
+    let batch = VideoSourceSpec::parse_batch(raw).expect("video.json must parse");
     assert_eq!(batch.len(), 6);
 
     assert_eq!(batch[0].0.source_name, "爱坤资源 (ikunzy)");
@@ -66,7 +67,7 @@ fn video_source_spec_normalizes_empty_source_url_from_api_url_and_auto_detects_f
         "apiUrl": "https://cms.example.com/api.php/provide/vod/",
         "preferredPlayFrom": "ikm3u8, snm3u8"
     }"#;
-    let batch = VideoSourceSpec::parse_json_batch(raw).unwrap();
+    let batch = VideoSourceSpec::parse_batch(raw).unwrap();
     assert_eq!(batch.len(), 1);
     let (spec, clean_raw) = &batch[0];
     assert_eq!(
@@ -195,7 +196,7 @@ async fn applecms_detail_strips_html_tags_and_decodes_entities_in_intro() {
             false,
         )
         .unwrap();
-        applecms_fetch_detail(&spec, &http, Some("42"), None)
+        applecms_fetch_detail(&spec, |u, b| http.fetch(u, b), Some("42"), None)
     })
     .await
     .unwrap()
@@ -343,20 +344,20 @@ async fn applecms_guards_against_plain_text_and_403_search_errors() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let spec_txt = VideoSourceSpec {
-        source_name: "TextErr".into(),
-        source_url: format!("http://{addr}/text/api.php/provide/vod/"),
-        api_url: Some(format!("http://{addr}/text/api.php/provide/vod/")),
-        searchable: true,
-        ..Default::default()
-    };
-    let spec_403 = VideoSourceSpec {
-        source_name: "403Err".into(),
-        source_url: format!("http://{addr}/forbidden/api.php/provide/vod/"),
-        api_url: Some(format!("http://{addr}/forbidden/api.php/provide/vod/")),
-        searchable: true,
-        ..Default::default()
-    };
+    let spec_txt: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "TextErr",
+        "sourceUrl": format!("http://{addr}/text/api.php/provide/vod/"),
+        "apiUrl": format!("http://{addr}/text/api.php/provide/vod/"),
+        "searchable": true
+    }))
+    .unwrap();
+    let spec_403: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "403Err",
+        "sourceUrl": format!("http://{addr}/forbidden/api.php/provide/vod/"),
+        "apiUrl": format!("http://{addr}/forbidden/api.php/provide/vod/"),
+        "searchable": true
+    }))
+    .unwrap();
 
     let res_txt = tokio::task::spawn_blocking(move || {
         let cfg = HttpClientConfig {
@@ -365,8 +366,8 @@ async fn applecms_guards_against_plain_text_and_403_search_errors() {
         };
         let cookies = Arc::new(Mutex::new(HashMap::new()));
         let http = LegadoHttpClient::new(cfg, cookies, None, false).unwrap();
-        let e1 = applecms_search(&spec_txt, &http, "test", 1).unwrap_err();
-        let e2 = applecms_search(&spec_403, &http, "test", 1).unwrap_err();
+        let e1 = applecms_search(&spec_txt, |u, b| http.fetch(u, b), "test", 1).unwrap_err();
+        let e2 = applecms_search(&spec_403, |u, b| http.fetch(u, b), "test", 1).unwrap_err();
         (e1, e2)
     })
     .await
@@ -568,7 +569,7 @@ async fn rule_play_subtitles_evaluates_jsonpath_js_and_edge_cases() {
                     "subtitles": sub_rule
                 }
             });
-            VideoSourceSpec::parse_json_batch(&raw.to_string())
+            VideoSourceSpec::parse_batch(&raw.to_string())
                 .unwrap()
                 .remove(0)
                 .0
@@ -1294,7 +1295,7 @@ async fn rule_play_sanitizes_dangerous_schemes_and_merges_header_with_media_head
         "mediaHeader": r#"{"referer":"https://cdn.example","X-Media":"m1"}"#
     }))
     .unwrap();
-    let merged_headers = merged_spec.parse_media_header_map();
+    let merged_headers = merged_spec.build_media_headers("https://video.example/stream.mp4", None);
     assert_eq!(
         merged_headers.get("Cookie").map(String::as_str),
         Some("sid=1")
@@ -1356,7 +1357,7 @@ async fn rule_play_sanitizes_dangerous_schemes_and_merges_header_with_media_head
         // 3. rulePlay rejects dangerous streamUrl schemes
         let make_rule_spec =
             |sub_rule: &str, rule_headers: Option<&str>, media_header: Option<&str>| {
-                VideoSourceSpec::parse_json_batch(
+                VideoSourceSpec::parse_batch(
                     &serde_json::json!({
                         "sourceName": "RulePlaySanitize",
                         "sourceUrl": origin_c,

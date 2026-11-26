@@ -1,17 +1,31 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::time::Duration;
 
 use regex::Regex;
 use serde::Deserialize;
 use url::Url;
-use xmedia_source::http::{LegadoHttpClient, resolve_relative_url};
+use xmedia_source::http::{HttpFetchResult, resolve_relative_url};
 use xmedia_source::rule::cached_regex;
 
 use crate::domain::online::{
     OnlineVideoCategory, OnlineVideoDetail, OnlineVideoEpisode, OnlineVideoPlayGroup,
-    OnlineVideoSummary, VideoSourceSpec,
+    OnlineVideoSummary, VideoSourceBackend, VideoSourceSpec,
 };
+
+fn extract_applecms_params(spec: &VideoSourceSpec) -> (&str, &[String], &str) {
+    match spec.backend() {
+        VideoSourceBackend::Applecms {
+            api_url,
+            preferred_play_from,
+            play_filter_regex,
+        } => (api_url, preferred_play_from, play_filter_regex),
+        VideoSourceBackend::Rule { .. } => (
+            spec.effective_source_url(),
+            &spec.preferred_play_from,
+            VideoSourceSpec::DEFAULT_PLAY_FILTER_REGEX,
+        ),
+    }
+}
 
 static RE_SCRIPT_STYLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?is)<(?:script|style)\b[^>]*>[\s\S]*?</(?:script|style)>").expect("valid regex")
@@ -224,19 +238,11 @@ pub fn infer_stream_type(url: &str) -> &'static str {
 
 pub fn fetch_categories(
     spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
+    fetch: impl FnOnce(&str, &str) -> Result<HttpFetchResult, String>,
 ) -> Result<Vec<OnlineVideoCategory>, String> {
-    fetch_categories_with_timeout(spec, http, None)
-}
-
-pub fn fetch_categories_with_timeout(
-    spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
-    timeout: Option<Duration>,
-) -> Result<Vec<OnlineVideoCategory>, String> {
-    let api_url = spec.effective_api_url();
+    let (api_url, _, _) = extract_applecms_params(spec);
     let url = build_api_url(api_url, &[("ac", "list".into()), ("pg", "1".into())])?;
-    let fetched = http.fetch_with_timeout(&url, spec.effective_source_url(), timeout)?;
+    let fetched = fetch(&url, spec.effective_source_url())?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "获取分类")?;
 
     let mut out = Vec::with_capacity(parsed.class.len());
@@ -262,24 +268,14 @@ pub fn fetch_categories_with_timeout(
 
 pub fn search(
     spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
+    fetch: impl FnOnce(&str, &str) -> Result<HttpFetchResult, String>,
     keyword: &str,
     page: u32,
-) -> Result<Vec<OnlineVideoSummary>, String> {
-    search_with_timeout(spec, http, keyword, page, None)
-}
-
-pub fn search_with_timeout(
-    spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
-    keyword: &str,
-    page: u32,
-    timeout: Option<Duration>,
 ) -> Result<Vec<OnlineVideoSummary>, String> {
     if !spec.searchable {
         return Err(format!("影视源「{}」不支持关键词搜索", spec.source_name));
     }
-    let api_url = spec.effective_api_url();
+    let (api_url, _, _) = extract_applecms_params(spec);
     let page_num = page.max(1);
     let url = build_api_url(
         api_url,
@@ -289,7 +285,7 @@ pub fn search_with_timeout(
             ("pg", page_num.to_string()),
         ],
     )?;
-    let fetched = http.fetch_with_timeout(&url, spec.effective_source_url(), timeout)?;
+    let fetched = fetch(&url, spec.effective_source_url())?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "关键词搜索")?;
     Ok(parsed
         .list
@@ -300,28 +296,18 @@ pub fn search_with_timeout(
 
 pub fn browse(
     spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
+    fetch: impl FnOnce(&str, &str) -> Result<HttpFetchResult, String>,
     category_id: Option<&str>,
     page: u32,
 ) -> Result<AppleCmsBrowsePage, String> {
-    browse_with_timeout(spec, http, category_id, page, None)
-}
-
-pub fn browse_with_timeout(
-    spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
-    category_id: Option<&str>,
-    page: u32,
-    timeout: Option<Duration>,
-) -> Result<AppleCmsBrowsePage, String> {
-    let api_url = spec.effective_api_url();
+    let (api_url, _, _) = extract_applecms_params(spec);
     let page_num = page.max(1);
     let mut params = vec![("ac", "detail".into()), ("pg", page_num.to_string())];
     if let Some(cat) = category_id.map(str::trim).filter(|s| !s.is_empty()) {
         params.push(("t", cat.to_string()));
     }
     let url = build_api_url(api_url, &params)?;
-    let fetched = http.fetch_with_timeout(&url, spec.effective_source_url(), timeout)?;
+    let fetched = fetch(&url, spec.effective_source_url())?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "分类浏览")?;
 
     let items = parsed
@@ -352,21 +338,11 @@ pub fn browse_with_timeout(
 
 pub fn fetch_detail(
     spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
+    fetch: impl FnOnce(&str, &str) -> Result<HttpFetchResult, String>,
     video_id: Option<&str>,
     detail_url: Option<&str>,
 ) -> Result<OnlineVideoDetail, String> {
-    fetch_detail_with_timeout(spec, http, video_id, detail_url, None)
-}
-
-pub fn fetch_detail_with_timeout(
-    spec: &VideoSourceSpec,
-    http: &LegadoHttpClient,
-    video_id: Option<&str>,
-    detail_url: Option<&str>,
-    timeout: Option<Duration>,
-) -> Result<OnlineVideoDetail, String> {
-    let api_url = spec.effective_api_url();
+    let (api_url, preferred_play_from, play_filter_regex) = extract_applecms_params(spec);
     let target_url = if let Some(vid) = video_id.map(str::trim).filter(|s| !s.is_empty()) {
         build_api_url(
             api_url,
@@ -378,7 +354,7 @@ pub fn fetch_detail_with_timeout(
         return Err("缺少 video_id 或 detail_url".into());
     };
 
-    let fetched = http.fetch_with_timeout(&target_url, spec.effective_source_url(), timeout)?;
+    let fetched = fetch(&target_url, spec.effective_source_url())?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "获取影视详情")?;
     let vod = parsed
         .list
@@ -396,8 +372,8 @@ pub fn fetch_detail_with_timeout(
     let play_groups = parse_vod_play_groups(
         vod.vod_play_from.as_deref(),
         vod.vod_play_url.as_deref(),
-        &spec.preferred_play_from,
-        spec.effective_play_filter_regex(),
+        preferred_play_from,
+        play_filter_regex,
     );
 
     Ok(OnlineVideoDetail {

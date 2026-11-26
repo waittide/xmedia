@@ -8,7 +8,7 @@ use xmedia_core::domain::user::User;
 use xmedia_source::rate_limit::get_or_insert_rate_limiter;
 
 use crate::application::ports::VideoProxyUrlBuilder;
-use crate::domain::online::{VideoSourceFormat, VideoSourceSpec};
+use crate::domain::online::{VideoSourceBackend, VideoSourceSpec};
 
 use super::dto::{
     OnlineVideoBrowseResponseDto, OnlineVideoCategoriesResponseDto, OnlineVideoDetailResponseDto,
@@ -29,15 +29,13 @@ impl VideoOnlineService {
         self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
             .await
             .map_err(DomainError::Validation)?;
-        let has_explore = match parsed.effective_format() {
-            VideoSourceFormat::ApplecmsV10 => true,
-            VideoSourceFormat::Rule => {
-                parsed.enabled_explore
-                    && parsed
-                        .explore_url
-                        .as_deref()
-                        .is_some_and(|s| !s.trim().is_empty())
-            }
+        let has_explore = match parsed.backend() {
+            VideoSourceBackend::Applecms { .. } => true,
+            VideoSourceBackend::Rule {
+                enabled_explore,
+                explore_url,
+                ..
+            } => enabled_explore && explore_url.is_some(),
         };
 
         let engine = self.engine.clone();
@@ -117,21 +115,11 @@ impl VideoOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut sources = self.source_crud.repository().list_all().await?;
-        let is_admin = actor.role.is_admin();
-
         let explicit_single_or_filtered = source_ids.as_ref().is_some_and(|v| !v.is_empty());
-        if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
-            sources.retain(|s| filter_ids.contains(&s.id) && (is_admin || s.enabled));
-        } else {
-            sources.retain(|s| s.enabled);
-        }
-
-        if sources.is_empty() {
-            return Err(DomainError::Validation("没有可用的已启用影视源".into()));
-        }
-
-        sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+        let sources = self
+            .source_crud
+            .select_sources(actor, source_ids.as_deref())
+            .await?;
         let page_num = page.max(1);
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
         let op_timeout = self.op_timeout;

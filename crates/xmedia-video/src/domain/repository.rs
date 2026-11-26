@@ -8,81 +8,96 @@ use crate::domain::id::{ShowId, VideoId, VideoShelfId};
 use crate::domain::video::{ShowQueryFilter, VideoItem, VideoQueryFilter, VideoShow};
 use crate::domain::watch::{VideoFavoriteEntry, VideoFavoriteKind, VideoShelf, WatchProgress};
 
+pub enum VideoScope<'a> {
+    Id(VideoId),
+    Ids(&'a [VideoId]),
+    PosterKey(&'a str),
+    Library(LibraryId),
+    ShowEpisodes(ShowId),
+    Filter(&'a VideoQueryFilter),
+}
+
+pub enum ShowScope<'a> {
+    Id(ShowId),
+    Key(&'a str),
+    OnlineTracked { source_id: Uuid, item_id: &'a str },
+    PosterKey(&'a str),
+    Filter(&'a ShowQueryFilter),
+}
+
+pub enum VideoCatalogMutation<'a> {
+    Video(&'a VideoItem),
+    Show(&'a VideoShow),
+    RecomputeShowAggregates,
+}
+
+pub enum VideoCatalogDelete {
+    Video(VideoId),
+    LibraryVideos(LibraryId),
+    Show(ShowId),
+}
+
 #[async_trait]
 pub trait VideoCatalogRepository: Send + Sync {
-    async fn find_video_by_id(&self, id: VideoId) -> DomainResult<Option<VideoItem>>;
-    async fn find_videos_by_ids(&self, ids: &[VideoId]) -> DomainResult<Vec<VideoItem>>;
-    async fn find_videos_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoItem>>;
-    async fn list_videos(&self, filter: &VideoQueryFilter) -> DomainResult<Vec<VideoItem>>;
-    async fn list_videos_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<VideoItem>>;
-    async fn list_episodes_by_show(&self, show_id: ShowId) -> DomainResult<Vec<VideoItem>>;
-    async fn save_video(&self, video: &VideoItem) -> DomainResult<()>;
-    async fn delete_video(&self, id: VideoId) -> DomainResult<()>;
-    async fn delete_videos_by_library(&self, library_id: LibraryId) -> DomainResult<()>;
+    async fn query_videos(&self, scope: VideoScope<'_>) -> DomainResult<Vec<VideoItem>>;
+    async fn query_shows(&self, scope: ShowScope<'_>) -> DomainResult<Vec<VideoShow>>;
+    async fn save(&self, mutation: VideoCatalogMutation<'_>) -> DomainResult<()>;
+    async fn delete(&self, scope: VideoCatalogDelete) -> DomainResult<()>;
+}
 
-    async fn find_show_by_id(&self, id: ShowId) -> DomainResult<Option<VideoShow>>;
-    async fn find_show_by_key(&self, show_key: &str) -> DomainResult<Option<VideoShow>>;
-    async fn find_online_tracked_show(
-        &self,
-        source_id: Uuid,
-        item_id: &str,
-    ) -> DomainResult<Option<VideoShow>>;
-    async fn find_shows_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoShow>>;
-    async fn list_shows(&self, filter: &ShowQueryFilter) -> DomainResult<Vec<VideoShow>>;
-    async fn save_show(&self, show: &VideoShow) -> DomainResult<()>;
-    async fn delete_show(&self, id: ShowId) -> DomainResult<()>;
-    async fn recompute_show_aggregates(&self) -> DomainResult<()>;
+pub enum ProgressScope {
+    One { user_id: UserId, video_id: VideoId },
+    User(UserId),
+}
+
+pub enum VideoShelfScope {
+    Id(VideoShelfId),
+    User(UserId),
+}
+
+pub enum VideoWatchMutation<'a> {
+    Progress(&'a WatchProgress),
+    SetFavorite {
+        user_id: UserId,
+        kind: VideoFavoriteKind,
+        target_id: Uuid,
+    },
+    UnsetFavorite {
+        user_id: UserId,
+        kind: VideoFavoriteKind,
+        target_id: Uuid,
+    },
+    Shelf(&'a VideoShelf),
+}
+
+pub enum VideoWatchPurge<'a> {
+    VideoProgress(VideoId),
+    VideoReferences {
+        video_id: VideoId,
+        deleted_show_id: Option<ShowId>,
+    },
+    LibraryReferences {
+        video_ids: &'a [VideoId],
+        show_ids: &'a [ShowId],
+    },
+    Shelf(VideoShelfId),
+    User(UserId),
+    UserTargets {
+        user_id: UserId,
+        video_ids: &'a [VideoId],
+        show_id: Option<ShowId>,
+    },
 }
 
 #[async_trait]
 pub trait VideoWatchRepository: Send + Sync {
-    async fn get_progress(
-        &self,
-        user_id: UserId,
-        video_id: VideoId,
-    ) -> DomainResult<Option<WatchProgress>>;
-    async fn list_user_progress(&self, user_id: UserId) -> DomainResult<Vec<WatchProgress>>;
-    async fn save_progress(&self, progress: &WatchProgress) -> DomainResult<()>;
-    async fn delete_progress_by_video(&self, video_id: VideoId) -> DomainResult<()>;
-    async fn delete_video_references(
-        &self,
-        video_id: VideoId,
-        deleted_show_id: Option<ShowId>,
-    ) -> DomainResult<()>;
-    async fn delete_library_references(
-        &self,
-        video_ids: &[VideoId],
-        show_ids: &[ShowId],
-    ) -> DomainResult<()>;
-
-    async fn set_favorite(
-        &self,
-        user_id: UserId,
-        kind: VideoFavoriteKind,
-        target_id: Uuid,
-    ) -> DomainResult<()>;
-    async fn unset_favorite(
-        &self,
-        user_id: UserId,
-        kind: VideoFavoriteKind,
-        target_id: Uuid,
-    ) -> DomainResult<()>;
+    async fn query_progress(&self, scope: ProgressScope) -> DomainResult<Vec<WatchProgress>>;
     async fn list_favorites(
         &self,
         user_id: UserId,
         kind: Option<VideoFavoriteKind>,
     ) -> DomainResult<Vec<VideoFavoriteEntry>>;
-
-    async fn list_shelves(&self, user_id: UserId) -> DomainResult<Vec<VideoShelf>>;
-    async fn find_shelf_by_id(&self, id: VideoShelfId) -> DomainResult<Option<VideoShelf>>;
-    async fn save_shelf(&self, shelf: &VideoShelf) -> DomainResult<()>;
-    async fn delete_shelf(&self, id: VideoShelfId) -> DomainResult<()>;
-
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
-    async fn delete_by_user_and_targets(
-        &self,
-        user_id: UserId,
-        video_ids: &[VideoId],
-        show_id: Option<ShowId>,
-    ) -> DomainResult<()>;
+    async fn query_shelves(&self, scope: VideoShelfScope) -> DomainResult<Vec<VideoShelf>>;
+    async fn save(&self, mutation: VideoWatchMutation<'_>) -> DomainResult<()>;
+    async fn purge(&self, scope: VideoWatchPurge<'_>) -> DomainResult<()>;
 }

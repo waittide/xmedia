@@ -1,19 +1,24 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use uuid::Uuid;
 use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::dto::FfmpegStatusDto;
-use xmedia_core::application::ports::{ByteChunkStream, ByteRangeSpec, ByteRangeStream};
-use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::library::MediaKind;
-use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{UserId, VideoQualityProfile};
-
-use crate::application::ports::{
-    VideoMediaEnginePort, VideoStoragePort, VideoStreamTranscodeRequest, VideoTranscodeMode,
+use xmedia_core::application::ports::{
+    BinaryPayload, ByteChunkStream, ByteRangeSpec, ByteRangeStream,
 };
+use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::{Library, MediaKind};
+use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::user::{User, UserId, VideoQualityProfile};
+
+use crate::application::dto::SubtitleTrackDto;
+use crate::application::ports::{
+    VideoMediaEnginePort, VideoStoragePort, VideoStreamTranscodeRequest,
+};
+use crate::application::projector::VideoProjector;
 use crate::domain::id::VideoId;
-use crate::domain::repository::VideoCatalogRepository;
+use crate::domain::repository::{ShowScope, VideoCatalogRepository, VideoScope};
 use crate::domain::video::VideoItem;
 
 pub enum ResolvedVideoStream {
@@ -35,15 +40,17 @@ pub struct VideoStreamingService {
     bindings: Arc<MediaBindingService>,
     storage: Arc<dyn VideoStoragePort>,
     engine: Arc<dyn VideoMediaEnginePort>,
+    projector: VideoProjector,
 }
 
 impl VideoStreamingService {
-    pub fn new(
+    pub(super) fn new(
         libraries: Arc<dyn LibraryRepository>,
         catalog: Arc<dyn VideoCatalogRepository>,
         bindings: Arc<MediaBindingService>,
         storage: Arc<dyn VideoStoragePort>,
         engine: Arc<dyn VideoMediaEnginePort>,
+        projector: VideoProjector,
     ) -> Self {
         Self {
             libraries,
@@ -51,6 +58,7 @@ impl VideoStreamingService {
             bindings,
             storage,
             engine,
+            projector,
         }
     }
 
@@ -86,31 +94,9 @@ impl VideoStreamingService {
         spec: ByteRangeSpec,
     ) -> DomainResult<ResolvedVideoStream> {
         let (video, library) = self.load_bound_video_and_library(user_id, video_id).await?;
-        if let Some(requested_audio) = audio_stream_index
-            && !video
-                .audio_streams
-                .iter()
-                .any(|a| a.stream_index == requested_audio)
-        {
-            return Err(DomainError::Validation(format!(
-                "invalid audio_stream index {requested_audio} for this video"
-            )));
-        }
         let offset = start_secs.filter(|&s| s > 0);
-        let default_audio_idx = video.audio_streams.first().map(|a| a.stream_index);
-        let custom_audio = audio_stream_index.filter(|&idx| Some(idx) != default_audio_idx);
-
-        let wants_direct = match quality {
-            VideoQualityProfile::Direct => offset.is_none() && custom_audio.is_none(),
-            VideoQualityProfile::Auto => {
-                offset.is_none() && custom_audio.is_none() && video.can_direct_play_in_browser()
-            }
-            VideoQualityProfile::P1080 | VideoQualityProfile::P720 | VideoQualityProfile::P480 => {
-                false
-            }
-        };
-
-        if wants_direct {
+        let Some(mode) = video.resolve_playback_plan(quality, audio_stream_index, start_secs)?
+        else {
             let range_stream = self
                 .storage
                 .open_video_range_stream(&library, &video, spec)
@@ -120,29 +106,6 @@ impl VideoStreamingService {
                 range_stream,
                 is_partial: spec.is_partial(),
             });
-        }
-
-        let is_h264 = video
-            .video_codec
-            .as_deref()
-            .is_some_and(|c| matches!(c.to_ascii_lowercase().as_str(), "h264" | "avc1"));
-
-        let mode = match quality {
-            VideoQualityProfile::Auto | VideoQualityProfile::Direct if is_h264 => {
-                VideoTranscodeMode::RemuxVideoTranscodeAudio
-            }
-            VideoQualityProfile::Auto | VideoQualityProfile::Direct => {
-                VideoTranscodeMode::FullTranscode { max_height: None }
-            }
-            VideoQualityProfile::P1080 => VideoTranscodeMode::FullTranscode {
-                max_height: Some(1080),
-            },
-            VideoQualityProfile::P720 => VideoTranscodeMode::FullTranscode {
-                max_height: Some(720),
-            },
-            VideoQualityProfile::P480 => VideoTranscodeMode::FullTranscode {
-                max_height: Some(480),
-            },
         };
 
         let fs_path = self.storage.resolve_video_fs_path(&library, &video).await?;
@@ -161,20 +124,123 @@ impl VideoStreamingService {
         Ok(ResolvedVideoStream::TranscodedFmp4 { video, stream })
     }
 
+    pub async fn list_video_subtitles(
+        &self,
+        user_id: UserId,
+        video_id: VideoId,
+    ) -> DomainResult<Vec<SubtitleTrackDto>> {
+        let item = self
+            .projector
+            .require_video_bound(user_id, video_id)
+            .await?;
+        Ok(SubtitleTrackDto::collect_from_video(&item))
+    }
+
+    pub async fn get_subtitle_webvtt(
+        &self,
+        user_id: UserId,
+        video_id: VideoId,
+        sub_id: &str,
+        offset_secs: Option<f64>,
+    ) -> DomainResult<String> {
+        let (video, library) = self.load_bound_video_and_library(user_id, video_id).await?;
+
+        let trimmed = sub_id.trim().trim_end_matches(".vtt");
+        let vtt = if let Some(raw_idx) = trimmed.strip_prefix("emb-") {
+            let stream_index = raw_idx
+                .parse::<u32>()
+                .map_err(|_| DomainError::Validation("invalid embedded subtitle id".into()))?;
+            let sub_stream = video
+                .subtitle_streams
+                .iter()
+                .find(|s| s.stream_index == stream_index)
+                .ok_or_else(|| {
+                    DomainError::NotFound(format!(
+                        "embedded subtitle stream {stream_index} not found"
+                    ))
+                })?;
+            if !sub_stream.is_text_based {
+                return Err(DomainError::Validation(format!(
+                    "embedded subtitle stream {stream_index} ({}) is not text-based",
+                    sub_stream.codec
+                )));
+            }
+            let fs_path = self.storage.resolve_video_fs_path(&library, &video).await?;
+            self.engine
+                .extract_embedded_subtitle_vtt(Path::new(&fs_path), stream_index)
+                .await?
+        } else {
+            let ext_id = trimmed.strip_prefix("ext-").unwrap_or(trimmed);
+            let (fmt, bytes) = self
+                .storage
+                .read_sidecar_subtitle_bytes(&library, &video, ext_id)
+                .await?;
+            self.engine.convert_sidecar_subtitle_to_vtt(&fmt, &bytes)
+        };
+
+        if let Some(offset) = offset_secs.filter(|&v| v.is_finite() && v > 0.0) {
+            Ok(self.engine.shift_webvtt_timestamps(&vtt, offset))
+        } else {
+            Ok(vtt)
+        }
+    }
+
+    pub async fn get_poster(
+        &self,
+        actor: Option<&User>,
+        key: &str,
+        max_size: Option<u32>,
+    ) -> DomainResult<BinaryPayload> {
+        if let Some(user) = actor {
+            let videos = self
+                .catalog
+                .query_videos(VideoScope::PosterKey(key))
+                .await?;
+            let mut matched_pool = false;
+            let mut matched_tracked_binding_ids: Vec<Uuid> = Vec::new();
+            for v in &videos {
+                if v.source.online_tracking_info().is_some() {
+                    matched_tracked_binding_ids.push(v.binding_id());
+                } else {
+                    matched_pool = true;
+                    break;
+                }
+            }
+            if !matched_pool {
+                let shows = self.catalog.query_shows(ShowScope::PosterKey(key)).await?;
+                for s in &shows {
+                    if s.online_tracked().is_some() {
+                        matched_tracked_binding_ids.push(s.id.0);
+                    } else {
+                        matched_pool = true;
+                        break;
+                    }
+                }
+            }
+            if !matched_pool && !matched_tracked_binding_ids.is_empty() {
+                let bound = self
+                    .bindings
+                    .list_bound_ids(user.id, MediaKind::Video)
+                    .await?;
+                if !matched_tracked_binding_ids
+                    .iter()
+                    .any(|id| bound.contains(id))
+                {
+                    return Err(DomainError::NotFound("poster not found".into()));
+                }
+            }
+        }
+        self.storage.read_poster(key, max_size).await
+    }
+
     async fn load_bound_video_and_library(
         &self,
         user_id: UserId,
         video_id: VideoId,
-    ) -> DomainResult<(VideoItem, xmedia_core::domain::library::Library)> {
+    ) -> DomainResult<(VideoItem, Library)> {
         let video = self
-            .catalog
-            .find_video_by_id(video_id)
-            .await?
-            .filter(|v| !v.is_missing)
-            .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
-        let binding_id = video.show_id.map(|s| s.0).unwrap_or(video.id.0);
-        self.bindings
-            .require_bound(user_id, MediaKind::Video, binding_id, "video not found")
+            .projector
+            .require_video_bound(user_id, video_id)
             .await?;
         let library = self
             .libraries

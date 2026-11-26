@@ -1,3 +1,6 @@
+use std::fmt;
+use std::str::FromStr;
+
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -19,19 +22,85 @@ pub struct WatchProgress {
 }
 
 impl WatchProgress {
-    pub fn compute_completed(
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile(
+        user_id: UserId,
+        video_id: VideoId,
+        video_duration_secs: u32,
         position_secs: f64,
-        duration_secs: u32,
+        duration_override: Option<u32>,
         explicit_completed: Option<bool>,
-    ) -> bool {
-        if let Some(done) = explicit_completed {
-            return done;
-        }
-        if duration_secs > 0 {
-            position_secs >= f64::from(duration_secs) * 0.92
+        selected_audio_stream: Option<u32>,
+        selected_subtitle: Option<String>,
+        existing: Option<Self>,
+    ) -> DomainResult<Self> {
+        let clean_pos = validate_position_secs(position_secs)?;
+        let duration_secs = resolve_duration_secs(duration_override, video_duration_secs);
+        let completed = compute_completed(clean_pos, duration_secs, explicit_completed);
+        Ok(Self {
+            user_id,
+            video_id,
+            position_secs: clean_pos,
+            duration_secs,
+            completed,
+            selected_audio_stream: selected_audio_stream
+                .or_else(|| existing.as_ref().and_then(|e| e.selected_audio_stream)),
+            selected_subtitle: selected_subtitle
+                .or_else(|| existing.and_then(|e| e.selected_subtitle)),
+            updated_at: Timestamp::now(),
+        })
+    }
+
+    pub fn mark_watched(
+        user_id: UserId,
+        video_id: VideoId,
+        duration_secs: u32,
+        watched: bool,
+        existing: Option<Self>,
+    ) -> Self {
+        let position_secs = if watched {
+            f64::from(duration_secs)
         } else {
-            false
+            0.0
+        };
+        Self {
+            user_id,
+            video_id,
+            position_secs,
+            duration_secs,
+            completed: watched,
+            selected_audio_stream: existing.as_ref().and_then(|e| e.selected_audio_stream),
+            selected_subtitle: existing.and_then(|e| e.selected_subtitle),
+            updated_at: Timestamp::now(),
         }
+    }
+}
+
+fn validate_position_secs(position_secs: f64) -> DomainResult<f64> {
+    if !position_secs.is_finite() {
+        return Err(DomainError::Validation(
+            "position_secs must be a finite number".into(),
+        ));
+    }
+    Ok(position_secs.max(0.0))
+}
+
+fn resolve_duration_secs(override_secs: Option<u32>, fallback_secs: u32) -> u32 {
+    override_secs.filter(|&d| d > 0).unwrap_or(fallback_secs)
+}
+
+fn compute_completed(
+    position_secs: f64,
+    duration_secs: u32,
+    explicit_completed: Option<bool>,
+) -> bool {
+    if let Some(done) = explicit_completed {
+        return done;
+    }
+    if duration_secs > 0 {
+        position_secs >= f64::from(duration_secs) * 0.92
+    } else {
+        false
     }
 }
 
@@ -42,22 +111,40 @@ pub enum VideoFavoriteKind {
     Show,
 }
 
-impl VideoFavoriteKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Video => "video",
-            Self::Show => "show",
-        }
+impl AsRef<str> for VideoFavoriteKind {
+    fn as_ref(&self) -> &str {
+        favorite_kind_str(*self)
     }
+}
 
-    pub fn parse(raw: &str) -> DomainResult<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "video" | "videos" => Ok(Self::Video),
-            "show" | "shows" | "series" => Ok(Self::Show),
-            other => Err(DomainError::Validation(format!(
-                "unknown video favorite kind: {other}"
-            ))),
-        }
+impl fmt::Display for VideoFavoriteKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(favorite_kind_str(*self))
+    }
+}
+
+impl FromStr for VideoFavoriteKind {
+    type Err = DomainError;
+
+    fn from_str(raw: &str) -> DomainResult<Self> {
+        parse_favorite_kind_str(raw)
+    }
+}
+
+fn favorite_kind_str(kind: VideoFavoriteKind) -> &'static str {
+    match kind {
+        VideoFavoriteKind::Video => "video",
+        VideoFavoriteKind::Show => "show",
+    }
+}
+
+fn parse_favorite_kind_str(raw: &str) -> DomainResult<VideoFavoriteKind> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "video" | "videos" => Ok(VideoFavoriteKind::Video),
+        "show" | "shows" | "series" => Ok(VideoFavoriteKind::Show),
+        other => Err(DomainError::Validation(format!(
+            "unknown video favorite kind: {other}"
+        ))),
     }
 }
 
@@ -87,7 +174,7 @@ impl VideoShelf {
         description: impl Into<String>,
         video_ids: Vec<VideoId>,
     ) -> DomainResult<Self> {
-        let name = Self::validate_name(name.into())?;
+        let name = validate_shelf_name(name.into())?;
         let now = Timestamp::now();
         Ok(Self {
             id: VideoShelfId::new(),
@@ -106,23 +193,23 @@ impl VideoShelf {
         description: impl Into<String>,
         video_ids: Vec<VideoId>,
     ) -> DomainResult<()> {
-        self.name = Self::validate_name(name.into())?;
+        self.name = validate_shelf_name(name.into())?;
         self.description = description.into().trim().to_string();
         self.video_ids = video_ids;
         self.updated_at = Timestamp::now();
         Ok(())
     }
+}
 
-    fn validate_name(raw: String) -> DomainResult<String> {
-        let name = raw.trim().to_string();
-        let char_len = name.chars().count();
-        if char_len == 0 || char_len > 120 {
-            return Err(DomainError::Validation(
-                "shelf name must be between 1 and 120 characters".into(),
-            ));
-        }
-        Ok(name)
+fn validate_shelf_name(raw: String) -> DomainResult<String> {
+    let name = raw.trim().to_string();
+    let char_len = name.chars().count();
+    if char_len == 0 || char_len > 120 {
+        return Err(DomainError::Validation(
+            "shelf name must be between 1 and 120 characters".into(),
+        ));
     }
+    Ok(name)
 }
 
 #[cfg(test)]

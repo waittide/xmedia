@@ -11,16 +11,14 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 use xmedia_core::http::{into_binary_cache_response, parse_http_range_spec};
 
-use crate::application::catalog::VideoCatalogService;
-use crate::application::dto::SaveWatchProgressInput;
+use crate::application::dto::{ResolvedCatalogEntity, SaveWatchProgressInput, SubtitleTrackDto};
 use crate::application::online::{HlsProxyOutcome, ProxyStreamOutcome};
-use crate::domain::id::{ShowId, VideoId};
+use crate::domain::id::VideoId;
 use crate::http::into_video_http_response;
 use crate::http::online::{build_416_response, build_stream_response, encode_query_component};
 use crate::http::state::VideoHttpState;
 
 use super::JfQuery;
-use super::catalog::resolve_synthetic_season;
 use super::dto::{
     build_media_source_local, build_media_source_online, build_playback_info_response,
     ticks_to_secs,
@@ -37,11 +35,11 @@ pub async fn handle_playback_info(
     let video = state
         .services
         .catalog
-        .require_video_bound(user.id, VideoId(uuid))
+        .require_bound_video(user.id, VideoId(uuid))
         .await?;
 
     let media_source = if video.source.is_cached() {
-        let subs = VideoCatalogService::collect_subtitle_dtos(&video);
+        let subs = SubtitleTrackDto::collect_from_video(&video);
         build_media_source_local(&video, &subs, api_key)
     } else {
         let (_source_id, play_res) = state
@@ -71,7 +69,7 @@ pub async fn handle_video_stream(
     let video = state
         .services
         .catalog
-        .require_video_bound(user.id, VideoId(uuid))
+        .require_bound_video(user.id, VideoId(uuid))
         .await?;
 
     if video.source.is_cached() {
@@ -132,7 +130,7 @@ pub async fn handle_video_hls_master(
     state
         .services
         .catalog
-        .require_video_bound(user.id, VideoId(uuid))
+        .require_bound_video(user.id, VideoId(uuid))
         .await?;
     let (source_id, play_res) = state
         .services
@@ -181,7 +179,7 @@ pub async fn handle_video_hls_proxy(
     let video = state
         .services
         .catalog
-        .require_video_bound(user.id, VideoId(uuid))
+        .require_bound_video(user.id, VideoId(uuid))
         .await?;
     if video.source.is_cached() {
         return Err(DomainError::Validation(
@@ -260,11 +258,11 @@ pub async fn handle_subtitle_stream(
     let video = state
         .services
         .catalog
-        .require_video_bound(user.id, VideoId(uuid))
+        .require_bound_video(user.id, VideoId(uuid))
         .await?;
 
     let vtt = if video.source.is_cached() {
-        let subs = VideoCatalogService::collect_subtitle_dtos(&video);
+        let subs = SubtitleTrackDto::collect_from_video(&video);
         let audio_offset = 1 + video.audio_streams.len().max(1);
         let target = subs
             .get(idx)
@@ -272,8 +270,8 @@ pub async fn handle_subtitle_stream(
             .ok_or_else(|| DomainError::NotFound("subtitle stream not found".into()))?;
         state
             .services
-            .catalog
-            .get_subtitle_webvtt(user.id, video.id, &target.id)
+            .streaming
+            .get_subtitle_webvtt(user.id, video.id, &target.id, None)
             .await?
     } else {
         let (source_id, play_res) = state
@@ -322,18 +320,13 @@ pub async fn handle_image(
         .map_err(|_| DomainError::NotFound("invalid item id".into()))?;
 
     let (poster_key, target_video, target_show) =
-        if let Some(video) = state.services.catalog.find_raw_video(VideoId(uuid)).await? {
-            (video.poster_key, Some(video.id), None)
-        } else if let Some(show) = state.services.catalog.find_raw_show(ShowId(uuid)).await? {
-            (show.poster_key, None, Some(show.id))
-        } else if let Some((show_id, _season_num)) = resolve_synthetic_season(state, uuid).await? {
-            if let Some(show) = state.services.catalog.find_raw_show(show_id).await? {
+        match state.services.shows.resolve_item_kind(uuid).await? {
+            Some(ResolvedCatalogEntity::Video(video)) => (video.poster_key, Some(video.id), None),
+            Some(ResolvedCatalogEntity::Show(show))
+            | Some(ResolvedCatalogEntity::Season { show, .. }) => {
                 (show.poster_key, None, Some(show.id))
-            } else {
-                (None, None, None)
             }
-        } else {
-            (None, None, None)
+            None => (None, None, None),
         };
     let Some(poster_key) = poster_key else {
         if authenticated_user.is_none() {
@@ -349,13 +342,13 @@ pub async fn handle_image(
                 state
                     .services
                     .catalog
-                    .require_video_bound(user.id, vid)
+                    .require_bound_video(user.id, vid)
                     .await?;
             } else if let Some(sid) = target_show {
                 state
                     .services
-                    .catalog
-                    .require_show_bound(user.id, sid)
+                    .shows
+                    .require_bound_show(user.id, sid)
                     .await?;
             }
         }
@@ -374,7 +367,7 @@ pub async fn handle_image(
         .or_else(|| query.u32_param("width"));
     let payload = state
         .services
-        .catalog
+        .streaming
         .get_poster(None, &poster_key, max_size)
         .await?;
     Ok(into_binary_cache_response(payload))
@@ -400,12 +393,10 @@ pub async fn handle_session_playing(
         && let Ok(uuid) = Uuid::parse_str(raw_id.trim())
         && let Some(ticks) = payload.position_ticks
         && (ticks > 0 || save_zero_position)
-        && state
-            .services
-            .catalog
-            .find_raw_video(VideoId(uuid))
-            .await?
-            .is_some()
+        && matches!(
+            state.services.shows.resolve_item_kind(uuid).await?,
+            Some(ResolvedCatalogEntity::Video(_))
+        )
     {
         let pos_secs = ticks_to_secs(ticks);
         let _ = state

@@ -3,10 +3,11 @@ use uuid::Uuid;
 use xmedia_core::application::dto::LibraryDto;
 use xmedia_core::domain::user::User;
 
+pub use crate::application::dto::season_uuid;
 use crate::application::dto::{
     SeasonGroupDto, ShowSummaryDto, SubtitleTrackDto, VideoDetailDto, VideoSummaryDto,
 };
-use crate::domain::id::{ShowId, VideoId};
+use crate::domain::id::VideoId;
 use crate::domain::online::OnlineVideoPlayResult;
 use crate::domain::video::{VideoContainer, VideoItem};
 use crate::http::online::encode_query_component;
@@ -18,13 +19,6 @@ pub const SECS_TO_TICKS: i64 = 10_000_000;
 
 pub fn format_jf_id(id: Uuid) -> String {
     id.simple().to_string()
-}
-
-pub fn season_uuid(show_id: ShowId, season_number: u32) -> Uuid {
-    let hex = xmedia_core::infra::stream::sha256_hex(
-        format!("xmedia:jf:season:{}:{}", show_id.0, season_number).as_bytes(),
-    );
-    Uuid::parse_str(&hex[..32]).unwrap_or_else(|_| Uuid::nil())
 }
 
 pub fn secs_to_ticks(secs: u32) -> Option<i64> {
@@ -173,7 +167,7 @@ pub fn build_media_source_local(
     api_key: &str,
 ) -> Value {
     let id_str = format_jf_id(video.id.0);
-    let container = video.container.as_str();
+    let container = video.container.as_ref();
     let mut streams: Vec<Value> = Vec::new();
     let mut next_idx = 0i64;
 
@@ -357,7 +351,7 @@ pub fn build_media_source_online(
             "Id": id_str,
             "Path": direct_url,
             "Type": "Default",
-            "Container": container.as_str(),
+            "Container": container.as_ref(),
             "Name": video.title,
             "IsRemote": true,
             "SupportsTranscoding": false,
@@ -382,7 +376,7 @@ fn infer_online_container(url: &str) -> VideoContainer {
         && let Some(ext) = std::path::Path::new(parsed.path())
             .extension()
             .and_then(|s| s.to_str())
-        && let Some(c) = VideoContainer::from_extension(ext)
+        && let Ok(c) = ext.parse::<VideoContainer>()
     {
         return c;
     }
@@ -407,7 +401,7 @@ pub fn build_video_summary_item(
         "DateCreated": v.created_at.to_string(),
         "SortName": v.title.to_lowercase(),
         "Overview": v.summary,
-        "Container": v.container.as_str(),
+        "Container": v.container.as_ref(),
         "Genres": v.genres,
         "Tags": v.tags,
         "IsFolder": false,

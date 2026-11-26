@@ -9,14 +9,13 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::User;
 
-use crate::application::dto::{ShowSummaryDto, VideoSummaryDto};
-use crate::domain::id::{ShowId, VideoId};
+use crate::application::dto::{ResolvedCatalogEntity, ShowSummaryDto, VideoSummaryDto};
 use crate::domain::video::{ShowQueryFilter, VideoKindFilter, VideoQueryFilter};
 use crate::http::state::VideoHttpState;
 
 use super::super::JfQuery;
 use super::super::dto::{build_season_item, build_series_item, build_video_summary_item};
-use super::{parse_csv_lower, resolve_synthetic_season};
+use super::parse_csv_lower;
 
 struct SortableJfItem {
     sort_name: String,
@@ -27,7 +26,7 @@ struct SortableJfItem {
     json: Value,
 }
 
-pub async fn handle_items(
+pub(super) async fn handle_items(
     state: &VideoHttpState,
     user: &User,
     query: &JfQuery,
@@ -40,33 +39,30 @@ pub async fn handle_items(
         let mut out = Vec::new();
         for part in raw_ids.split(',') {
             if let Ok(uuid) = Uuid::parse_str(part.trim()) {
-                if let Some(raw_video) =
-                    state.services.catalog.find_raw_video(VideoId(uuid)).await?
-                    && let Ok(detail) = state
-                        .services
-                        .catalog
-                        .get_video_detail(user, VideoId(uuid))
-                        .await
-                {
-                    out.push(build_video_summary_item(
-                        &detail.video,
-                        Some(&detail),
-                        Some(&raw_video),
-                        api_key,
-                    ));
-                } else if state
-                    .services
-                    .catalog
-                    .find_raw_show(ShowId(uuid))
-                    .await?
-                    .is_some()
-                    && let Ok(detail) = state
-                        .services
-                        .catalog
-                        .get_show_detail(user, ShowId(uuid))
-                        .await
-                {
-                    out.push(build_series_item(&detail.show));
+                match state.services.shows.resolve_item_kind(uuid).await? {
+                    Some(ResolvedCatalogEntity::Video(raw_video)) => {
+                        if let Ok(detail) = state
+                            .services
+                            .catalog
+                            .get_video_detail(user, raw_video.id)
+                            .await
+                        {
+                            out.push(build_video_summary_item(
+                                &detail.video,
+                                Some(&detail),
+                                Some(&raw_video),
+                                api_key,
+                            ));
+                        }
+                    }
+                    Some(ResolvedCatalogEntity::Show(show)) => {
+                        if let Ok(detail) =
+                            state.services.shows.get_show_detail(user, show.id).await
+                        {
+                            out.push(build_series_item(&detail.show));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -122,85 +118,75 @@ pub async fn handle_items(
         .get("parentid")
         .and_then(|s| Uuid::parse_str(s.trim()).ok());
 
-    if let Some(pid) = parent_uuid
-        && state
-            .services
-            .catalog
-            .find_raw_show(ShowId(pid))
-            .await?
-            .is_some()
-    {
-        let detail = state
-            .services
-            .catalog
-            .get_show_detail(user, ShowId(pid))
-            .await?;
-        let wants_episodes = include_types.contains("episode") || recursive;
-        let items: Vec<Value> = if wants_episodes {
-            detail
-                .seasons
-                .iter()
-                .flat_map(|s| s.episodes.iter())
-                .map(|ep| build_video_summary_item(ep, None, None, api_key))
-                .collect()
-        } else {
-            detail
-                .seasons
-                .iter()
-                .map(|s| build_season_item(&detail.show, s))
-                .collect()
-        };
-        let total = items.len();
-        let page: Vec<Value> = items
-            .into_iter()
-            .skip(start_index)
-            .take(limit.unwrap_or(total))
-            .collect();
-        return Ok((
-            StatusCode::OK,
-            Json(json!({
-                "Items": page,
-                "TotalRecordCount": total,
-                "StartIndex": start_index
-            })),
-        )
-            .into_response());
-    }
-
-    if let Some(pid) = parent_uuid
-        && let Some((show_id, season_num)) = resolve_synthetic_season(state, pid).await?
-    {
-        let detail = state
-            .services
-            .catalog
-            .get_show_detail(user, show_id)
-            .await?;
-        let eps: Vec<Value> = detail
-            .seasons
-            .into_iter()
-            .find(|s| s.season_number == season_num)
-            .map(|s| {
-                s.episodes
-                    .iter()
-                    .map(|ep| build_video_summary_item(ep, None, None, api_key))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let total = eps.len();
-        let page: Vec<Value> = eps
-            .into_iter()
-            .skip(start_index)
-            .take(limit.unwrap_or(total))
-            .collect();
-        return Ok((
-            StatusCode::OK,
-            Json(json!({
-                "Items": page,
-                "TotalRecordCount": total,
-                "StartIndex": start_index
-            })),
-        )
-            .into_response());
+    if let Some(pid) = parent_uuid {
+        match state.services.shows.resolve_item_kind(pid).await? {
+            Some(ResolvedCatalogEntity::Show(show)) => {
+                let detail = state.services.shows.get_show_detail(user, show.id).await?;
+                let wants_episodes = include_types.contains("episode") || recursive;
+                let items: Vec<Value> = if wants_episodes {
+                    detail
+                        .seasons
+                        .iter()
+                        .flat_map(|s| s.episodes.iter())
+                        .map(|ep| build_video_summary_item(ep, None, None, api_key))
+                        .collect()
+                } else {
+                    detail
+                        .seasons
+                        .iter()
+                        .map(|s| build_season_item(&detail.show, s))
+                        .collect()
+                };
+                let total = items.len();
+                let page: Vec<Value> = items
+                    .into_iter()
+                    .skip(start_index)
+                    .take(limit.unwrap_or(total))
+                    .collect();
+                return Ok((
+                    StatusCode::OK,
+                    Json(json!({
+                        "Items": page,
+                        "TotalRecordCount": total,
+                        "StartIndex": start_index
+                    })),
+                )
+                    .into_response());
+            }
+            Some(ResolvedCatalogEntity::Season {
+                show,
+                season_number,
+            }) => {
+                let detail = state.services.shows.get_show_detail(user, show.id).await?;
+                let eps: Vec<Value> = detail
+                    .seasons
+                    .into_iter()
+                    .find(|s| s.season_number == season_number)
+                    .map(|s| {
+                        s.episodes
+                            .iter()
+                            .map(|ep| build_video_summary_item(ep, None, None, api_key))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let total = eps.len();
+                let page: Vec<Value> = eps
+                    .into_iter()
+                    .skip(start_index)
+                    .take(limit.unwrap_or(total))
+                    .collect();
+                return Ok((
+                    StatusCode::OK,
+                    Json(json!({
+                        "Items": page,
+                        "TotalRecordCount": total,
+                        "StartIndex": start_index
+                    })),
+                )
+                    .into_response());
+            }
+            _ => {}
+        }
     }
 
     let library_id = parent_uuid.map(LibraryId);
@@ -282,7 +268,7 @@ pub async fn handle_items(
     if want_series {
         let shows = state
             .services
-            .catalog
+            .shows
             .list_shows(
                 user,
                 ShowQueryFilter {
@@ -483,7 +469,7 @@ fn matches_show_filters(
     true
 }
 
-pub async fn handle_resume(
+pub(super) async fn handle_resume(
     state: &VideoHttpState,
     user: &User,
     query: &JfQuery,
@@ -539,7 +525,7 @@ pub async fn handle_resume(
         .into_response())
 }
 
-pub async fn handle_latest(
+pub(super) async fn handle_latest(
     state: &VideoHttpState,
     user: &User,
     query: &JfQuery,
@@ -579,7 +565,7 @@ pub async fn handle_latest(
     if want_series {
         let shows = state
             .services
-            .catalog
+            .shows
             .list_shows(
                 user,
                 ShowQueryFilter {
@@ -598,7 +584,7 @@ pub async fn handle_latest(
     Ok((StatusCode::OK, Json(items)).into_response())
 }
 
-pub async fn handle_counts(state: &VideoHttpState, user: &User) -> DomainResult<Response> {
+pub(super) async fn handle_counts(state: &VideoHttpState, user: &User) -> DomainResult<Response> {
     let overview = state.services.catalog.home_overview(user).await?;
     let episodes = overview.total_videos.saturating_sub(overview.movies_count);
     let total = overview.movies_count + overview.total_shows + episodes;

@@ -13,54 +13,17 @@ use xmedia_core::domain::user::User;
 
 use crate::application::dto::VideoSummaryDto;
 use crate::domain::id::{ShowId, VideoId};
-use crate::domain::video::{SidecarSubtitle, VideoContainer};
+use crate::domain::repository::{ShowScope, VideoCatalogMutation, VideoScope};
+use crate::domain::video::{CachedOnlineVideoUpdate, SidecarSubtitle, VideoContainer};
 
-use super::super::dto::VideoCacheReportDto;
-use super::super::{VideoOnlineService, VideoTrackingDeps, get_or_insert_weak_lock};
+use super::dto::VideoCacheReportDto;
 use super::hls_stage::{
-    TempDirGuard, TempFileGuard, open_exclusive_temp_file, stage_local_hls_playlist_with,
+    TempDirGuard, TempFileGuard, open_exclusive_temp_file, pick_best_hls_variant,
+    stage_local_hls_playlist_with,
 };
+use super::{VideoOnlineService, VideoTrackingDeps, weak_lock};
 
 const MAX_TRACKED_VIDEO_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-
-fn pick_best_hls_variant(playlist: &str, base_url: &Url) -> Option<String> {
-    let mut best: Option<(u64, String)> = None;
-    let mut pending_bw: Option<u64> = None;
-
-    for raw_line in playlist.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
-            let bw = rest
-                .split(',')
-                .find_map(|part| {
-                    let (k, v) = part.split_once('=')?;
-                    k.trim()
-                        .eq_ignore_ascii_case("BANDWIDTH")
-                        .then(|| v.trim().parse::<u64>().ok())
-                        .flatten()
-                })
-                .unwrap_or(0);
-            pending_bw = Some(bw);
-            continue;
-        }
-        if line.starts_with('#') {
-            continue;
-        }
-        if let Some(bw) = pending_bw.take()
-            && let Ok(joined) = base_url.join(line)
-            && matches!(joined.scheme(), "http" | "https")
-        {
-            let replace = best.as_ref().is_none_or(|(prev_bw, _)| bw >= *prev_bw);
-            if replace {
-                best = Some((bw, joined.to_string()));
-            }
-        }
-    }
-    best.map(|(_, url)| url)
-}
 
 impl VideoOnlineService {
     async fn download_direct_video_to_temp(
@@ -176,9 +139,12 @@ impl VideoOnlineService {
 
         let (out_mp4, precreated) = TempFileGuard::create_exclusive("mp4").await?;
         drop(precreated);
-        deps.media_engine
+        let remux_res = deps
+            .media_engine
             .remux_local_hls_to_mp4(&local_m3u8, out_mp4.path())
-            .await?;
+            .await;
+        work_dir.cleanup().await;
+        remux_res?;
 
         Ok((out_mp4, VideoContainer::Mp4))
     }
@@ -203,17 +169,19 @@ impl VideoOnlineService {
         video_id: VideoId,
     ) -> DomainResult<VideoSummaryDto> {
         let deps = self.require_tracking()?;
-        deps.catalog_service
+        deps.projector
             .require_video_bound(actor.id, video_id)
             .await?;
 
-        let lock = get_or_insert_weak_lock(&self.video_cache_locks, video_id);
+        let lock = weak_lock(&self.video_cache_locks, video_id);
         let _guard = lock.lock().await;
 
         let mut video = deps
             .catalog_repo
-            .find_video_by_id(video_id)
+            .query_videos(VideoScope::Id(video_id))
             .await?
+            .into_iter()
+            .next()
             .filter(|v| !v.is_missing)
             .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
         let library = deps
@@ -229,10 +197,7 @@ impl VideoOnlineService {
                 .await
                 .is_ok_and(|p| Path::new(&p).is_file());
             if file_exists {
-                let mut enriched = deps
-                    .catalog_service
-                    .enrich_videos(actor.id, vec![video])
-                    .await?;
+                let mut enriched = deps.projector.enrich_videos(actor.id, vec![video]).await?;
                 return enriched
                     .pop()
                     .ok_or_else(|| DomainError::NotFound("video not found".into()));
@@ -257,10 +222,12 @@ impl VideoOnlineService {
                 .await?
         };
 
-        let stored = deps
+        let stored_res = deps
             .storage
             .save_managed_video_from_path(video.id, container, temp_file.path())
-            .await?;
+            .await;
+        temp_file.cleanup().await;
+        let stored = stored_res?;
 
         let probed = deps
             .media_engine
@@ -318,35 +285,36 @@ impl VideoOnlineService {
             None
         };
 
-        video.mark_online_cached(
+        video.mark_online_cached(CachedOnlineVideoUpdate {
             container,
-            stored.storage_key,
-            stored.file_size,
-            stored.file_hash,
-            probed.duration_secs,
-            probed.bit_rate_kbps,
-            probed.width,
-            probed.height,
-            probed.video_codec,
-            probed.audio_streams,
-            probed.subtitle_streams,
+            storage_key: stored.storage_key,
+            file_size: stored.file_size,
+            file_hash: stored.file_hash,
+            duration_secs: probed.duration_secs,
+            bit_rate_kbps: probed.bit_rate_kbps,
+            width: probed.width,
+            height: probed.height,
+            video_codec: probed.video_codec,
+            audio_streams: probed.audio_streams,
+            subtitle_streams: probed.subtitle_streams,
             sidecar_subtitles,
             fallback_poster_key,
-            Timestamp::now(),
-        )?;
+            now: Timestamp::now(),
+        })?;
 
-        deps.catalog_repo.save_video(&video).await?;
+        deps.catalog_repo
+            .save(VideoCatalogMutation::Video(&video))
+            .await?;
         if video.show_id.is_some() {
-            deps.catalog_repo.recompute_show_aggregates().await?;
+            deps.catalog_repo
+                .save(VideoCatalogMutation::RecomputeShowAggregates)
+                .await?;
         }
         deps.events.publish(SystemEvent::MediaChanged {
             media_kind: MediaKind::Video,
         });
 
-        let mut enriched = deps
-            .catalog_service
-            .enrich_videos(actor.id, vec![video])
-            .await?;
+        let mut enriched = deps.projector.enrich_videos(actor.id, vec![video]).await?;
         enriched
             .pop()
             .ok_or_else(|| DomainError::NotFound("video not found".into()))
@@ -359,16 +327,20 @@ impl VideoOnlineService {
         video_ids: Option<Vec<VideoId>>,
     ) -> DomainResult<VideoCacheReportDto> {
         let deps = self.require_tracking()?;
-        deps.catalog_service
-            .require_show_bound(actor.id, show_id)
-            .await?;
+        deps.projector.require_show_bound(actor.id, show_id).await?;
 
-        let _show = deps
+        if deps
             .catalog_repo
-            .find_show_by_id(show_id)
+            .query_shows(ShowScope::Id(show_id))
             .await?
-            .ok_or_else(|| DomainError::NotFound("剧集不存在".into()))?;
-        let episodes = deps.catalog_repo.list_episodes_by_show(show_id).await?;
+            .is_empty()
+        {
+            return Err(DomainError::NotFound("剧集不存在".into()));
+        }
+        let episodes = deps
+            .catalog_repo
+            .query_videos(VideoScope::ShowEpisodes(show_id))
+            .await?;
         let filter_set: Option<HashSet<VideoId>> = video_ids
             .filter(|v| !v.is_empty())
             .map(|v| v.into_iter().collect());
@@ -384,7 +356,7 @@ impl VideoOnlineService {
             {
                 continue;
             }
-            if !ep.source.is_online_tracked() || ep.source.is_cached() {
+            if ep.source.online_tracking_info().is_none() || ep.source.is_cached() {
                 skipped_count += 1;
                 continue;
             }

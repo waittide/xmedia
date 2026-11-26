@@ -8,8 +8,21 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::media::ProbedAudioStream;
 
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
-use crate::domain::video::VideoContainer;
+use crate::domain::video::{VideoContainer, VideoItem, VideoShow};
 use crate::domain::watch::WatchProgress;
+
+pub fn season_uuid(show_id: ShowId, season_number: u32) -> Uuid {
+    let hex = xmedia_core::infra::stream::sha256_hex(
+        format!("xmedia:jf:season:{}:{}", show_id.0, season_number).as_bytes(),
+    );
+    Uuid::parse_str(&hex[..32]).unwrap_or_else(|_| Uuid::nil())
+}
+
+pub enum ResolvedCatalogEntity {
+    Video(Box<VideoItem>),
+    Show(VideoShow),
+    Season { show: VideoShow, season_number: u32 },
+}
 
 #[derive(Debug, Clone)]
 pub struct VideoUploadPathItem {
@@ -39,6 +52,40 @@ pub struct SubtitleTrackDto {
     pub language: Option<String>,
     pub label: String,
     pub is_default: bool,
+}
+
+impl SubtitleTrackDto {
+    pub fn collect_from_video(video: &VideoItem) -> Vec<Self> {
+        let mut out = Vec::new();
+        for sc in video.source.sidecar_subtitles() {
+            out.push(Self {
+                id: format!("ext-{}", sc.id),
+                source_kind: "external".into(),
+                codec_or_format: sc.format.clone(),
+                language: sc.language.clone(),
+                label: sc.label.clone(),
+                is_default: out.is_empty(),
+            });
+        }
+        for sub in &video.subtitle_streams {
+            if sub.is_text_based {
+                let label = sub
+                    .title
+                    .clone()
+                    .or_else(|| sub.language.clone())
+                    .unwrap_or_else(|| format!("Track #{}", sub.stream_index));
+                out.push(Self {
+                    id: format!("emb-{}", sub.stream_index),
+                    source_kind: "embedded".into(),
+                    codec_or_format: sub.codec.clone(),
+                    language: sub.language.clone(),
+                    label,
+                    is_default: out.is_empty() && sub.is_default,
+                });
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

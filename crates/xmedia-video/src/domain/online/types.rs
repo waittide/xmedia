@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::domain::video::normalize_string_list;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VideoSourceTestMode {
@@ -76,6 +78,46 @@ pub struct OnlineVideoDetail {
     #[serde(default)]
     pub remarks: Option<String>,
     pub play_groups: Vec<OnlineVideoPlayGroup>,
+}
+
+impl OnlineVideoDetail {
+    pub fn select_play_group(&self, preferred_name: Option<&str>) -> Option<&OnlineVideoPlayGroup> {
+        if let Some(pref) = preferred_name.map(str::trim).filter(|s| !s.is_empty())
+            && let Some(found) = self
+                .play_groups
+                .iter()
+                .find(|g| !g.episodes.is_empty() && g.name.trim().eq_ignore_ascii_case(pref))
+        {
+            return Some(found);
+        }
+        self.play_groups.iter().find(|g| !g.episodes.is_empty())
+    }
+
+    pub fn parsed_year(&self) -> Option<i32> {
+        parse_year_digits(self.year.as_deref())
+    }
+
+    pub fn area_genres(&self) -> Vec<String> {
+        self.area
+            .as_deref()
+            .map(|a| {
+                normalize_string_list(a.split([',', '，', '/', ' ']).map(str::to_string).collect())
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn parse_year_digits(raw: Option<&str>) -> Option<i32> {
+    let s = raw?.trim();
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).take(4).collect();
+    if digits.len() == 4 {
+        digits
+            .parse::<i32>()
+            .ok()
+            .filter(|&y| (1880..=2150).contains(&y))
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

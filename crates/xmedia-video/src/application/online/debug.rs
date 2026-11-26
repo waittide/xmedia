@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_source::crud::{
     format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
 };
@@ -375,7 +375,7 @@ impl VideoOnlineService {
         input: VideoSourceTestInput,
         url_builder: &dyn VideoProxyUrlBuilder,
     ) -> DomainResult<VideoSourceTestReportDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let rec = self.load_source(id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
@@ -386,13 +386,7 @@ impl VideoOnlineService {
                 .map(ToString::to_string)
         };
         let raw_input = trim_non_empty(input.keyword.as_deref());
-        let default_kw = parsed
-            .check_keyword
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("电影")
-            .to_string();
+        let default_kw = parsed.default_test_keyword().to_string();
         let is_direct_url = |s: &str| {
             s.starts_with("http://") || s.starts_with("https://") || s.starts_with("data:")
         };

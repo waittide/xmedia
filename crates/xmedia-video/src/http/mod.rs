@@ -30,7 +30,7 @@ pub(crate) fn into_video_http_response(
             range_stream,
             is_partial,
         } => {
-            let filename = sanitize_download_filename(&video.title, video.container.extension());
+            let filename = sanitize_download_filename(&video.title, video.container.as_ref());
             into_range_http_response(
                 range_stream,
                 is_partial,

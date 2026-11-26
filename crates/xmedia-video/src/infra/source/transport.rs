@@ -10,7 +10,7 @@ use xmedia_source::http::{
 };
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, DEFAULT_SUBTITLE_PROXY_MAX_BYTES, DEFAULT_VIDEO_PROXY_MAX_BYTES,
-    fetch_validated_image_bytes_with_config, limit_byte_stream, validate_proxy_content_length,
+    fetch_image, limit_byte_stream, validate_proxy_content_length,
 };
 
 use crate::application::ports::{
@@ -39,7 +39,7 @@ fn validate_range_header(raw: Option<&str>) -> DomainResult<Option<String>> {
 
 #[derive(Debug, Clone)]
 pub struct HttpVideoStreamTransport {
-    pub(super) http_config: HttpClientConfig,
+    http_config: HttpClientConfig,
     video_proxy_max_bytes: u64,
     subtitle_proxy_max_bytes: u64,
 }
@@ -74,7 +74,7 @@ impl VideoStreamTransportPort for HttpVideoStreamTransport {
         raw_url: &str,
         source_headers: &HashMap<String, String>,
     ) -> DomainResult<(Vec<u8>, &'static str)> {
-        fetch_validated_image_bytes_with_config(
+        fetch_image(
             raw_url,
             (!source_headers.is_empty()).then_some(source_headers),
             DEFAULT_IMAGE_PROXY_MAX_BYTES,
@@ -441,8 +441,14 @@ impl VideoStreamTransportPort for HttpVideoStreamTransport {
         dest_path: &Path,
         max_bytes: u64,
     ) -> DomainResult<VideoContainer> {
-        self.download_direct_video_impl(raw_url, source_headers, dest_path, max_bytes)
-            .await
+        super::transport_download::download_direct_video(
+            &self.http_config,
+            raw_url,
+            source_headers,
+            dest_path,
+            max_bytes,
+        )
+        .await
     }
 
     async fn fetch_hls_playlist_text(
@@ -450,8 +456,12 @@ impl VideoStreamTransportPort for HttpVideoStreamTransport {
         raw_url: &str,
         source_headers: HashMap<String, String>,
     ) -> DomainResult<(String, Url)> {
-        self.fetch_hls_playlist_text_impl(raw_url, source_headers)
-            .await
+        super::transport_download::fetch_hls_playlist_text(
+            &self.http_config,
+            raw_url,
+            source_headers,
+        )
+        .await
     }
 
     async fn download_hls_asset_to_path(
@@ -462,7 +472,14 @@ impl VideoStreamTransportPort for HttpVideoStreamTransport {
         total_bytes: u64,
         max_bytes: u64,
     ) -> DomainResult<u64> {
-        self.download_hls_asset_impl(raw_url, source_headers, dest_path, total_bytes, max_bytes)
-            .await
+        super::transport_download::download_hls_asset(
+            &self.http_config,
+            raw_url,
+            source_headers,
+            dest_path,
+            total_bytes,
+            max_bytes,
+        )
+        .await
     }
 }

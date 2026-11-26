@@ -106,7 +106,13 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
         })
         .await
         .unwrap();
-    let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let state = VideoHttpState::new(auth_svc, library_svc.clone(), video_services.clone());
     let app = Router::new().nest("/api/v1/video", rest_router(state));
@@ -234,14 +240,14 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     // Scanned local library stays in the pool until claimed
     assert!(
         video_services
-            .catalog
+            .shows
             .list_shows(&admin, Default::default())
             .await
             .unwrap()
             .is_empty()
     );
     let pool_before = video_services
-        .catalog
+        .ingest
         .list_pool(&admin, Some(mount_lib.id), None)
         .await
         .unwrap();
@@ -249,7 +255,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     assert!(!pool_before.shows[0].bound);
 
     video_services
-        .catalog
+        .ingest
         .bind_items(
             &admin,
             BindMediaItemsInput {
@@ -262,7 +268,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
         .unwrap();
 
     let shows = video_services
-        .catalog
+        .shows
         .list_shows(&admin, Default::default())
         .await
         .unwrap();
@@ -271,7 +277,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     assert_eq!(shows[0].episode_count, 2);
 
     let show_detail = video_services
-        .catalog
+        .shows
         .get_show_detail(&admin, shows[0].id)
         .await
         .unwrap();
@@ -288,8 +294,8 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     assert_eq!(ep1_detail.next_episode_id, Some(ep2.id));
 
     let ass_vtt = video_services
-        .catalog
-        .get_subtitle_webvtt(admin.id, ep1.id, "ext-s0")
+        .streaming
+        .get_subtitle_webvtt(admin.id, ep1.id, "ext-s0", None)
         .await
         .unwrap();
     assert!(ass_vtt.contains("00:00:02.500 --> 00:00:05.000"));
@@ -315,7 +321,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     assert!(prog.completed);
 
     let updated_show = video_services
-        .catalog
+        .shows
         .get_show_detail(&admin, shows[0].id)
         .await
         .unwrap();
@@ -364,7 +370,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     }
 
     video_services
-        .catalog
+        .ingest
         .bind_items(
             &admin,
             BindMediaItemsInput {
@@ -474,7 +480,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     // 6. Verify ShowQueryFilter.tag filtering & update_show_metadata episode show_title sync
     let moved_show_id = moved_ep1.video.show_id.unwrap();
     video_services
-        .catalog
+        .shows
         .update_show_metadata(
             &admin,
             moved_show_id,
@@ -487,7 +493,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
         .await
         .unwrap();
     let tagged_shows = video_services
-        .catalog
+        .shows
         .list_shows(
             &admin,
             ShowQueryFilter {
@@ -500,7 +506,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
     assert_eq!(tagged_shows.len(), 1);
     assert!(
         video_services
-            .catalog
+            .shows
             .list_shows(
                 &admin,
                 ShowQueryFilter {
@@ -541,7 +547,7 @@ async fn video_upload_subtitles_range_show_scan_and_watch_progress_e2e() {
         .await
         .unwrap();
     video_services
-        .catalog
+        .ingest
         .delete_video(&admin, movie.id)
         .await
         .unwrap();

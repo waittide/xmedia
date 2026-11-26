@@ -11,11 +11,12 @@ use xmedia_core::application::bindings::{
 };
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
     ApiError, ApiResult, TempUploadFile, WebAuth, into_binary_cache_response,
     parse_http_range_spec, stream_multipart_field_to_temp_file,
 };
+
+use xmedia_formats::video::SubtitleFormatExt;
 
 use crate::application::dto::{
     SaveWatchProgressInput, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, UpsertVideoShelfInput,
@@ -27,7 +28,6 @@ use crate::application::ports::parse_quality_param;
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
 use crate::domain::video::{
     ShowMetadataPatch, ShowQueryFilter, VideoContainer, VideoMetadataPatch, VideoQueryFilter,
-    is_subtitle_extension,
 };
 use crate::domain::watch::{VideoFavoriteKind, WatchProgress};
 use crate::http::into_video_http_response;
@@ -153,7 +153,7 @@ async fn list_pool(
     Ok(Json(
         state
             .services
-            .catalog
+            .ingest
             .list_pool(&user, q.library_id.map(LibraryId), q.search)
             .await?,
     ))
@@ -164,7 +164,7 @@ async fn bind_items(
     WebAuth(user): WebAuth,
     Json(input): Json<BindMediaItemsInput>,
 ) -> ApiResult<Json<BindMediaItemsResultDto>> {
-    Ok(Json(state.services.catalog.bind_items(&user, input).await?))
+    Ok(Json(state.services.ingest.bind_items(&user, input).await?))
 }
 
 async fn unbind_item(
@@ -176,7 +176,7 @@ async fn unbind_item(
     Ok(Json(
         state
             .services
-            .catalog
+            .ingest
             .unbind_item(&user, id, q.user_id)
             .await?,
     ))
@@ -189,7 +189,7 @@ async fn upload_videos(
     WebAuth(user): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<VideoUploadResultDto>)> {
-    require_admin(&user)?;
+    user.ensure_admin()?;
     let mut temp_guards: Vec<(String, TempUploadFile)> = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -206,7 +206,9 @@ async fn upload_videos(
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .trim();
-        if VideoContainer::from_extension(ext).is_none() && !is_subtitle_extension(ext) {
+        if ext.parse::<VideoContainer>().is_err()
+            && SubtitleFormatExt::from_extension(ext).is_none()
+        {
             return Err(ApiError(DomainError::UnsupportedFormat(format!(
                 "unsupported file extension '.{ext}'"
             ))));
@@ -269,7 +271,7 @@ async fn update_video_metadata(
     Ok(Json(
         state
             .services
-            .catalog
+            .ingest
             .update_video_metadata(&user, VideoId(id), patch)
             .await?,
     ))
@@ -282,7 +284,7 @@ async fn delete_video(
 ) -> ApiResult<Json<OkResponse>> {
     state
         .services
-        .catalog
+        .ingest
         .delete_video(&user, VideoId(id))
         .await?;
     Ok(Json(OkResponse { ok: true }))
@@ -294,12 +296,12 @@ async fn upload_video_poster(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<VideoSummaryDto>> {
-    require_admin(&user)?;
+    user.ensure_admin()?;
     let bytes = read_first_multipart_bytes(&mut multipart).await?;
     Ok(Json(
         state
             .services
-            .catalog
+            .ingest
             .upload_video_poster(&user, VideoId(id), &bytes)
             .await?,
     ))
@@ -352,7 +354,7 @@ async fn list_video_subtitles(
     Ok(Json(
         state
             .services
-            .catalog
+            .streaming
             .list_video_subtitles(user.id, VideoId(id))
             .await?,
     ))
@@ -366,8 +368,8 @@ async fn get_subtitle_vtt(
 ) -> ApiResult<Response> {
     let vtt = state
         .services
-        .catalog
-        .get_subtitle_webvtt_with_offset(user.id, VideoId(id), &sub_id, q.offset_secs)
+        .streaming
+        .get_subtitle_webvtt(user.id, VideoId(id), &sub_id, q.offset_secs)
         .await?;
     let mut res = (StatusCode::OK, Body::from(vtt)).into_response();
     let headers = res.headers_mut();
@@ -421,9 +423,7 @@ async fn list_shows(
     WebAuth(user): WebAuth,
     Query(filter): Query<ShowQueryFilter>,
 ) -> ApiResult<Json<Vec<ShowSummaryDto>>> {
-    Ok(Json(
-        state.services.catalog.list_shows(&user, filter).await?,
-    ))
+    Ok(Json(state.services.shows.list_shows(&user, filter).await?))
 }
 
 async fn get_show_detail(
@@ -434,7 +434,7 @@ async fn get_show_detail(
     Ok(Json(
         state
             .services
-            .catalog
+            .shows
             .get_show_detail(&user, ShowId(id))
             .await?,
     ))
@@ -449,7 +449,7 @@ async fn update_show_metadata(
     Ok(Json(
         state
             .services
-            .catalog
+            .shows
             .update_show_metadata(&user, ShowId(id), patch)
             .await?,
     ))
@@ -461,12 +461,12 @@ async fn upload_show_poster(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<ShowSummaryDto>> {
-    require_admin(&user)?;
+    user.ensure_admin()?;
     let bytes = read_first_multipart_bytes(&mut multipart).await?;
     Ok(Json(
         state
             .services
-            .catalog
+            .shows
             .upload_show_poster(&user, ShowId(id), &bytes)
             .await?,
     ))
@@ -480,7 +480,7 @@ async fn get_poster(
 ) -> ApiResult<Response> {
     let payload = state
         .services
-        .catalog
+        .streaming
         .get_poster(Some(&user), &key, p.size)
         .await?;
     Ok(into_binary_cache_response(payload))
@@ -499,7 +499,7 @@ async fn set_favorite(
     Path((kind_raw, id)): Path<(String, Uuid)>,
     Json(body): Json<FavoriteBody>,
 ) -> ApiResult<Json<OkResponse>> {
-    let kind = VideoFavoriteKind::parse(&kind_raw)?;
+    let kind = kind_raw.parse::<VideoFavoriteKind>()?;
     state
         .services
         .watch

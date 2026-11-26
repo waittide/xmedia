@@ -3,6 +3,7 @@ mod dto;
 mod playback;
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 use axum::Json;
 use axum::Router;
@@ -15,7 +16,7 @@ use serde_json::json;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
-use xmedia_core::http::ApiError;
+use xmedia_core::http::{ApiError, ClientIp};
 
 use crate::http::state::VideoHttpState;
 
@@ -136,13 +137,28 @@ async fn authenticate_optional(
     state: &VideoHttpState,
     headers: &HeaderMap,
     query: &JfQuery,
+    client_ip: Option<IpAddr>,
 ) -> Option<(User, String)> {
     let token = extract_token(headers, query)?;
-    if let Ok(user) = state.auth.authenticate_api_key(&token).await {
+    if let Ok(user) = state
+        .auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::ApiKey(&token),
+            client_ip,
+        )
+        .await
+    {
         let key = user.api_key.clone();
         return Some((user, key));
     }
-    if let Ok(user) = state.auth.authenticate_jwt(&token).await {
+    if let Ok(user) = state
+        .auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&token),
+            client_ip,
+        )
+        .await
+    {
         let key = user.api_key.clone();
         return Some((user, key));
     }
@@ -153,13 +169,14 @@ async fn authenticate_required(
     state: &VideoHttpState,
     headers: &HeaderMap,
     query: &JfQuery,
+    client_ip: Option<IpAddr>,
 ) -> DomainResult<(User, String)> {
-    authenticate_optional(state, headers, query)
+    authenticate_optional(state, headers, query, client_ip)
         .await
         .ok_or_else(|| DomainError::Unauthorized("Jellyfin authentication required".into()))
 }
 
-fn verify_user_scope(auth_user: &User, raw_user_id: &str) -> DomainResult<()> {
+pub(super) fn verify_user_scope(auth_user: &User, raw_user_id: &str) -> DomainResult<()> {
     let trimmed = raw_user_id.trim();
     if trimmed.eq_ignore_ascii_case("me") {
         return Ok(());
@@ -188,12 +205,19 @@ async fn handle_authenticate_by_name(
     state: &VideoHttpState,
     headers: &HeaderMap,
     body: &Bytes,
+    client_ip: Option<IpAddr>,
 ) -> DomainResult<Response> {
     let req: AuthenticateByNameBody = serde_json::from_slice(body)
         .map_err(|e| DomainError::Validation(format!("invalid authentication payload: {e}")))?;
 
-    let session = state.auth.login(&req.username, &req.pw).await?;
-    let user = state.auth.authenticate_jwt(&session.token).await?;
+    let session = state.auth.login(&req.username, &req.pw, client_ip).await?;
+    let user = state
+        .auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            client_ip,
+        )
+        .await?;
 
     let auth_hdr = headers
         .get("x-emby-authorization")
@@ -230,12 +254,13 @@ async fn handle_authenticate_by_name(
 
 async fn dispatch_jellyfin(
     State(state): State<VideoHttpState>,
+    ClientIp(client_ip): ClientIp,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    match dispatch_jellyfin_inner(&state, &method, &uri, &headers, &body).await {
+    match dispatch_jellyfin_inner(&state, &method, &uri, &headers, &body, client_ip).await {
         Ok(resp) => resp,
         Err(err) => ApiError(err).into_response(),
     }
@@ -247,6 +272,7 @@ async fn dispatch_jellyfin_inner(
     uri: &Uri,
     headers: &HeaderMap,
     body: &Bytes,
+    client_ip: Option<IpAddr>,
 ) -> DomainResult<Response> {
     let query = JfQuery::parse(uri.query());
     let raw_segments: Vec<String> = uri
@@ -308,11 +334,11 @@ async fn dispatch_jellyfin_inner(
             return Ok((StatusCode::OK, Json(Vec::<serde_json::Value>::new())).into_response());
         }
         (&Method::POST, ["users", "authenticatebyname"]) => {
-            return handle_authenticate_by_name(state, headers, body).await;
+            return handle_authenticate_by_name(state, headers, body, client_ip).await;
         }
         (&Method::GET | &Method::HEAD, ["items", _, "images", _])
         | (&Method::GET | &Method::HEAD, ["items", _, "images", _, _]) => {
-            let auth_opt = authenticate_optional(state, headers, &query)
+            let auth_opt = authenticate_optional(state, headers, &query, client_ip)
                 .await
                 .map(|(u, _)| u);
             return playback::handle_image(state, &raw_slice[1], &query, auth_opt.as_ref()).await;
@@ -321,7 +347,21 @@ async fn dispatch_jellyfin_inner(
     }
 
     // 2. All remaining endpoints require valid Jellyfin API Key or JWT token
-    let (user, api_key) = authenticate_required(state, headers, &query).await?;
+    let (user, api_key) = authenticate_required(state, headers, &query, client_ip).await?;
+
+    if let Some(res) = catalog::try_dispatch(
+        state,
+        &user,
+        &api_key,
+        method,
+        segs.as_slice(),
+        raw_slice,
+        &query,
+    )
+    .await
+    {
+        return res;
+    }
 
     match (method, segs.as_slice()) {
         (&Method::GET, ["system", "info"]) => Ok((
@@ -366,69 +406,6 @@ async fn dispatch_jellyfin_inner(
             playback::handle_session_playing(state, &user, body, true).await
         }
 
-        // Library Views
-        (&Method::GET, ["userviews"]) => catalog::handle_views(state, &user).await,
-        (&Method::GET, ["users", _, "views"]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_views(state, &user).await
-        }
-        (&Method::GET, ["users", _, "groupingoptions"]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            Ok((StatusCode::OK, Json(Vec::<serde_json::Value>::new())).into_response())
-        }
-
-        // Items listing / resume / latest / counts / detail
-        (&Method::GET, ["items"]) => catalog::handle_items(state, &user, &query, &api_key).await,
-        (&Method::GET, ["users", _, "items"]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_items(state, &user, &query, &api_key).await
-        }
-        (&Method::GET, ["useritems", "resume"]) => {
-            catalog::handle_resume(state, &user, &query, &api_key).await
-        }
-        (&Method::GET, ["users", _, "items", "resume"]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_resume(state, &user, &query, &api_key).await
-        }
-        (&Method::GET, ["items", "latest"]) => {
-            catalog::handle_latest(state, &user, &query, &api_key).await
-        }
-        (&Method::GET, ["users", _, "items", "latest"]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_latest(state, &user, &query, &api_key).await
-        }
-        (&Method::GET, ["items", "counts"]) => catalog::handle_counts(state, &user).await,
-        (&Method::GET, ["users", _, "items", "counts"]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_counts(state, &user).await
-        }
-        (&Method::GET, ["items", _]) => {
-            catalog::handle_item_detail(state, &user, &raw_slice[1], &api_key).await
-        }
-        (&Method::GET, ["users", _, "items", _]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_item_detail(state, &user, &raw_slice[3], &api_key).await
-        }
-
-        // Shows: Seasons, Episodes, NextUp
-        (&Method::GET, ["shows", _, "seasons"]) => {
-            catalog::handle_show_seasons(state, &user, &raw_slice[1]).await
-        }
-        (&Method::GET, ["shows", _, "episodes"]) => {
-            catalog::handle_show_episodes(state, &user, &raw_slice[1], &query, &api_key).await
-        }
-        (&Method::GET, ["shows", "nextup"]) => {
-            catalog::handle_next_up(state, &user, &query, &api_key).await
-        }
-
-        // Genres & Search Hints
-        (&Method::GET, ["genres"]) | (&Method::GET, ["musicgenres"]) => {
-            catalog::handle_genres(state, &user).await
-        }
-        (&Method::GET, ["search", "hints"]) => {
-            catalog::handle_search_hints(state, &user, &query).await
-        }
-
         // PlaybackInfo
         (&Method::GET | &Method::POST, ["items", _, "playbackinfo"]) => {
             playback::handle_playback_info(state, &user, &raw_slice[1], &api_key).await
@@ -456,38 +433,6 @@ async fn dispatch_jellyfin_inner(
         // Subtitles
         (&Method::GET, ["videos", _, _, "subtitles", _, seg]) if seg.starts_with("stream.") => {
             playback::handle_subtitle_stream(state, &user, &raw_slice[1], &raw_slice[4]).await
-        }
-
-        // Played / Watched status sync
-        (&Method::POST, ["users", _, "playeditems", _]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_played_item(state, &user, &raw_slice[3], true).await
-        }
-        (&Method::DELETE, ["users", _, "playeditems", _]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_played_item(state, &user, &raw_slice[3], false).await
-        }
-        (&Method::POST, ["userplayeditems", _]) => {
-            catalog::handle_played_item(state, &user, &raw_slice[1], true).await
-        }
-        (&Method::DELETE, ["userplayeditems", _]) => {
-            catalog::handle_played_item(state, &user, &raw_slice[1], false).await
-        }
-
-        // Favorites sync
-        (&Method::POST, ["users", _, "favoriteitems", _]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_favorite_item(state, &user, &raw_slice[3], true).await
-        }
-        (&Method::DELETE, ["users", _, "favoriteitems", _]) => {
-            verify_user_scope(&user, &raw_slice[1])?;
-            catalog::handle_favorite_item(state, &user, &raw_slice[3], false).await
-        }
-        (&Method::POST, ["userfavoriteitems", _]) => {
-            catalog::handle_favorite_item(state, &user, &raw_slice[1], true).await
-        }
-        (&Method::DELETE, ["userfavoriteitems", _]) => {
-            catalog::handle_favorite_item(state, &user, &raw_slice[1], false).await
         }
 
         // Auxiliary UI endpoints called by Swiftfin / Infuse / SenPlayer

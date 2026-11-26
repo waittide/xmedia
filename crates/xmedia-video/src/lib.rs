@@ -25,12 +25,7 @@ use xmedia_core::infra::persistence::repositories::{
 use xmedia_source::crud::SourceCrudService;
 use xmedia_source::http::HttpClientConfig;
 
-use application::VideoServices;
-use application::catalog::VideoCatalogService;
-use application::lifecycle::VideoDomainLifecycle;
-use application::online::{VideoOnlineService, VideoTrackingDeps};
-use application::streaming::VideoStreamingService;
-use application::watch::VideoWatchService;
+use application::{VideoAppDeps, VideoServices, build_video_services};
 use domain::online::VideoSourceSpec;
 use infra::media_engine::FfmpegVideoEngine;
 use infra::persistence::repositories::{
@@ -39,7 +34,7 @@ use infra::persistence::repositories::{
 use infra::source::{HttpVideoStreamTransport, VideoSourceEngine};
 use infra::storage::{LocalVideoScanner, LocalVideoStorage};
 
-pub use infra::persistence::{ensure_video_schema, register_video_models};
+pub use infra::persistence::{ensure_video_indexes, ensure_video_schema, register_video_models};
 
 pub fn init_video_module(
     db: Db,
@@ -103,39 +98,6 @@ pub fn init_video_module_with_bindings(
     let scanner = Arc::new(LocalVideoScanner);
     let engine = Arc::new(FfmpegVideoEngine::new(ffmpeg));
 
-    let catalog = Arc::new(VideoCatalogService::new(
-        libraries_repo.clone(),
-        catalog_repo.clone(),
-        watch_repo.clone(),
-        bindings.clone(),
-        storage.clone(),
-        engine.clone(),
-        events.clone(),
-    ));
-    let watch = Arc::new(VideoWatchService::new(
-        catalog_repo.clone(),
-        watch_repo.clone(),
-        (*catalog).clone(),
-    ));
-    let streaming = Arc::new(VideoStreamingService::new(
-        libraries_repo.clone(),
-        catalog_repo.clone(),
-        bindings,
-        storage.clone(),
-        engine.clone(),
-    ));
-    let ingest = Arc::new(VideoDomainLifecycle::new(
-        libraries_repo.clone(),
-        catalog_repo.clone(),
-        watch_repo,
-        (*catalog).clone(),
-        storage.clone(),
-        scanner,
-        engine.clone(),
-        events.clone(),
-    ));
-    library_service.register_lifecycle(ingest.clone());
-
     let source_crud = Arc::new(SourceCrudService::<VideoSourceSpec>::new(source_repo));
     let http_config = HttpClientConfig {
         allow_private_ips,
@@ -146,30 +108,27 @@ pub fn init_video_module_with_bindings(
         Duration::from_secs(45),
     ));
     let stream_transport = Arc::new(HttpVideoStreamTransport::new(http_config));
-    let online = Arc::new(
-        VideoOnlineService::new(source_crud.clone(), source_engine, stream_transport)
-            .with_tracking(VideoTrackingDeps {
-                libraries: libraries_repo,
-                catalog_repo,
-                catalog_service: catalog.clone(),
-                lifecycle: ingest.clone(),
-                storage,
-                media_engine: engine,
-                events,
-            }),
-    );
     let online_items = Arc::new(OnlineLibraryService::new(
         MediaKind::Video,
         online_items_repo,
-        source_crud,
+        source_crud.clone(),
     ));
 
-    Ok(VideoServices::new(
-        catalog,
-        watch,
-        streaming,
-        ingest,
-        online,
+    let (services, lifecycle) = build_video_services(VideoAppDeps {
+        libraries_repo,
+        catalog_repo,
+        watch_repo,
+        bindings,
+        storage,
+        scanner,
+        engine,
+        events,
+        source_crud,
+        source_engine,
+        stream_transport,
         online_items,
-    ))
+    });
+    library_service.register_lifecycle(lifecycle);
+
+    Ok(services)
 }

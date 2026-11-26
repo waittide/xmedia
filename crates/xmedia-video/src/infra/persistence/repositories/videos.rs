@@ -3,16 +3,17 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::id::{ShowId, VideoId};
-use crate::domain::video::{
-    VideoContainer, VideoItem, VideoKindFilter, VideoQueryFilter, VideoSortBy,
-};
+use crate::domain::video::{VideoContainer, VideoItem, VideoQueryFilter, sort_episode_items};
 
 use super::super::models::VideoItemModel;
 use super::{ToastyVideoCatalogRepository, db_err};
 
 impl ToastyVideoCatalogRepository {
     pub(super) fn item_to_domain(m: VideoItemModel) -> VideoItem {
-        let container = VideoContainer::parse(&m.container).unwrap_or(VideoContainer::Mp4);
+        let container = m
+            .container
+            .parse::<VideoContainer>()
+            .unwrap_or(VideoContainer::Mp4);
         VideoItem {
             id: VideoId(m.id),
             library_id: LibraryId(m.library_id),
@@ -105,73 +106,7 @@ impl ToastyVideoCatalogRepository {
         } else {
             VideoItemModel::all().exec(&mut db).await.map_err(db_err)?
         };
-
-        let search_lower = filter
-            .search
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_lowercase);
-        let genre_lower = filter
-            .genre
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_lowercase);
-        let tag_lower = filter
-            .tag
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_lowercase);
-
-        let mut items: Vec<VideoItem> = rows
-            .into_iter()
-            .map(Self::item_to_domain)
-            .filter(|v| !v.is_missing)
-            .filter(|v| filter.show_id.is_none_or(|sid| v.show_id == Some(sid)))
-            .filter(|v| match filter.kind {
-                VideoKindFilter::All => true,
-                VideoKindFilter::Standalone => v.show_id.is_none(),
-                VideoKindFilter::Episodes => v.show_id.is_some(),
-            })
-            .filter(|v| filter.year.is_none_or(|y| v.year == Some(y)))
-            .filter(|v| {
-                genre_lower
-                    .as_ref()
-                    .is_none_or(|g| v.genres.iter().any(|vg| vg.to_lowercase() == *g))
-            })
-            .filter(|v| {
-                tag_lower
-                    .as_ref()
-                    .is_none_or(|t| v.tags.iter().any(|vt| vt.to_lowercase() == *t))
-            })
-            .filter(|v| {
-                search_lower.as_ref().is_none_or(|q| {
-                    v.title.to_lowercase().contains(q)
-                        || v.summary.to_lowercase().contains(q)
-                        || v.show_title
-                            .as_ref()
-                            .is_some_and(|st| st.to_lowercase().contains(q))
-                })
-            })
-            .collect();
-
-        let desc = filter.sort_desc.unwrap_or(matches!(
-            filter.sort_by,
-            VideoSortBy::CreatedAt | VideoSortBy::Year | VideoSortBy::Duration
-        ));
-
-        match filter.sort_by {
-            VideoSortBy::CreatedAt => items.sort_by_key(|v| v.created_at),
-            VideoSortBy::Title => items.sort_by_key(|v| v.title.to_lowercase()),
-            VideoSortBy::Year => items.sort_by_key(|v| v.year.unwrap_or(0)),
-            VideoSortBy::Duration => items.sort_by_key(|v| v.duration_secs),
-        }
-        if desc {
-            items.reverse();
-        }
-        Ok(items)
+        Ok(filter.apply(rows.into_iter().map(Self::item_to_domain)))
     }
 
     pub(super) async fn list_videos_by_library_impl(
@@ -200,17 +135,7 @@ impl ToastyVideoCatalogRepository {
             .map(Self::item_to_domain)
             .filter(|v| !v.is_missing)
             .collect();
-        items.sort_by(|a, b| {
-            a.season_number
-                .unwrap_or(1)
-                .cmp(&b.season_number.unwrap_or(1))
-                .then_with(|| {
-                    a.episode_number
-                        .unwrap_or(u32::MAX)
-                        .cmp(&b.episode_number.unwrap_or(u32::MAX))
-                })
-                .then_with(|| a.title.cmp(&b.title))
-        });
+        sort_episode_items(&mut items);
         Ok(items)
     }
 
@@ -244,7 +169,7 @@ impl ToastyVideoCatalogRepository {
                 .year(year_i64)
                 .genres(toasty::Json(v.genres.clone()))
                 .tags(toasty::Json(v.tags.clone()))
-                .container(v.container.as_str())
+                .container(v.container.as_ref())
                 .file_size(size_i64)
                 .file_hash(&v.file_hash)
                 .duration_secs(dur_i64)
@@ -274,7 +199,7 @@ impl ToastyVideoCatalogRepository {
                 year: year_i64,
                 genres: toasty::Json(v.genres.clone()),
                 tags: toasty::Json(v.tags.clone()),
-                container: v.container.as_str().to_string(),
+                container: v.container.to_string(),
                 file_size: size_i64,
                 file_hash: v.file_hash.clone(),
                 duration_secs: dur_i64,

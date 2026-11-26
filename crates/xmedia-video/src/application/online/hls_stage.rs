@@ -3,8 +3,48 @@ use std::path::{Path, PathBuf};
 use url::Url;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::http::resolve_temp_dir;
 
 const MAX_HLS_SEGMENTS: usize = 10_000;
+
+pub(super) fn pick_best_hls_variant(playlist: &str, base_url: &Url) -> Option<String> {
+    let mut best: Option<(u64, String)> = None;
+    let mut pending_bw: Option<u64> = None;
+
+    for raw_line in playlist.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
+            let bw = rest
+                .split(',')
+                .find_map(|part| {
+                    let (k, v) = part.split_once('=')?;
+                    k.trim()
+                        .eq_ignore_ascii_case("BANDWIDTH")
+                        .then(|| v.trim().parse::<u64>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            pending_bw = Some(bw);
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(bw) = pending_bw.take()
+            && let Ok(joined) = base_url.join(line)
+            && matches!(joined.scheme(), "http" | "https")
+        {
+            let replace = best.as_ref().is_none_or(|(prev_bw, _)| bw >= *prev_bw);
+            if replace {
+                best = Some((bw, joined.to_string()));
+            }
+        }
+    }
+    best.map(|(_, url)| url)
+}
 
 pub(super) async fn open_exclusive_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
     let mut opts = tokio::fs::OpenOptions::new();
@@ -30,9 +70,9 @@ impl TempFileGuard {
         } else {
             clean
         };
+        let base_dir = resolve_temp_dir();
         for _ in 0..8 {
-            let path =
-                std::env::temp_dir().join(format!("xmedia-video-{}.{suffix}", Uuid::now_v7()));
+            let path = base_dir.join(format!("xmedia-video-{}.{suffix}", Uuid::now_v7()));
             match open_exclusive_temp_file(&path).await {
                 Ok(file) => return Ok((Self { path }, file)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -51,11 +91,20 @@ impl TempFileGuard {
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
+
+    pub(super) async fn cleanup(mut self) {
+        let path = std::mem::take(&mut self.path);
+        if !path.as_os_str().is_empty() {
+            let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(path)).await;
+        }
+    }
 }
 
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if !self.path.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -71,8 +120,9 @@ impl TempDirGuard {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
+        let base_dir = resolve_temp_dir();
         for _ in 0..8 {
-            let path = std::env::temp_dir().join(format!("xmedia-hls-{}", Uuid::now_v7()));
+            let path = base_dir.join(format!("xmedia-hls-{}", Uuid::now_v7()));
             match builder.create(&path) {
                 Ok(()) => return Ok(Self { path }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -89,11 +139,20 @@ impl TempDirGuard {
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
+
+    pub(super) async fn cleanup(mut self) {
+        let path = std::mem::take(&mut self.path);
+        if !path.as_os_str().is_empty() {
+            let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(path)).await;
+        }
+    }
 }
 
 impl Drop for TempDirGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        if !self.path.as_os_str().is_empty() {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 }
 

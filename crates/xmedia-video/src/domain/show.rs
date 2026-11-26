@@ -5,7 +5,9 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::id::ShowId;
-use crate::domain::video::normalize_string_list;
+use crate::domain::video::{
+    matches_case_insensitive_list, normalize_filter_term, normalize_string_list,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -17,23 +19,6 @@ pub enum ShowSource {
         item_id: String,
         detail_url: Option<String>,
     },
-}
-
-impl ShowSource {
-    pub fn is_online_tracked(&self) -> bool {
-        matches!(self, Self::OnlineTracked { .. })
-    }
-
-    pub fn online_tracked(&self) -> Option<(Uuid, &str, Option<&str>)> {
-        match self {
-            Self::Local => None,
-            Self::OnlineTracked {
-                source_id,
-                item_id,
-                detail_url,
-            } => Some((*source_id, item_id.as_str(), detail_url.as_deref())),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,13 +40,18 @@ pub struct VideoShow {
     pub updated_at: Timestamp,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MissingShowMetadata<'a> {
+    pub summary: Option<&'a str>,
+    pub year: Option<i32>,
+    pub genres: Option<&'a [String]>,
+    pub poster_key: Option<&'a str>,
+    pub detail_url: Option<&'a str>,
+}
+
 impl VideoShow {
     pub fn compute_show_key(library_id: LibraryId, title: &str) -> String {
         format!("{}:{}", library_id.0, title.trim().to_lowercase())
-    }
-
-    fn compute_tracked_unique_key(source_id: Uuid, item_id: &str) -> String {
-        format!("tracked:{source_id}:{}", item_id.trim())
     }
 
     pub fn new_local(
@@ -106,7 +96,7 @@ impl VideoShow {
         now: Timestamp,
     ) -> Self {
         let clean_item_id = item_id.trim().to_string();
-        let show_key = Self::compute_tracked_unique_key(source_id, &clean_item_id);
+        let show_key = compute_tracked_unique_key(source_id, &clean_item_id);
         Self {
             id: ShowId::new(),
             library_id,
@@ -114,9 +104,7 @@ impl VideoShow {
             source: ShowSource::OnlineTracked {
                 source_id,
                 item_id: clean_item_id,
-                detail_url: detail_url
-                    .map(|u| u.trim().to_string())
-                    .filter(|u| !u.is_empty()),
+                detail_url: normalize_optional_text(detail_url),
             },
             title: title.trim().to_string(),
             summary: summary.trim().to_string(),
@@ -131,68 +119,48 @@ impl VideoShow {
         }
     }
 
-    pub fn is_online_tracked(&self) -> bool {
-        self.source.is_online_tracked()
+    fn is_online_tracked(&self) -> bool {
+        matches!(self.source, ShowSource::OnlineTracked { .. })
     }
 
     pub fn online_tracked(&self) -> Option<(Uuid, &str, Option<&str>)> {
-        self.source.online_tracked()
+        match &self.source {
+            ShowSource::Local => None,
+            ShowSource::OnlineTracked {
+                source_id,
+                item_id,
+                detail_url,
+            } => Some((*source_id, item_id.as_str(), detail_url.as_deref())),
+        }
     }
 
-    pub fn set_poster_key(&mut self, poster_key: String, now: Timestamp) {
-        self.poster_key = Some(poster_key);
-        self.updated_at = now;
-    }
-
-    pub fn fill_missing_scan_metadata(
+    pub fn fill_missing_metadata(
         &mut self,
-        year: Option<i32>,
-        genres: &[String],
-        poster_key: Option<&str>,
+        missing: MissingShowMetadata<'_>,
         now: Timestamp,
     ) -> bool {
         let mut dirty = false;
-        if self.year.is_none() && year.is_some() {
-            self.year = year;
-            dirty = true;
-        }
-        if self.genres.is_empty() && !genres.is_empty() {
-            self.genres = genres.to_vec();
-            dirty = true;
-        }
-        if self.poster_key.is_none()
-            && let Some(pk) = poster_key
-        {
-            self.poster_key = Some(pk.to_string());
-            dirty = true;
-        }
-        if dirty {
-            self.updated_at = now;
-        }
-        dirty
-    }
-
-    pub fn fill_missing_online_metadata(
-        &mut self,
-        summary: Option<&str>,
-        year: Option<i32>,
-        poster_key: Option<String>,
-        detail_url: Option<String>,
-        now: Timestamp,
-    ) -> bool {
-        let mut dirty = false;
-        if self.poster_key.is_none() && poster_key.is_some() {
-            self.poster_key = poster_key;
-            dirty = true;
-        }
         if self.summary.is_empty()
-            && let Some(intro) = summary.map(str::trim).filter(|s| !s.is_empty())
+            && let Some(intro) = missing.summary.map(str::trim).filter(|s| !s.is_empty())
         {
             self.summary = intro.to_string();
             dirty = true;
         }
-        if self.year.is_none() && year.is_some() {
-            self.year = year;
+        if self.year.is_none() && missing.year.is_some() {
+            self.year = missing.year;
+            dirty = true;
+        }
+        if self.genres.is_empty()
+            && let Some(genres) = missing.genres
+            && !genres.is_empty()
+        {
+            self.genres = genres.to_vec();
+            dirty = true;
+        }
+        if self.poster_key.is_none()
+            && let Some(pk) = missing.poster_key.map(str::trim).filter(|s| !s.is_empty())
+        {
+            self.poster_key = Some(pk.to_string());
             dirty = true;
         }
         if let ShowSource::OnlineTracked {
@@ -200,11 +168,9 @@ impl VideoShow {
             ..
         } = self.source
             && existing_detail.is_none()
-            && let Some(durl) = detail_url
-                .map(|u| u.trim().to_string())
-                .filter(|u| !u.is_empty())
+            && let Some(durl) = missing.detail_url.map(str::trim).filter(|s| !s.is_empty())
         {
-            *existing_detail = Some(durl);
+            *existing_detail = Some(durl.to_string());
             dirty = true;
         }
         if dirty {
@@ -218,13 +184,10 @@ impl VideoShow {
     pub fn apply_patch(&mut self, patch: ShowMetadataPatch) -> DomainResult<bool> {
         let mut title_changed = false;
         if let Some(title) = patch.title {
-            let trimmed = title.trim();
-            if trimmed.is_empty() {
-                return Err(DomainError::Validation("show title cannot be empty".into()));
-            }
-            if self.title != trimmed {
-                self.title = trimmed.to_string();
-                if !self.source.is_online_tracked() {
+            let clean = validate_show_title(&title)?;
+            if self.title != clean {
+                self.title = clean;
+                if !self.is_online_tracked() {
                     self.show_key = Self::compute_show_key(self.library_id, &self.title);
                 }
                 title_changed = true;
@@ -247,6 +210,22 @@ impl VideoShow {
     }
 }
 
+fn compute_tracked_unique_key(source_id: Uuid, item_id: &str) -> String {
+    format!("tracked:{source_id}:{}", item_id.trim())
+}
+
+fn normalize_optional_text(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn validate_show_title(raw: &str) -> DomainResult<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(DomainError::Validation("show title cannot be empty".into()));
+    }
+    Ok(trimmed.to_string())
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ShowMetadataPatch {
     pub title: Option<String>,
@@ -262,6 +241,30 @@ pub struct ShowQueryFilter {
     pub genre: Option<String>,
     pub tag: Option<String>,
     pub search: Option<String>,
+}
+
+impl ShowQueryFilter {
+    pub fn apply(&self, shows: impl IntoIterator<Item = VideoShow>) -> Vec<VideoShow> {
+        let search_lower = normalize_filter_term(self.search.as_deref());
+        let genre_lower = normalize_filter_term(self.genre.as_deref());
+        let tag_lower = normalize_filter_term(self.tag.as_deref());
+
+        let mut filtered: Vec<VideoShow> = shows
+            .into_iter()
+            .filter(|s| s.episode_count > 0)
+            .filter(|s| matches_case_insensitive_list(&s.genres, genre_lower.as_deref()))
+            .filter(|s| matches_case_insensitive_list(&s.tags, tag_lower.as_deref()))
+            .filter(|s| matches_show_search(s, search_lower.as_deref()))
+            .collect();
+        filtered.sort_by_key(|s| s.title.to_lowercase());
+        filtered
+    }
+}
+
+fn matches_show_search(show: &VideoShow, query: Option<&str>) -> bool {
+    query.is_none_or(|q| {
+        show.title.to_lowercase().contains(q) || show.summary.to_lowercase().contains(q)
+    })
 }
 
 #[cfg(test)]

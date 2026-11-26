@@ -25,7 +25,7 @@ use xmedia_core::{ensure_core_schema, register_core_models};
 
 use super::{fake_mp4_bytes, stage_upload_files};
 use crate::application::dto::{SaveWatchProgressInput, UpsertVideoShelfInput};
-use crate::domain::repository::VideoWatchRepository;
+use crate::domain::repository::{ProgressScope, VideoShelfScope, VideoWatchRepository};
 use crate::domain::video::ShowMetadataPatch;
 use crate::domain::watch::VideoFavoriteKind;
 use crate::http::state::VideoHttpState;
@@ -82,7 +82,13 @@ async fn delete_video_emits_media_changed_and_subtitles_list_endpoint_works() {
         })
         .await
         .unwrap();
-    let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let state = VideoHttpState::new(auth_svc, library_svc, video_services.clone());
     let app = Router::new().nest("/api/v1/video", rest_router(state));
@@ -135,7 +141,7 @@ async fn delete_video_emits_media_changed_and_subtitles_list_endpoint_works() {
     // Subscribe before deleting video and verify MediaChanged(Video) is published
     let mut rx = events.subscribe();
     video_services
-        .catalog
+        .ingest
         .delete_video(&admin, movie.id)
         .await
         .unwrap();
@@ -206,7 +212,13 @@ async fn delete_library_cascades_progress_favorites_and_shelf_items() {
         })
         .await
         .unwrap();
-    let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     // Upload a managed movie (in another library) that must survive cascade deletion
     let arrival_mp4 = fake_mp4_bytes(256);
@@ -254,7 +266,7 @@ async fn delete_library_cascades_progress_favorites_and_shelf_items() {
     }
 
     video_services
-        .catalog
+        .ingest
         .bind_items(
             &admin,
             BindMediaItemsInput {
@@ -267,14 +279,14 @@ async fn delete_library_cascades_progress_favorites_and_shelf_items() {
         .unwrap();
 
     let shows = video_services
-        .catalog
+        .shows
         .list_shows(&admin, Default::default())
         .await
         .unwrap();
     assert_eq!(shows.len(), 1);
     let show_id = shows[0].id;
     let show_detail = video_services
-        .catalog
+        .shows
         .get_show_detail(&admin, show_id)
         .await
         .unwrap();
@@ -351,7 +363,7 @@ async fn delete_library_cascades_progress_favorites_and_shelf_items() {
 
     assert!(
         video_services
-            .catalog
+            .shows
             .list_shows(&admin, Default::default())
             .await
             .unwrap()
@@ -363,16 +375,26 @@ async fn delete_library_cascades_progress_favorites_and_shelf_items() {
     // Progress for deleted episode must be gone; survivor progress must remain
     assert!(
         watch_repo
-            .get_progress(admin.id, ep1.id)
+            .query_progress(ProgressScope::One {
+                user_id: admin.id,
+                video_id: ep1.id,
+            })
             .await
             .unwrap()
+            .into_iter()
+            .next()
             .is_none()
     );
     assert!(
         watch_repo
-            .get_progress(admin.id, survivor.id)
+            .query_progress(ProgressScope::One {
+                user_id: admin.id,
+                video_id: survivor.id,
+            })
             .await
             .unwrap()
+            .into_iter()
+            .next()
             .is_some()
     );
 
@@ -384,9 +406,11 @@ async fn delete_library_cascades_progress_favorites_and_shelf_items() {
 
     // Shelf must only retain the surviving managed movie in persistence
     let persisted_shelf = watch_repo
-        .find_shelf_by_id(shelf.shelf.id)
+        .query_shelves(VideoShelfScope::Id(shelf.shelf.id))
         .await
         .unwrap()
+        .into_iter()
+        .next()
         .unwrap();
     assert_eq!(persisted_shelf.video_ids, vec![survivor.id]);
 }
@@ -442,7 +466,10 @@ async fn taxonomy_counts_show_genres_tags_and_jellyfin_enforces_user_scope_and_b
         .await
         .unwrap();
     let admin = auth_svc
-        .authenticate_jwt(&admin_session.token)
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&admin_session.token),
+            None,
+        )
         .await
         .unwrap();
 
@@ -458,7 +485,7 @@ async fn taxonomy_counts_show_genres_tags_and_jellyfin_enforces_user_scope_and_b
         )
         .await
         .unwrap();
-    let member_session = auth_svc.login("member", "password123").await.unwrap();
+    let member_session = auth_svc.login("member", "password123", None).await.unwrap();
 
     // Mount a library with 2 shows sharing genre "Fantasy" and tag "magic"
     let mount_root = tmp.path().join("shows_mount");
@@ -510,7 +537,7 @@ async fn taxonomy_counts_show_genres_tags_and_jellyfin_enforces_user_scope_and_b
 
     // Bind ONLY to admin, NOT to member
     video_services
-        .catalog
+        .ingest
         .bind_items(
             &admin,
             BindMediaItemsInput {
@@ -524,14 +551,14 @@ async fn taxonomy_counts_show_genres_tags_and_jellyfin_enforces_user_scope_and_b
 
     // 1. Verify get_taxonomy increments show genre and tag counts across multiple shows
     let all_shows = video_services
-        .catalog
+        .shows
         .list_shows(&admin, Default::default())
         .await
         .unwrap();
     assert_eq!(all_shows.len(), 2);
     for s in &all_shows {
         video_services
-            .catalog
+            .shows
             .update_show_metadata(
                 &admin,
                 s.id,
@@ -580,7 +607,7 @@ async fn taxonomy_counts_show_genres_tags_and_jellyfin_enforces_user_scope_and_b
     assert_eq!(updated_shelf.shelf.name, cjk_80);
 
     let shows = video_services
-        .catalog
+        .shows
         .list_shows(&admin, Default::default())
         .await
         .unwrap();

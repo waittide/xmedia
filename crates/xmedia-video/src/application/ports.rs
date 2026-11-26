@@ -22,6 +22,7 @@ use crate::domain::online::{
     OnlineVideoCategory, OnlineVideoDetail, OnlineVideoPlayResult, OnlineVideoSummary,
     SourceCallError, SourceCallOutput, SourceRuntimeState, VideoBrowseOutput, VideoSourceSpec,
 };
+pub use crate::domain::video::VideoTranscodeMode;
 use crate::domain::video::{SidecarSubtitle, VideoContainer, VideoItem};
 
 #[derive(Debug, Clone, Default)]
@@ -66,14 +67,6 @@ pub struct ScannedVideoEntry {
     pub sidecar_subtitles: Vec<SidecarSubtitle>,
     pub directory_poster_path: Option<String>,
     pub nfo: Option<ParsedNfoMetadata>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VideoTranscodeMode {
-    /// Copy H.264 video stream without re-encoding, transcode audio to AAC into fragmented MP4
-    RemuxVideoTranscodeAudio,
-    /// Full H.264 + AAC real-time transcode into fragmented MP4 with optional max height
-    FullTranscode { max_height: Option<u32> },
 }
 
 #[derive(Debug, Clone)]

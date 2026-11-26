@@ -85,7 +85,7 @@ impl VideoStoragePort for LocalVideoStorage {
         container: VideoContainer,
         bytes: Bytes,
     ) -> DomainResult<StoredManagedVideo> {
-        let storage_key = format!("{}.{}", video_id.0, container.extension());
+        let storage_key = format!("{}.{container}", video_id.0);
         let dest = self.uploads_dir.join(&storage_key);
         let file_hash = fast_bytes_fingerprint(&bytes);
         let file_size = bytes.len() as u64;
@@ -108,7 +108,7 @@ impl VideoStoragePort for LocalVideoStorage {
         container: VideoContainer,
         src_path: &Path,
     ) -> DomainResult<StoredManagedVideo> {
-        let storage_key = format!("{}.{}", video_id.0, container.extension());
+        let storage_key = format!("{}.{container}", video_id.0);
         let dest = self.uploads_dir.join(&storage_key);
         let file_size = move_or_copy_file(src_path, &dest).await?;
         let dest_for_hash = dest.clone();
@@ -286,7 +286,7 @@ impl VideoScannerPort for LocalVideoScanner {
                 let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                let Some(container) = VideoContainer::from_extension(ext) else {
+                let Ok(container) = ext.parse::<VideoContainer>() else {
                     continue;
                 };
                 let Ok(meta) = entry.metadata() else {

@@ -17,7 +17,7 @@ use super::super::dto::{
     build_video_summary_item, season_uuid,
 };
 
-pub async fn handle_show_seasons(
+pub(super) async fn handle_show_seasons(
     state: &VideoHttpState,
     user: &User,
     raw_series_id: &str,
@@ -26,7 +26,7 @@ pub async fn handle_show_seasons(
         .map_err(|_| DomainError::NotFound("invalid series id".into()))?;
     let detail = state
         .services
-        .catalog
+        .shows
         .get_show_detail(user, ShowId(uuid))
         .await?;
     let items: Vec<Value> = detail
@@ -46,7 +46,7 @@ pub async fn handle_show_seasons(
         .into_response())
 }
 
-pub async fn handle_show_episodes(
+pub(super) async fn handle_show_episodes(
     state: &VideoHttpState,
     user: &User,
     raw_series_id: &str,
@@ -57,7 +57,7 @@ pub async fn handle_show_episodes(
         .map_err(|_| DomainError::NotFound("invalid series id".into()))?;
     let detail = state
         .services
-        .catalog
+        .shows
         .get_show_detail(user, ShowId(uuid))
         .await?;
 
@@ -105,7 +105,7 @@ pub async fn handle_show_episodes(
         .into_response())
 }
 
-pub async fn handle_next_up(
+pub(super) async fn handle_next_up(
     state: &VideoHttpState,
     user: &User,
     query: &JfQuery,
@@ -123,7 +123,7 @@ pub async fn handle_next_up(
 
     let mut items = Vec::new();
     if let Some(sid) = series_id {
-        if let Ok(detail) = state.services.catalog.get_show_detail(user, sid).await
+        if let Ok(detail) = state.services.shows.get_show_detail(user, sid).await
             && let Some(ep) = detail.continue_episode
         {
             items.push(build_video_summary_item(&ep, None, None, api_key));
@@ -131,7 +131,7 @@ pub async fn handle_next_up(
     } else {
         let shows = state
             .services
-            .catalog
+            .shows
             .list_shows(
                 user,
                 ShowQueryFilter {
@@ -144,7 +144,7 @@ pub async fn handle_next_up(
             if s.watched_episode_count == 0 {
                 continue;
             }
-            if let Ok(detail) = state.services.catalog.get_show_detail(user, s.id).await
+            if let Ok(detail) = state.services.shows.get_show_detail(user, s.id).await
                 && let Some(ep) = detail.continue_episode
                 && !ep.progress.as_ref().is_some_and(|p| p.completed)
             {
@@ -168,7 +168,7 @@ pub async fn handle_next_up(
         .into_response())
 }
 
-pub async fn handle_genres(state: &VideoHttpState, user: &User) -> DomainResult<Response> {
+pub(super) async fn handle_genres(state: &VideoHttpState, user: &User) -> DomainResult<Response> {
     let taxonomy = state.services.catalog.get_taxonomy(user.id).await?;
     let items: Vec<Value> = taxonomy
         .genres
@@ -199,7 +199,7 @@ pub async fn handle_genres(state: &VideoHttpState, user: &User) -> DomainResult<
         .into_response())
 }
 
-pub async fn handle_search_hints(
+pub(super) async fn handle_search_hints(
     state: &VideoHttpState,
     user: &User,
     query: &JfQuery,
@@ -222,7 +222,7 @@ pub async fn handle_search_hints(
         .await?;
     let shows = state
         .services
-        .catalog
+        .shows
         .list_shows(user, ShowQueryFilter::default())
         .await?;
 

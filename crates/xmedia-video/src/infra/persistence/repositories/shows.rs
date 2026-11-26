@@ -5,9 +5,11 @@ use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
-use crate::domain::id::{ShowId, VideoId};
-use crate::domain::repository::VideoCatalogRepository;
-use crate::domain::video::{ShowQueryFilter, ShowSource, VideoItem, VideoQueryFilter, VideoShow};
+use crate::domain::id::ShowId;
+use crate::domain::repository::{
+    ShowScope, VideoCatalogDelete, VideoCatalogMutation, VideoCatalogRepository, VideoScope,
+};
+use crate::domain::video::{ShowQueryFilter, ShowSource, VideoItem, VideoShow};
 
 use super::super::models::{VideoFavoriteModel, VideoItemModel, VideoShowModel};
 use super::{ToastyVideoCatalogRepository, db_err};
@@ -43,47 +45,8 @@ impl ToastyVideoCatalogRepository {
             updated_at: m.updated_at,
         }
     }
-}
 
-#[async_trait]
-impl VideoCatalogRepository for ToastyVideoCatalogRepository {
-    async fn find_video_by_id(&self, id: VideoId) -> DomainResult<Option<VideoItem>> {
-        self.find_video_by_id_impl(id).await
-    }
-
-    async fn find_videos_by_ids(&self, ids: &[VideoId]) -> DomainResult<Vec<VideoItem>> {
-        self.find_videos_by_ids_impl(ids).await
-    }
-
-    async fn find_videos_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoItem>> {
-        self.find_videos_by_poster_key_impl(poster_key).await
-    }
-
-    async fn list_videos(&self, filter: &VideoQueryFilter) -> DomainResult<Vec<VideoItem>> {
-        self.list_videos_impl(filter).await
-    }
-
-    async fn list_videos_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<VideoItem>> {
-        self.list_videos_by_library_impl(library_id).await
-    }
-
-    async fn list_episodes_by_show(&self, show_id: ShowId) -> DomainResult<Vec<VideoItem>> {
-        self.list_episodes_by_show_impl(show_id).await
-    }
-
-    async fn save_video(&self, v: &VideoItem) -> DomainResult<()> {
-        self.save_video_impl(v).await
-    }
-
-    async fn delete_video(&self, id: VideoId) -> DomainResult<()> {
-        self.delete_video_impl(id).await
-    }
-
-    async fn delete_videos_by_library(&self, library_id: LibraryId) -> DomainResult<()> {
-        self.delete_videos_by_library_impl(library_id).await
-    }
-
-    async fn find_show_by_id(&self, id: ShowId) -> DomainResult<Option<VideoShow>> {
+    async fn find_show_by_id_impl(&self, id: ShowId) -> DomainResult<Option<VideoShow>> {
         let mut db = self.db.clone();
         let row = VideoShowModel::filter_by_id(id.0)
             .first()
@@ -93,7 +56,7 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(row.map(Self::show_to_domain))
     }
 
-    async fn find_show_by_key(&self, show_key: &str) -> DomainResult<Option<VideoShow>> {
+    async fn find_show_by_key_impl(&self, show_key: &str) -> DomainResult<Option<VideoShow>> {
         let mut db = self.db.clone();
         let row = VideoShowModel::filter_by_show_key(show_key)
             .first()
@@ -103,7 +66,7 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(row.map(Self::show_to_domain))
     }
 
-    async fn find_online_tracked_show(
+    async fn find_online_tracked_show_impl(
         &self,
         source_id: Uuid,
         item_id: &str,
@@ -129,7 +92,10 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         }))
     }
 
-    async fn find_shows_by_poster_key(&self, poster_key: &str) -> DomainResult<Vec<VideoShow>> {
+    async fn find_shows_by_poster_key_impl(
+        &self,
+        poster_key: &str,
+    ) -> DomainResult<Vec<VideoShow>> {
         let clean = poster_key.trim();
         if clean.is_empty() {
             return Ok(Vec::new());
@@ -142,7 +108,7 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(rows.into_iter().map(Self::show_to_domain).collect())
     }
 
-    async fn list_shows(&self, filter: &ShowQueryFilter) -> DomainResult<Vec<VideoShow>> {
+    async fn list_shows_impl(&self, filter: &ShowQueryFilter) -> DomainResult<Vec<VideoShow>> {
         let mut db = self.db.clone();
         let rows = if let Some(lib_id) = filter.library_id {
             VideoShowModel::filter_by_library_id(lib_id.0)
@@ -152,51 +118,10 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         } else {
             VideoShowModel::all().exec(&mut db).await.map_err(db_err)?
         };
-
-        let search_lower = filter
-            .search
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_lowercase);
-        let genre_lower = filter
-            .genre
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_lowercase);
-        let tag_lower = filter
-            .tag
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_lowercase);
-
-        let mut shows: Vec<VideoShow> = rows
-            .into_iter()
-            .map(Self::show_to_domain)
-            .filter(|s| s.episode_count > 0)
-            .filter(|s| {
-                genre_lower
-                    .as_ref()
-                    .is_none_or(|g| s.genres.iter().any(|sg| sg.to_lowercase() == *g))
-            })
-            .filter(|s| {
-                tag_lower
-                    .as_ref()
-                    .is_none_or(|t| s.tags.iter().any(|st| st.to_lowercase() == *t))
-            })
-            .filter(|s| {
-                search_lower.as_ref().is_none_or(|q| {
-                    s.title.to_lowercase().contains(q) || s.summary.to_lowercase().contains(q)
-                })
-            })
-            .collect();
-        shows.sort_by_key(|s| s.title.to_lowercase());
-        Ok(shows)
+        Ok(filter.apply(rows.into_iter().map(Self::show_to_domain)))
     }
 
-    async fn save_show(&self, s: &VideoShow) -> DomainResult<()> {
+    async fn save_show_impl(&self, s: &VideoShow) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = VideoShowModel::filter_by_id(s.id.0)
             .first()
@@ -267,7 +192,7 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(())
     }
 
-    async fn delete_show(&self, id: ShowId) -> DomainResult<()> {
+    async fn delete_show_impl(&self, id: ShowId) -> DomainResult<()> {
         let mut db = self.db.clone();
         VideoShowModel::filter_by_id(id.0)
             .delete()
@@ -277,7 +202,7 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         Ok(())
     }
 
-    async fn recompute_show_aggregates(&self) -> DomainResult<()> {
+    async fn recompute_show_aggregates_impl(&self) -> DomainResult<()> {
         let mut db = self.db.clone();
         let all_videos = VideoItemModel::all().exec(&mut db).await.map_err(db_err)?;
         let all_shows = VideoShowModel::all().exec(&mut db).await.map_err(db_err)?;
@@ -349,5 +274,53 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
             }
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl VideoCatalogRepository for ToastyVideoCatalogRepository {
+    async fn query_videos(&self, scope: VideoScope<'_>) -> DomainResult<Vec<VideoItem>> {
+        match scope {
+            VideoScope::Id(id) => Ok(self.find_video_by_id_impl(id).await?.into_iter().collect()),
+            VideoScope::Ids(ids) => self.find_videos_by_ids_impl(ids).await,
+            VideoScope::PosterKey(key) => self.find_videos_by_poster_key_impl(key).await,
+            VideoScope::Library(lib_id) => self.list_videos_by_library_impl(lib_id).await,
+            VideoScope::ShowEpisodes(show_id) => self.list_episodes_by_show_impl(show_id).await,
+            VideoScope::Filter(filter) => self.list_videos_impl(filter).await,
+        }
+    }
+
+    async fn query_shows(&self, scope: ShowScope<'_>) -> DomainResult<Vec<VideoShow>> {
+        match scope {
+            ShowScope::Id(id) => Ok(self.find_show_by_id_impl(id).await?.into_iter().collect()),
+            ShowScope::Key(key) => Ok(self.find_show_by_key_impl(key).await?.into_iter().collect()),
+            ShowScope::OnlineTracked { source_id, item_id } => Ok(self
+                .find_online_tracked_show_impl(source_id, item_id)
+                .await?
+                .into_iter()
+                .collect()),
+            ShowScope::PosterKey(key) => self.find_shows_by_poster_key_impl(key).await,
+            ShowScope::Filter(filter) => self.list_shows_impl(filter).await,
+        }
+    }
+
+    async fn save(&self, mutation: VideoCatalogMutation<'_>) -> DomainResult<()> {
+        match mutation {
+            VideoCatalogMutation::Video(v) => self.save_video_impl(v).await,
+            VideoCatalogMutation::Show(s) => self.save_show_impl(s).await,
+            VideoCatalogMutation::RecomputeShowAggregates => {
+                self.recompute_show_aggregates_impl().await
+            }
+        }
+    }
+
+    async fn delete(&self, scope: VideoCatalogDelete) -> DomainResult<()> {
+        match scope {
+            VideoCatalogDelete::Video(id) => self.delete_video_impl(id).await,
+            VideoCatalogDelete::LibraryVideos(lib_id) => {
+                self.delete_videos_by_library_impl(lib_id).await
+            }
+            VideoCatalogDelete::Show(id) => self.delete_show_impl(id).await,
+        }
     }
 }

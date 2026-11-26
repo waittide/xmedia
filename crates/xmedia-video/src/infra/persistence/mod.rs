@@ -4,24 +4,24 @@ pub mod repositories;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::infra::persistence::push_model_set;
+use xmedia_core::domain::error::DomainResult;
+use xmedia_core::infra::persistence::{ensure_sql_index, push_model_set};
 
 use models::{
     VideoFavoriteModel, VideoItemModel, VideoProgressModel, VideoShelfModel, VideoShowModel,
     VideoSourceRecordModel,
 };
 
-async fn ensure_video_indexes(db: &mut Db) -> DomainResult<()> {
-    for ddl in [
-        "CREATE INDEX IF NOT EXISTS idx_video_items_poster_key ON video_items (poster_key)",
-        "CREATE INDEX IF NOT EXISTS idx_video_shows_poster_key ON video_shows (poster_key)",
-        "CREATE INDEX IF NOT EXISTS idx_video_shows_online_tracked ON video_shows (online_source_id, online_item_id)",
+pub async fn ensure_video_indexes(db: &mut Db) -> DomainResult<()> {
+    for (idx, spec) in [
+        ("idx_video_items_poster_key", "video_items (poster_key)"),
+        ("idx_video_shows_poster_key", "video_shows (poster_key)"),
+        (
+            "idx_video_shows_online_tracked",
+            "video_shows (online_source_id, online_item_id)",
+        ),
     ] {
-        toasty::sql::statement(ddl)
-            .exec(db)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to ensure video index: {e}")))?;
+        ensure_sql_index(db, idx, spec).await?;
     }
     Ok(())
 }
@@ -88,7 +88,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::domain::repository::VideoCatalogRepository;
+    use crate::domain::repository::{ShowScope, VideoCatalogRepository, VideoScope};
     use crate::infra::persistence::repositories::ToastyVideoCatalogRepository;
 
     #[tokio::test]
@@ -111,13 +111,13 @@ mod tests {
 
         let repo = ToastyVideoCatalogRepository::new(db);
         assert!(
-            repo.find_videos_by_poster_key("missing.jpg")
+            repo.query_videos(VideoScope::PosterKey("missing.jpg"))
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            repo.find_shows_by_poster_key("missing.jpg")
+            repo.query_shows(ShowScope::PosterKey("missing.jpg"))
                 .await
                 .unwrap()
                 .is_empty()

@@ -4,10 +4,12 @@ use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline};
 
 use crate::domain::online::{
     OnlineVideoCategory, OnlineVideoDetail, OnlineVideoEpisode, OnlineVideoPlayGroup,
-    OnlineVideoSubtitle, OnlineVideoSummary, VideoJsContext, VideoSearchRule, VideoSourceSpec,
+    OnlineVideoPlayResult, OnlineVideoSubtitle, OnlineVideoSummary, VideoBrowseOutput,
+    VideoCategoriesRule, VideoDetailRule, VideoJsContext, VideoPlayRule, VideoSearchRule,
 };
+use crate::infra::source::applecms;
 
-use super::{VideoSourceEngine, fetch_session_api};
+use super::template::{eval_url_template, set_video_globals};
 
 pub(super) fn is_http_url(u: &str) -> bool {
     let trimmed = u.trim();
@@ -19,7 +21,7 @@ pub(super) fn is_http_url(u: &str) -> bool {
             .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
 }
 
-pub(super) fn non_empty_opt(s: String) -> Option<String> {
+fn non_empty_opt(s: String) -> Option<String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         None
@@ -30,34 +32,17 @@ pub(super) fn non_empty_opt(s: String) -> Option<String> {
 
 pub(super) fn eval_rule_categories(
     session: &mut ReusableSourceSession,
-    source: &VideoSourceSpec,
+    base_url: &str,
+    categories: Option<(&str, &VideoCategoriesRule)>,
 ) -> Result<Vec<OnlineVideoCategory>, String> {
-    let Some(cat_url_tpl) = source
-        .categories_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
+    let Some((cat_url_tpl, rule_cat)) = categories else {
         return Ok(Vec::new());
     };
-    let Some(rule_cat) = source.rule_categories.as_ref() else {
-        return Ok(Vec::new());
-    };
-    let base_url = source.effective_source_url();
     let ctx = VideoJsContext::default();
-    VideoSourceEngine::set_video_globals(session, &ctx, None)?;
+    set_video_globals(session, &ctx, None)?;
     session.set_search_vars("", 1)?;
-    let url = VideoSourceEngine::eval_url_template(
-        session,
-        cat_url_tpl,
-        base_url,
-        &[],
-        &ctx,
-        None,
-        "",
-        1,
-    )?;
-    let fetched = fetch_session_api(session, &url, base_url)?;
+    let url = eval_url_template(session, cat_url_tpl, base_url, &[], &ctx, None, "", 1)?;
+    let fetched = session.fetch(&url, base_url)?;
     let raw_input = RuleValue::from_raw(fetched.body);
 
     let list_rule = rule_cat
@@ -84,18 +69,92 @@ pub(super) fn eval_rule_categories(
     Ok(out)
 }
 
+pub(super) fn eval_rule_search(
+    session: &mut ReusableSourceSession,
+    source_name: &str,
+    base_url: &str,
+    search_url: Option<&str>,
+    search_rule: Option<&VideoSearchRule>,
+    keyword: &str,
+    page_num: u32,
+) -> Result<Vec<OnlineVideoSummary>, String> {
+    let rule_search =
+        search_rule.ok_or_else(|| format!("影视源「{source_name}」未配置 ruleSearch"))?;
+    let search_tpl =
+        search_url.ok_or_else(|| format!("影视源「{source_name}」未配置 searchUrl"))?;
+
+    let ctx = VideoJsContext::default();
+    set_video_globals(session, &ctx, None)?;
+    session.set_search_vars(keyword, page_num)?;
+
+    let page_str = page_num.to_string();
+    let url = eval_url_template(
+        session,
+        search_tpl,
+        base_url,
+        &[("key", keyword), ("page", &page_str)],
+        &ctx,
+        None,
+        keyword,
+        page_num,
+    )?;
+    let fetched = session.fetch(&url, base_url)?;
+    let raw_input = RuleValue::from_raw(fetched.body);
+    eval_video_summary_list(session, &raw_input, rule_search, &fetched.final_url)
+}
+
+pub(super) fn eval_rule_browse(
+    session: &mut ReusableSourceSession,
+    source_name: &str,
+    base_url: &str,
+    explore_url: Option<&str>,
+    explore_rule: Option<&VideoSearchRule>,
+    category_id: Option<&str>,
+    page_num: u32,
+) -> Result<VideoBrowseOutput, String> {
+    let explore_tpl =
+        explore_url.ok_or_else(|| format!("影视源「{source_name}」未配置 exploreUrl"))?;
+    let rule = explore_rule
+        .ok_or_else(|| format!("影视源「{source_name}」未配置 ruleExplore / ruleSearch"))?;
+
+    let ctx = VideoJsContext::default();
+    let clean_cat = category_id.map(str::trim).unwrap_or("");
+    set_video_globals(session, &ctx, Some(clean_cat))?;
+    session.set_search_vars("", page_num)?;
+
+    let page_str = page_num.to_string();
+    let url = eval_url_template(
+        session,
+        explore_tpl,
+        base_url,
+        &[("catId", clean_cat), ("page", &page_str)],
+        &ctx,
+        Some(clean_cat),
+        "",
+        page_num,
+    )?;
+    let fetched = session.fetch(&url, base_url)?;
+    let raw_input = RuleValue::from_raw(fetched.body);
+    let items = eval_video_summary_list(session, &raw_input, rule, &fetched.final_url)?;
+    Ok(VideoBrowseOutput {
+        items,
+        total: None,
+        page: page_num,
+        page_count: None,
+    })
+}
+
 pub(super) fn eval_rule_detail(
     session: &mut ReusableSourceSession,
-    source: &VideoSourceSpec,
+    source_name: &str,
+    base_url: &str,
+    detail_rule: Option<&VideoDetailRule>,
     video_id: Option<&str>,
     detail_url: Option<&str>,
 ) -> Result<OnlineVideoDetail, String> {
-    let rule_detail = source
-        .rule_detail
-        .as_ref()
-        .ok_or_else(|| format!("影视源「{}」未配置 ruleDetail", source.source_name))?;
+    let rule_detail =
+        detail_rule.ok_or_else(|| format!("影视源「{source_name}」未配置 ruleDetail"))?;
 
-    let base_url = source.effective_source_url();
     let clean_vid = video_id.map(str::trim).unwrap_or("");
     let clean_durl = detail_url.map(str::trim).unwrap_or("");
     let ctx = VideoJsContext {
@@ -103,7 +162,7 @@ pub(super) fn eval_rule_detail(
         detail_url: clean_durl.to_string(),
         ..Default::default()
     };
-    VideoSourceEngine::set_video_globals(session, &ctx, None)?;
+    set_video_globals(session, &ctx, None)?;
     session.set_search_vars("", 1)?;
 
     let target_url = if !clean_durl.is_empty() {
@@ -111,7 +170,7 @@ pub(super) fn eval_rule_detail(
     } else if let Some(ref req_tpl) = rule_detail.request_url
         && !req_tpl.trim().is_empty()
     {
-        VideoSourceEngine::eval_url_template(
+        eval_url_template(
             session,
             req_tpl,
             base_url,
@@ -125,7 +184,7 @@ pub(super) fn eval_rule_detail(
         return Err("缺少 detail_url 且 ruleDetail 未配置 requestUrl".into());
     };
 
-    let fetched = fetch_session_api(session, &target_url, base_url)?;
+    let fetched = session.fetch(&target_url, base_url)?;
     let mut raw_input = RuleValue::from_raw(fetched.body);
     if let Some(ref init_rule) = rule_detail.init
         && !init_rule.trim().is_empty()
@@ -270,7 +329,84 @@ pub(super) fn eval_rule_detail(
     })
 }
 
-pub(super) fn eval_video_summary_list(
+pub(super) fn eval_rule_play(
+    session: &mut ReusableSourceSession,
+    base_url: &str,
+    rule_play: &VideoPlayRule,
+    resolved_input_play: String,
+    group_name: Option<&str>,
+    headers_applied: bool,
+) -> Result<OnlineVideoPlayResult, String> {
+    let g_name = group_name.map(str::trim).unwrap_or("");
+    let ctx = VideoJsContext {
+        play_url: resolved_input_play.clone(),
+        group_name: g_name.to_string(),
+        ..Default::default()
+    };
+    set_video_globals(session, &ctx, None)?;
+    session.set_search_vars("", 1)?;
+
+    let mut target_input = RuleValue::Text(resolved_input_play.clone());
+    let mut eval_base_url = base_url.to_string();
+    if let Some(ref req_tpl) = rule_play.request_url
+        && !req_tpl.trim().is_empty()
+    {
+        let req_url = eval_url_template(
+            session,
+            req_tpl,
+            base_url,
+            &[("playUrl", &resolved_input_play), ("groupName", g_name)],
+            &ctx,
+            None,
+            "",
+            1,
+        )?;
+        let fetched = session.fetch(&req_url, base_url)?;
+        eval_base_url = fetched.final_url;
+        target_input = RuleValue::from_raw(fetched.body);
+    }
+
+    let stream_raw = if let Some(ref stream_rule) = rule_play.stream_url
+        && !stream_rule.trim().is_empty()
+    {
+        session.eval_string(&target_input, stream_rule, &eval_base_url)?
+    } else {
+        resolved_input_play
+    };
+    let stream_url = resolve_relative_url(stream_raw.trim(), &eval_base_url);
+    if stream_url.is_empty() || !is_http_url(&stream_url) {
+        return Err("未能解析出有效的 HTTP(S) 视频流地址".into());
+    }
+
+    let raw_type = non_empty_opt(session.eval_opt(
+        &target_input,
+        rule_play.stream_type.as_deref(),
+        &eval_base_url,
+    ));
+    let stream_type = match raw_type.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Some("hls") => "hls".to_string(),
+        Some("mp4") => "mp4".to_string(),
+        _ => applecms::infer_stream_type(&stream_url).to_string(),
+    };
+
+    let subtitles = if let Some(ref sub_rule) = rule_play.subtitles
+        && !sub_rule.trim().is_empty()
+    {
+        eval_play_subtitles(session, &target_input, sub_rule, &eval_base_url)
+    } else {
+        Vec::new()
+    };
+
+    Ok(OnlineVideoPlayResult {
+        stream_url,
+        proxy_stream_url: String::new(),
+        stream_type,
+        headers_applied,
+        subtitles,
+    })
+}
+
+fn eval_video_summary_list(
     session: &mut ReusableSourceSession,
     raw_input: &RuleValue,
     rule: &VideoSearchRule,
@@ -349,7 +485,7 @@ fn eval_episodes_list(
     Ok(episodes)
 }
 
-pub(super) fn eval_play_subtitles(
+fn eval_play_subtitles(
     session: &mut ReusableSourceSession,
     input: &RuleValue,
     sub_rule: &str,
@@ -383,10 +519,7 @@ pub(super) fn eval_play_subtitles(
             }
             Err(err) => {
                 if rule_needs_js(trimmed) {
-                    let mut g = session.diag_arc().lock().unwrap_or_else(|e| e.into_inner());
-                    if g.logs.len() < 100 {
-                        g.logs.push(format!("字段规则求值失败: {err}"));
-                    }
+                    session.push_diagnostic_log(format!("字段规则求值失败: {err}"));
                 }
                 return Vec::new();
             }

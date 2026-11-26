@@ -1,6 +1,8 @@
 mod browse;
+mod cache;
 mod debug;
 mod dto;
+mod hls_stage;
 mod playback;
 mod proxy;
 mod tracked;
@@ -10,23 +12,24 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use uuid::Uuid;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::User;
 pub(super) use xmedia_source::concurrency::{
-    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
+    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, weak_lock,
 };
 use xmedia_source::crud::{SourceCrudService, SourceRecord};
-use xmedia_source::http::normalize_cookie_key;
 use xmedia_source::model::{ConcurrentRateSpec, SourceCallError};
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
-use crate::application::catalog::VideoCatalogService;
-use crate::application::lifecycle::VideoDomainLifecycle;
+use crate::application::ingest::VideoIngestService;
 use crate::application::ports::{
     VideoMediaEnginePort, VideoSourceEnginePort, VideoStoragePort, VideoStreamTransportPort,
 };
+use crate::application::projector::VideoProjector;
+use crate::application::shows::VideoShowService;
 use crate::domain::id::VideoId;
 use crate::domain::online::{ExecutionDiagnostics, SourceRuntimeState, VideoSourceSpec};
 use crate::domain::repository::VideoCatalogRepository;
@@ -39,14 +42,16 @@ const DETAIL_OP_TIMEOUT: Duration = Duration::from_secs(25);
 const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone)]
-pub struct VideoTrackingDeps {
-    pub libraries: Arc<dyn LibraryRepository>,
-    pub catalog_repo: Arc<dyn VideoCatalogRepository>,
-    pub catalog_service: Arc<VideoCatalogService>,
-    pub lifecycle: Arc<VideoDomainLifecycle>,
-    pub storage: Arc<dyn VideoStoragePort>,
-    pub media_engine: Arc<dyn VideoMediaEnginePort>,
-    pub events: Arc<dyn RealtimeEventPort>,
+pub(in crate::application) struct VideoTrackingDeps {
+    pub(super) libraries: Arc<dyn LibraryRepository>,
+    pub(super) catalog_repo: Arc<dyn VideoCatalogRepository>,
+    pub(super) bindings: Arc<MediaBindingService>,
+    pub(super) shows: Arc<VideoShowService>,
+    pub(super) ingest: Arc<VideoIngestService>,
+    pub(super) projector: VideoProjector,
+    pub(super) storage: Arc<dyn VideoStoragePort>,
+    pub(super) media_engine: Arc<dyn VideoMediaEnginePort>,
+    pub(super) events: Arc<dyn RealtimeEventPort>,
 }
 
 pub struct VideoOnlineService {
@@ -59,44 +64,6 @@ pub struct VideoOnlineService {
     tracking: Option<VideoTrackingDeps>,
     op_timeout: Duration,
     detail_timeout: Duration,
-}
-
-pub(super) fn lookup_cookie_for_url(
-    cookies: &HashMap<String, String>,
-    target_url: &str,
-) -> Option<String> {
-    let key = normalize_cookie_key(target_url);
-    if key.is_empty() {
-        return None;
-    }
-    if let Some(v) = cookies.get(&key)
-        && !v.trim().is_empty()
-    {
-        return Some(v.clone());
-    }
-    let mut best: Option<(&str, &str)> = None;
-    for (stored_host, val) in cookies {
-        let clean_stored = stored_host.trim_start_matches('.');
-        if clean_stored.is_empty() || val.trim().is_empty() {
-            continue;
-        }
-        if key.len() > clean_stored.len()
-            && key.ends_with(clean_stored)
-            && key.as_bytes()[key.len() - clean_stored.len() - 1] == b'.'
-        {
-            let replace = match best {
-                None => true,
-                Some((prev_host, _)) => {
-                    clean_stored.len() > prev_host.len()
-                        || (clean_stored.len() == prev_host.len() && clean_stored < prev_host)
-                }
-            };
-            if replace {
-                best = Some((clean_stored, val.as_str()));
-            }
-        }
-    }
-    best.map(|(_, v)| v.to_string())
 }
 
 impl VideoOnlineService {
@@ -122,7 +89,7 @@ impl VideoOnlineService {
         &self.source_crud
     }
 
-    pub fn with_tracking(mut self, deps: VideoTrackingDeps) -> Self {
+    pub(in crate::application) fn with_tracking(mut self, deps: VideoTrackingDeps) -> Self {
         self.tracking = Some(deps);
         self
     }
@@ -155,9 +122,7 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        let mut merged = spec.parse_media_header_map_for_target(target_url);
-        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
-        Ok(merged)
+        Ok(spec.build_media_headers(target_url, None))
     }
 
     pub(super) async fn resolve_source_media_headers_with_cookies(
@@ -169,15 +134,7 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        let mut merged = spec.parse_media_header_map_for_target(target_url);
-        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
-        if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
-            && spec.enabled_cookie_jar
-            && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)
-        {
-            merged.insert("Cookie".to_string(), cookie);
-        }
-        Ok(merged)
+        Ok(spec.build_media_headers(target_url, Some(&rec.runtime_state.cookies)))
     }
 
     pub(super) async fn resolve_internal_media_headers(
@@ -194,15 +151,7 @@ impl VideoOnlineService {
         let Ok(spec) = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json) else {
             return HashMap::new();
         };
-        let mut merged = spec.parse_media_header_map_for_target(target_url);
-        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
-        if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
-            && spec.enabled_cookie_jar
-            && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)
-        {
-            merged.insert("Cookie".to_string(), cookie);
-        }
-        merged
+        spec.build_media_headers(target_url, Some(&rec.runtime_state.cookies))
     }
 
     pub(super) async fn persist_runtime_state_with_base(
