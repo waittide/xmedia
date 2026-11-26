@@ -157,7 +157,7 @@ watch(
         </div>
       </div>
 
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:gap-x-8">
         <div>
           <label class="text-label-medium mb-1.5 block text-on-surface-variant">
             {{ bookT('reader.fontFamily') }}
@@ -232,7 +232,7 @@ watch(
           />
         </div>
 
-        <div class="sm:col-span-2 sm:max-w-sm">
+        <div>
           <div class="mb-1.5 flex items-center justify-between">
             <span class="text-label-medium text-on-surface-variant">
               {{ bookT('reader.margin') }}
@@ -280,7 +280,7 @@ watch(
         </div>
       </div>
 
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:gap-x-8">
         <div>
           <label class="text-label-medium mb-1.5 block text-on-surface-variant">
             {{ comicT('settings.defaultReaderMode') }}
@@ -363,17 +363,19 @@ watch(
         </div>
       </div>
 
-      <div class="max-w-sm">
-        <MdSelect
-          :model-value="prefsStore.playback.transcode_profile"
-          :options="musicQualityOptions"
-          @update:model-value="
-            prefsStore.updatePlaybackPreferences(
-              { transcode_profile: $event as TranscodeProfile },
-              { immediate: true, notifyOnError: true },
-            )
-          "
-        />
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:gap-x-8">
+        <div>
+          <MdSelect
+            :model-value="prefsStore.playback.transcode_profile"
+            :options="musicQualityOptions"
+            @update:model-value="
+              prefsStore.updatePlaybackPreferences(
+                { transcode_profile: $event as TranscodeProfile },
+                { immediate: true, notifyOnError: true },
+              )
+            "
+          />
+        </div>
       </div>
     </MdCard>
 
@@ -402,30 +404,32 @@ watch(
         </div>
       </div>
 
-      <div class="max-w-sm">
-        <MdSelect
-          :model-value="prefsStore.video.default_quality"
-          :options="videoQualityOptions"
-          @update:model-value="
-            prefsStore.updateVideoPreferences(
-              { default_quality: $event as VideoQualityProfile },
-              { immediate: true, notifyOnError: true },
-            )
-          "
-        />
-      </div>
+      <div class="grid grid-cols-1 items-center gap-4 sm:grid-cols-2 lg:gap-x-8">
+        <div>
+          <MdSelect
+            :model-value="prefsStore.video.default_quality"
+            :options="videoQualityOptions"
+            @update:model-value="
+              prefsStore.updateVideoPreferences(
+                { default_quality: $event as VideoQualityProfile },
+                { immediate: true, notifyOnError: true },
+              )
+            "
+          />
+        </div>
 
-      <div class="rounded-corner-md bg-surface-container px-4 py-3">
-        <MdSwitch
-          :model-value="prefsStore.video.autoplay_next"
-          :label="t('settings.videoAutoplayNext')"
-          @update:model-value="
-            prefsStore.updateVideoPreferences(
-              { autoplay_next: $event },
-              { immediate: true, notifyOnError: true },
-            )
-          "
-        />
+        <div class="flex min-h-11 items-center rounded-corner-md bg-surface-container px-4 py-1.5">
+          <MdSwitch
+            :model-value="prefsStore.video.autoplay_next"
+            :label="t('settings.videoAutoplayNext')"
+            @update:model-value="
+              prefsStore.updateVideoPreferences(
+                { autoplay_next: $event },
+                { immediate: true, notifyOnError: true },
+              )
+            "
+          />
+        </div>
       </div>
     </MdCard>
   </div>

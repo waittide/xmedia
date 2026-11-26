@@ -169,80 +169,82 @@ watch(
 </script>
 
 <template>
-  <div class="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
-    <!-- Domain Settings Header -->
-    <div class="flex items-center gap-3.5">
-      <div
-        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-corner-lg bg-secondary-container text-on-secondary-container"
-      >
-        <component :is="DOMAIN_ICONS[domain]" class="h-5 w-5" aria-hidden="true" />
+  <div class="px-4 py-5 sm:px-6 sm:py-6">
+    <div class="mx-auto flex w-full max-w-7xl flex-col gap-6">
+      <!-- Domain Settings Header -->
+      <div class="flex items-center gap-3.5">
+        <div
+          class="flex h-11 w-11 shrink-0 items-center justify-center rounded-corner-lg bg-secondary-container text-on-secondary-container"
+        >
+          <component :is="DOMAIN_ICONS[domain]" class="h-5 w-5" aria-hidden="true" />
+        </div>
+        <div class="min-w-0">
+          <h1 class="text-headline-small truncate text-on-surface">
+            {{ pageTitle }}
+          </h1>
+          <p class="text-body-small mt-0.5 text-on-surface-variant">
+            {{ pageSubtitle }}
+          </p>
+        </div>
       </div>
-      <div class="min-w-0">
-        <h1 class="text-headline-small truncate text-on-surface">
-          {{ pageTitle }}
-        </h1>
-        <p class="text-body-small mt-0.5 text-on-surface-variant">
-          {{ pageSubtitle }}
-        </p>
-      </div>
-    </div>
 
-    <!-- Single-row MD3 Filter Chips for Domain Setting Sections -->
-    <div
-      role="group"
-      :aria-label="t('settings.navLabel')"
-      class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
-    >
-      <MdChip
-        v-for="item in tabs"
-        :key="item.id"
-        :data-domain-settings-tab="item.id"
-        variant="filter"
-        hide-check
-        :icon="item.icon"
-        :label="item.label"
-        :selected="activeTab === item.id"
-        @click="selectTab(item.id)"
+      <!-- Single-row MD3 Filter Chips for Domain Setting Sections -->
+      <div
+        role="group"
+        :aria-label="t('settings.navLabel')"
+        class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
+      >
+        <MdChip
+          v-for="item in tabs"
+          :key="item.id"
+          :data-domain-settings-tab="item.id"
+          variant="filter"
+          hide-check
+          :icon="item.icon"
+          :label="item.label"
+          :selected="activeTab === item.id"
+          @click="selectTab(item.id)"
+        />
+      </div>
+
+      <div
+        v-if="errorMsg"
+        role="alert"
+        class="text-body-small flex items-center gap-2 rounded-corner-md bg-error-container px-4 py-3 text-on-error-container"
+      >
+        <LuAlertCircle class="h-4 w-4 shrink-0" />
+        <span>{{ errorMsg }}</span>
+      </div>
+
+      <!-- 1. Domain Preferences -->
+      <SettingsDomainGeneralTab
+        v-if="activeTab === 'preferences'"
+        :domain="domain"
+      />
+
+      <!-- 2. Domain Local Libraries (Admin) -->
+      <SettingsLibrariesTab
+        v-else-if="activeTab === 'libraries'"
+        :locked-domain="domain"
+        @error="errorMsg = $event"
+      />
+
+      <!-- 3. Domain Online Sources & Remote Servers (Admin) -->
+      <SettingsDomainDataSourcesTab
+        v-else-if="activeTab === 'sources'"
+        :domain="domain"
+        :advanced="sourcesAdvanced"
+        :focus-kind="focusKind"
+        hide-domain-selector
+        @update:advanced="handleAdvancedChange"
+        @error="errorMsg = $event"
+      />
+
+      <!-- 4. Domain Open Protocols -->
+      <SettingsDomainProtocolsTab
+        v-else-if="activeTab === 'protocols'"
+        :domain="domain"
       />
     </div>
-
-    <div
-      v-if="errorMsg"
-      role="alert"
-      class="text-body-small flex items-center gap-2 rounded-corner-md bg-error-container px-4 py-3 text-on-error-container"
-    >
-      <LuAlertCircle class="h-4 w-4 shrink-0" />
-      <span>{{ errorMsg }}</span>
-    </div>
-
-    <!-- 1. Domain Preferences -->
-    <SettingsDomainGeneralTab
-      v-if="activeTab === 'preferences'"
-      :domain="domain"
-    />
-
-    <!-- 2. Domain Local Libraries (Admin) -->
-    <SettingsLibrariesTab
-      v-else-if="activeTab === 'libraries'"
-      :locked-domain="domain"
-      @error="errorMsg = $event"
-    />
-
-    <!-- 3. Domain Online Sources & Remote Servers (Admin) -->
-    <SettingsDomainDataSourcesTab
-      v-else-if="activeTab === 'sources'"
-      :domain="domain"
-      :advanced="sourcesAdvanced"
-      :focus-kind="focusKind"
-      hide-domain-selector
-      @update:advanced="handleAdvancedChange"
-      @error="errorMsg = $event"
-    />
-
-    <!-- 4. Domain Open Protocols -->
-    <SettingsDomainProtocolsTab
-      v-else-if="activeTab === 'protocols'"
-      :domain="domain"
-    />
   </div>
 </template>
