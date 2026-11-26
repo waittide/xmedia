@@ -5,11 +5,14 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::UserRole;
 
 use super::{make_wav, setup_test_env};
-use crate::application::dto::{UpdatePlaylistInput, UploadFilePathItem};
+use crate::application::dto::{BindMusicItemsInput, UpdatePlaylistInput, UploadFilePathItem};
 use crate::domain::catalog::{
     Album, AlbumId, Artist, ArtistId, AudioFormat, ReplayGain, Track, TrackId, TrackSource,
 };
-use crate::domain::repository::{MusicCatalogRepository, MusicCollectionRepository};
+use crate::domain::repository::{
+    AlbumScope, ArtistScope, CatalogFacetQuery, CatalogFacetResult, CatalogMutation,
+    MusicCatalogRepository, MusicCollectionRepository, PlaylistQuery, TrackScope,
+};
 use crate::infra::persistence::repositories::{
     ToastyMusicCatalogRepository, ToastyMusicCollectionRepository,
 };
@@ -26,7 +29,14 @@ async fn upload_files_publishes_media_changed_event() {
         })
         .await
         .unwrap();
-    let admin = env.auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = env
+        .auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let _member_dto = env
         .auth_svc
         .create_user(
@@ -40,10 +50,17 @@ async fn upload_files_publishes_media_changed_event() {
         )
         .await
         .unwrap();
-    let member_session = env.auth_svc.login("member", "password123").await.unwrap();
+    let member_session = env
+        .auth_svc
+        .login("member", "password123", None)
+        .await
+        .unwrap();
     let member = env
         .auth_svc
-        .authenticate_jwt(&member_session.token)
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&member_session.token),
+            None,
+        )
         .await
         .unwrap();
 
@@ -122,7 +139,14 @@ async fn delete_library_cascades_all_collection_references() {
         })
         .await
         .unwrap();
-    let admin = env.auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = env
+        .auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let managed_lib = env
         .library_svc
@@ -170,13 +194,19 @@ async fn delete_library_cascades_all_collection_references() {
         created_at: now,
         updated_at: now,
     };
-    catalog_repo.save_artist(&shared_artist).await.unwrap();
-    catalog_repo.save_artist(&exclusive_artist).await.unwrap();
+    catalog_repo
+        .save(CatalogMutation::Artist(&shared_artist))
+        .await
+        .unwrap();
+    catalog_repo
+        .save(CatalogMutation::Artist(&exclusive_artist))
+        .await
+        .unwrap();
 
     let keep_album = Album {
         id: AlbumId::new(),
         library_id: managed_lib.id,
-        album_key: Album::compute_key(managed_lib.id, "Keep Album", &shared_artist.name, false),
+        album_key: Album::lookup_key(managed_lib.id, "Keep Album", &shared_artist.name, false).1,
         title: "Keep Album".into(),
         album_artist_id: shared_artist.id,
         album_artist_name: shared_artist.name.clone(),
@@ -193,12 +223,13 @@ async fn delete_library_cascades_all_collection_references() {
     let del_album = Album {
         id: AlbumId::new(),
         library_id: mounted_lib.id,
-        album_key: Album::compute_key(
+        album_key: Album::lookup_key(
             mounted_lib.id,
             "Delete Album",
             &exclusive_artist.name,
             false,
-        ),
+        )
+        .1,
         title: "Delete Album".into(),
         album_artist_id: exclusive_artist.id,
         album_artist_name: exclusive_artist.name.clone(),
@@ -212,8 +243,14 @@ async fn delete_library_cascades_all_collection_references() {
         created_at: now,
         updated_at: now,
     };
-    catalog_repo.save_album(&keep_album).await.unwrap();
-    catalog_repo.save_album(&del_album).await.unwrap();
+    catalog_repo
+        .save(CatalogMutation::Album(&keep_album))
+        .await
+        .unwrap();
+    catalog_repo
+        .save(CatalogMutation::Album(&del_album))
+        .await
+        .unwrap();
 
     let keep_track = Track {
         id: TrackId::new(),
@@ -286,20 +323,36 @@ async fn delete_library_cascades_all_collection_references() {
         created_at: now,
         updated_at: now,
     };
-    catalog_repo.save_track(&keep_track).await.unwrap();
-    catalog_repo.save_track(&del_track).await.unwrap();
-    catalog_repo.recompute_catalog_aggregates().await.unwrap();
+    catalog_repo
+        .save(CatalogMutation::Track(&keep_track))
+        .await
+        .unwrap();
+    catalog_repo
+        .save(CatalogMutation::Track(&del_track))
+        .await
+        .unwrap();
+    catalog_repo
+        .save(CatalogMutation::RecomputeAggregates)
+        .await
+        .unwrap();
     env.music_services
-        .catalog
-        .bind_tracks_for_user(admin.id, &[keep_track.id, del_track.id])
+        .ingest
+        .bind_tracks(
+            &admin,
+            BindMusicItemsInput {
+                item_ids: vec![keep_track.id.0, del_track.id.0],
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
 
     // Populate stars, ratings, playlist, bookmarks, play queue, scrobbles/stats, and tags
     env.music_services
         .collection
-        .star_items(
+        .set_starred(
             admin.id,
+            true,
             &[del_track.id.to_string(), keep_track.id.to_string()],
             &[del_album.id, keep_album.id],
             &[exclusive_artist.id, shared_artist.id],
@@ -386,36 +439,42 @@ async fn delete_library_cascades_all_collection_references() {
     // Catalog entities deleted (shared artist survives)
     assert!(
         catalog_repo
-            .find_track_by_id(del_track.id)
+            .query_tracks(TrackScope::Id(del_track.id))
             .await
             .unwrap()
-            .is_none()
+            .is_empty()
     );
     assert!(
         catalog_repo
-            .find_album_by_id(del_album.id)
+            .query_albums(AlbumScope::Id(del_album.id))
             .await
             .unwrap()
-            .is_none()
+            .items
+            .is_empty()
     );
     assert!(
         catalog_repo
-            .find_artist_by_id(exclusive_artist.id)
+            .query_artists(ArtistScope::Id(exclusive_artist.id))
             .await
             .unwrap()
-            .is_none()
+            .items
+            .is_empty()
     );
     assert!(
-        catalog_repo
-            .find_artist_by_id(shared_artist.id)
+        !catalog_repo
+            .query_artists(ArtistScope::Id(shared_artist.id))
             .await
             .unwrap()
-            .is_some()
+            .items
+            .is_empty()
     );
 
     // Stars cleaned for deleted track/album/exclusive artist; surviving stars intact
-    let stars = collections_repo.list_starred(admin.id, None).await.unwrap();
-    let starred_ids: Vec<_> = stars.iter().map(|s| s.target_id).collect();
+    let engagement = collections_repo
+        .load_engagement(admin.id, None)
+        .await
+        .unwrap();
+    let starred_ids: Vec<_> = engagement.starred.iter().map(|s| s.target_id).collect();
     assert!(!starred_ids.contains(&del_track.id.0));
     assert!(!starred_ids.contains(&del_album.id.0));
     assert!(!starred_ids.contains(&exclusive_artist.id.0));
@@ -424,8 +483,7 @@ async fn delete_library_cascades_all_collection_references() {
     assert!(starred_ids.contains(&shared_artist.id.0));
 
     // Ratings cleaned for deleted track/album/exclusive artist; surviving ratings intact
-    let ratings = collections_repo.list_user_ratings(admin.id).await.unwrap();
-    let rated_ids: Vec<_> = ratings.iter().map(|r| r.target_id).collect();
+    let rated_ids: Vec<_> = engagement.ratings.iter().map(|r| r.target_id).collect();
     assert!(!rated_ids.contains(&del_track.id.0));
     assert!(!rated_ids.contains(&del_album.id.0));
     assert!(!rated_ids.contains(&exclusive_artist.id.0));
@@ -435,14 +493,19 @@ async fn delete_library_cascades_all_collection_references() {
 
     // Playlist tracks stripped of deleted track, surviving track retained
     let pl_after = collections_repo
-        .find_playlist_by_id(playlist.playlist.id)
+        .query_playlists(PlaylistQuery::Id(playlist.playlist.id))
         .await
         .unwrap()
+        .into_iter()
+        .next()
         .unwrap();
     assert_eq!(pl_after.track_ids, vec![keep_track.id]);
 
     // Bookmarks cleaned
-    let bms = collections_repo.list_bookmarks(admin.id).await.unwrap();
+    let bms = collections_repo
+        .query_bookmarks(admin.id, None)
+        .await
+        .unwrap();
     assert_eq!(bms.len(), 1);
     assert_eq!(bms[0].track_id, keep_track.id);
 
@@ -457,12 +520,8 @@ async fn delete_library_cascades_all_collection_references() {
     assert_eq!(queue.position_ms, 0);
 
     // Play stats and scrobbles cleaned
-    let stats = collections_repo
-        .list_user_play_stats(admin.id)
-        .await
-        .unwrap();
-    assert_eq!(stats.len(), 1);
-    assert_eq!(stats[0].track_id, keep_track.id);
+    assert_eq!(engagement.play_stats.len(), 1);
+    assert_eq!(engagement.play_stats[0].track_id, keep_track.id);
     let scrobbles = collections_repo
         .list_recent_scrobbles(admin.id, 20)
         .await
@@ -471,7 +530,13 @@ async fn delete_library_cascades_all_collection_references() {
     assert_eq!(scrobbles[0].track_id, keep_track.id);
 
     // Tags cleaned
-    assert!(catalog_repo.list_tags().await.unwrap().is_empty());
+    assert!(matches!(
+        catalog_repo
+            .query_facets(CatalogFacetQuery::Tags(None))
+            .await
+            .unwrap(),
+        CatalogFacetResult::Tags(tags) if tags.is_empty()
+    ));
 }
 
 #[tokio::test]
@@ -488,7 +553,10 @@ async fn playlist_visibility_rules_for_public_and_private_playlists() {
         .unwrap();
     let admin = env
         .auth_svc
-        .authenticate_jwt(&admin_session.token)
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&admin_session.token),
+            None,
+        )
         .await
         .unwrap();
     let _alice_dto = env
@@ -517,16 +585,30 @@ async fn playlist_visibility_rules_for_public_and_private_playlists() {
         )
         .await
         .unwrap();
-    let alice_session = env.auth_svc.login("alice", "password123").await.unwrap();
-    let bob_session = env.auth_svc.login("bob", "password123").await.unwrap();
+    let alice_session = env
+        .auth_svc
+        .login("alice", "password123", None)
+        .await
+        .unwrap();
+    let bob_session = env
+        .auth_svc
+        .login("bob", "password123", None)
+        .await
+        .unwrap();
     let alice = env
         .auth_svc
-        .authenticate_jwt(&alice_session.token)
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&alice_session.token),
+            None,
+        )
         .await
         .unwrap();
     let bob = env
         .auth_svc
-        .authenticate_jwt(&bob_session.token)
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&bob_session.token),
+            None,
+        )
         .await
         .unwrap();
 

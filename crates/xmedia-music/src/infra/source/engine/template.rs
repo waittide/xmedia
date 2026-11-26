@@ -13,24 +13,41 @@ use crate::domain::online::{MusicSourceSpec, MusicTrackContext};
 
 #[derive(Debug, Default)]
 pub(super) struct MusicTemplateVars<'a> {
-    pub(super) key: &'a str,
-    pub(super) page: u32,
-    pub(super) limit: u32,
-    pub(super) quality: &'a str,
-    pub(super) track_id: &'a str,
-    pub(super) url_id: &'a str,
-    pub(super) cover_id: &'a str,
-    pub(super) lyric_id: &'a str,
-    pub(super) play_url: &'a str,
-    pub(super) detail_url: &'a str,
-    pub(super) title: &'a str,
-    pub(super) artist: &'a str,
-    pub(super) album: &'a str,
-    pub(super) cover_url: Option<&'a str>,
-    pub(super) raw_ctx: Option<&'a MusicTrackContext>,
+    key: &'a str,
+    page: u32,
+    limit: u32,
+    quality: &'a str,
+    track_id: &'a str,
+    url_id: &'a str,
+    cover_id: &'a str,
+    lyric_id: &'a str,
+    play_url: &'a str,
+    detail_url: &'a str,
+    title: &'a str,
+    artist: &'a str,
+    album: &'a str,
+    cover_url: Option<&'a str>,
+    raw_ctx: Option<&'a MusicTrackContext>,
 }
 
 impl<'a> MusicTemplateVars<'a> {
+    pub(super) fn for_search(key: &'a str, page: u32, limit: u32) -> Self {
+        Self {
+            key,
+            page,
+            limit,
+            ..Default::default()
+        }
+    }
+
+    pub(super) fn for_explore(page: u32, limit: u32) -> Self {
+        Self {
+            page,
+            limit,
+            ..Default::default()
+        }
+    }
+
     pub(super) fn from_track(ctx: &'a MusicTrackContext, quality: &'a str) -> Self {
         let url_id = ctx
             .url_id
@@ -66,6 +83,26 @@ impl<'a> MusicTemplateVars<'a> {
         }
     }
 
+    pub(super) fn eval(
+        &self,
+        session: &mut MusicSourceSession,
+        raw_tpl: &str,
+        input: &RuleValue,
+        base_url: &str,
+    ) -> Result<String, String> {
+        for branch in split_top_level_or(raw_tpl) {
+            if branch.is_empty() {
+                continue;
+            }
+            let evaluated = self.eval_branch(session, branch, input, base_url)?;
+            let trimmed = evaluated.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+        Ok(String::new())
+    }
+
     fn to_pairs(&self, page_str: &'a str, limit_str: &'a str) -> [(&'a str, &'a str); 13] {
         [
             ("key", self.key),
@@ -99,6 +136,149 @@ impl<'a> MusicTemplateVars<'a> {
             self.album,
             self.cover_url.unwrap_or(""),
         ])
+    }
+
+    fn eval_js_pipeline_guarded(
+        &self,
+        session: &mut MusicSourceSession,
+        raw_tpl: &str,
+        input: &RuleValue,
+        base_url: &str,
+    ) -> Result<String, String> {
+        let out = session.eval_string(input, raw_tpl, base_url)?;
+        if self.has_suspicious_option_chars()
+            && split_legado_url_and_raw_options(out.trim()).1.is_some()
+        {
+            let probe_key = if self.key.is_empty() {
+                ""
+            } else {
+                "__xmedia_probe__"
+            };
+            let probe_ctx = self.raw_ctx.map(|orig| MusicTrackContext {
+                track_id: if orig.track_id.is_empty() {
+                    String::new()
+                } else {
+                    "__xmedia_probe__".into()
+                },
+                title: if orig.title.is_empty() {
+                    String::new()
+                } else {
+                    "__xmedia_probe__".into()
+                },
+                artist: if orig.artist.is_empty() {
+                    String::new()
+                } else {
+                    "__xmedia_probe__".into()
+                },
+                album: probe_non_empty_opt(orig.album.as_deref()),
+                duration_secs: orig.duration_secs,
+                cover_url: probe_non_empty_opt(orig.cover_url.as_deref()),
+                cover_id: probe_non_empty_opt(orig.cover_id.as_deref()),
+                url_id: probe_non_empty_opt(orig.url_id.as_deref()),
+                lyric_id: probe_non_empty_opt(orig.lyric_id.as_deref()),
+                play_url: probe_non_empty_opt(orig.play_url.as_deref()),
+                detail_url: probe_non_empty_opt(orig.detail_url.as_deref()),
+                quality: (!self.quality.is_empty()).then(|| "__xmedia_probe__".into()),
+            });
+            let probe_res = match session.set_search_vars(probe_key, self.page, self.limit) {
+                Ok(()) => {
+                    if let Some(ref pctx) = probe_ctx {
+                        session
+                            .set_track_context(pctx)
+                            .and_then(|()| session.eval_string(input, raw_tpl, base_url))
+                    } else {
+                        session.eval_string(input, raw_tpl, base_url)
+                    }
+                }
+                Err(e) => Err(e),
+            };
+
+            let _ = session.set_search_vars(self.key, self.page, self.limit);
+            if let Some(orig) = self.raw_ctx {
+                let _ = session.set_track_context(orig);
+            }
+
+            let probe_out = probe_res?;
+            verify_js_pipeline_url_options(&out, &probe_out, "请求 URL")?;
+        }
+        Ok(out)
+    }
+
+    fn eval_branch(
+        &self,
+        session: &mut MusicSourceSession,
+        branch: &str,
+        input: &RuleValue,
+        base_url: &str,
+    ) -> Result<String, String> {
+        let normalized_branch = normalize_quality_placeholder(branch);
+        let (raw_url_part, opt_part) = split_legado_url_template_and_options(&normalized_branch);
+
+        if opt_part.is_none() {
+            if split_js_pipeline(&normalized_branch).is_some() {
+                return self.eval_js_pipeline_guarded(session, &normalized_branch, input, base_url);
+            }
+            if !normalized_branch.contains("{{") || !normalized_branch.contains("}}") {
+                if normalized_branch.starts_with("$.")
+                    || normalized_branch.starts_with("$[")
+                    || normalized_branch == "$"
+                    || normalized_branch.starts_with('@')
+                {
+                    return Ok(session.eval_opt(input, Some(&normalized_branch), base_url));
+                }
+                return Ok(normalized_branch.into_owned());
+            }
+        }
+
+        let page_str = self.page.to_string();
+        let limit_str = self.limit.to_string();
+        let var_pairs = self.to_pairs(&page_str, &limit_str);
+
+        let rendered_url = if split_js_pipeline(raw_url_part).is_some() {
+            self.eval_js_pipeline_guarded(session, raw_url_part, input, base_url)?
+        } else if let Some((var_name, literal_val)) =
+            detect_passthrough_url_var(raw_url_part, &var_pairs)
+        {
+            if literal_val.trim().is_empty() {
+                String::new()
+            } else {
+                resolve_literal_http_url(literal_val, base_url, var_name)?
+            }
+        } else {
+            let pre_url = substitute_url_part_vars(raw_url_part, &var_pairs, None);
+            let evaluated_url = if pre_url.contains("{{") && pre_url.contains("}}") {
+                session.eval_string(input, &pre_url, base_url)?
+            } else {
+                pre_url
+            };
+            if split_legado_url_and_raw_options(evaluated_url.trim())
+                .1
+                .is_some()
+            {
+                return Err("请求 URL 模板参数不允许附加请求选项".into());
+            }
+            evaluated_url
+        };
+
+        if rendered_url.trim().is_empty() {
+            return Ok(String::new());
+        }
+
+        if let Some(raw_opts) = opt_part {
+            let rendered_opts = if template_needs_js(raw_opts) {
+                eval_json_options_template(
+                    raw_opts,
+                    &var_pairs,
+                    |expr_tpl| session.eval_string(input, expr_tpl, base_url),
+                    "音源请求 URL",
+                )?
+            } else {
+                substitute_legado_options_vars(raw_opts, &var_pairs).map_err(|e| e.to_string())?
+            };
+            Ok(format!("{},{rendered_opts}", rendered_url.trim()))
+        } else {
+            Ok(rendered_url)
+        }
     }
 }
 
@@ -181,169 +361,6 @@ pub(super) fn normalize_quality_placeholder(tpl: &str) -> Cow<'_, str> {
 fn probe_non_empty_opt(opt: Option<&str>) -> Option<String> {
     opt.filter(|s| !s.is_empty())
         .map(|_| "__xmedia_probe__".to_string())
-}
-
-fn eval_js_pipeline_guarded(
-    session: &mut MusicSourceSession,
-    raw_tpl: &str,
-    vars: &MusicTemplateVars<'_>,
-    input: &RuleValue,
-    base_url: &str,
-) -> Result<String, String> {
-    let out = session.eval_string(input, raw_tpl, base_url)?;
-    if vars.has_suspicious_option_chars()
-        && split_legado_url_and_raw_options(out.trim()).1.is_some()
-    {
-        let probe_key = if vars.key.is_empty() {
-            ""
-        } else {
-            "__xmedia_probe__"
-        };
-        let probe_ctx = vars.raw_ctx.map(|orig| MusicTrackContext {
-            track_id: if orig.track_id.is_empty() {
-                String::new()
-            } else {
-                "__xmedia_probe__".into()
-            },
-            title: if orig.title.is_empty() {
-                String::new()
-            } else {
-                "__xmedia_probe__".into()
-            },
-            artist: if orig.artist.is_empty() {
-                String::new()
-            } else {
-                "__xmedia_probe__".into()
-            },
-            album: probe_non_empty_opt(orig.album.as_deref()),
-            duration_secs: orig.duration_secs,
-            cover_url: probe_non_empty_opt(orig.cover_url.as_deref()),
-            cover_id: probe_non_empty_opt(orig.cover_id.as_deref()),
-            url_id: probe_non_empty_opt(orig.url_id.as_deref()),
-            lyric_id: probe_non_empty_opt(orig.lyric_id.as_deref()),
-            play_url: probe_non_empty_opt(orig.play_url.as_deref()),
-            detail_url: probe_non_empty_opt(orig.detail_url.as_deref()),
-            quality: (!vars.quality.is_empty()).then(|| "__xmedia_probe__".into()),
-        });
-        let probe_res = match session.set_search_vars(probe_key, vars.page, vars.limit) {
-            Ok(()) => {
-                if let Some(ref pctx) = probe_ctx {
-                    session
-                        .set_track_context(pctx)
-                        .and_then(|()| session.eval_string(input, raw_tpl, base_url))
-                } else {
-                    session.eval_string(input, raw_tpl, base_url)
-                }
-            }
-            Err(e) => Err(e),
-        };
-
-        let _ = session.set_search_vars(vars.key, vars.page, vars.limit);
-        if let Some(orig) = vars.raw_ctx {
-            let _ = session.set_track_context(orig);
-        }
-
-        let probe_out = probe_res?;
-        verify_js_pipeline_url_options(&out, &probe_out, "请求 URL")?;
-    }
-    Ok(out)
-}
-
-fn eval_template_branch_single_pass(
-    session: &mut MusicSourceSession,
-    branch: &str,
-    vars: &MusicTemplateVars<'_>,
-    input: &RuleValue,
-    base_url: &str,
-) -> Result<String, String> {
-    let normalized_branch = normalize_quality_placeholder(branch);
-    let (raw_url_part, opt_part) = split_legado_url_template_and_options(&normalized_branch);
-
-    if opt_part.is_none() {
-        if split_js_pipeline(&normalized_branch).is_some() {
-            return eval_js_pipeline_guarded(session, &normalized_branch, vars, input, base_url);
-        }
-        if !normalized_branch.contains("{{") || !normalized_branch.contains("}}") {
-            if normalized_branch.starts_with("$.")
-                || normalized_branch.starts_with("$[")
-                || normalized_branch == "$"
-                || normalized_branch.starts_with('@')
-            {
-                return Ok(session.eval_opt(input, Some(&normalized_branch), base_url));
-            }
-            return Ok(normalized_branch.into_owned());
-        }
-    }
-
-    let page_str = vars.page.to_string();
-    let limit_str = vars.limit.to_string();
-    let var_pairs = vars.to_pairs(&page_str, &limit_str);
-
-    let rendered_url = if split_js_pipeline(raw_url_part).is_some() {
-        eval_js_pipeline_guarded(session, raw_url_part, vars, input, base_url)?
-    } else if let Some((var_name, literal_val)) =
-        detect_passthrough_url_var(raw_url_part, &var_pairs)
-    {
-        if literal_val.trim().is_empty() {
-            String::new()
-        } else {
-            resolve_literal_http_url(literal_val, base_url, var_name)?
-        }
-    } else {
-        let pre_url = substitute_url_part_vars(raw_url_part, &var_pairs, None);
-        let evaluated_url = if pre_url.contains("{{") && pre_url.contains("}}") {
-            session.eval_string(input, &pre_url, base_url)?
-        } else {
-            pre_url
-        };
-        if split_legado_url_and_raw_options(evaluated_url.trim())
-            .1
-            .is_some()
-        {
-            return Err("请求 URL 模板参数不允许附加请求选项".into());
-        }
-        evaluated_url
-    };
-
-    if rendered_url.trim().is_empty() {
-        return Ok(String::new());
-    }
-
-    if let Some(raw_opts) = opt_part {
-        let rendered_opts = if template_needs_js(raw_opts) {
-            eval_json_options_template(
-                raw_opts,
-                &var_pairs,
-                |expr_tpl| session.eval_string(input, expr_tpl, base_url),
-                "音源请求 URL",
-            )?
-        } else {
-            substitute_legado_options_vars(raw_opts, &var_pairs).map_err(|e| e.to_string())?
-        };
-        Ok(format!("{},{rendered_opts}", rendered_url.trim()))
-    } else {
-        Ok(rendered_url)
-    }
-}
-
-pub(super) fn eval_template_expression(
-    session: &mut MusicSourceSession,
-    raw_tpl: &str,
-    vars: &MusicTemplateVars<'_>,
-    input: &RuleValue,
-    base_url: &str,
-) -> Result<String, String> {
-    for branch in split_top_level_or(raw_tpl) {
-        if branch.is_empty() {
-            continue;
-        }
-        let evaluated = eval_template_branch_single_pass(session, branch, vars, input, base_url)?;
-        let trimmed = evaluated.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-    Ok(String::new())
 }
 
 pub(super) fn substitute_static_explore_placeholders(raw: &str, page: u32, limit: u32) -> String {
@@ -595,14 +612,7 @@ pub(super) fn fetch_api(
     target_url: &str,
     base_url: &str,
 ) -> Result<xmedia_source::http::HttpFetchResult, String> {
-    session.check_active()?;
-    let remaining = session.remaining_budget();
-    if remaining.is_zero() {
-        return Err("执行超过单次操作总超时上限 (interrupted)".into());
-    }
-    let fetched = session
-        .http()
-        .fetch_with_timeout(target_url, base_url, Some(remaining))?;
+    let fetched = session.fetch(target_url, base_url)?;
     session.check_active()?;
     if fetched.status >= 400 {
         return Err(format!(

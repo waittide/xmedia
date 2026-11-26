@@ -8,7 +8,8 @@ use xmedia_core::domain::user::User;
 
 use crate::domain::catalog::StructuredLyrics;
 use crate::domain::online::{
-    ExecutionDiagnostics, MusicSourceSpec, MusicTrackContext, OnlineMusicTrackItem, is_http_url,
+    ExecutionDiagnostics, MusicRuleKind, MusicSourceSpec, MusicTrackContext, OnlineMusicTrackItem,
+    is_http_url, parse_concurrent_rate,
 };
 
 use super::browse::{build_proxy_cover_url, build_proxy_stream_url, track_item_to_dto};
@@ -29,15 +30,19 @@ impl MusicOnlineService {
 
         let op_timeout = self.op_timeout;
         let track_info_timeout = self.track_info_timeout;
-        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
-            .await
-            .map_err(DomainError::Validation)?;
+        self.acquire_rate_slot(
+            source_id,
+            parse_concurrent_rate(parsed.concurrent_rate.as_deref()),
+            op_timeout,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         if let Some(ref q) = quality {
             ctx.quality = Some(q.clone());
         }
         let qualities = parsed.supported_qualities.clone();
-        let has_cover_rule = parsed.rule_cover.is_some();
+        let has_cover_rule = parsed.has_rule(MusicRuleKind::Cover);
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
@@ -86,7 +91,7 @@ impl MusicOnlineService {
                     format: None,
                 };
 
-                let track_item = if parsed.rule_track_detail.is_some()
+                let track_item = if parsed.has_rule(MusicRuleKind::TrackDetail)
                     && (ctx
                         .detail_url
                         .as_deref()
@@ -297,9 +302,13 @@ impl MusicOnlineService {
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
         let op_timeout = self.op_timeout;
-        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
-            .await
-            .map_err(DomainError::Validation)?;
+        self.acquire_rate_slot(
+            source_id,
+            parse_concurrent_rate(parsed.concurrent_rate.as_deref()),
+            op_timeout,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let headers_applied = self.media_proxy.has_effective_proxy_headers(&parsed);
@@ -387,9 +396,13 @@ impl MusicOnlineService {
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
         let op_timeout = self.op_timeout;
-        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
-            .await
-            .map_err(DomainError::Validation)?;
+        self.acquire_rate_slot(
+            source_id,
+            parse_concurrent_rate(parsed.concurrent_rate.as_deref()),
+            op_timeout,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
@@ -444,9 +457,6 @@ impl MusicOnlineService {
                 .await;
         }
 
-        Ok(out
-            .data
-            .map(|r| r.lyrics)
-            .unwrap_or_else(StructuredLyrics::empty))
+        Ok(out.data.map(|r| r.lyrics).unwrap_or_default())
     }
 }

@@ -19,9 +19,9 @@ use xmedia_source::http::{
 };
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, MEDIA_PROLOG_SNIFF_MAX_BYTES,
-    fetch_validated_image_bytes_with_config, has_enough_media_sniff_bytes,
-    has_unclosed_leading_xml_or_comment, is_only_bom_or_whitespace, limit_byte_stream,
-    looks_like_html_or_svg_bytes, validate_proxy_content_length,
+    fetch_image, has_enough_media_sniff_bytes, has_unclosed_leading_xml_or_comment,
+    is_only_bom_or_whitespace, limit_byte_stream, looks_like_html_or_svg_bytes,
+    validate_proxy_content_length,
 };
 
 use crate::application::ports::{
@@ -207,8 +207,7 @@ impl MusicMediaProxyPort for HttpMusicMediaProxy {
             allow_private_ips: self.allow_private_ips,
             proxy_url: None,
         };
-        fetch_validated_image_bytes_with_config(url, headers, DEFAULT_IMAGE_PROXY_MAX_BYTES, &cfg)
-            .await
+        fetch_image(url, headers, DEFAULT_IMAGE_PROXY_MAX_BYTES, &cfg).await
     }
 
     async fn open_audio_proxy_stream(

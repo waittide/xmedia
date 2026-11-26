@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use xmedia_source::http::LegadoHttpClient;
+use xmedia_source::http::{HttpFetchResult, LegadoHttpClient};
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::model::{ExecutionDiagnostics, SourceMetadata, SourceRuntimeState};
 use xmedia_source::rule::RuleValue;
@@ -61,16 +61,12 @@ impl MusicSourceSession {
         Self { inner }
     }
 
-    pub fn http(&self) -> &LegadoHttpClient {
-        self.inner.http()
+    pub fn fetch(&self, target_url: &str, base_url: &str) -> Result<HttpFetchResult, String> {
+        self.inner.fetch(target_url, base_url)
     }
 
     pub fn check_active(&self) -> Result<(), String> {
         self.inner.check_active()
-    }
-
-    pub(crate) fn remaining_budget(&self) -> Duration {
-        self.inner.remaining_budget()
     }
 
     pub fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {

@@ -10,7 +10,6 @@ use uuid::Uuid;
 use xmedia_core::application::bindings::{BindMediaItemsResultDto, UnbindMediaItemResultDto};
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
     ApiError, ApiResult, TempUploadFile, WebAuth, into_binary_cache_response,
     parse_http_range_spec, stream_multipart_field_to_temp_file,
@@ -212,7 +211,7 @@ async fn upload_tracks(
     WebAuth(user): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadBatchResultDto>)> {
-    require_admin(&user)?;
+    user.ensure_admin()?;
     let mut temp_guards: Vec<(String, TempUploadFile)> = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -229,7 +228,7 @@ async fn upload_tracks(
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .trim();
-        if !ext.eq_ignore_ascii_case("lrc") && AudioFormat::from_extension(ext).is_none() {
+        if !ext.eq_ignore_ascii_case("lrc") && ext.parse::<AudioFormat>().is_err() {
             return Err(ApiError(DomainError::UnsupportedFormat(format!(
                 "unsupported file extension '.{ext}' for '{filename}'"
             ))));
@@ -289,7 +288,7 @@ async fn list_pool_tracks(
         exclude_online_tracked: true,
     };
     Ok(Json(
-        state.services.catalog.list_pool_tracks(user.id, q).await?,
+        state.services.ingest.list_pool_tracks(user.id, q).await?,
     ))
 }
 
@@ -341,7 +340,7 @@ async fn query_tracks(
         page_size: p.page_size.unwrap_or(50).clamp(1, 500),
         exclude_online_tracked: false,
     };
-    Ok(Json(state.services.catalog.query_tracks(user.id, q).await?))
+    Ok(Json(state.services.tracks.query_tracks(user.id, q).await?))
 }
 
 async fn recent_tracks(
@@ -352,7 +351,7 @@ async fn recent_tracks(
     Ok(Json(
         state
             .services
-            .catalog
+            .tracks
             .list_recent_played_tracks(user.id, p.limit.unwrap_or(50))
             .await?,
     ))
@@ -366,7 +365,7 @@ async fn random_tracks(
     Ok(Json(
         state
             .services
-            .catalog
+            .tracks
             .get_random_tracks(
                 user.id,
                 p.size.unwrap_or(20),
@@ -387,7 +386,7 @@ async fn get_track(
     Ok(Json(
         state
             .services
-            .catalog
+            .tracks
             .get_track(user.id, TrackId(id))
             .await?,
     ))
@@ -413,18 +412,13 @@ async fn get_track_lyrics(
 ) -> ApiResult<Json<StructuredLyrics>> {
     state
         .services
-        .catalog
-        .require_track_bound(user.id, TrackId(id))
-        .await?;
-    let _ = state
-        .services
         .online
-        .ensure_tracked_lyrics_cached(TrackId(id))
-        .await;
+        .ensure_tracked_lyrics_cached(user.id, TrackId(id))
+        .await?;
     Ok(Json(
         state
             .services
-            .catalog
+            .streaming
             .get_lyrics_by_track(user.id, TrackId(id))
             .await?,
     ))
@@ -439,13 +433,8 @@ async fn stream_track(
 ) -> ApiResult<Response> {
     state
         .services
-        .catalog
-        .require_track_bound(user.id, TrackId(id))
-        .await?;
-    state
-        .services
         .online
-        .ensure_tracked_track_cached(TrackId(id))
+        .ensure_tracked_track_cached(user.id, TrackId(id))
         .await?;
     let spec = parse_http_range_spec(&headers);
     let resolved = state
@@ -471,13 +460,8 @@ async fn download_track(
 ) -> ApiResult<Response> {
     state
         .services
-        .catalog
-        .require_track_bound(user.id, TrackId(id))
-        .await?;
-    state
-        .services
         .online
-        .ensure_tracked_track_cached(TrackId(id))
+        .ensure_tracked_track_cached(user.id, TrackId(id))
         .await?;
     let spec = parse_http_range_spec(&headers);
     let resolved = state
@@ -496,7 +480,7 @@ async fn get_cover(
 ) -> ApiResult<Response> {
     let cover = state
         .services
-        .catalog
+        .streaming
         .get_cover_art(&user, &id, p.size)
         .await?;
     Ok(into_binary_cache_response(cover))
@@ -508,7 +492,7 @@ async fn list_albums(
     Query(p): Query<AlbumListParams>,
 ) -> ApiResult<Json<PagedResult<AlbumDto>>> {
     let list_type = match p.list_type.as_deref() {
-        Some(raw) if !raw.trim().is_empty() => AlbumListType::parse(raw)?,
+        Some(raw) if !raw.trim().is_empty() => raw.parse::<AlbumListType>()?,
         _ => AlbumListType::Newest,
     };
     let q = AlbumListQuery {
@@ -521,7 +505,7 @@ async fn list_albums(
         offset: p.offset.unwrap_or(0),
         size: p.size.unwrap_or(48).clamp(1, 500),
     };
-    Ok(Json(state.services.catalog.list_albums(user.id, q).await?))
+    Ok(Json(state.services.browse.list_albums(user.id, q).await?))
 }
 
 async fn get_album(
@@ -532,7 +516,7 @@ async fn get_album(
     Ok(Json(
         state
             .services
-            .catalog
+            .browse
             .get_album_detail(user.id, AlbumId(id))
             .await?,
     ))
@@ -550,7 +534,7 @@ async fn list_artists(
         offset: p.offset.unwrap_or(0),
         size: p.size.unwrap_or(100).clamp(1, 1000),
     };
-    Ok(Json(state.services.catalog.list_artists(user.id, q).await?))
+    Ok(Json(state.services.browse.list_artists(user.id, q).await?))
 }
 
 async fn get_artist(
@@ -561,7 +545,7 @@ async fn get_artist(
     Ok(Json(
         state
             .services
-            .catalog
+            .browse
             .get_artist_detail(user.id, ArtistId(id))
             .await?,
     ))

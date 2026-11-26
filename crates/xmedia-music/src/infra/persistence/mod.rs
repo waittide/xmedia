@@ -4,8 +4,8 @@ pub mod repositories;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::infra::persistence::push_model_set;
+use xmedia_core::domain::error::DomainResult;
+use xmedia_core::infra::persistence::{ensure_sql_index, push_model_set};
 
 use models::{
     MusicAlbumModel, MusicArtistModel, MusicBookmarkModel, MusicPlayQueueModel, MusicPlayStatModel,
@@ -13,15 +13,12 @@ use models::{
     MusicStarredModel, MusicTrackModel, MusicTrackTagModel,
 };
 
-async fn ensure_music_indexes(db: &mut Db) -> DomainResult<()> {
-    for ddl in [
-        "CREATE INDEX IF NOT EXISTS idx_music_tracks_cover_key ON music_tracks (cover_key)",
-        "CREATE INDEX IF NOT EXISTS idx_music_albums_cover_key ON music_albums (cover_key)",
+pub async fn ensure_music_indexes(db: &mut Db) -> DomainResult<()> {
+    for (idx, spec) in [
+        ("idx_music_tracks_cover_key", "music_tracks (cover_key)"),
+        ("idx_music_albums_cover_key", "music_albums (cover_key)"),
     ] {
-        toasty::sql::statement(ddl)
-            .exec(db)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to ensure music index: {e}")))?;
+        ensure_sql_index(db, idx, spec).await?;
     }
     Ok(())
 }
@@ -118,7 +115,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::domain::repository::MusicCatalogRepository;
+    use crate::domain::repository::{AlbumScope, MusicCatalogRepository, TrackScope};
     use crate::infra::persistence::repositories::ToastyMusicCatalogRepository;
 
     #[tokio::test]
@@ -141,15 +138,16 @@ mod tests {
 
         let repo = ToastyMusicCatalogRepository::new(db);
         assert!(
-            repo.find_tracks_by_cover_key("missing.jpg")
+            repo.query_tracks(TrackScope::CoverKey("missing.jpg"))
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            repo.find_albums_by_cover_key("missing.jpg")
+            repo.query_albums(AlbumScope::CoverKey("missing.jpg"))
                 .await
                 .unwrap()
+                .items
                 .is_empty()
         );
     }

@@ -25,12 +25,12 @@ use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, register_core_models};
 
 use super::{make_wav, setup_test_env};
-use crate::application::dto::UploadFilePathItem;
+use crate::application::dto::{BindMusicItemsInput, UploadFilePathItem};
 use crate::domain::catalog::{
     Album, AlbumId, AlbumListQuery, AlbumListType, ArtistId, AudioFormat, ReplayGain, Track,
     TrackId, TrackSource,
 };
-use crate::domain::repository::MusicCatalogRepository;
+use crate::domain::repository::{CatalogMutation, MusicCatalogRepository};
 use crate::http::state::MusicHttpState;
 use crate::http::{rest_router, subsonic_router};
 use crate::infra::persistence::repositories::ToastyMusicCatalogRepository;
@@ -85,7 +85,13 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
         })
         .await
         .unwrap();
-    let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let bob = auth_svc
         .create_user(
             &admin,
@@ -322,8 +328,14 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
         .await;
     assert!(matches!(orphan_res, Err(DomainError::Validation(_))));
 
-    let bob_session = auth_svc.login("bob", "bobpassword").await.unwrap();
-    let bob_user = auth_svc.authenticate_jwt(&bob_session.token).await.unwrap();
+    let bob_session = auth_svc.login("bob", "bobpassword", None).await.unwrap();
+    let bob_user = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&bob_session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let bob_tag_res = music_services
         .catalog
         .set_track_tags(&bob_user, track_id, vec!["night".into()])
@@ -344,7 +356,7 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
 
     let artist_name = uploaded.uploaded_tracks[0].artist_name.clone();
     let fallback_lyrics = music_services
-        .catalog
+        .streaming
         .get_lyrics_by_artist_title(admin.id, Some(&artist_name), None)
         .await
         .unwrap();
@@ -370,7 +382,7 @@ async fn music_rest_opensubsonic_and_incremental_scan_e2e() {
         .await
         .unwrap();
     assert!(matches!(
-        music_services.catalog.get_track(admin.id, track_id).await,
+        music_services.tracks.get_track(admin.id, track_id).await,
         Err(DomainError::NotFound(_))
     ));
     let pl_after = music_services
@@ -402,7 +414,14 @@ async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() 
         })
         .await
         .unwrap();
-    let admin = env.auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = env
+        .auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(env.db.clone()));
     let lib_id = LibraryId::new();
@@ -431,7 +450,10 @@ async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() 
             created_at: now,
             updated_at: now,
         };
-        catalog_repo.save_album(&album).await.unwrap();
+        catalog_repo
+            .save(CatalogMutation::Album(&album))
+            .await
+            .unwrap();
 
         let track = Track {
             id: TrackId::new(),
@@ -468,10 +490,19 @@ async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() 
             created_at: now,
             updated_at: now,
         };
-        catalog_repo.save_track(&track).await.unwrap();
+        catalog_repo
+            .save(CatalogMutation::Track(&track))
+            .await
+            .unwrap();
         env.music_services
-            .catalog
-            .bind_track_for_user(admin.id, track.id)
+            .ingest
+            .bind_tracks(
+                &admin,
+                BindMusicItemsInput {
+                    item_ids: vec![track.id.0],
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
     }
@@ -479,7 +510,7 @@ async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() 
     // Subsonic spec: fromYear > toYear returns albums in [toYear, fromYear] in descending year order
     let desc = env
         .music_services
-        .catalog
+        .browse
         .list_albums(
             admin.id,
             AlbumListQuery {
@@ -497,7 +528,7 @@ async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() 
 
     let asc = env
         .music_services
-        .catalog
+        .browse
         .list_albums(
             admin.id,
             AlbumListQuery {

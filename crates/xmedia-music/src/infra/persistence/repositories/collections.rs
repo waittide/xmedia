@@ -12,10 +12,12 @@ use xmedia_core::domain::user::UserId;
 use super::db_err;
 use crate::domain::catalog::{AlbumId, ArtistId, TrackId};
 use crate::domain::collection::{
-    AudioBookmark, PlayQueue, Playlist, PlaylistId, RatingEntry, ScrobbleEntry, StarTargetKind,
-    StarredEntry, TrackPlayStat,
+    AudioBookmark, PlayQueue, Playlist, PlaylistId, ScrobbleEntry, StarTargetKind,
+    UserEngagementSnapshot,
 };
-use crate::domain::repository::MusicCollectionRepository;
+use crate::domain::repository::{
+    CollectionMutation, CollectionPurgeScope, MusicCollectionRepository, PlaylistQuery,
+};
 use crate::infra::persistence::models::{
     MusicBookmarkModel, MusicPlayQueueModel, MusicPlayStatModel, MusicPlaylistModel,
     MusicRatingModel, MusicScrobbleModel, MusicStarredModel,
@@ -44,11 +46,8 @@ impl ToastyMusicCollectionRepository {
             updated_at: m.updated_at,
         }
     }
-}
 
-#[async_trait]
-impl MusicCollectionRepository for ToastyMusicCollectionRepository {
-    async fn find_playlist_by_id(&self, id: PlaylistId) -> DomainResult<Option<Playlist>> {
+    async fn find_playlist_by_id_impl(&self, id: PlaylistId) -> DomainResult<Option<Playlist>> {
         let mut db = self.db.clone();
         let row = MusicPlaylistModel::filter_by_id(id.0)
             .first()
@@ -58,7 +57,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
         Ok(row.map(Self::playlist_to_domain))
     }
 
-    async fn list_visible_playlists(&self, user_id: UserId) -> DomainResult<Vec<Playlist>> {
+    async fn list_visible_playlists_impl(&self, user_id: UserId) -> DomainResult<Vec<Playlist>> {
         let mut db = self.db.clone();
         let rows = MusicPlaylistModel::all()
             .exec(&mut db)
@@ -73,7 +72,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
         Ok(out)
     }
 
-    async fn save_playlist(&self, playlist: &Playlist) -> DomainResult<()> {
+    async fn save_playlist_impl(&self, playlist: &Playlist) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = MusicPlaylistModel::filter_by_id(playlist.id.0)
             .first()
@@ -111,7 +110,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
         Ok(())
     }
 
-    async fn delete_playlist(&self, id: PlaylistId) -> DomainResult<()> {
+    async fn delete_playlist_impl(&self, id: PlaylistId) -> DomainResult<()> {
         let mut db = self.db.clone();
         MusicPlaylistModel::filter_by_id(id.0)
             .delete()
@@ -121,7 +120,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
         Ok(())
     }
 
-    async fn delete_tracks_references(
+    async fn delete_tracks_references_impl(
         &self,
         track_ids: &[TrackId],
         deleted_album_ids: &[AlbumId],
@@ -244,23 +243,23 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
             }
         }
 
-        let mut target_keys: HashSet<(&'static str, Uuid)> = HashSet::new();
+        let mut target_keys: HashSet<(StarTargetKind, Uuid)> = HashSet::new();
         let mut unique_uuids: Vec<Uuid> = Vec::new();
         let mut seen_uuids: HashSet<Uuid> = HashSet::new();
         for &tid in track_ids {
-            target_keys.insert((StarTargetKind::Track.as_str(), tid.0));
+            target_keys.insert((StarTargetKind::Track, tid.0));
             if seen_uuids.insert(tid.0) {
                 unique_uuids.push(tid.0);
             }
         }
         for &aid in deleted_album_ids {
-            target_keys.insert((StarTargetKind::Album.as_str(), aid.0));
+            target_keys.insert((StarTargetKind::Album, aid.0));
             if seen_uuids.insert(aid.0) {
                 unique_uuids.push(aid.0);
             }
         }
         for &arid in deleted_artist_ids {
-            target_keys.insert((StarTargetKind::Artist.as_str(), arid.0));
+            target_keys.insert((StarTargetKind::Artist, arid.0));
             if seen_uuids.insert(arid.0) {
                 unique_uuids.push(arid.0);
             }
@@ -277,7 +276,9 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
             .await
             .map_err(db_err)?
             {
-                if target_keys.contains(&(row.kind.as_str(), row.target_id)) {
+                if let Ok(kind) = row.kind.parse::<StarTargetKind>()
+                    && target_keys.contains(&(kind, row.target_id))
+                {
                     row.delete().exec(&mut db).await.map_err(db_err)?;
                 }
             }
@@ -287,78 +288,62 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
                     .await
                     .map_err(db_err)?
             {
-                if target_keys.contains(&(row.kind.as_str(), row.target_id)) {
+                if let Ok(kind) = row.kind.parse::<StarTargetKind>()
+                    && target_keys.contains(&(kind, row.target_id))
+                {
                     row.delete().exec(&mut db).await.map_err(db_err)?;
                 }
             }
         }
         Ok(())
     }
+}
 
-    async fn set_starred(
-        &self,
-        user_id: UserId,
-        kind: StarTargetKind,
-        target_id: Uuid,
-        starred_at: Timestamp,
-    ) -> DomainResult<()> {
-        self.set_starred_impl(user_id, kind, target_id, starred_at)
-            .await
+#[async_trait]
+impl MusicCollectionRepository for ToastyMusicCollectionRepository {
+    async fn query_playlists(&self, scope: PlaylistQuery) -> DomainResult<Vec<Playlist>> {
+        match scope {
+            PlaylistQuery::Id(id) => Ok(self
+                .find_playlist_by_id_impl(id)
+                .await?
+                .into_iter()
+                .collect()),
+            PlaylistQuery::VisibleTo(user_id) => self.list_visible_playlists_impl(user_id).await,
+        }
     }
 
-    async fn unset_starred(
-        &self,
-        user_id: UserId,
-        kind: StarTargetKind,
-        target_id: Uuid,
-    ) -> DomainResult<()> {
-        self.unset_starred_impl(user_id, kind, target_id).await
+    async fn get_play_queue(&self, user_id: UserId) -> DomainResult<Option<PlayQueue>> {
+        self.get_play_queue_impl(user_id).await
     }
 
-    async fn list_starred(
+    async fn query_bookmarks(
+        &self,
+        user_id: UserId,
+        track_id: Option<TrackId>,
+    ) -> DomainResult<Vec<AudioBookmark>> {
+        match track_id {
+            Some(tid) => Ok(self
+                .get_bookmark_impl(user_id, tid)
+                .await?
+                .into_iter()
+                .collect()),
+            None => self.list_bookmarks_impl(user_id).await,
+        }
+    }
+
+    async fn load_engagement(
         &self,
         user_id: UserId,
         kind: Option<StarTargetKind>,
-    ) -> DomainResult<Vec<StarredEntry>> {
-        self.list_starred_impl(user_id, kind).await
-    }
-
-    async fn set_rating(
-        &self,
-        user_id: UserId,
-        kind: StarTargetKind,
-        target_id: Uuid,
-        rating: u8,
-    ) -> DomainResult<()> {
-        self.set_rating_impl(user_id, kind, target_id, rating).await
-    }
-
-    async fn remove_rating(
-        &self,
-        user_id: UserId,
-        kind: StarTargetKind,
-        target_id: Uuid,
-    ) -> DomainResult<()> {
-        self.remove_rating_impl(user_id, kind, target_id).await
-    }
-
-    async fn list_user_ratings(&self, user_id: UserId) -> DomainResult<Vec<RatingEntry>> {
-        self.list_user_ratings_impl(user_id).await
-    }
-
-    async fn record_play(
-        &self,
-        user_id: UserId,
-        track_id: TrackId,
-        album_id: AlbumId,
-        played_at: Timestamp,
-    ) -> DomainResult<TrackPlayStat> {
-        self.record_play_impl(user_id, track_id, album_id, played_at)
-            .await
-    }
-
-    async fn list_user_play_stats(&self, user_id: UserId) -> DomainResult<Vec<TrackPlayStat>> {
-        self.list_user_play_stats_impl(user_id).await
+    ) -> DomainResult<UserEngagementSnapshot> {
+        let starred = self.list_starred_impl(user_id, kind).await?;
+        let ratings = self.list_user_ratings_impl(user_id).await?;
+        let play_stats = self.list_user_play_stats_impl(user_id).await?;
+        Ok(UserEngagementSnapshot {
+            starred,
+            ratings,
+            play_stats,
+        })
     }
 
     async fn list_recent_scrobbles(
@@ -369,43 +354,61 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
         self.list_recent_scrobbles_impl(user_id, limit).await
     }
 
-    async fn get_play_queue(&self, user_id: UserId) -> DomainResult<Option<PlayQueue>> {
-        self.get_play_queue_impl(user_id).await
+    async fn save(&self, mutation: CollectionMutation<'_>) -> DomainResult<()> {
+        match mutation {
+            CollectionMutation::Playlist(playlist) => self.save_playlist_impl(playlist).await,
+            CollectionMutation::PlayQueue(queue) => self.save_play_queue_impl(queue).await,
+            CollectionMutation::Bookmark(bookmark) => self.save_bookmark_impl(bookmark).await,
+            CollectionMutation::Star {
+                user_id,
+                kind,
+                target_id,
+                starred_at,
+            } => match starred_at {
+                Some(ts) => self.set_starred_impl(user_id, kind, target_id, ts).await,
+                None => self.unset_starred_impl(user_id, kind, target_id).await,
+            },
+            CollectionMutation::Rating {
+                user_id,
+                kind,
+                target_id,
+                rating,
+            } => match rating {
+                Some(val) => self.set_rating_impl(user_id, kind, target_id, val).await,
+                None => self.remove_rating_impl(user_id, kind, target_id).await,
+            },
+            CollectionMutation::Scrobble {
+                user_id,
+                track_id,
+                album_id,
+                played_at,
+            } => {
+                let _ = self
+                    .record_play_impl(user_id, track_id, album_id, played_at)
+                    .await?;
+                Ok(())
+            }
+        }
     }
 
-    async fn save_play_queue(&self, queue: &PlayQueue) -> DomainResult<()> {
-        self.save_play_queue_impl(queue).await
-    }
-
-    async fn list_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<AudioBookmark>> {
-        self.list_bookmarks_impl(user_id).await
-    }
-
-    async fn get_bookmark(
-        &self,
-        user_id: UserId,
-        track_id: TrackId,
-    ) -> DomainResult<Option<AudioBookmark>> {
-        self.get_bookmark_impl(user_id, track_id).await
-    }
-
-    async fn save_bookmark(&self, bookmark: &AudioBookmark) -> DomainResult<()> {
-        self.save_bookmark_impl(bookmark).await
-    }
-
-    async fn delete_bookmark(&self, user_id: UserId, track_id: TrackId) -> DomainResult<()> {
-        self.delete_bookmark_impl(user_id, track_id).await
-    }
-
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
-        self.delete_by_user_impl(user_id).await
-    }
-
-    async fn delete_by_user_and_track(
-        &self,
-        user_id: UserId,
-        track_id: TrackId,
-    ) -> DomainResult<()> {
-        self.delete_by_user_and_track_impl(user_id, track_id).await
+    async fn purge(&self, scope: CollectionPurgeScope<'_>) -> DomainResult<()> {
+        match scope {
+            CollectionPurgeScope::Playlist(id) => self.delete_playlist_impl(id).await,
+            CollectionPurgeScope::Bookmark { user_id, track_id } => {
+                self.delete_bookmark_impl(user_id, track_id).await
+            }
+            CollectionPurgeScope::User(user_id) => self.delete_by_user_impl(user_id).await,
+            CollectionPurgeScope::UserTrack { user_id, track_id } => {
+                self.delete_by_user_and_track_impl(user_id, track_id).await
+            }
+            CollectionPurgeScope::DeletedCatalog {
+                track_ids,
+                album_ids,
+                artist_ids,
+            } => {
+                self.delete_tracks_references_impl(track_ids, album_ids, artist_ids)
+                    .await
+            }
+        }
     }
 }

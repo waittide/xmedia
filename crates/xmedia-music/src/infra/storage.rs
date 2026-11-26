@@ -305,7 +305,7 @@ impl MusicScannerPort for LocalMusicScanner {
                     continue;
                 };
                 if AudioFormatExt::from_extension(ext).is_none()
-                    && AudioFormat::from_extension(ext).is_none()
+                    && ext.parse::<AudioFormat>().is_err()
                 {
                     continue;
                 }

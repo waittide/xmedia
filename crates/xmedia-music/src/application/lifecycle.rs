@@ -1,18 +1,65 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::ScanProgressReporter;
-use xmedia_core::application::ports::{MediaDomainLifecycle, SystemEvent};
+use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
+use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::UserId;
 
-use super::MusicIngestService;
+use crate::application::ingest::MusicIngestService;
+use crate::application::ports::{AudioMetadataProbePort, MusicScannerPort, MusicStoragePort};
 use crate::domain::catalog::{AlbumId, ArtistId, Track, TrackId, TrackSource};
+use crate::domain::repository::{
+    AlbumScope, ArtistScope, CatalogMutation, CollectionPurgeScope, MusicCatalogRepository,
+    MusicCollectionRepository, TrackDeleteScope, TrackScope,
+};
+
+pub struct MusicDomainLifecycle {
+    libraries: Arc<dyn LibraryRepository>,
+    catalog_repo: Arc<dyn MusicCatalogRepository>,
+    collections: Arc<dyn MusicCollectionRepository>,
+    bindings: Arc<MediaBindingService>,
+    ingest: Arc<MusicIngestService>,
+    storage: Arc<dyn MusicStoragePort>,
+    scanner: Arc<dyn MusicScannerPort>,
+    probe: Arc<dyn AudioMetadataProbePort>,
+    events: Arc<dyn RealtimeEventPort>,
+}
+
+impl MusicDomainLifecycle {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        libraries: Arc<dyn LibraryRepository>,
+        catalog_repo: Arc<dyn MusicCatalogRepository>,
+        collections: Arc<dyn MusicCollectionRepository>,
+        bindings: Arc<MediaBindingService>,
+        ingest: Arc<MusicIngestService>,
+        storage: Arc<dyn MusicStoragePort>,
+        scanner: Arc<dyn MusicScannerPort>,
+        probe: Arc<dyn AudioMetadataProbePort>,
+        events: Arc<dyn RealtimeEventPort>,
+    ) -> Self {
+        Self {
+            libraries,
+            catalog_repo,
+            collections,
+            bindings,
+            ingest,
+            storage,
+            scanner,
+            probe,
+            events,
+        }
+    }
+}
 
 #[async_trait]
-impl MediaDomainLifecycle for MusicIngestService {
+impl MediaDomainLifecycle for MusicDomainLifecycle {
     fn media_kind(&self) -> MediaKind {
         MediaKind::Music
     }
@@ -29,7 +76,10 @@ impl MediaDomainLifecycle for MusicIngestService {
         let entries = self.scanner.scan_audio_entries(&root_path).await?;
         let entry_paths: HashSet<String> =
             entries.iter().map(|e| e.relative_path.clone()).collect();
-        let existing_tracks = self.catalog_repo.list_tracks_by_library(library_id).await?;
+        let existing_tracks = self
+            .catalog_repo
+            .query_tracks(TrackScope::Library(library_id))
+            .await?;
         let mut existing_by_rel: HashMap<String, Track> = HashMap::new();
         for tr in existing_tracks {
             if let TrackSource::LocalPath {
@@ -69,8 +119,10 @@ impl MediaDomainLifecycle for MusicIngestService {
                 && prev.file_size == entry.file_size
                 && sidecar_lrc_path == &entry.sidecar_lrc_relative_path
             {
-                if prev.mark_present(Timestamp::now()) {
-                    self.catalog_repo.save_track(&prev).await?;
+                if prev.set_missing(false, Timestamp::now()) {
+                    self.catalog_repo
+                        .save(CatalogMutation::Track(&prev))
+                        .await?;
                     updated_count += 1;
                 }
                 reporter.advance().await;
@@ -113,9 +165,9 @@ impl MediaDomainLifecycle for MusicIngestService {
                         "failed to probe audio file during scan"
                     );
                     if let Some(mut stale) = prev_track
-                        && stale.mark_missing(Timestamp::now())
+                        && stale.set_missing(true, Timestamp::now())
                     {
-                        let _ = self.catalog_repo.save_track(&stale).await;
+                        let _ = self.catalog_repo.save(CatalogMutation::Track(&stale)).await;
                     }
                     reporter.advance().await;
                     continue;
@@ -167,6 +219,7 @@ impl MediaDomainLifecycle for MusicIngestService {
             };
 
             let track = self
+                .ingest
                 .upsert_probed_track(
                     library_id,
                     track_id,
@@ -180,7 +233,9 @@ impl MediaDomainLifecycle for MusicIngestService {
                 )
                 .await?;
 
-            self.catalog_repo.save_track(&track).await?;
+            self.catalog_repo
+                .save(CatalogMutation::Track(&track))
+                .await?;
             if prev_track.is_some() {
                 updated_count += 1;
             } else {
@@ -192,14 +247,18 @@ impl MediaDomainLifecycle for MusicIngestService {
 
         let mut missing_count = 0u64;
         for (rel, mut old_track) in existing_by_rel {
-            if !seen_rel.contains(&rel) && old_track.mark_missing(Timestamp::now()) {
-                self.catalog_repo.save_track(&old_track).await?;
+            if !seen_rel.contains(&rel) && old_track.set_missing(true, Timestamp::now()) {
+                self.catalog_repo
+                    .save(CatalogMutation::Track(&old_track))
+                    .await?;
                 missing_count += 1;
             }
         }
 
         if added_count > 0 || updated_count > 0 || missing_count > 0 {
-            self.catalog_repo.recompute_catalog_aggregates().await?;
+            self.catalog_repo
+                .save(CatalogMutation::RecomputeAggregates)
+                .await?;
         }
         reporter
             .complete(added_count, updated_count, missing_count)
@@ -209,15 +268,21 @@ impl MediaDomainLifecycle for MusicIngestService {
     }
 
     async fn count_library_items(&self, library_id: LibraryId) -> DomainResult<u64> {
-        let tracks = self.catalog_repo.list_tracks_by_library(library_id).await?;
+        let tracks = self
+            .catalog_repo
+            .query_tracks(TrackScope::Library(library_id))
+            .await?;
         Ok(tracks
             .into_iter()
-            .filter(|t| !t.is_missing && !t.source.is_online_tracked())
+            .filter(|t| !t.is_missing && !matches!(t.source, TrackSource::OnlineTracked(_)))
             .count() as u64)
     }
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
-        let tracks = self.catalog_repo.list_tracks_by_library(library_id).await?;
+        let tracks = self
+            .catalog_repo
+            .query_tracks(TrackScope::Library(library_id))
+            .await?;
         let mut track_ids = Vec::with_capacity(tracks.len());
         let mut candidate_albums = HashSet::new();
         let mut candidate_artists = HashSet::new();
@@ -232,15 +297,21 @@ impl MediaDomainLifecycle for MusicIngestService {
             for key in tr.source.managed_file_keys() {
                 files_to_delete.push(key.to_string());
             }
-            self.bindings
-                .delete_item_bindings(MediaKind::Music, tr.id.0)
+            let _ = self
+                .bindings
+                .purge(xmedia_core::domain::repository::BindingDeleteScope::Item {
+                    media_kind: MediaKind::Music,
+                    item_id: tr.id.0,
+                })
                 .await?;
         }
 
         self.catalog_repo
-            .delete_tracks_by_library(library_id)
+            .delete_tracks(TrackDeleteScope::Library(library_id))
             .await?;
-        self.catalog_repo.recompute_catalog_aggregates().await?;
+        self.catalog_repo
+            .save(CatalogMutation::RecomputeAggregates)
+            .await?;
 
         for key in files_to_delete {
             let _ = self.storage.delete_managed_file(&key).await;
@@ -249,8 +320,9 @@ impl MediaDomainLifecycle for MusicIngestService {
         let candidate_album_vec: Vec<AlbumId> = candidate_albums.into_iter().collect();
         let surviving_albums: HashSet<AlbumId> = self
             .catalog_repo
-            .find_albums_by_ids(&candidate_album_vec)
+            .query_albums(AlbumScope::Ids(&candidate_album_vec))
             .await?
+            .items
             .into_iter()
             .map(|a| a.id)
             .collect();
@@ -262,8 +334,9 @@ impl MediaDomainLifecycle for MusicIngestService {
         let candidate_artist_vec: Vec<ArtistId> = candidate_artists.into_iter().collect();
         let surviving_artists: HashSet<ArtistId> = self
             .catalog_repo
-            .find_artists_by_ids(&candidate_artist_vec)
+            .query_artists(ArtistScope::Ids(&candidate_artist_vec))
             .await?
+            .items
             .into_iter()
             .map(|a| a.id)
             .collect();
@@ -273,7 +346,11 @@ impl MediaDomainLifecycle for MusicIngestService {
             .collect();
 
         self.collections
-            .delete_tracks_references(&track_ids, &deleted_album_ids, &deleted_artist_ids)
+            .purge(CollectionPurgeScope::DeletedCatalog {
+                track_ids: &track_ids,
+                album_ids: &deleted_album_ids,
+                artist_ids: &deleted_artist_ids,
+            })
             .await?;
 
         if !track_ids.is_empty() {
@@ -285,19 +362,31 @@ impl MediaDomainLifecycle for MusicIngestService {
     }
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {
-        self.collections.delete_by_user(user_id).await?;
+        self.collections
+            .purge(CollectionPurgeScope::User(user_id))
+            .await?;
         let unbound_ids = self
             .bindings
-            .delete_user_bindings_for_media(user_id, MediaKind::Music)
+            .purge(
+                xmedia_core::domain::repository::BindingDeleteScope::UserMedia {
+                    user_id,
+                    media_kind: MediaKind::Music,
+                },
+            )
             .await?;
         for raw_id in unbound_ids {
             let tid = TrackId(raw_id);
             self.bindings
                 .gc_if_orphaned(MediaKind::Music, raw_id, || async {
-                    if let Some(track) = self.catalog_repo.find_track_by_id(tid).await?
-                        && track.source.is_online_tracked()
+                    if let Some(track) = self
+                        .catalog_repo
+                        .query_tracks(TrackScope::Id(tid))
+                        .await?
+                        .into_iter()
+                        .next()
+                        && matches!(track.source, TrackSource::OnlineTracked(_))
                     {
-                        self.delete_track_without_bindings(track).await?;
+                        self.ingest.delete_track_without_bindings(track).await?;
                         return Ok(true);
                     }
                     Ok(false)

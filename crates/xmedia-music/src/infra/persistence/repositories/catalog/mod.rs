@@ -5,7 +5,7 @@ mod sql;
 mod tags_search;
 mod tracks;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use toasty::Db;
@@ -13,11 +13,13 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::catalog::{
-    Album, AlbumId, AlbumListQuery, Artist, ArtistId, ArtistQuery, AudioFormat, BoundCatalogCounts,
-    GenreStat, MusicTagStat, PagedResult, Track, TrackId, TrackQuery,
+    Album, AlbumId, Artist, ArtistId, AudioFormat, PagedResult, Track, TrackId, TrackQuery,
 };
-use crate::domain::collection::{RatingEntry, StarredEntry, TrackPlayStat};
-use crate::domain::repository::MusicCatalogRepository;
+use crate::domain::collection::StarTargetKind;
+use crate::domain::repository::{
+    AlbumScope, ArtistScope, CatalogFacetQuery, CatalogFacetResult, CatalogMutation,
+    MusicCatalogRepository, TrackDeleteScope, TrackScope,
+};
 use crate::infra::persistence::models::{MusicAlbumModel, MusicArtistModel, MusicTrackModel};
 
 #[derive(Clone)]
@@ -31,7 +33,7 @@ impl ToastyMusicCatalogRepository {
     }
 
     pub(super) fn track_to_domain(m: MusicTrackModel) -> Track {
-        let format = AudioFormat::parse(&m.format).unwrap_or(AudioFormat::Mp3);
+        let format = m.format.parse::<AudioFormat>().unwrap_or(AudioFormat::Mp3);
         Track {
             id: TrackId(m.id),
             library_id: LibraryId(m.library_id),
@@ -101,282 +103,196 @@ impl ToastyMusicCatalogRepository {
     }
 }
 
+fn unpaged<T>(items: Vec<T>) -> PagedResult<T> {
+    let total = items.len() as u64;
+    let page_size = u32::try_from(items.len().max(1)).unwrap_or(u32::MAX);
+    PagedResult {
+        items,
+        total,
+        page: 1,
+        page_size,
+    }
+}
+
 #[async_trait]
 impl MusicCatalogRepository for ToastyMusicCatalogRepository {
-    async fn find_track_by_id(&self, id: TrackId) -> DomainResult<Option<Track>> {
-        self.find_track_by_id_impl(id).await
+    async fn query_tracks(&self, scope: TrackScope<'_>) -> DomainResult<Vec<Track>> {
+        match scope {
+            TrackScope::Id(id) => Ok(self.find_track_by_id_impl(id).await?.into_iter().collect()),
+            TrackScope::Ids(ids) => self.find_tracks_by_ids_impl(ids).await,
+            TrackScope::CoverKey(key) => self.find_tracks_by_cover_key_impl(key).await,
+            TrackScope::Library(lib_id) => self.list_tracks_by_library_impl(lib_id).await,
+            TrackScope::Album { album_id, allowed } => match allowed {
+                Some(set) => self.list_bound_tracks_by_album_impl(set, album_id).await,
+                None => self.list_tracks_by_album_impl(album_id).await,
+            },
+            TrackScope::Artist { artist_id, allowed } => match allowed {
+                Some(set) => self.list_bound_tracks_by_artist_impl(set, artist_id).await,
+                None => self.list_tracks_by_artist_impl(artist_id).await,
+            },
+            TrackScope::Offset {
+                allowed,
+                query,
+                offset,
+                limit,
+            } => {
+                self.list_bound_tracks_offset_impl(allowed, query, offset, limit)
+                    .await
+            }
+            TrackScope::Random {
+                allowed,
+                size,
+                library_id,
+                genre,
+                from_year,
+                to_year,
+            } => {
+                self.list_random_bound_tracks_impl(
+                    allowed, size, library_id, genre, from_year, to_year,
+                )
+                .await
+            }
+        }
     }
 
-    async fn find_tracks_by_ids(&self, ids: &[TrackId]) -> DomainResult<Vec<Track>> {
-        self.find_tracks_by_ids_impl(ids).await
-    }
-
-    async fn find_tracks_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Track>> {
-        self.find_tracks_by_cover_key_impl(cover_key).await
-    }
-
-    async fn list_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Track>> {
-        self.list_tracks_by_library_impl(library_id).await
-    }
-
-    async fn list_all_active_track_ids(&self) -> DomainResult<Vec<TrackId>> {
-        self.list_all_active_track_ids_impl().await
-    }
-
-    async fn query_tracks(&self, query: &TrackQuery) -> DomainResult<PagedResult<Track>> {
-        self.query_tracks_impl(query).await
-    }
-
-    async fn list_tracks_by_album(&self, album_id: AlbumId) -> DomainResult<Vec<Track>> {
-        self.list_tracks_by_album_impl(album_id).await
-    }
-
-    async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>> {
-        self.list_tracks_by_artist_impl(artist_id).await
-    }
-
-    async fn count_bound_active_tracks(
+    async fn search_tracks(
         &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<u64> {
-        self.count_bound_active_tracks_impl(allowed_track_ids).await
-    }
-
-    async fn count_bound_tracks_by_library(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<HashMap<LibraryId, u64>> {
-        self.count_bound_tracks_by_library_impl(allowed_track_ids)
-            .await
-    }
-
-    async fn get_bound_overview_stats(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<BoundCatalogCounts> {
-        self.get_bound_overview_stats_impl(allowed_track_ids).await
-    }
-
-    async fn query_bound_tracks(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
+        allowed: Option<&HashSet<TrackId>>,
         query: &TrackQuery,
     ) -> DomainResult<PagedResult<Track>> {
-        self.query_bound_tracks_impl(allowed_track_ids, query).await
+        match allowed {
+            Some(set) => self.query_bound_tracks_impl(set, query).await,
+            None => self.query_tracks_impl(query).await,
+        }
     }
 
-    async fn list_bound_tracks_offset(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        query: &TrackQuery,
-        offset: u32,
-        limit: u32,
-    ) -> DomainResult<Vec<Track>> {
-        self.list_bound_tracks_offset_impl(allowed_track_ids, query, offset, limit)
-            .await
+    async fn query_albums(&self, scope: AlbumScope<'_>) -> DomainResult<PagedResult<Album>> {
+        match scope {
+            AlbumScope::Id(id) => Ok(unpaged(
+                self.find_album_by_id_impl(id).await?.into_iter().collect(),
+            )),
+            AlbumScope::Key(key) => Ok(unpaged(
+                self.find_album_by_key_impl(key)
+                    .await?
+                    .into_iter()
+                    .collect(),
+            )),
+            AlbumScope::Ids(ids) => Ok(unpaged(self.find_albums_by_ids_impl(ids).await?)),
+            AlbumScope::CoverKey(key) => {
+                Ok(unpaged(self.find_albums_by_cover_key_impl(key).await?))
+            }
+            AlbumScope::BoundByIds {
+                allowed,
+                album_ids,
+                library_id,
+            } => Ok(unpaged(
+                self.project_bound_albums_by_ids_impl(allowed, album_ids, library_id)
+                    .await?,
+            )),
+            AlbumScope::BoundByArtist { allowed, artist_id } => Ok(unpaged(
+                self.list_bound_albums_by_artist_impl(allowed, artist_id)
+                    .await?,
+            )),
+            AlbumScope::BoundPaged {
+                allowed,
+                query,
+                starred,
+                play_stats,
+            } => {
+                self.query_bound_albums_impl(allowed, query, starred, play_stats)
+                    .await
+            }
+        }
     }
 
-    async fn list_random_bound_tracks(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        size: u32,
-        library_id: Option<LibraryId>,
-        genre: Option<&str>,
-        from_year: Option<i32>,
-        to_year: Option<i32>,
-    ) -> DomainResult<Vec<Track>> {
-        self.list_random_bound_tracks_impl(
-            allowed_track_ids,
-            size,
-            library_id,
-            genre,
-            from_year,
-            to_year,
-        )
-        .await
+    async fn query_artists(&self, scope: ArtistScope<'_>) -> DomainResult<PagedResult<Artist>> {
+        match scope {
+            ArtistScope::Id(id) => Ok(unpaged(
+                self.find_artist_by_id_impl(id).await?.into_iter().collect(),
+            )),
+            ArtistScope::Name(name) => Ok(unpaged(
+                self.find_artist_by_name_impl(name)
+                    .await?
+                    .into_iter()
+                    .collect(),
+            )),
+            ArtistScope::Ids(ids) => Ok(unpaged(self.find_artists_by_ids_impl(ids).await?)),
+            ArtistScope::BoundByIds {
+                allowed,
+                artist_ids,
+                library_id,
+            } => Ok(unpaged(
+                self.project_bound_artists_by_ids_impl(allowed, artist_ids, library_id)
+                    .await?,
+            )),
+            ArtistScope::BoundPaged { allowed, query } => {
+                self.query_bound_artists_impl(allowed, query).await
+            }
+        }
     }
 
-    async fn list_bound_tracks_by_album(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        album_id: AlbumId,
-    ) -> DomainResult<Vec<Track>> {
-        self.list_bound_tracks_by_album_impl(allowed_track_ids, album_id)
-            .await
+    async fn query_facets(&self, query: CatalogFacetQuery<'_>) -> DomainResult<CatalogFacetResult> {
+        match query {
+            CatalogFacetQuery::ActiveTrackIds => Ok(CatalogFacetResult::TrackIds(
+                self.list_all_active_track_ids_impl().await?,
+            )),
+            CatalogFacetQuery::OverviewStats(allowed) => Ok(CatalogFacetResult::OverviewStats(
+                self.get_bound_overview_stats_impl(allowed).await?,
+            )),
+            CatalogFacetQuery::LibraryTrackCounts(allowed) => {
+                Ok(CatalogFacetResult::LibraryTrackCounts(
+                    self.count_bound_tracks_by_library_impl(allowed).await?,
+                ))
+            }
+            CatalogFacetQuery::Genres(allowed) => Ok(CatalogFacetResult::Genres(
+                self.list_bound_genres_impl(allowed).await?,
+            )),
+            CatalogFacetQuery::Tags(Some(allowed)) => Ok(CatalogFacetResult::Tags(
+                self.list_bound_tags_impl(allowed).await?,
+            )),
+            CatalogFacetQuery::Tags(None) => {
+                Ok(CatalogFacetResult::Tags(self.list_tags_impl().await?))
+            }
+            CatalogFacetQuery::TrackTags(ids) => Ok(CatalogFacetResult::TrackTags(
+                self.get_tags_for_tracks_impl(ids).await?,
+            )),
+            CatalogFacetQuery::HasBoundTarget { allowed, kind, id } => {
+                let exists = match kind {
+                    StarTargetKind::Track => {
+                        self.has_bound_active_track_impl(allowed, TrackId(id))
+                            .await?
+                    }
+                    StarTargetKind::Album => {
+                        self.has_bound_active_album_impl(allowed, AlbumId(id))
+                            .await?
+                    }
+                    StarTargetKind::Artist => {
+                        self.has_bound_active_artist_impl(allowed, ArtistId(id))
+                            .await?
+                    }
+                };
+                Ok(CatalogFacetResult::Exists(exists))
+            }
+        }
     }
 
-    async fn list_bound_tracks_by_artist(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        artist_id: ArtistId,
-    ) -> DomainResult<Vec<Track>> {
-        self.list_bound_tracks_by_artist_impl(allowed_track_ids, artist_id)
-            .await
+    async fn save(&self, mutation: CatalogMutation<'_>) -> DomainResult<()> {
+        match mutation {
+            CatalogMutation::Track(track) => self.save_track_impl(track).await,
+            CatalogMutation::Album(album) => self.save_album_impl(album).await,
+            CatalogMutation::Artist(artist) => self.save_artist_impl(artist).await,
+            CatalogMutation::TrackTags { track_id, tags } => {
+                let _ = self.set_track_tags_impl(track_id, tags).await?;
+                Ok(())
+            }
+            CatalogMutation::RecomputeAggregates => self.recompute_catalog_aggregates_impl().await,
+        }
     }
 
-    async fn query_bound_albums(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        query: &AlbumListQuery,
-        starred_ids: &[StarredEntry],
-        play_stats: &[TrackPlayStat],
-        ratings: &[RatingEntry],
-    ) -> DomainResult<PagedResult<Album>> {
-        self.query_bound_albums_impl(allowed_track_ids, query, starred_ids, play_stats, ratings)
-            .await
-    }
-
-    async fn project_bound_albums_by_ids(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        album_ids: &[AlbumId],
-        library_id: Option<LibraryId>,
-    ) -> DomainResult<Vec<Album>> {
-        self.project_bound_albums_by_ids_impl(allowed_track_ids, album_ids, library_id)
-            .await
-    }
-
-    async fn list_bound_albums_by_artist(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        artist_id: ArtistId,
-    ) -> DomainResult<Vec<Album>> {
-        self.list_bound_albums_by_artist_impl(allowed_track_ids, artist_id)
-            .await
-    }
-
-    async fn query_bound_artists(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        query: &ArtistQuery,
-    ) -> DomainResult<PagedResult<Artist>> {
-        self.query_bound_artists_impl(allowed_track_ids, query)
-            .await
-    }
-
-    async fn project_bound_artists_by_ids(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        artist_ids: &[ArtistId],
-        library_id: Option<LibraryId>,
-    ) -> DomainResult<Vec<Artist>> {
-        self.project_bound_artists_by_ids_impl(allowed_track_ids, artist_ids, library_id)
-            .await
-    }
-
-    async fn list_bound_genres(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<Vec<GenreStat>> {
-        self.list_bound_genres_impl(allowed_track_ids).await
-    }
-
-    async fn list_bound_tags(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<Vec<MusicTagStat>> {
-        self.list_bound_tags_impl(allowed_track_ids).await
-    }
-
-    async fn has_bound_active_track(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        track_id: TrackId,
-    ) -> DomainResult<bool> {
-        self.has_bound_active_track_impl(allowed_track_ids, track_id)
-            .await
-    }
-
-    async fn has_bound_active_album(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        album_id: AlbumId,
-    ) -> DomainResult<bool> {
-        self.has_bound_active_album_impl(allowed_track_ids, album_id)
-            .await
-    }
-
-    async fn has_bound_active_artist(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        artist_id: ArtistId,
-    ) -> DomainResult<bool> {
-        self.has_bound_active_artist_impl(allowed_track_ids, artist_id)
-            .await
-    }
-
-    async fn save_track(&self, track: &Track) -> DomainResult<()> {
-        self.save_track_impl(track).await
-    }
-
-    async fn delete_track(&self, id: TrackId) -> DomainResult<()> {
-        self.delete_track_impl(id).await
-    }
-
-    async fn delete_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<()> {
-        self.delete_tracks_by_library_impl(library_id).await
-    }
-
-    async fn find_album_by_id(&self, id: AlbumId) -> DomainResult<Option<Album>> {
-        self.find_album_by_id_impl(id).await
-    }
-
-    async fn find_album_by_key(&self, album_key: &str) -> DomainResult<Option<Album>> {
-        self.find_album_by_key_impl(album_key).await
-    }
-
-    async fn find_albums_by_ids(&self, ids: &[AlbumId]) -> DomainResult<Vec<Album>> {
-        self.find_albums_by_ids_impl(ids).await
-    }
-
-    async fn find_albums_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Album>> {
-        self.find_albums_by_cover_key_impl(cover_key).await
-    }
-
-    async fn save_album(&self, album: &Album) -> DomainResult<()> {
-        self.save_album_impl(album).await
-    }
-
-    async fn find_artist_by_id(&self, id: ArtistId) -> DomainResult<Option<Artist>> {
-        self.find_artist_by_id_impl(id).await
-    }
-
-    async fn find_artist_by_name(&self, name: &str) -> DomainResult<Option<Artist>> {
-        self.find_artist_by_name_impl(name).await
-    }
-
-    async fn find_artists_by_ids(&self, ids: &[ArtistId]) -> DomainResult<Vec<Artist>> {
-        self.find_artists_by_ids_impl(ids).await
-    }
-
-    async fn save_artist(&self, artist: &Artist) -> DomainResult<()> {
-        self.save_artist_impl(artist).await
-    }
-
-    async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>> {
-        self.list_tags_impl().await
-    }
-
-    async fn count_active_tags(&self, active_track_ids: &HashSet<TrackId>) -> DomainResult<u64> {
-        self.count_active_tags_impl(active_track_ids).await
-    }
-
-    async fn get_tags_for_tracks(
-        &self,
-        track_ids: &[TrackId],
-    ) -> DomainResult<HashMap<TrackId, Vec<String>>> {
-        self.get_tags_for_tracks_impl(track_ids).await
-    }
-
-    async fn set_track_tags(
-        &self,
-        track_id: TrackId,
-        tags: Vec<String>,
-    ) -> DomainResult<Vec<String>> {
-        self.set_track_tags_impl(track_id, tags).await
-    }
-
-    async fn recompute_catalog_aggregates(&self) -> DomainResult<()> {
-        self.recompute_catalog_aggregates_impl().await
+    async fn delete_tracks(&self, scope: TrackDeleteScope) -> DomainResult<()> {
+        match scope {
+            TrackDeleteScope::Id(id) => self.delete_track_impl(id).await,
+            TrackDeleteScope::Library(lib_id) => self.delete_tracks_by_library_impl(lib_id).await,
+        }
     }
 }

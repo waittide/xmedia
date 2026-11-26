@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_source::crud::{
     format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
 };
@@ -12,7 +12,7 @@ use xmedia_source::crud::{
 use crate::application::ports::MusicSourceEnginePort;
 use crate::domain::catalog::StructuredLyrics;
 use crate::domain::online::{
-    ExecutionDiagnostics, MusicSourceSpec, MusicSourceTestMode, MusicTrackContext,
+    ExecutionDiagnostics, MusicRuleKind, MusicSourceSpec, MusicSourceTestMode, MusicTrackContext,
     OnlineMusicTrackItem, SourceRuntimeState, is_http_url,
 };
 
@@ -79,7 +79,7 @@ impl<'a> DebugStageRunner<'a> {
                 if let Some(first) = out.data.first() {
                     self.active_item = Some(first.clone());
                 }
-                let has_cover_rule = self.spec.rule_cover.is_some();
+                let has_cover_rule = self.spec.has_rule(MusicRuleKind::Cover);
                 self.search_items = out
                     .data
                     .into_iter()
@@ -157,7 +157,7 @@ impl<'a> DebugStageRunner<'a> {
                         url: c.url,
                     })
                     .collect();
-                let has_cover_rule = self.spec.rule_cover.is_some();
+                let has_cover_rule = self.spec.has_rule(MusicRuleKind::Cover);
                 self.search_items = out
                     .data
                     .tracks
@@ -421,7 +421,7 @@ impl<'a> DebugStageRunner<'a> {
         mode: MusicSourceTestMode,
         keyword: String,
     ) -> (SourceRuntimeState, MusicSourceTestReportDto) {
-        let has_cover_rule = self.spec.rule_cover.is_some();
+        let has_cover_rule = self.spec.has_rule(MusicRuleKind::Cover);
         let source_id = self.source_id;
         let source_name = self.source_name;
         let qualities = &self.spec.supported_qualities;
@@ -496,7 +496,7 @@ impl MusicOnlineService {
         id: Uuid,
         input: MusicSourceTestInput,
     ) -> DomainResult<MusicSourceTestReportDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let rec = self.sources.load_source(id).await?;
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
@@ -508,14 +508,7 @@ impl MusicOnlineService {
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
 
-        let default_kw = parsed
-            .rule_search
-            .as_ref()
-            .and_then(|r| r.check_key_word.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("Mojito")
-            .to_string();
+        let default_kw = parsed.default_test_keyword();
 
         let effective_keyword = raw_input.unwrap_or(default_kw);
         let mode = input.mode;
@@ -599,7 +592,7 @@ impl MusicOnlineService {
                 let run_detail = match mode {
                     MusicSourceTestMode::Detail => true,
                     MusicSourceTestMode::Full => {
-                        parsed.rule_track_detail.is_some()
+                        parsed.has_rule(MusicRuleKind::TrackDetail)
                             && (!ctx.track_id.trim().is_empty()
                                 || ctx
                                     .detail_url
@@ -631,7 +624,7 @@ impl MusicOnlineService {
                 }
 
                 if mode == MusicSourceTestMode::Full
-                    && parsed.rule_cover.is_some()
+                    && parsed.has_rule(MusicRuleKind::Cover)
                     && runner.steps.iter().all(|s| s.ok)
                 {
                     runner.run_cover_stage(&ctx);
@@ -640,7 +633,7 @@ impl MusicOnlineService {
                 let run_lyric = match mode {
                     MusicSourceTestMode::Lyric => true,
                     MusicSourceTestMode::Full => {
-                        parsed.rule_lyric.is_some() && runner.steps.iter().all(|s| s.ok)
+                        parsed.has_rule(MusicRuleKind::Lyric) && runner.steps.iter().all(|s| s.ok)
                     }
                     _ => false,
                 };

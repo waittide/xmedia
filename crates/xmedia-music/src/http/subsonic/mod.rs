@@ -3,6 +3,8 @@ mod collections;
 pub mod envelope;
 mod media;
 
+use std::net::IpAddr;
+
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -13,6 +15,7 @@ use uuid::Uuid;
 use xmedia_core::application::dto::SubsonicCredentials;
 use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::user::User;
+use xmedia_core::http::ClientIp;
 
 use crate::application::dto::{AlbumDto, ArtistDto, PlaylistSummaryDto, TrackDto};
 use crate::http::state::MusicHttpState;
@@ -24,6 +27,7 @@ pub fn router() -> Router<MusicHttpState> {
 
 async fn dispatch_subsonic(
     State(state): State<MusicHttpState>,
+    ClientIp(client_ip): ClientIp,
     Path(raw_endpoint): Path<String>,
     uri: Uri,
     headers: HeaderMap,
@@ -50,7 +54,7 @@ async fn dispatch_subsonic(
         return handle_open_subsonic_extensions(&params);
     }
 
-    let user = match authenticate_request(&state, &params, &headers).await {
+    let user = match authenticate_request(&state, &params, &headers, client_ip).await {
         Ok(u) => u,
         Err(err) => return render_err(&params, err),
     };
@@ -65,11 +69,17 @@ async fn authenticate_request(
     state: &MusicHttpState,
     params: &SubsonicParams,
     headers: &HeaderMap,
+    client_ip: Option<IpAddr>,
 ) -> Result<User, SubsonicError> {
     if let Some(api_key) = params.first("apiKey").filter(|k| !k.trim().is_empty()) {
         return state
             .auth
-            .authenticate_subsonic(SubsonicCredentials::ApiKey(api_key.to_string()))
+            .authenticate(
+                xmedia_core::application::dto::AuthCredential::Subsonic(
+                    SubsonicCredentials::ApiKey(api_key.to_string()),
+                ),
+                client_ip,
+            )
             .await
             .map_err(SubsonicError::from);
     }
@@ -81,7 +91,12 @@ async fn authenticate_request(
     {
         return state
             .auth
-            .authenticate_subsonic(SubsonicCredentials::ApiKey(hdr_key.to_string()))
+            .authenticate(
+                xmedia_core::application::dto::AuthCredential::Subsonic(
+                    SubsonicCredentials::ApiKey(hdr_key.to_string()),
+                ),
+                client_ip,
+            )
             .await
             .map_err(SubsonicError::from);
     }
@@ -94,11 +109,16 @@ async fn authenticate_request(
     if let (Some(token), Some(salt)) = (params.first("t"), params.first("s")) {
         return state
             .auth
-            .authenticate_subsonic(SubsonicCredentials::TokenSalt {
-                username: username.to_string(),
-                token: token.to_string(),
-                salt: salt.to_string(),
-            })
+            .authenticate(
+                xmedia_core::application::dto::AuthCredential::Subsonic(
+                    SubsonicCredentials::TokenSalt {
+                        username: username.to_string(),
+                        token: token.to_string(),
+                        salt: salt.to_string(),
+                    },
+                ),
+                client_ip,
+            )
             .await
             .map_err(SubsonicError::from);
     }
@@ -106,10 +126,15 @@ async fn authenticate_request(
     if let Some(pwd) = params.first("p") {
         return state
             .auth
-            .authenticate_subsonic(SubsonicCredentials::Password {
-                username: username.to_string(),
-                password: pwd.to_string(),
-            })
+            .authenticate(
+                xmedia_core::application::dto::AuthCredential::Subsonic(
+                    SubsonicCredentials::Password {
+                        username: username.to_string(),
+                        password: pwd.to_string(),
+                    },
+                ),
+                client_ip,
+            )
             .await
             .map_err(SubsonicError::from);
     }

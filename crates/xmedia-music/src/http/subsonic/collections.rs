@@ -46,19 +46,11 @@ pub(super) async fn handle_collections_method(
                 })
                 .collect();
 
-            if method == "star" {
-                state
-                    .services
-                    .collection
-                    .star_items(user.id, &ids, &album_ids, &artist_ids)
-                    .await?;
-            } else {
-                state
-                    .services
-                    .collection
-                    .unstar_items(user.id, &ids, &album_ids, &artist_ids)
-                    .await?;
-            }
+            state
+                .services
+                .collection
+                .set_starred(user.id, method == "star", &ids, &album_ids, &artist_ids)
+                .await?;
             Ok(render_ok(params, None))
         }
 

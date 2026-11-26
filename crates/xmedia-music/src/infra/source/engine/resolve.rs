@@ -10,15 +10,15 @@ use xmedia_source::model::{
 use xmedia_source::rule::{RuleValue, strip_js_wrapper};
 
 use super::template::{
-    MusicTemplateVars, apply_stream_headers, eval_rule_or_literal, eval_template_expression,
-    fetch_api, is_static_rule_literal, non_empty_opt, normalize_quality_placeholder,
-    resolve_literal_http_url, template_references_quality,
+    MusicTemplateVars, apply_stream_headers, eval_rule_or_literal, fetch_api,
+    is_static_rule_literal, non_empty_opt, normalize_quality_placeholder, resolve_literal_http_url,
+    template_references_quality,
 };
 use super::{MusicSourceEngine, infer_audio_format, is_http_url};
+use crate::domain::catalog::StructuredLyrics;
 use crate::domain::online::{
     MusicSourceSpec, MusicTrackContext, OnlineMusicLyricsResult, OnlineMusicStreamResult,
 };
-use crate::infra::lyrics::parse_lyrics_str;
 
 impl MusicSourceEngine {
     pub fn resolve_stream_sync(
@@ -62,9 +62,8 @@ impl MusicSourceEngine {
                             .map(str::trim)
                             .filter(|s| !s.is_empty())
                     });
-            let effective_quality = requested_quality
-                .or_else(|| source.supported_qualities.first().map(String::as_str))
-                .unwrap_or("320");
+            let (effective_quality, quality_matches_or_absent) =
+                source.resolve_quality(requested_quality);
 
             let mut ctx_with_q = ctx.clone();
             ctx_with_q.quality = Some(effective_quality.to_string());
@@ -111,10 +110,6 @@ impl MusicSourceEngine {
             let static_metadata_only = is_static_rule_literal(rule.format.as_deref())
                 && is_static_rule_literal(rule.bitrate.as_deref())
                 && is_static_rule_literal(rule.expires_in_secs.as_deref());
-            let quality_matches_or_absent = requested_quality.is_none_or(|q| {
-                source.supported_qualities.len() == 1
-                    && source.supported_qualities[0].eq_ignore_ascii_case(q)
-            });
 
             if let Some(req_tpl) = rule
                 .request_url
@@ -156,13 +151,8 @@ impl MusicSourceEngine {
                     });
                 }
 
-                let evaluated_req = eval_template_expression(
-                    &mut session,
-                    req_tpl,
-                    &vars,
-                    &empty_input,
-                    &source.source_url,
-                )?;
+                let evaluated_req =
+                    vars.eval(&mut session, req_tpl, &empty_input, &source.source_url)?;
                 if evaluated_req.trim().is_empty() {
                     return Err("ruleStream.requestUrl 求值结果为空".into());
                 }
@@ -242,13 +232,7 @@ impl MusicSourceEngine {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                 {
-                    eval_template_expression(
-                        &mut session,
-                        tpl,
-                        &vars,
-                        &empty_input,
-                        &source.source_url,
-                    )?
+                    vars.eval(&mut session, tpl, &empty_input, &source.source_url)?
                 } else {
                     resolve_literal_http_url(
                         ctx.play_url.as_deref().unwrap_or(""),
@@ -353,18 +337,6 @@ impl MusicSourceEngine {
 
         let mut run = || -> Result<Option<String>, String> {
             session.set_track_context(ctx)?;
-            if let Some(ref existing) = ctx.cover_url
-                && !existing.trim().is_empty()
-                && source
-                    .rule_cover
-                    .as_ref()
-                    .and_then(|r| r.request_url.as_deref())
-                    .map(str::trim)
-                    .is_none_or(str::is_empty)
-            {
-                return Ok(Some(resolve_relative_url(existing, &source.source_url)));
-            }
-
             let Some(ref rule) = source.rule_cover else {
                 return Ok(ctx
                     .cover_url
@@ -374,15 +346,23 @@ impl MusicSourceEngine {
                     .map(|u| resolve_relative_url(u, &source.source_url)));
             };
 
-            let vars = MusicTemplateVars::from_track(ctx, ctx.quality.as_deref().unwrap_or(""));
-            let empty_input = RuleValue::Text(String::new());
-
-            if let Some(req_tpl) = rule
+            let req_tpl_opt = rule
                 .request_url
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty());
+
+            if let Some(ref existing) = ctx.cover_url
+                && !existing.trim().is_empty()
+                && req_tpl_opt.is_none()
             {
+                return Ok(Some(resolve_relative_url(existing, &source.source_url)));
+            }
+
+            let vars = MusicTemplateVars::from_track(ctx, ctx.quality.as_deref().unwrap_or(""));
+            let empty_input = RuleValue::Text(String::new());
+
+            if let Some(req_tpl) = req_tpl_opt {
                 let has_cover_or_id = ctx
                     .cover_id
                     .as_deref()
@@ -391,13 +371,8 @@ impl MusicSourceEngine {
                 if !has_cover_or_id {
                     return Ok(ctx.cover_url.clone());
                 }
-                let evaluated_req = eval_template_expression(
-                    &mut session,
-                    req_tpl,
-                    &vars,
-                    &empty_input,
-                    &source.source_url,
-                )?;
+                let evaluated_req =
+                    vars.eval(&mut session, req_tpl, &empty_input, &source.source_url)?;
                 if evaluated_req.trim().is_empty() {
                     return Ok(ctx.cover_url.clone());
                 }
@@ -421,13 +396,8 @@ impl MusicSourceEngine {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
-                let cover_raw = eval_template_expression(
-                    &mut session,
-                    cover_tpl,
-                    &vars,
-                    &empty_input,
-                    &source.source_url,
-                )?;
+                let cover_raw =
+                    vars.eval(&mut session, cover_tpl, &empty_input, &source.source_url)?;
                 let clean = cover_raw.trim();
                 if clean.is_empty() {
                     Ok(ctx.cover_url.clone())
@@ -491,13 +461,8 @@ impl MusicSourceEngine {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                 {
-                    let evaluated_req = eval_template_expression(
-                        &mut session,
-                        req_tpl,
-                        &vars,
-                        &empty_input,
-                        &source.source_url,
-                    )?;
+                    let evaluated_req =
+                        vars.eval(&mut session, req_tpl, &empty_input, &source.source_url)?;
                     if evaluated_req.trim().is_empty() {
                         return Ok(None);
                     }
@@ -534,13 +499,8 @@ impl MusicSourceEngine {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                 {
-                    let evaluated_req = eval_template_expression(
-                        &mut session,
-                        req_tpl,
-                        &vars,
-                        &empty_input,
-                        &source.source_url,
-                    )?;
+                    let evaluated_req =
+                        vars.eval(&mut session, req_tpl, &empty_input, &source.source_url)?;
                     if evaluated_req.trim().is_empty() {
                         None
                     } else {
@@ -580,7 +540,7 @@ impl MusicSourceEngine {
                 return Ok(None);
             }
 
-            let mut parsed = parse_lyrics_str(&raw_lyric);
+            let mut parsed = StructuredLyrics::from(raw_lyric.as_str());
             if parsed.display_title.is_none() && !ctx.title.trim().is_empty() {
                 parsed.display_title = Some(ctx.title.clone());
             }
@@ -592,7 +552,7 @@ impl MusicSourceEngine {
             }
 
             let translated_lyrics = raw_tlyric.as_deref().and_then(|raw_t| {
-                let t_parsed = parse_lyrics_str(raw_t);
+                let t_parsed = StructuredLyrics::from(raw_t);
                 (!t_parsed.is_empty()).then_some(t_parsed)
             });
 

@@ -1,7 +1,7 @@
 use axum::http::HeaderMap;
 use axum::response::Response;
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_core::http::{into_binary_cache_response, parse_http_range_spec};
 
 use super::envelope::{SsNode, SubsonicError, SubsonicParams, render_ok};
@@ -22,13 +22,8 @@ pub(super) async fn handle_media_method(
             let id = parse_uuid_param(params, "id")?;
             state
                 .services
-                .catalog
-                .require_track_bound(user.id, TrackId(id))
-                .await?;
-            state
-                .services
                 .online
-                .ensure_tracked_track_cached(TrackId(id))
+                .ensure_tracked_track_cached(user.id, TrackId(id))
                 .await?;
             let spec = parse_http_range_spec(headers);
             let resolved = state
@@ -50,13 +45,8 @@ pub(super) async fn handle_media_method(
             let id = parse_uuid_param(params, "id")?;
             state
                 .services
-                .catalog
-                .require_track_bound(user.id, TrackId(id))
-                .await?;
-            state
-                .services
                 .online
-                .ensure_tracked_track_cached(TrackId(id))
+                .ensure_tracked_track_cached(user.id, TrackId(id))
                 .await?;
             let spec = parse_http_range_spec(headers);
             let resolved = state
@@ -75,7 +65,7 @@ pub(super) async fn handle_media_method(
             let size = params.u32("size");
             let cover = state
                 .services
-                .catalog
+                .streaming
                 .get_cover_art(user, clean_id, size)
                 .await?;
             Ok(into_binary_cache_response(cover))
@@ -86,7 +76,7 @@ pub(super) async fn handle_media_method(
             let title = params.first("title");
             let lyr = state
                 .services
-                .catalog
+                .streaming
                 .get_lyrics_by_artist_title(user.id, artist, title)
                 .await?;
             let node = SsNode::new()
@@ -106,17 +96,12 @@ pub(super) async fn handle_media_method(
             let id = parse_uuid_param(params, "id")?;
             state
                 .services
-                .catalog
-                .require_track_bound(user.id, TrackId(id))
-                .await?;
-            let _ = state
-                .services
                 .online
-                .ensure_tracked_lyrics_cached(TrackId(id))
-                .await;
+                .ensure_tracked_lyrics_cached(user.id, TrackId(id))
+                .await?;
             let lyr = state
                 .services
-                .catalog
+                .streaming
                 .get_lyrics_by_track(user.id, TrackId(id))
                 .await?;
             let structured = if lyr.is_empty() {
@@ -153,7 +138,7 @@ pub(super) async fn handle_media_method(
         }
 
         "startScan" => {
-            require_admin(user)?;
+            user.ensure_admin()?;
             let libs = state
                 .libraries
                 .list_libraries(Some(MediaKind::Music))

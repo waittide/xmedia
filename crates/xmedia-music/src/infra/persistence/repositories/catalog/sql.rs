@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use jiff::Timestamp;
-use toasty::Db;
 use toasty::stmt::Value;
+use toasty::{Db, Dialect, SqlPlaceholder};
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
@@ -27,19 +27,48 @@ pub(super) const PROJECTED_ALBUM_SELECT_COLUMNS: &str = "a.id, a.library_id, a.a
     MAX(COALESCE(t.disc_number, 1)), COUNT(t.id), COALESCE(SUM(t.duration_secs), 0), \
     a.is_compilation, a.cover_key, a.created_at, a.updated_at";
 
-#[derive(Default)]
 pub(super) struct SqlBuilder {
+    dialect: Dialect,
+    placeholder: SqlPlaceholder,
     params: Vec<Value>,
 }
 
 impl SqlBuilder {
+    pub(super) fn new(db: &Db) -> Self {
+        let cap = db.capability();
+        Self {
+            dialect: cap.sql.unwrap_or(Dialect::Sqlite),
+            placeholder: cap
+                .sql_placeholder
+                .unwrap_or(SqlPlaceholder::NumberedQuestionMark),
+            params: Vec::new(),
+        }
+    }
+
     pub(super) fn bind_val(&mut self, val: impl Into<Value>) -> String {
         self.params.push(val.into());
-        format!("?{}", self.params.len())
+        let idx = self.params.len();
+        match self.placeholder {
+            SqlPlaceholder::NumberedQuestionMark => format!("?{idx}"),
+            SqlPlaceholder::DollarNumber => format!("${idx}"),
+            SqlPlaceholder::QuestionMark => "?".to_string(),
+        }
+    }
+
+    pub(super) fn bind_bool(&mut self, val: bool) -> String {
+        self.bind_val(val)
+    }
+
+    pub(super) fn not_missing(&mut self, col: &str) -> String {
+        let p = self.bind_bool(false);
+        format!("{col} = {p}")
     }
 
     pub(super) fn bind_uuid(&mut self, id: Uuid) -> String {
-        self.bind_val(id.as_bytes().to_vec())
+        match self.dialect {
+            Dialect::Sqlite => self.bind_val(id.as_bytes().to_vec()),
+            Dialect::Postgresql | Dialect::Mysql | Dialect::MariaDb => self.bind_val(id),
+        }
     }
 
     pub(super) fn bind_uuid_set<I>(&mut self, col: &str, uuids: I, count: usize) -> String
@@ -48,17 +77,73 @@ impl SqlBuilder {
     {
         if count <= INLINE_UUID_IN_LIMIT {
             let placeholders: Vec<String> = uuids.into_iter().map(|u| self.bind_uuid(u)).collect();
-            format!("{col} IN ({})", placeholders.join(", "))
-        } else {
-            let hex_list: Vec<String> = uuids.into_iter().map(|u| u.simple().to_string()).collect();
-            let json_arr = serde_json::to_string(&hex_list).unwrap_or_else(|_| "[]".to_string());
-            let p = self.bind_val(json_arr);
-            format!("{col} IN (SELECT unhex(value) FROM json_each({p}))")
+            return format!("{col} IN ({})", placeholders.join(", "));
+        }
+        match self.dialect {
+            Dialect::Sqlite => {
+                let hex_list: Vec<String> =
+                    uuids.into_iter().map(|u| u.simple().to_string()).collect();
+                let json_arr =
+                    serde_json::to_string(&hex_list).unwrap_or_else(|_| "[]".to_string());
+                let p = self.bind_val(json_arr);
+                format!("{col} IN (SELECT unhex(value) FROM json_each({p}))")
+            }
+            Dialect::Postgresql => {
+                let list = Value::List(uuids.into_iter().map(Value::Uuid).collect());
+                let p = self.bind_val(list);
+                format!("{col} = ANY({p})")
+            }
+            Dialect::Mysql | Dialect::MariaDb => {
+                let placeholders: Vec<String> =
+                    uuids.into_iter().map(|u| self.bind_uuid(u)).collect();
+                format!("{col} IN ({})", placeholders.join(", "))
+            }
         }
     }
 
     pub(super) fn bind_track_scope(&mut self, col: &str, allowed: &HashSet<TrackId>) -> String {
         self.bind_uuid_set(col, allowed.iter().map(|t| t.0), allowed.len())
+    }
+
+    pub(super) fn not_online_tracked_cond(&self, col: &str) -> String {
+        match self.dialect {
+            Dialect::Sqlite => {
+                format!("COALESCE(json_extract({col}, '$.kind'), '') != 'online_tracked'")
+            }
+            Dialect::Postgresql => {
+                format!("COALESCE({col}::jsonb ->> 'kind', '') != 'online_tracked'")
+            }
+            Dialect::Mysql | Dialect::MariaDb => format!(
+                "COALESCE(JSON_UNQUOTE(JSON_EXTRACT({col}, '$.kind')), '') != 'online_tracked'"
+            ),
+        }
+    }
+
+    pub(super) fn contains_any_lower(&mut self, cols: &[&str], kw_lower: &str) -> String {
+        let parts: Vec<String> = cols
+            .iter()
+            .map(|col| {
+                let p = self.bind_val(kw_lower.to_string());
+                match self.dialect {
+                    Dialect::Postgresql => format!("STRPOS(LOWER({col}), {p}) > 0"),
+                    Dialect::Sqlite | Dialect::Mysql | Dialect::MariaDb => {
+                        format!("INSTR(LOWER({col}), {p}) > 0")
+                    }
+                }
+            })
+            .collect();
+        if parts.len() == 1 {
+            parts.into_iter().next().unwrap_or_default()
+        } else {
+            format!("({})", parts.join(" OR "))
+        }
+    }
+
+    pub(super) fn random_order_sql(&self) -> &'static str {
+        match self.dialect {
+            Dialect::Mysql | Dialect::MariaDb => "RAND()",
+            Dialect::Sqlite | Dialect::Postgresql => "RANDOM()",
+        }
     }
 
     pub(super) async fn exec_rows(self, sql: String, db: &mut Db) -> DomainResult<Vec<Value>> {
@@ -76,12 +161,12 @@ pub(super) fn append_track_query_conditions(
     allowed: Option<&HashSet<TrackId>>,
     query: &TrackQuery,
 ) {
-    conds.push("t.is_missing = 0".to_string());
+    conds.push(b.not_missing("t.is_missing"));
     if let Some(set) = allowed {
         conds.push(b.bind_track_scope("t.id", set));
     }
     if query.exclude_online_tracked {
-        conds.push("COALESCE(json_extract(t.source, '$.kind'), '') != 'online_tracked'".into());
+        conds.push(b.not_online_tracked_cond("t.source"));
     }
     if let Some(lib_id) = query.library_id {
         let p = b.bind_uuid(lib_id.0);
@@ -92,8 +177,9 @@ pub(super) fn append_track_query_conditions(
         conds.push(format!("t.album_id = {p}"));
     }
     if let Some(ar_id) = query.artist_id {
-        let p = b.bind_uuid(ar_id.0);
-        conds.push(format!("(t.artist_id = {p} OR t.album_artist_id = {p})"));
+        let p1 = b.bind_uuid(ar_id.0);
+        let p2 = b.bind_uuid(ar_id.0);
+        conds.push(format!("(t.artist_id = {p1} OR t.album_artist_id = {p2})"));
     }
     if let Some(tag_lower) = query
         .tag
@@ -129,10 +215,7 @@ pub(super) fn append_track_query_conditions(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
     {
-        let p = b.bind_val(kw_lower);
-        conds.push(format!(
-            "(INSTR(LOWER(t.title), {p}) > 0 OR INSTR(LOWER(t.artist_name), {p}) > 0 OR INSTR(LOWER(t.album_title), {p}) > 0)"
-        ));
+        conds.push(b.contains_any_lower(&["t.title", "t.artist_name", "t.album_title"], &kw_lower));
     }
 }
 
@@ -195,6 +278,10 @@ pub(super) fn val_i64(val: &Value) -> DomainResult<i64> {
         Value::U64(v) => Ok(*v as i64),
         Value::I32(v) => Ok(i64::from(*v)),
         Value::U32(v) => Ok(i64::from(*v)),
+        Value::I16(v) => Ok(i64::from(*v)),
+        Value::U16(v) => Ok(i64::from(*v)),
+        Value::I8(v) => Ok(i64::from(*v)),
+        Value::U8(v) => Ok(i64::from(*v)),
         other => Err(DomainError::Persistence(format!(
             "expected integer column, got {other:?}"
         ))),
@@ -211,10 +298,9 @@ pub(super) fn val_opt_i64(val: &Value) -> DomainResult<Option<i64>> {
 pub(super) fn val_bool(val: &Value) -> DomainResult<bool> {
     match val {
         Value::Bool(b) => Ok(*b),
-        Value::I64(n) => Ok(*n != 0),
-        other => Err(DomainError::Persistence(format!(
-            "expected boolean column, got {other:?}"
-        ))),
+        other => val_i64(other).map(|n| n != 0).map_err(|_| {
+            DomainError::Persistence(format!("expected boolean column, got {other:?}"))
+        }),
     }
 }
 
@@ -237,9 +323,18 @@ pub(super) fn val_opt_string(val: &Value) -> DomainResult<Option<String>> {
 pub(super) fn val_timestamp(val: &Value) -> DomainResult<Timestamp> {
     match val {
         Value::Timestamp(ts) => Ok(*ts),
+        Value::DateTime(dt) => dt
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .map(|z| z.timestamp())
+            .map_err(|e| DomainError::Persistence(format!("invalid datetime '{dt}': {e}"))),
         Value::String(s) => s
             .parse::<Timestamp>()
-            .map_err(|e| DomainError::Persistence(format!("invalid SQLite timestamp '{s}': {e}"))),
+            .or_else(|_| {
+                s.parse::<jiff::civil::DateTime>()
+                    .and_then(|dt| dt.to_zoned(jiff::tz::TimeZone::UTC))
+                    .map(|z| z.timestamp())
+            })
+            .map_err(|e| DomainError::Persistence(format!("invalid SQL timestamp '{s}': {e}"))),
         other => Err(DomainError::Persistence(format!(
             "expected timestamp column, got {other:?}"
         ))),
@@ -255,7 +350,9 @@ pub(super) fn row_to_track(row: &Value) -> DomainResult<Track> {
         )));
     }
     let format_raw = val_string(&f[18])?;
-    let format = AudioFormat::parse(&format_raw).unwrap_or(AudioFormat::Mp3);
+    let format = format_raw
+        .parse::<AudioFormat>()
+        .unwrap_or(AudioFormat::Mp3);
     let rg_json = val_string(&f[21])?;
     let replay_gain: ReplayGain = serde_json::from_str(&rg_json).unwrap_or_default();
     let source_json = val_string(&f[26])?;

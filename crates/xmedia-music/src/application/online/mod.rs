@@ -10,12 +10,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use uuid::Uuid;
+use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::User;
 pub(super) use xmedia_source::concurrency::{
-    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
+    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, weak_lock,
 };
 use xmedia_source::crud::SourceCrudService;
 use xmedia_source::model::ConcurrentRateSpec;
@@ -25,11 +26,12 @@ pub use crate::application::ports::AudioProxyResponse;
 pub use dto::*;
 pub use proxy::MAX_AUDIO_PROXY_BYTES;
 
-use crate::application::catalog::MusicCatalogService;
 use crate::application::ingest::MusicIngestService;
 use crate::application::ports::{
     AudioMetadataProbePort, MusicMediaProxyPort, MusicSourceEnginePort, MusicStoragePort,
 };
+use crate::application::projector::MusicProjector;
+use crate::application::tracks::MusicTrackService;
 use crate::domain::catalog::TrackId;
 use crate::domain::online::MusicSourceSpec;
 use crate::domain::repository::MusicCatalogRepository;
@@ -42,14 +44,16 @@ pub(super) const TRACK_INFO_OP_TIMEOUT: Duration = Duration::from_secs(45);
 pub(super) const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone)]
-pub struct MusicTrackingDeps {
-    pub libraries: Arc<dyn LibraryRepository>,
-    pub catalog_repo: Arc<dyn MusicCatalogRepository>,
-    pub catalog_service: Arc<MusicCatalogService>,
-    pub ingest_service: Arc<MusicIngestService>,
-    pub storage: Arc<dyn MusicStoragePort>,
-    pub probe: Arc<dyn AudioMetadataProbePort>,
-    pub events: Arc<dyn RealtimeEventPort>,
+pub(crate) struct MusicTrackingDeps {
+    pub(crate) libraries: Arc<dyn LibraryRepository>,
+    pub(crate) catalog_repo: Arc<dyn MusicCatalogRepository>,
+    pub(crate) bindings: Arc<MediaBindingService>,
+    pub(crate) projector: MusicProjector,
+    pub(crate) tracks_service: Arc<MusicTrackService>,
+    pub(crate) ingest_service: Arc<MusicIngestService>,
+    pub(crate) storage: Arc<dyn MusicStoragePort>,
+    pub(crate) probe: Arc<dyn AudioMetadataProbePort>,
+    pub(crate) events: Arc<dyn RealtimeEventPort>,
 }
 
 pub(super) type CoverUrlCacheKey = (Uuid, u64, String);
@@ -69,7 +73,7 @@ pub struct MusicOnlineService {
 }
 
 impl MusicOnlineService {
-    pub fn with_ports(
+    pub(crate) fn with_ports(
         sources: Arc<SourceCrudService<MusicSourceSpec>>,
         engine: Arc<dyn MusicSourceEnginePort>,
         media_proxy: Arc<dyn MusicMediaProxyPort>,
@@ -93,7 +97,7 @@ impl MusicOnlineService {
         &self.sources
     }
 
-    pub fn with_tracking(mut self, deps: MusicTrackingDeps) -> Self {
+    pub(crate) fn with_tracking(mut self, deps: MusicTrackingDeps) -> Self {
         self.tracking = Some(deps);
         self
     }

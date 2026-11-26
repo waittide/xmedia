@@ -12,7 +12,9 @@ use xmedia_source::proxy::{limit_byte_stream, validate_proxy_content_length};
 
 use super::{COVER_URL_CACHE_MAX_ENTRIES, CancelOnDrop, MusicOnlineService};
 use crate::application::ports::{AudioProxyResponse, UpstreamAudioProxyRequest};
-use crate::domain::online::{MusicSourceSpec, MusicTrackContext, is_http_url};
+use crate::domain::online::{
+    MusicRuleKind, MusicSourceSpec, MusicTrackContext, is_http_url, parse_concurrent_rate,
+};
 
 /// Maximum byte ceiling enforced on proxied online audio streams (`2 GiB`).
 pub const MAX_AUDIO_PROXY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -98,7 +100,7 @@ impl MusicOnlineService {
 
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
-        if parsed.rule_cover.is_none() {
+        if !parsed.has_rule(MusicRuleKind::Cover) {
             return Err(DomainError::NotFound("音源未配置封面解析规则".into()));
         }
 
@@ -120,9 +122,13 @@ impl MusicOnlineService {
         }
 
         let cover_timeout = self.op_timeout.min(Duration::from_secs(15));
-        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), cover_timeout)
-            .await
-            .map_err(DomainError::Validation)?;
+        self.acquire_rate_slot(
+            source_id,
+            parse_concurrent_rate(parsed.concurrent_rate.as_deref()),
+            cover_timeout,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let ctx = MusicTrackContext {
             track_id: tid.unwrap_or_default().to_string(),

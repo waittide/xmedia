@@ -119,7 +119,7 @@ impl ToastyMusicCatalogRepository {
         let mut db = self.db.clone();
 
         let total = {
-            let mut b = SqlBuilder::default();
+            let mut b = SqlBuilder::new(&db);
             let mut conds = Vec::new();
             append_track_query_conditions(&mut b, &mut conds, allowed, query);
             let where_sql = conds.join(" AND ");
@@ -142,7 +142,7 @@ impl ToastyMusicCatalogRepository {
         }
 
         let order_sql = track_order_by_sql(query.sort_by, query.sort_order);
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let mut conds = Vec::new();
         append_track_query_conditions(&mut b, &mut conds, allowed, query);
         let where_sql = conds.join(" AND ");
@@ -177,7 +177,7 @@ impl ToastyMusicCatalogRepository {
         }
         let mut db = self.db.clone();
         let order_sql = track_order_by_sql(query.sort_by, query.sort_order);
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let mut conds = Vec::new();
         append_track_query_conditions(&mut b, &mut conds, Some(allowed_track_ids), query);
         let where_sql = conds.join(" AND ");
@@ -211,14 +211,15 @@ impl ToastyMusicCatalogRepository {
             ..Default::default()
         };
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let mut conds = Vec::new();
         append_track_query_conditions(&mut b, &mut conds, Some(allowed_track_ids), &query);
         let where_sql = conds.join(" AND ");
+        let rand_sql = b.random_order_sql();
         let p_limit = b.bind_val(i64::from(size.clamp(1, 500)));
         let sql = format!(
             "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
-             WHERE {where_sql} ORDER BY RANDOM() LIMIT {p_limit}"
+             WHERE {where_sql} ORDER BY {rand_sql} LIMIT {p_limit}"
         );
         let rows = b.exec_rows(sql, &mut db).await?;
         rows.iter().map(row_to_track).collect()
@@ -233,11 +234,12 @@ impl ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let p_alb = b.bind_uuid(album_id.0);
+        let not_missing = b.not_missing("t.is_missing");
         let sql = format!(
             "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
-             WHERE t.album_id = {p_alb} AND t.is_missing = 0 \
+             WHERE t.album_id = {p_alb} AND {not_missing} \
              ORDER BY COALESCE(t.disc_number, 1) ASC, COALESCE(t.track_number, 4294967295) ASC, LOWER(t.title) ASC"
         );
         let rows = b.exec_rows(sql, &mut db).await?;
@@ -260,11 +262,13 @@ impl ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
-        let p_ar = b.bind_uuid(artist_id.0);
+        let mut b = SqlBuilder::new(&db);
+        let not_missing = b.not_missing("t.is_missing");
+        let p_ar1 = b.bind_uuid(artist_id.0);
+        let p_ar2 = b.bind_uuid(artist_id.0);
         let sql = format!(
             "SELECT {TRACK_SELECT_COLUMNS} FROM music_tracks t \
-             WHERE t.is_missing = 0 AND (t.artist_id = {p_ar} OR t.album_artist_id = {p_ar}) \
+             WHERE {not_missing} AND (t.artist_id = {p_ar1} OR t.album_artist_id = {p_ar2}) \
              ORDER BY LOWER(t.title) ASC"
         );
         let rows = b.exec_rows(sql, &mut db).await?;
@@ -366,7 +370,7 @@ impl ToastyMusicCatalogRepository {
                 .sample_rate_hz(sample_rate)
                 .bit_depth(bit_depth)
                 .channels(channels)
-                .format(track.format.as_str().to_string())
+                .format(track.format.to_string())
                 .file_size(file_size)
                 .file_hash(track.file_hash.clone())
                 .replay_gain(toasty::Json(track.replay_gain.clone()))
@@ -400,7 +404,7 @@ impl ToastyMusicCatalogRepository {
                 sample_rate_hz: sample_rate,
                 bit_depth: bit_depth,
                 channels: channels,
-                format: track.format.as_str().to_string(),
+                format: track.format.to_string(),
                 file_size: file_size,
                 file_hash: track.file_hash.clone(),
                 replay_gain: toasty::Json(track.replay_gain.clone()),

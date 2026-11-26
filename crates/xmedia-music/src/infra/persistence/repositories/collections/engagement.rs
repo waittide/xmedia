@@ -24,7 +24,7 @@ impl ToastyMusicCollectionRepository {
         starred_at: Timestamp,
     ) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let key = format!("{}:{}:{target_id}", user_id.0, kind.as_str());
+        let key = format!("{}:{kind}:{target_id}", user_id.0);
         if MusicStarredModel::filter_by_star_key(&key)
             .first()
             .exec(&mut db)
@@ -35,7 +35,7 @@ impl ToastyMusicCollectionRepository {
             toasty::create!(MusicStarredModel {
                 star_key: key,
                 user_id: user_id.0,
-                kind: kind.as_str().to_string(),
+                kind: kind.to_string(),
                 target_id: target_id,
                 starred_at: starred_at,
             })
@@ -53,7 +53,7 @@ impl ToastyMusicCollectionRepository {
         target_id: Uuid,
     ) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let key = format!("{}:{}:{target_id}", user_id.0, kind.as_str());
+        let key = format!("{}:{kind}:{target_id}", user_id.0);
         MusicStarredModel::filter_by_star_key(&key)
             .delete()
             .exec(&mut db)
@@ -75,7 +75,7 @@ impl ToastyMusicCollectionRepository {
 
         let mut out = Vec::new();
         for r in rows {
-            let parsed = StarTargetKind::parse(&r.kind)?;
+            let parsed = r.kind.parse::<StarTargetKind>()?;
             if kind.is_none_or(|k| k == parsed) {
                 out.push(StarredEntry {
                     user_id: UserId(r.user_id),
@@ -96,7 +96,7 @@ impl ToastyMusicCollectionRepository {
         rating: u8,
     ) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let key = format!("{}:{}:{target_id}", user_id.0, kind.as_str());
+        let key = format!("{}:{kind}:{target_id}", user_id.0);
         let now = Timestamp::now();
         let existing = MusicRatingModel::filter_by_rating_key(&key)
             .first()
@@ -115,7 +115,7 @@ impl ToastyMusicCollectionRepository {
             toasty::create!(MusicRatingModel {
                 rating_key: key,
                 user_id: user_id.0,
-                kind: kind.as_str().to_string(),
+                kind: kind.to_string(),
                 target_id: target_id,
                 rating: i64::from(rating),
                 updated_at: now,
@@ -134,7 +134,7 @@ impl ToastyMusicCollectionRepository {
         target_id: Uuid,
     ) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let key = format!("{}:{}:{target_id}", user_id.0, kind.as_str());
+        let key = format!("{}:{kind}:{target_id}", user_id.0);
         MusicRatingModel::filter_by_rating_key(&key)
             .delete()
             .exec(&mut db)
@@ -156,7 +156,7 @@ impl ToastyMusicCollectionRepository {
         for r in rows {
             out.push(RatingEntry {
                 user_id: UserId(r.user_id),
-                kind: StarTargetKind::parse(&r.kind)?,
+                kind: r.kind.parse::<StarTargetKind>()?,
                 target_id: r.target_id,
                 rating: u8::try_from(r.rating.clamp(1, 5)).unwrap_or(5),
                 updated_at: r.updated_at,
@@ -540,23 +540,13 @@ impl ToastyMusicCollectionRepository {
                 sc.delete().exec(&mut db).await.map_err(db_err)?;
             }
         }
-        let star_key = format!(
-            "{}:{}:{}",
-            user_id.0,
-            StarTargetKind::Track.as_str(),
-            track_id.0
-        );
+        let star_key = format!("{}:{}:{}", user_id.0, StarTargetKind::Track, track_id.0);
         MusicStarredModel::filter_by_star_key(&star_key)
             .delete()
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        let rating_key = format!(
-            "{}:{}:{}",
-            user_id.0,
-            StarTargetKind::Track.as_str(),
-            track_id.0
-        );
+        let rating_key = format!("{}:{}:{}", user_id.0, StarTargetKind::Track, track_id.0);
         MusicRatingModel::filter_by_rating_key(&rating_key)
             .delete()
             .exec(&mut db)

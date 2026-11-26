@@ -4,8 +4,6 @@ mod template;
 #[cfg(test)]
 mod tests;
 
-pub use search_explore::parse_explore_categories;
-
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};

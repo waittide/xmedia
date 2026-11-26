@@ -4,7 +4,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Number, Value};
 use xmedia_core::domain::error::DomainError;
-use xmedia_core::domain::xml::xml_escape;
+use xmedia_formats::common::xml_escape_clean as xml_escape;
 
 pub const SUBSONIC_API_VERSION: &str = "1.16.1";
 pub const SERVER_TYPE: &str = "xmedia";

@@ -182,7 +182,7 @@ fn infer_audio_extension(content_type: &str, format_hint: Option<&str>, raw_url:
             .chars()
             .filter(|c| c.is_ascii_alphanumeric())
             .collect();
-        if let Some(fmt) = crate::domain::catalog::AudioFormat::from_extension(&clean) {
+        if let Ok(fmt) = clean.parse::<crate::domain::catalog::AudioFormat>() {
             return fmt.extension().to_string();
         }
         if clean == "webm" {
@@ -193,7 +193,7 @@ fn infer_audio_extension(content_type: &str, format_hint: Option<&str>, raw_url:
     let path_part = raw_url.split('?').next().unwrap_or(raw_url);
     if let Some((_, ext)) = path_part.rsplit_once('.') {
         let lower = ext.trim().to_ascii_lowercase();
-        if let Some(fmt) = crate::domain::catalog::AudioFormat::from_extension(&lower) {
+        if let Ok(fmt) = lower.parse::<crate::domain::catalog::AudioFormat>() {
             return fmt.extension().to_string();
         }
         if lower == "webm" {

@@ -12,225 +12,207 @@ use crate::domain::catalog::{
     MusicTagStat, PagedResult, Track, TrackId, TrackQuery,
 };
 use crate::domain::collection::{
-    AudioBookmark, PlayQueue, Playlist, PlaylistId, RatingEntry, ScrobbleEntry, StarTargetKind,
-    StarredEntry, TrackPlayStat,
+    AudioBookmark, PlayQueue, Playlist, PlaylistId, ScrobbleEntry, StarTargetKind, StarredEntry,
+    TrackPlayStat, UserEngagementSnapshot,
 };
 
-#[async_trait]
-pub trait MusicCatalogRepository: Send + Sync {
-    async fn find_track_by_id(&self, id: TrackId) -> DomainResult<Option<Track>>;
-    async fn find_tracks_by_ids(&self, ids: &[TrackId]) -> DomainResult<Vec<Track>>;
-    async fn find_tracks_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Track>>;
-    async fn list_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Track>>;
-    async fn list_all_active_track_ids(&self) -> DomainResult<Vec<TrackId>>;
-    async fn query_tracks(&self, query: &TrackQuery) -> DomainResult<PagedResult<Track>>;
-    async fn list_tracks_by_album(&self, album_id: AlbumId) -> DomainResult<Vec<Track>>;
-    async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>>;
-
-    async fn count_bound_active_tracks(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<u64>;
-    async fn count_bound_tracks_by_library(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<HashMap<LibraryId, u64>>;
-    async fn get_bound_overview_stats(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<BoundCatalogCounts>;
-    async fn query_bound_tracks(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        query: &TrackQuery,
-    ) -> DomainResult<PagedResult<Track>>;
-    async fn list_bound_tracks_offset(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        query: &TrackQuery,
+#[derive(Debug, Clone)]
+pub enum TrackScope<'a> {
+    Id(TrackId),
+    Ids(&'a [TrackId]),
+    CoverKey(&'a str),
+    Library(LibraryId),
+    Album {
+        album_id: AlbumId,
+        allowed: Option<&'a HashSet<TrackId>>,
+    },
+    Artist {
+        artist_id: ArtistId,
+        allowed: Option<&'a HashSet<TrackId>>,
+    },
+    Offset {
+        allowed: &'a HashSet<TrackId>,
+        query: &'a TrackQuery,
         offset: u32,
         limit: u32,
-    ) -> DomainResult<Vec<Track>>;
-    async fn list_random_bound_tracks(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
+    },
+    Random {
+        allowed: &'a HashSet<TrackId>,
         size: u32,
         library_id: Option<LibraryId>,
-        genre: Option<&str>,
+        genre: Option<&'a str>,
         from_year: Option<i32>,
         to_year: Option<i32>,
-    ) -> DomainResult<Vec<Track>>;
-    async fn list_bound_tracks_by_album(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        album_id: AlbumId,
-    ) -> DomainResult<Vec<Track>>;
-    async fn list_bound_tracks_by_artist(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        artist_id: ArtistId,
-    ) -> DomainResult<Vec<Track>>;
-    async fn query_bound_albums(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        query: &AlbumListQuery,
-        starred_ids: &[StarredEntry],
-        play_stats: &[TrackPlayStat],
-        ratings: &[RatingEntry],
-    ) -> DomainResult<PagedResult<Album>>;
-    async fn project_bound_albums_by_ids(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        album_ids: &[AlbumId],
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TrackDeleteScope {
+    Id(TrackId),
+    Library(LibraryId),
+}
+
+#[derive(Debug, Clone)]
+pub enum AlbumScope<'a> {
+    Id(AlbumId),
+    Key(&'a str),
+    Ids(&'a [AlbumId]),
+    CoverKey(&'a str),
+    BoundByIds {
+        allowed: &'a HashSet<TrackId>,
+        album_ids: &'a [AlbumId],
         library_id: Option<LibraryId>,
-    ) -> DomainResult<Vec<Album>>;
-    async fn list_bound_albums_by_artist(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
+    },
+    BoundByArtist {
+        allowed: &'a HashSet<TrackId>,
         artist_id: ArtistId,
-    ) -> DomainResult<Vec<Album>>;
-    async fn query_bound_artists(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        query: &ArtistQuery,
-    ) -> DomainResult<PagedResult<Artist>>;
-    async fn project_bound_artists_by_ids(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        artist_ids: &[ArtistId],
+    },
+    BoundPaged {
+        allowed: &'a HashSet<TrackId>,
+        query: &'a AlbumListQuery,
+        starred: &'a [StarredEntry],
+        play_stats: &'a [TrackPlayStat],
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ArtistScope<'a> {
+    Id(ArtistId),
+    Name(&'a str),
+    Ids(&'a [ArtistId]),
+    BoundByIds {
+        allowed: &'a HashSet<TrackId>,
+        artist_ids: &'a [ArtistId],
         library_id: Option<LibraryId>,
-    ) -> DomainResult<Vec<Artist>>;
-    async fn list_bound_genres(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<Vec<GenreStat>>;
-    async fn list_bound_tags(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<Vec<MusicTagStat>>;
-    async fn has_bound_active_track(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        track_id: TrackId,
-    ) -> DomainResult<bool>;
-    async fn has_bound_active_album(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        album_id: AlbumId,
-    ) -> DomainResult<bool>;
-    async fn has_bound_active_artist(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-        artist_id: ArtistId,
-    ) -> DomainResult<bool>;
+    },
+    BoundPaged {
+        allowed: &'a HashSet<TrackId>,
+        query: &'a ArtistQuery,
+    },
+}
 
-    async fn save_track(&self, track: &Track) -> DomainResult<()>;
-    async fn delete_track(&self, id: TrackId) -> DomainResult<()>;
-    async fn delete_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<()>;
+#[derive(Debug, Clone)]
+pub enum CatalogFacetQuery<'a> {
+    ActiveTrackIds,
+    OverviewStats(&'a HashSet<TrackId>),
+    LibraryTrackCounts(&'a HashSet<TrackId>),
+    Genres(&'a HashSet<TrackId>),
+    Tags(Option<&'a HashSet<TrackId>>),
+    TrackTags(&'a [TrackId]),
+    HasBoundTarget {
+        allowed: &'a HashSet<TrackId>,
+        kind: StarTargetKind,
+        id: Uuid,
+    },
+}
 
-    async fn find_album_by_id(&self, id: AlbumId) -> DomainResult<Option<Album>>;
-    async fn find_album_by_key(&self, album_key: &str) -> DomainResult<Option<Album>>;
-    async fn find_albums_by_ids(&self, ids: &[AlbumId]) -> DomainResult<Vec<Album>>;
-    async fn find_albums_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Album>>;
-    async fn save_album(&self, album: &Album) -> DomainResult<()>;
+#[derive(Debug, Clone)]
+pub enum CatalogFacetResult {
+    TrackIds(Vec<TrackId>),
+    OverviewStats(BoundCatalogCounts),
+    LibraryTrackCounts(HashMap<LibraryId, u64>),
+    Genres(Vec<GenreStat>),
+    Tags(Vec<MusicTagStat>),
+    TrackTags(HashMap<TrackId, Vec<String>>),
+    Exists(bool),
+}
 
-    async fn find_artist_by_id(&self, id: ArtistId) -> DomainResult<Option<Artist>>;
-    async fn find_artist_by_name(&self, name: &str) -> DomainResult<Option<Artist>>;
-    async fn find_artists_by_ids(&self, ids: &[ArtistId]) -> DomainResult<Vec<Artist>>;
-    async fn save_artist(&self, artist: &Artist) -> DomainResult<()>;
-
-    async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>>;
-    async fn count_active_tags(&self, _active_track_ids: &HashSet<TrackId>) -> DomainResult<u64> {
-        Ok(self.list_tags().await?.len() as u64)
-    }
-    async fn get_tags_for_tracks(
-        &self,
-        track_ids: &[TrackId],
-    ) -> DomainResult<HashMap<TrackId, Vec<String>>>;
-    async fn set_track_tags(
-        &self,
+#[derive(Debug, Clone)]
+pub enum CatalogMutation<'a> {
+    Track(&'a Track),
+    Album(&'a Album),
+    Artist(&'a Artist),
+    TrackTags {
         track_id: TrackId,
         tags: Vec<String>,
-    ) -> DomainResult<Vec<String>>;
-    async fn recompute_catalog_aggregates(&self) -> DomainResult<()>;
+    },
+    RecomputeAggregates,
 }
 
 #[async_trait]
-pub trait MusicCollectionRepository: Send + Sync {
-    async fn find_playlist_by_id(&self, id: PlaylistId) -> DomainResult<Option<Playlist>>;
-    async fn list_visible_playlists(&self, user_id: UserId) -> DomainResult<Vec<Playlist>>;
-    async fn save_playlist(&self, playlist: &Playlist) -> DomainResult<()>;
-    async fn delete_playlist(&self, id: PlaylistId) -> DomainResult<()>;
-    async fn delete_tracks_references(
+pub trait MusicCatalogRepository: Send + Sync {
+    async fn query_tracks(&self, scope: TrackScope<'_>) -> DomainResult<Vec<Track>>;
+    async fn search_tracks(
         &self,
-        track_ids: &[TrackId],
-        deleted_album_ids: &[AlbumId],
-        deleted_artist_ids: &[ArtistId],
-    ) -> DomainResult<()>;
+        allowed: Option<&HashSet<TrackId>>,
+        query: &TrackQuery,
+    ) -> DomainResult<PagedResult<Track>>;
+    async fn query_albums(&self, scope: AlbumScope<'_>) -> DomainResult<PagedResult<Album>>;
+    async fn query_artists(&self, scope: ArtistScope<'_>) -> DomainResult<PagedResult<Artist>>;
+    async fn query_facets(&self, query: CatalogFacetQuery<'_>) -> DomainResult<CatalogFacetResult>;
+    async fn save(&self, mutation: CatalogMutation<'_>) -> DomainResult<()>;
+    async fn delete_tracks(&self, scope: TrackDeleteScope) -> DomainResult<()>;
+}
 
-    async fn set_starred(
-        &self,
-        user_id: UserId,
-        kind: StarTargetKind,
-        target_id: Uuid,
-        starred_at: Timestamp,
-    ) -> DomainResult<()>;
-    async fn unset_starred(
-        &self,
-        user_id: UserId,
-        kind: StarTargetKind,
-        target_id: Uuid,
-    ) -> DomainResult<()>;
-    async fn list_starred(
-        &self,
-        user_id: UserId,
-        kind: Option<StarTargetKind>,
-    ) -> DomainResult<Vec<StarredEntry>>;
+#[derive(Debug, Clone, Copy)]
+pub enum PlaylistQuery {
+    Id(PlaylistId),
+    VisibleTo(UserId),
+}
 
-    async fn set_rating(
-        &self,
+#[derive(Debug, Clone)]
+pub enum CollectionMutation<'a> {
+    Playlist(&'a Playlist),
+    PlayQueue(&'a PlayQueue),
+    Bookmark(&'a AudioBookmark),
+    Star {
         user_id: UserId,
         kind: StarTargetKind,
         target_id: Uuid,
-        rating: u8,
-    ) -> DomainResult<()>;
-    async fn remove_rating(
-        &self,
+        starred_at: Option<Timestamp>,
+    },
+    Rating {
         user_id: UserId,
         kind: StarTargetKind,
         target_id: Uuid,
-    ) -> DomainResult<()>;
-    async fn list_user_ratings(&self, user_id: UserId) -> DomainResult<Vec<RatingEntry>>;
-
-    async fn record_play(
-        &self,
+        rating: Option<u8>,
+    },
+    Scrobble {
         user_id: UserId,
         track_id: TrackId,
         album_id: AlbumId,
         played_at: Timestamp,
-    ) -> DomainResult<TrackPlayStat>;
-    async fn list_user_play_stats(&self, user_id: UserId) -> DomainResult<Vec<TrackPlayStat>>;
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum CollectionPurgeScope<'a> {
+    Playlist(PlaylistId),
+    Bookmark {
+        user_id: UserId,
+        track_id: TrackId,
+    },
+    User(UserId),
+    UserTrack {
+        user_id: UserId,
+        track_id: TrackId,
+    },
+    DeletedCatalog {
+        track_ids: &'a [TrackId],
+        album_ids: &'a [AlbumId],
+        artist_ids: &'a [ArtistId],
+    },
+}
+
+#[async_trait]
+pub trait MusicCollectionRepository: Send + Sync {
+    async fn query_playlists(&self, scope: PlaylistQuery) -> DomainResult<Vec<Playlist>>;
+    async fn get_play_queue(&self, user_id: UserId) -> DomainResult<Option<PlayQueue>>;
+    async fn query_bookmarks(
+        &self,
+        user_id: UserId,
+        track_id: Option<TrackId>,
+    ) -> DomainResult<Vec<AudioBookmark>>;
+    async fn load_engagement(
+        &self,
+        user_id: UserId,
+        kind: Option<StarTargetKind>,
+    ) -> DomainResult<UserEngagementSnapshot>;
     async fn list_recent_scrobbles(
         &self,
         user_id: UserId,
         limit: u32,
     ) -> DomainResult<Vec<ScrobbleEntry>>;
-
-    async fn get_play_queue(&self, user_id: UserId) -> DomainResult<Option<PlayQueue>>;
-    async fn save_play_queue(&self, queue: &PlayQueue) -> DomainResult<()>;
-
-    async fn list_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<AudioBookmark>>;
-    async fn get_bookmark(
-        &self,
-        user_id: UserId,
-        track_id: TrackId,
-    ) -> DomainResult<Option<AudioBookmark>>;
-    async fn save_bookmark(&self, bookmark: &AudioBookmark) -> DomainResult<()>;
-    async fn delete_bookmark(&self, user_id: UserId, track_id: TrackId) -> DomainResult<()>;
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
-    async fn delete_by_user_and_track(
-        &self,
-        user_id: UserId,
-        track_id: TrackId,
-    ) -> DomainResult<()>;
+    async fn save(&self, mutation: CollectionMutation<'_>) -> DomainResult<()>;
+    async fn purge(&self, scope: CollectionPurgeScope<'_>) -> DomainResult<()>;
 }

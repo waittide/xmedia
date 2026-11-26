@@ -9,13 +9,19 @@ use uuid::Uuid;
 use xmedia_core::application::ports::{BinaryPayload, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
+use xmedia_core::domain::user::UserId;
 
-use super::super::{CancelOnDrop, MusicOnlineService, MusicTrackingDeps, get_or_insert_weak_lock};
+use super::super::{CancelOnDrop, MusicOnlineService, MusicTrackingDeps, weak_lock};
 use super::MAX_TRACKED_AUDIO_BYTES;
 use crate::domain::catalog::{
-    AudioFormat, OnlineTrackedTrackSource, StructuredLyrics, TrackId, TrackSource,
+    AudioFormat, OnlineAudioCacheUpdate, OnlineTrackedTrackSource, ProbedCacheFields, TrackId,
+    TrackSource,
 };
-use crate::domain::online::{MusicSourceSpec, MusicTrackContext, infer_audio_format, is_http_url};
+use crate::domain::online::{
+    MusicRuleKind, MusicSourceSpec, MusicTrackContext, infer_audio_format, is_http_url,
+    parse_concurrent_rate,
+};
+use crate::domain::repository::{AlbumScope, ArtistScope, CatalogMutation, TrackScope};
 
 fn infer_audio_ext_from_content_type(ct: &str) -> Option<&'static str> {
     let base = ct
@@ -37,29 +43,6 @@ fn infer_audio_ext_from_content_type(ct: &str) -> Option<&'static str> {
         "audio/x-wavpack" | "audio/wavpack" => Some("wv"),
         _ => None,
     }
-}
-
-fn format_lyrics_as_lrc(raw_lyric: &str, structured: &StructuredLyrics) -> Option<String> {
-    if !raw_lyric.trim().is_empty() {
-        return Some(raw_lyric.to_string());
-    }
-    if structured.synced && !structured.lines.is_empty() {
-        let mut out = String::new();
-        for line in &structured.lines {
-            let total_secs = line.start_ms / 1000;
-            let mins = total_secs / 60;
-            let secs = total_secs % 60;
-            let cs = (line.start_ms % 1000) / 10;
-            out.push_str(&format!("[{mins:02}:{secs:02}.{cs:02}]{}\n", line.text));
-        }
-        if !out.trim().is_empty() {
-            return Some(out);
-        }
-    }
-    if !structured.plain_text.trim().is_empty() {
-        return Some(structured.plain_text.clone());
-    }
-    None
 }
 
 impl MusicOnlineService {
@@ -120,7 +103,9 @@ impl MusicOnlineService {
     ) -> Option<String> {
         let rec = self.sources.load_source(source_id).await.ok()?;
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json).ok()?;
-        parsed.rule_cover.as_ref()?;
+        if !parsed.has_rule(MusicRuleKind::Cover) {
+            return None;
+        }
         let op_timeout = self.op_timeout.min(Duration::from_secs(15));
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
@@ -173,7 +158,9 @@ impl MusicOnlineService {
     ) -> Option<String> {
         let rec = self.sources.load_source(source_id).await.ok()?;
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json).ok()?;
-        parsed.rule_lyric.as_ref()?;
+        if !parsed.has_rule(MusicRuleKind::Lyric) {
+            return None;
+        }
         let op_timeout = self.op_timeout.min(Duration::from_secs(20));
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
@@ -210,8 +197,7 @@ impl MusicOnlineService {
                         )
                         .await;
                 }
-                out.data
-                    .and_then(|r| format_lyrics_as_lrc(&r.raw_lyric, &r.lyrics))
+                out.data.and_then(|r| r.lyrics.to_lrc(&r.raw_lyric))
             }
             _ => {
                 cancel_flag.store(true, Ordering::Relaxed);
@@ -220,14 +206,28 @@ impl MusicOnlineService {
         }
     }
 
-    pub async fn ensure_tracked_lyrics_cached(&self, track_id: TrackId) -> DomainResult<()> {
+    pub async fn ensure_tracked_lyrics_cached(
+        &self,
+        user_id: UserId,
+        track_id: TrackId,
+    ) -> DomainResult<()> {
         let Some(deps) = self.tracking.as_ref() else {
             return Ok(());
         };
-        let Some(mut track) = deps.catalog_repo.find_track_by_id(track_id).await? else {
+        deps.bindings
+            .require_bound(user_id, MediaKind::Music, track_id.0, "track not found")
+            .await?;
+
+        let Some(mut track) = deps
+            .catalog_repo
+            .query_tracks(TrackScope::Id(track_id))
+            .await?
+            .into_iter()
+            .next()
+        else {
             return Ok(());
         };
-        if track.has_lyrics() || !track.source.is_online_tracked() {
+        if track.has_lyrics() {
             return Ok(());
         }
         let TrackSource::OnlineTracked(ref info) = track.source else {
@@ -257,9 +257,15 @@ impl MusicOnlineService {
             return Ok(());
         };
 
-        let lock = get_or_insert_weak_lock(&self.track_cache_locks, track_id);
+        let lock = weak_lock(&self.track_cache_locks, track_id);
         let _guard = lock.lock().await;
-        let Some(latest) = deps.catalog_repo.find_track_by_id(track_id).await? else {
+        let Some(latest) = deps
+            .catalog_repo
+            .query_tracks(TrackScope::Id(track_id))
+            .await?
+            .into_iter()
+            .next()
+        else {
             return Ok(());
         };
         track = latest;
@@ -270,22 +276,39 @@ impl MusicOnlineService {
             .storage
             .save_managed_sidecar_lrc(track_id, Bytes::from(lrc_text.into_bytes()))
             .await?;
-        track.attach_online_sidecar_lrc(saved_lrc_key, Timestamp::now());
-        deps.catalog_repo.save_track(&track).await?;
+        if track.attach_sidecar_lrc(saved_lrc_key, Timestamp::now()) {
+            deps.catalog_repo
+                .save(CatalogMutation::Track(&track))
+                .await?;
+        }
         Ok(())
     }
 
-    pub async fn ensure_tracked_track_cached(&self, track_id: TrackId) -> DomainResult<()> {
+    pub async fn ensure_tracked_track_cached(
+        &self,
+        user_id: UserId,
+        track_id: TrackId,
+    ) -> DomainResult<()> {
         let Some(deps) = self.tracking.as_ref() else {
             return Ok(());
         };
-        let Some(track) = deps.catalog_repo.find_track_by_id(track_id).await? else {
+        deps.bindings
+            .require_bound(user_id, MediaKind::Music, track_id.0, "track not found")
+            .await?;
+
+        let Some(track) = deps
+            .catalog_repo
+            .query_tracks(TrackScope::Id(track_id))
+            .await?
+            .into_iter()
+            .next()
+        else {
             return Ok(());
         };
-        if !track.source.is_online_tracked() {
+        if !matches!(track.source, TrackSource::OnlineTracked(_)) {
             return Ok(());
         }
-        if track.source.is_cached()
+        if track.is_cached()
             && let Some(library) = deps.libraries.find_by_id(track.library_id).await?
             && deps
                 .storage
@@ -296,15 +319,17 @@ impl MusicOnlineService {
             return Ok(());
         }
 
-        let lock = get_or_insert_weak_lock(&self.track_cache_locks, track_id);
+        let lock = weak_lock(&self.track_cache_locks, track_id);
         let _guard = lock.lock().await;
 
         let mut track = deps
             .catalog_repo
-            .find_track_by_id(track_id)
+            .query_tracks(TrackScope::Id(track_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
-        if !track.source.is_online_tracked() {
+        if !matches!(track.source, TrackSource::OnlineTracked(_)) {
             return Ok(());
         }
         let library = deps
@@ -312,7 +337,7 @@ impl MusicOnlineService {
             .find_by_id(track.library_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
-        if track.source.is_cached()
+        if track.is_cached()
             && deps
                 .storage
                 .resolve_audio_fs_path(&library, &track)
@@ -342,9 +367,13 @@ impl MusicOnlineService {
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
         let op_timeout = self.op_timeout;
-        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
-            .await
-            .map_err(DomainError::Validation)?;
+        self.acquire_rate_slot(
+            source_id,
+            parse_concurrent_rate(parsed.concurrent_rate.as_deref()),
+            op_timeout,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let ctx = MusicTrackContext {
             track_id: item_id.clone(),
@@ -467,7 +496,7 @@ impl MusicOnlineService {
         let final_format = probed_opt
             .as_ref()
             .map(|p| p.format)
-            .or_else(|| AudioFormat::parse(&probe_ext).ok())
+            .or_else(|| probe_ext.parse::<AudioFormat>().ok())
             .unwrap_or(track.format);
 
         let stored = deps
@@ -475,18 +504,8 @@ impl MusicOnlineService {
             .save_managed_audio_from_path(track.id, final_format, downloaded.temp_file.path())
             .await?;
 
-        if let Some(ref probed) = probed_opt {
-            track.apply_probed_metadata(
-                probed.duration_secs,
-                probed.bit_rate_kbps,
-                probed.sample_rate_hz,
-                probed.bit_depth,
-                probed.channels,
-                probed.year,
-                probed.genre.clone(),
-                probed.replay_gain.clone(),
-                probed.has_embedded_lyrics,
-            );
+        let mut resolved_cover_key: Option<String> = None;
+        let probed_fields = if let Some(ref probed) = probed_opt {
             if track.cover_key.is_none()
                 && let Some(ref embedded_cover) = probed.cover
                 && let Ok(key) = deps
@@ -494,13 +513,24 @@ impl MusicOnlineService {
                     .save_cover(&track.id.0.to_string(), embedded_cover)
                     .await
             {
-                track.set_cover_if_absent(key);
+                resolved_cover_key = Some(key);
             }
-        } else if let Some(br) = stream_out.data.bitrate {
-            track.set_bit_rate_kbps(br);
-        }
+            Some(ProbedCacheFields {
+                duration_secs: probed.duration_secs,
+                bit_rate_kbps: probed.bit_rate_kbps,
+                sample_rate_hz: probed.sample_rate_hz,
+                bit_depth: probed.bit_depth,
+                channels: probed.channels,
+                year: probed.year,
+                genre: probed.genre.clone(),
+                replay_gain: probed.replay_gain.clone(),
+                has_embedded_lyrics: probed.has_embedded_lyrics,
+            })
+        } else {
+            None
+        };
 
-        if track.cover_key.is_none() {
+        if track.cover_key.is_none() && resolved_cover_key.is_none() {
             let resolved_cover = match cover_url.clone() {
                 Some(u) => Some(u),
                 None => {
@@ -508,23 +538,24 @@ impl MusicOnlineService {
                         .await
                 }
             };
-            if let Some(key) = self
+            resolved_cover_key = self
                 .fetch_and_save_cover_best_effort(
                     deps,
                     source_id,
                     &track.id.0.to_string(),
                     resolved_cover.as_deref(),
                 )
-                .await
-            {
-                track.set_cover_if_absent(key);
-            }
+                .await;
         }
 
+        let has_embedded_lyrics = track.has_embedded_lyrics
+            || probed_fields
+                .as_ref()
+                .is_some_and(|p| p.has_embedded_lyrics);
         let mut final_lrc_key = existing_lrc_key;
         let mut added_sidecar_lrc = false;
         if final_lrc_key.is_none()
-            && !track.has_embedded_lyrics
+            && !has_embedded_lyrics
             && let Some(lrc_text) = self.resolve_lyrics_internal(source_id, ctx).await
             && let Ok(key) = deps
                 .storage
@@ -536,44 +567,64 @@ impl MusicOnlineService {
         }
 
         let now = Timestamp::now();
-        track.finalize_online_cached(
-            final_format,
-            stored.file_size,
-            stored.file_hash,
-            OnlineTrackedTrackSource {
-                storage_key: Some(stored.storage_key),
-                source_id,
-                item_id,
-                detail_url,
-                play_url,
-                url_id,
-                cover_url,
-                cover_id,
-                lyric_id,
-                quality,
-                cached: true,
-                sidecar_lrc_key: final_lrc_key,
+        track.cache_online_audio(
+            OnlineAudioCacheUpdate {
+                probed: probed_fields,
+                fallback_bitrate_kbps: stream_out.data.bitrate,
+                cover_key: resolved_cover_key,
+                format: final_format,
+                file_size: stored.file_size,
+                file_hash: stored.file_hash,
+                cached_source: OnlineTrackedTrackSource {
+                    storage_key: Some(stored.storage_key),
+                    source_id,
+                    item_id,
+                    detail_url,
+                    play_url,
+                    url_id,
+                    cover_url,
+                    cover_id,
+                    lyric_id,
+                    quality,
+                    cached: true,
+                    sidecar_lrc_key: final_lrc_key,
+                },
+                added_sidecar_lyrics: added_sidecar_lrc,
             },
-            added_sidecar_lrc,
             now,
         );
 
-        deps.catalog_repo.save_track(&track).await?;
+        deps.catalog_repo
+            .save(CatalogMutation::Track(&track))
+            .await?;
 
         if let Some(ref cov) = track.cover_key {
-            if let Ok(Some(mut album)) = deps.catalog_repo.find_album_by_id(track.album_id).await
+            if let Ok(paged) = deps
+                .catalog_repo
+                .query_albums(AlbumScope::Id(track.album_id))
+                .await
+                && let Some(mut album) = paged.items.into_iter().next()
                 && album.set_cover_if_absent(cov, now)
             {
-                let _ = deps.catalog_repo.save_album(&album).await;
+                let _ = deps.catalog_repo.save(CatalogMutation::Album(&album)).await;
             }
-            if let Ok(Some(mut artist)) = deps.catalog_repo.find_artist_by_id(track.artist_id).await
+            if let Ok(paged) = deps
+                .catalog_repo
+                .query_artists(ArtistScope::Id(track.artist_id))
+                .await
+                && let Some(mut artist) = paged.items.into_iter().next()
                 && artist.set_cover_if_absent(cov, now)
             {
-                let _ = deps.catalog_repo.save_artist(&artist).await;
+                let _ = deps
+                    .catalog_repo
+                    .save(CatalogMutation::Artist(&artist))
+                    .await;
             }
         }
 
-        deps.catalog_repo.recompute_catalog_aggregates().await?;
+        deps.catalog_repo
+            .save(CatalogMutation::RecomputeAggregates)
+            .await?;
         deps.events.publish(SystemEvent::MediaChanged {
             media_kind: MediaKind::Music,
         });

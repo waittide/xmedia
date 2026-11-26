@@ -1,340 +1,421 @@
-mod browse;
-mod media;
-mod overview_tracks;
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use jiff::Timestamp;
 use uuid::Uuid;
-use xmedia_core::application::bindings::MediaBindingService;
-use xmedia_core::domain::error::DomainResult;
-use xmedia_core::domain::library::{LibraryId, MediaKind};
-use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::UserId;
+use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::user::{User, UserId};
 
-use crate::application::dto::{AlbumDto, ArtistDto, OnlineTrackedTrackDto, TrackDto};
-use crate::application::ports::{LyricsResolverPort, MusicStoragePort};
-use crate::domain::catalog::{Album, AlbumId, Artist, Track, TrackId};
+use crate::application::dto::{
+    BookmarkDto, CatalogStatsDto, HomeOverviewDto, PlayQueueDto, SearchResultDto, TrackDto,
+};
+use crate::application::projector::MusicProjector;
+use crate::domain::catalog::{
+    AlbumId, AlbumListQuery, AlbumListType, ArtistQuery, ArtistRoleFilter, BoundCatalogCounts,
+    GenreStat, MusicTagStat, SearchQuery, SortOrder, Track, TrackId, TrackQuery, TrackSortField,
+};
 use crate::domain::collection::StarTargetKind;
-use crate::domain::repository::{MusicCatalogRepository, MusicCollectionRepository};
-
-#[derive(Debug, Clone)]
-pub enum MusicDirectoryNode {
-    Folder {
-        id: String,
-        parent: Option<String>,
-        name: String,
-        sub_albums: Vec<AlbumDto>,
-        tracks: Vec<TrackDto>,
-    },
-}
+use crate::domain::repository::{
+    AlbumScope, ArtistScope, CatalogFacetQuery, CatalogFacetResult, CatalogMutation,
+    MusicCatalogRepository, MusicCollectionRepository, PlaylistQuery, TrackScope,
+};
 
 #[derive(Clone)]
 pub struct MusicCatalogService {
-    libraries: Arc<dyn LibraryRepository>,
     catalog: Arc<dyn MusicCatalogRepository>,
     collections: Arc<dyn MusicCollectionRepository>,
-    bindings: Arc<MediaBindingService>,
-    storage: Arc<dyn MusicStoragePort>,
-    lyrics: Arc<dyn LyricsResolverPort>,
+    projector: MusicProjector,
 }
 
 impl MusicCatalogService {
-    pub fn new(
-        libraries: Arc<dyn LibraryRepository>,
+    pub(crate) fn new(
         catalog: Arc<dyn MusicCatalogRepository>,
         collections: Arc<dyn MusicCollectionRepository>,
-        bindings: Arc<MediaBindingService>,
-        storage: Arc<dyn MusicStoragePort>,
-        lyrics: Arc<dyn LyricsResolverPort>,
+        projector: MusicProjector,
     ) -> Self {
         Self {
-            libraries,
             catalog,
             collections,
-            bindings,
-            storage,
-            lyrics,
+            projector,
         }
-    }
-
-    pub fn bindings(&self) -> &Arc<MediaBindingService> {
-        &self.bindings
-    }
-
-    pub(crate) async fn bound_track_ids(&self, user_id: UserId) -> DomainResult<HashSet<TrackId>> {
-        Ok(self
-            .bindings
-            .list_bound_ids(user_id, MediaKind::Music)
-            .await?
-            .into_iter()
-            .map(TrackId)
-            .collect())
     }
 
     pub async fn list_all_track_ids_for_backfill(&self) -> DomainResult<Vec<Uuid>> {
-        Ok(self
+        match self
             .catalog
-            .list_all_active_track_ids()
+            .query_facets(CatalogFacetQuery::ActiveTrackIds)
+            .await?
+        {
+            CatalogFacetResult::TrackIds(ids) => Ok(ids.into_iter().map(|id| id.0).collect()),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    pub async fn get_home_overview(&self, user_id: UserId) -> DomainResult<HomeOverviewDto> {
+        let allowed = self.projector.bound_track_ids(user_id).await?;
+        let counts = match self
+            .catalog
+            .query_facets(CatalogFacetQuery::OverviewStats(&allowed))
+            .await?
+        {
+            CatalogFacetResult::OverviewStats(c) => c,
+            _ => BoundCatalogCounts::default(),
+        };
+
+        let engagement = self.collections.load_engagement(user_id, None).await?;
+        let mut track_star_map = engagement.star_map(StarTargetKind::Track);
+        track_star_map.retain(|id, _| counts.active_track_ids.contains(&TrackId(*id)));
+        let mut album_star_map = engagement.star_map(StarTargetKind::Album);
+        album_star_map.retain(|id, _| counts.active_album_ids.contains(&AlbumId(*id)));
+        let starred_tracks = track_star_map.len() as u64;
+
+        let mut track_rating_map = engagement.rating_map(StarTargetKind::Track);
+        track_rating_map.retain(|id, _| counts.active_track_ids.contains(&TrackId(*id)));
+        let mut album_rating_map = engagement.rating_map(StarTargetKind::Album);
+        album_rating_map.retain(|id, _| counts.active_album_ids.contains(&AlbumId(*id)));
+
+        let (track_stat_map, album_play_counts) =
+            engagement.play_maps(Some(&counts.active_track_ids));
+
+        let recent_added_raw = self
+            .catalog
+            .query_albums(AlbumScope::BoundPaged {
+                allowed: &counts.active_track_ids,
+                query: &AlbumListQuery {
+                    list_type: AlbumListType::Newest,
+                    size: 12,
+                    ..Default::default()
+                },
+                starred: &[],
+                play_stats: &[],
+            })
+            .await?
+            .items;
+
+        let mut freq_pairs: Vec<(AlbumId, u64)> = album_play_counts
+            .iter()
+            .filter(|(id, _)| counts.active_album_ids.contains(id))
+            .map(|(&id, &cnt)| (id, cnt))
+            .collect();
+        freq_pairs.sort_by_key(|a| std::cmp::Reverse(a.1));
+        let freq_ids: Vec<AlbumId> = freq_pairs.into_iter().take(12).map(|(id, _)| id).collect();
+        let frequent_raw = self
+            .catalog
+            .query_albums(AlbumScope::BoundByIds {
+                allowed: &counts.active_track_ids,
+                album_ids: &freq_ids,
+                library_id: None,
+            })
+            .await?
+            .items;
+
+        let recent_added = MusicProjector::enrich_albums_with_maps(
+            recent_added_raw,
+            &album_star_map,
+            &album_rating_map,
+            &album_play_counts,
+        );
+        let frequent = MusicProjector::enrich_albums_with_maps(
+            frequent_raw,
+            &album_star_map,
+            &album_rating_map,
+            &album_play_counts,
+        );
+
+        let scrobbles = self.collections.list_recent_scrobbles(user_id, 30).await?;
+        let mut recent_ids: Vec<TrackId> = Vec::new();
+        for sc in scrobbles {
+            if !counts.active_track_ids.contains(&sc.track_id) {
+                continue;
+            }
+            if !recent_ids.contains(&sc.track_id) {
+                recent_ids.push(sc.track_id);
+            }
+            if recent_ids.len() >= 10 {
+                break;
+            }
+        }
+        let raw_bookmarks: Vec<_> = self
+            .collections
+            .query_bookmarks(user_id, None)
             .await?
             .into_iter()
-            .map(|id| id.0)
-            .collect())
-    }
+            .filter(|bm| counts.active_track_ids.contains(&bm.track_id))
+            .collect();
+        let bookmarks_count = raw_bookmarks.len() as u64;
+        let raw_queue = self.collections.get_play_queue(user_id).await?;
 
-    pub async fn bind_track_for_user(
-        &self,
-        user_id: UserId,
-        track_id: TrackId,
-    ) -> DomainResult<bool> {
-        self.bindings
-            .bind(user_id, MediaKind::Music, track_id.0)
-            .await
-    }
+        let random_raw = self
+            .catalog
+            .query_tracks(TrackScope::Random {
+                allowed: &counts.active_track_ids,
+                size: 12,
+                library_id: None,
+                genre: None,
+                from_year: None,
+                to_year: None,
+            })
+            .await?;
+        let random_ids: Vec<TrackId> = random_raw.iter().map(|t| t.id).collect();
+        let mut track_pool: HashMap<TrackId, Track> =
+            random_raw.into_iter().map(|t| (t.id, t)).collect();
 
-    pub async fn bind_tracks_for_user(
-        &self,
-        user_id: UserId,
-        track_ids: &[TrackId],
-    ) -> DomainResult<usize> {
-        let raw_ids: Vec<Uuid> = track_ids.iter().map(|id| id.0).collect();
-        self.bindings
-            .bind_batch(user_id, MediaKind::Music, &raw_ids)
-            .await
-    }
-
-    pub async fn require_track_bound(
-        &self,
-        user_id: UserId,
-        track_id: TrackId,
-    ) -> DomainResult<()> {
-        self.bindings
-            .require_bound(user_id, MediaKind::Music, track_id.0, "track not found")
-            .await
-    }
-
-    pub async fn count_bound_active_tracks(&self, user_id: UserId) -> DomainResult<u64> {
-        let allowed = self.bound_track_ids(user_id).await?;
-        self.catalog.count_bound_active_tracks(&allowed).await
-    }
-
-    pub async fn count_bound_tracks_by_library(
-        &self,
-        user_id: UserId,
-    ) -> DomainResult<HashMap<LibraryId, u64>> {
-        let allowed = self.bound_track_ids(user_id).await?;
-        self.catalog.count_bound_tracks_by_library(&allowed).await
-    }
-
-    fn enrich_tracks_with_maps(
-        tracks: Vec<Track>,
-        tag_map: &mut HashMap<TrackId, Vec<String>>,
-        star_map: &HashMap<Uuid, Timestamp>,
-        rating_map: &HashMap<Uuid, u8>,
-        stat_map: &HashMap<TrackId, (u64, Timestamp)>,
-    ) -> Vec<TrackDto> {
-        tracks
-            .into_iter()
-            .map(|t| {
-                let (play_count, last_played_at) = stat_map
-                    .get(&t.id)
-                    .map(|(c, ts)| (*c, Some(*ts)))
-                    .unwrap_or((0, None));
-                let online_tracking =
-                    t.source
-                        .online_tracking_info()
-                        .map(|(source_id, item_id, cached)| OnlineTrackedTrackDto {
-                            source_id,
-                            item_id: item_id.to_string(),
-                            cached,
-                        });
-                TrackDto {
-                    id: t.id,
-                    library_id: t.library_id,
-                    album_id: t.album_id,
-                    artist_id: t.artist_id,
-                    album_artist_id: t.album_artist_id,
-                    title: t.title.clone(),
-                    artist_name: t.artist_name.clone(),
-                    album_artist_name: t.album_artist_name.clone(),
-                    album_title: t.album_title.clone(),
-                    track_number: t.track_number,
-                    disc_number: t.disc_number,
-                    year: t.year,
-                    genre: t.genre.clone(),
-                    duration_secs: t.duration_secs,
-                    bit_rate_kbps: t.bit_rate_kbps,
-                    sample_rate_hz: t.sample_rate_hz,
-                    bit_depth: t.bit_depth,
-                    channels: t.channels,
-                    format: t.format,
-                    mime_type: t.format.mime_type().to_string(),
-                    is_lossless: t.format.is_lossless(),
-                    file_size: t.file_size,
-                    replay_gain: t.replay_gain.clone(),
-                    has_lyrics: t.has_lyrics(),
-                    has_embedded_lyrics: t.has_embedded_lyrics,
-                    has_sidecar_lyrics: t.has_sidecar_lyrics,
-                    is_compilation: t.is_compilation,
-                    cover_key: t.cover_key.clone(),
-                    path: t.source.display_path().to_string(),
-                    tags: tag_map.remove(&t.id).unwrap_or_default(),
-                    starred_at: star_map.get(&t.id.0).copied(),
-                    user_rating: rating_map.get(&t.id.0).copied(),
-                    play_count,
-                    last_played_at,
-                    created_at: t.created_at,
-                    online_tracking,
+        let mut extra_fetch_ids: Vec<TrackId> = Vec::new();
+        for &id in &recent_ids {
+            if !track_pool.contains_key(&id) && !extra_fetch_ids.contains(&id) {
+                extra_fetch_ids.push(id);
+            }
+        }
+        for bm in &raw_bookmarks {
+            if !track_pool.contains_key(&bm.track_id) && !extra_fetch_ids.contains(&bm.track_id) {
+                extra_fetch_ids.push(bm.track_id);
+            }
+        }
+        if let Some(ref q) = raw_queue
+            && let Some(cid) = q.current_track_id
+            && counts.active_track_ids.contains(&cid)
+            && !track_pool.contains_key(&cid)
+            && !extra_fetch_ids.contains(&cid)
+        {
+            extra_fetch_ids.push(cid);
+        }
+        if !extra_fetch_ids.is_empty() {
+            for tr in self
+                .catalog
+                .query_tracks(TrackScope::Ids(&extra_fetch_ids))
+                .await?
+            {
+                if !tr.is_missing {
+                    track_pool.insert(tr.id, tr);
                 }
-            })
-            .collect()
-    }
-
-    fn enrich_albums_with_maps(
-        albums: Vec<Album>,
-        star_map: &HashMap<Uuid, Timestamp>,
-        rating_map: &HashMap<Uuid, u8>,
-        album_play_counts: &HashMap<AlbumId, u64>,
-    ) -> Vec<AlbumDto> {
-        albums
-            .into_iter()
-            .map(|a| AlbumDto {
-                id: a.id,
-                library_id: a.library_id,
-                title: a.title,
-                album_artist_id: a.album_artist_id,
-                album_artist_name: a.album_artist_name,
-                year: a.year,
-                genre: a.genre,
-                disc_count: a.disc_count,
-                track_count: a.track_count,
-                duration_secs: a.duration_secs,
-                is_compilation: a.is_compilation,
-                cover_key: a.cover_key,
-                starred_at: star_map.get(&a.id.0).copied(),
-                user_rating: rating_map.get(&a.id.0).copied(),
-                play_count: album_play_counts.get(&a.id).copied().unwrap_or(0),
-                created_at: a.created_at,
-            })
-            .collect()
-    }
-
-    pub async fn enrich_tracks(
-        &self,
-        user_id: UserId,
-        tracks: Vec<Track>,
-    ) -> DomainResult<Vec<TrackDto>> {
-        if tracks.is_empty() {
-            return Ok(Vec::new());
+            }
         }
-        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
-        let mut tag_map = self.catalog.get_tags_for_tracks(&track_ids).await?;
-        let stars = self
-            .collections
-            .list_starred(user_id, Some(StarTargetKind::Track))
-            .await?;
-        let ratings = self.collections.list_user_ratings(user_id).await?;
-        let stats = self.collections.list_user_play_stats(user_id).await?;
 
-        let star_map: HashMap<Uuid, Timestamp> = stars
-            .into_iter()
-            .map(|s| (s.target_id, s.starred_at))
-            .collect();
-        let rating_map: HashMap<Uuid, u8> = ratings
-            .into_iter()
-            .filter(|r| r.kind == StarTargetKind::Track)
-            .map(|r| (r.target_id, r.rating))
-            .collect();
-        let stat_map: HashMap<TrackId, (u64, Timestamp)> = stats
-            .into_iter()
-            .map(|st| (st.track_id, (st.play_count, st.last_played_at)))
-            .collect();
-
-        Ok(Self::enrich_tracks_with_maps(
-            tracks,
+        let needed_ids: Vec<TrackId> = track_pool.keys().copied().collect();
+        let mut tag_map = self.projector.load_track_tags(&needed_ids).await?;
+        let all_dtos = MusicProjector::enrich_tracks_with_maps(
+            track_pool.into_values().collect(),
             &mut tag_map,
-            &star_map,
-            &rating_map,
-            &stat_map,
-        ))
-    }
+            &track_star_map,
+            &track_rating_map,
+            &track_stat_map,
+        );
+        let dto_lookup: HashMap<TrackId, TrackDto> =
+            all_dtos.into_iter().map(|t| (t.id, t)).collect();
 
-    pub async fn enrich_albums(
-        &self,
-        user_id: UserId,
-        albums: Vec<Album>,
-    ) -> DomainResult<Vec<AlbumDto>> {
-        if albums.is_empty() {
-            return Ok(Vec::new());
+        let recent_played_tracks: Vec<TrackDto> = recent_ids
+            .iter()
+            .filter_map(|id| dto_lookup.get(id).cloned())
+            .collect();
+        let random_tracks: Vec<TrackDto> = random_ids
+            .iter()
+            .filter_map(|id| dto_lookup.get(id).cloned())
+            .collect();
+
+        let mut bookmarks = Vec::new();
+        for bm in raw_bookmarks {
+            if let Some(track) = dto_lookup.get(&bm.track_id).cloned() {
+                bookmarks.push(BookmarkDto {
+                    track,
+                    position_ms: bm.position_ms,
+                    comment: bm.comment,
+                    created_at: bm.created_at,
+                    updated_at: bm.updated_at,
+                });
+            }
         }
-        let stars = self
-            .collections
-            .list_starred(user_id, Some(StarTargetKind::Album))
-            .await?;
-        let ratings = self.collections.list_user_ratings(user_id).await?;
-        let stats = self.collections.list_user_play_stats(user_id).await?;
+        bookmarks.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
 
-        let star_map: HashMap<Uuid, Timestamp> = stars
-            .into_iter()
-            .map(|s| (s.target_id, s.starred_at))
-            .collect();
-        let rating_map: HashMap<Uuid, u8> = ratings
-            .into_iter()
-            .filter(|r| r.kind == StarTargetKind::Album)
-            .map(|r| (r.target_id, r.rating))
-            .collect();
-        let mut album_play_counts: HashMap<AlbumId, u64> = HashMap::new();
-        for st in stats {
-            *album_play_counts.entry(st.album_id).or_default() += st.play_count;
-        }
-
-        Ok(Self::enrich_albums_with_maps(
-            albums,
-            &star_map,
-            &rating_map,
-            &album_play_counts,
-        ))
-    }
-
-    pub async fn enrich_artists(
-        &self,
-        user_id: UserId,
-        artists: Vec<Artist>,
-    ) -> DomainResult<Vec<ArtistDto>> {
-        if artists.is_empty() {
-            return Ok(Vec::new());
-        }
-        let stars = self
-            .collections
-            .list_starred(user_id, Some(StarTargetKind::Artist))
-            .await?;
-        let ratings = self.collections.list_user_ratings(user_id).await?;
-
-        let star_map: HashMap<Uuid, Timestamp> = stars
-            .into_iter()
-            .map(|s| (s.target_id, s.starred_at))
-            .collect();
-        let rating_map: HashMap<Uuid, u8> = ratings
-            .into_iter()
-            .filter(|r| r.kind == StarTargetKind::Artist)
-            .map(|r| (r.target_id, r.rating))
-            .collect();
-
-        Ok(artists
-            .into_iter()
-            .map(|ar| ArtistDto {
-                id: ar.id,
-                name: ar.name,
-                is_album_artist: ar.is_album_artist,
-                is_track_artist: ar.is_track_artist,
-                album_count: ar.album_count,
-                track_count: ar.track_count,
-                cover_key: ar.cover_key,
-                starred_at: star_map.get(&ar.id.0).copied(),
-                user_rating: rating_map.get(&ar.id.0).copied(),
-                created_at: ar.created_at,
+        let play_queue = raw_queue.and_then(|q| {
+            let current_track_id = q
+                .current_track_id
+                .filter(|cid| counts.active_track_ids.contains(cid));
+            let current_tracks: Vec<TrackDto> = current_track_id
+                .and_then(|cid| dto_lookup.get(&cid).cloned())
+                .into_iter()
+                .collect();
+            if current_track_id.is_none()
+                && !q
+                    .track_ids
+                    .iter()
+                    .any(|tid| counts.active_track_ids.contains(tid))
+            {
+                return None;
+            }
+            Some(PlayQueueDto {
+                tracks: current_tracks,
+                current_track_id,
+                position_ms: q.position_ms,
+                changed_by: q.changed_by,
+                updated_at: q.updated_at,
             })
-            .collect())
+        });
+
+        let playlists_count = self
+            .collections
+            .query_playlists(PlaylistQuery::VisibleTo(user_id))
+            .await?
+            .len() as u64;
+
+        let mut listening_ids: HashSet<TrackId> = bookmarks.iter().map(|b| b.track.id).collect();
+        if let Some(ref pq) = play_queue
+            && let Some(cid) = pq.current_track_id
+        {
+            listening_ids.insert(cid);
+        }
+        for rt in &recent_played_tracks {
+            listening_ids.insert(rt.id);
+        }
+        let listening_count = listening_ids.len() as u64;
+
+        Ok(HomeOverviewDto {
+            stats: CatalogStatsDto {
+                total_tracks: counts.total_tracks,
+                total_albums: counts.total_albums,
+                total_artists: counts.total_artists,
+                starred_tracks,
+                playlists_count,
+                listening_count,
+                bookmarks_count,
+                genres_count: counts.genres_count,
+                tags_count: counts.tags_count,
+                libraries_count: counts.libraries_count,
+            },
+            recent_added_albums: recent_added,
+            frequent_albums: frequent,
+            recent_played_tracks,
+            random_tracks,
+            bookmarks,
+            play_queue,
+        })
+    }
+
+    pub async fn list_genres(&self, user_id: UserId) -> DomainResult<Vec<GenreStat>> {
+        let allowed = self.projector.bound_track_ids(user_id).await?;
+        match self
+            .catalog
+            .query_facets(CatalogFacetQuery::Genres(&allowed))
+            .await?
+        {
+            CatalogFacetResult::Genres(list) => Ok(list),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    pub async fn list_tags(&self, user_id: UserId) -> DomainResult<Vec<MusicTagStat>> {
+        let allowed = self.projector.bound_track_ids(user_id).await?;
+        match self
+            .catalog
+            .query_facets(CatalogFacetQuery::Tags(Some(&allowed)))
+            .await?
+        {
+            CatalogFacetResult::Tags(list) => Ok(list),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    pub async fn set_track_tags(
+        &self,
+        actor: &User,
+        track_id: TrackId,
+        tags: Vec<String>,
+    ) -> DomainResult<TrackDto> {
+        actor.ensure_admin()?;
+        let track = self
+            .catalog
+            .query_tracks(TrackScope::Id(track_id))
+            .await?
+            .into_iter()
+            .find(|t| !t.is_missing)
+            .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
+        self.catalog
+            .save(CatalogMutation::TrackTags {
+                track_id: track.id,
+                tags,
+            })
+            .await?;
+        let mut list = self.projector.enrich_tracks(actor.id, vec![track]).await?;
+        list.pop()
+            .ok_or_else(|| DomainError::NotFound("track not found".into()))
+    }
+
+    pub async fn search(
+        &self,
+        user_id: UserId,
+        query: SearchQuery,
+    ) -> DomainResult<SearchResultDto> {
+        let allowed = self.projector.bound_track_ids(user_id).await?;
+        if allowed.is_empty() {
+            return Ok(SearchResultDto {
+                artists: Vec::new(),
+                albums: Vec::new(),
+                tracks: Vec::new(),
+            });
+        }
+        let clean_q = query.query.trim().trim_matches('"');
+        let search_opt = (!clean_q.is_empty()).then(|| clean_q.to_string());
+
+        let artists = if query.artist_count > 0 {
+            self.catalog
+                .query_artists(ArtistScope::BoundPaged {
+                    allowed: &allowed,
+                    query: &ArtistQuery {
+                        library_id: query.library_id,
+                        search: search_opt.clone(),
+                        role_filter: ArtistRoleFilter::All,
+                        offset: query.artist_offset,
+                        size: query.artist_count,
+                    },
+                })
+                .await?
+                .items
+        } else {
+            Vec::new()
+        };
+
+        let albums = if query.album_count > 0 {
+            self.catalog
+                .query_albums(AlbumScope::BoundPaged {
+                    allowed: &allowed,
+                    query: &AlbumListQuery {
+                        list_type: AlbumListType::AlphabeticalByName,
+                        library_id: query.library_id,
+                        search: search_opt.clone(),
+                        offset: query.album_offset,
+                        size: query.album_count,
+                        ..Default::default()
+                    },
+                    starred: &[],
+                    play_stats: &[],
+                })
+                .await?
+                .items
+        } else {
+            Vec::new()
+        };
+
+        let tracks = if query.song_count > 0 {
+            self.catalog
+                .query_tracks(TrackScope::Offset {
+                    allowed: &allowed,
+                    query: &TrackQuery {
+                        library_id: query.library_id,
+                        search: search_opt,
+                        sort_by: TrackSortField::Title,
+                        sort_order: SortOrder::Asc,
+                        ..Default::default()
+                    },
+                    offset: query.song_offset,
+                    limit: query.song_count,
+                })
+                .await?
+        } else {
+            Vec::new()
+        };
+
+        Ok(SearchResultDto {
+            artists: self.projector.enrich_artists(user_id, artists).await?,
+            albums: self.projector.enrich_albums(user_id, albums).await?,
+            tracks: self.projector.enrich_tracks(user_id, tracks).await?,
+        })
     }
 }

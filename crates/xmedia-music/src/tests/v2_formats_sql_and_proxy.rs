@@ -39,11 +39,12 @@ use crate::application::ports::{
     MusicScannerPort, MusicStoragePort, TranscodeFormat, UpstreamAudioProxyRequest,
 };
 use crate::domain::catalog::{
-    Album, AlbumListQuery, AlbumListType, Artist, ArtistQuery, ArtistRoleFilter, AudioFormat,
-    ReplayGain, SearchQuery, SortOrder, Track, TrackId, TrackQuery, TrackSortField, TrackSource,
+    Album, AlbumListQuery, AlbumListType, AlbumSpec, Artist, ArtistQuery, ArtistRoleFilter,
+    AudioFormat, ReplayGain, SearchQuery, SortOrder, Track, TrackId, TrackQuery, TrackSortField,
+    TrackSource,
 };
 use crate::domain::online::{MusicSourceSpec, infer_audio_format, url_encode_component};
-use crate::domain::repository::MusicCatalogRepository;
+use crate::domain::repository::{AlbumScope, CatalogMutation, MusicCatalogRepository};
 use crate::http::state::MusicHttpState;
 use crate::http::{rest_router, subsonic_router};
 use crate::infra::audio_probe::LoftyAudioProbe;
@@ -101,7 +102,7 @@ async fn expanded_audio_formats_probe_scan_stream_and_subsonic_prefixes() {
         ("wv", AudioFormat::Wv, "wv", "audio/x-wavpack", true),
         ("wavpack", AudioFormat::Wv, "wv", "audio/x-wavpack", true),
     ] {
-        let fmt = AudioFormat::parse(raw).unwrap();
+        let fmt = raw.parse::<AudioFormat>().unwrap();
         assert_eq!(fmt, expected);
         assert_eq!(fmt.extension(), ext);
         assert_eq!(fmt.mime_type(), mime);
@@ -142,7 +143,14 @@ async fn expanded_audio_formats_probe_scan_stream_and_subsonic_prefixes() {
         })
         .await
         .unwrap();
-    let admin = env.auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = env
+        .auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     // Probe & scan AIFF (.aif) + cover + sidecar LRC
     let scan_root = env.tmp.path().join("aiff_mount");
@@ -214,9 +222,16 @@ async fn expanded_audio_formats_probe_scan_stream_and_subsonic_prefixes() {
         .await
         .unwrap();
     let repo = ToastyMusicCatalogRepository::new(env.db.clone());
-    let mut alb = repo.find_album_by_id(dto.album_id).await.unwrap().unwrap();
+    let mut alb = repo
+        .query_albums(AlbumScope::Id(dto.album_id))
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .next()
+        .unwrap();
     alb.set_cover_if_absent(&cover_key, Timestamp::now());
-    repo.save_album(&alb).await.unwrap();
+    repo.save(CatalogMutation::Album(&alb)).await.unwrap();
 
     let state = MusicHttpState::new(
         env.auth_svc.clone(),
@@ -305,7 +320,14 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
         })
         .await
         .unwrap();
-    let admin = env.auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = env
+        .auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let bob_dto = env
         .auth_svc
         .create_user(
@@ -328,35 +350,51 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
     let repo = ToastyMusicCatalogRepository::new(env.db.clone());
     let now = Timestamp::now();
 
-    let artist_main = Artist::new(" Main Artist ", true, true, None, now);
-    let artist_guest = Artist::new(" Guest Vocalist ", false, true, None, now);
-    repo.save_artist(&artist_main).await.unwrap();
-    repo.save_artist(&artist_guest).await.unwrap();
+    let artist_main = Artist::reconcile(None, " Main Artist ", true, true, None, now).0;
+    let artist_guest = Artist::reconcile(None, " Guest Vocalist ", false, true, None, now).0;
+    repo.save(CatalogMutation::Artist(&artist_main))
+        .await
+        .unwrap();
+    repo.save(CatalogMutation::Artist(&artist_guest))
+        .await
+        .unwrap();
 
-    let album_rock = Album::new(
-        lib.id,
-        "Symphonic Rock",
-        artist_main.id,
-        &artist_main.name,
-        Some(2022),
-        Some("Rock"),
-        false,
+    let album_rock = Album::reconcile(
         None,
+        AlbumSpec {
+            library_id: lib.id,
+            raw_title: "Symphonic Rock",
+            album_artist_id: artist_main.id,
+            album_artist_name: &artist_main.name,
+            year: Some(2022),
+            genre: Some("Rock"),
+            is_compilation: false,
+            cover_hint: None,
+        },
         now,
-    );
-    let album_jazz = Album::new(
-        lib.id,
-        "Midnight Jazz",
-        artist_main.id,
-        &artist_main.name,
-        Some(2024),
-        Some("Jazz"),
-        false,
+    )
+    .0;
+    let album_jazz = Album::reconcile(
         None,
+        AlbumSpec {
+            library_id: lib.id,
+            raw_title: "Midnight Jazz",
+            album_artist_id: artist_main.id,
+            album_artist_name: &artist_main.name,
+            year: Some(2024),
+            genre: Some("Jazz"),
+            is_compilation: false,
+            cover_hint: None,
+        },
         now,
-    );
-    repo.save_album(&album_rock).await.unwrap();
-    repo.save_album(&album_jazz).await.unwrap();
+    )
+    .0;
+    repo.save(CatalogMutation::Album(&album_rock))
+        .await
+        .unwrap();
+    repo.save(CatalogMutation::Album(&album_jazz))
+        .await
+        .unwrap();
 
     // Insert 540 active bound tracks (> 500 UUID threshold -> exercises json_each(unhex(...))),
     // plus 15 unbound tracks and 5 missing tracks.
@@ -407,7 +445,7 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
             created_at: now,
             updated_at: now,
         };
-        repo.save_track(&tr).await.unwrap();
+        repo.save(CatalogMutation::Track(&tr)).await.unwrap();
         if idx < 540 || is_missing {
             admin_bound_ids.push(tid.0);
         }
@@ -415,12 +453,17 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
             bob_bound_ids.push(tid.0);
         }
         if idx < 5 {
-            repo.set_track_tags(tid, vec!["Favorites".into(), "Lossless".into()])
-                .await
-                .unwrap();
+            repo.save(CatalogMutation::TrackTags {
+                track_id: tid,
+                tags: vec!["Favorites".into(), "Lossless".into()],
+            })
+            .await
+            .unwrap();
         }
     }
-    repo.recompute_catalog_aggregates().await.unwrap();
+    repo.save(CatalogMutation::RecomputeAggregates)
+        .await
+        .unwrap();
 
     env.music_services
         .ingest
@@ -449,18 +492,22 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
     // Verify >500 bound tracks SQL queries for admin vs 3 bound tracks for bob
     assert_eq!(
         env.music_services
-            .catalog
-            .count_bound_active_tracks(admin.id)
+            .browse
+            .count_bound_tracks_by_library(admin.id)
             .await
-            .unwrap(),
+            .unwrap()
+            .values()
+            .sum::<u64>(),
         540
     );
     assert_eq!(
         env.music_services
-            .catalog
-            .count_bound_active_tracks(bob_dto.id)
+            .browse
+            .count_bound_tracks_by_library(bob_dto.id)
             .await
-            .unwrap(),
+            .unwrap()
+            .values()
+            .sum::<u64>(),
         3
     );
 
@@ -479,7 +526,7 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
 
     let page_tracks = env
         .music_services
-        .catalog
+        .tracks
         .query_tracks(
             admin.id,
             TrackQuery {
@@ -498,7 +545,7 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
 
     let tagged = env
         .music_services
-        .catalog
+        .tracks
         .query_tracks(
             admin.id,
             TrackQuery {
@@ -512,7 +559,7 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
 
     let bob_albums = env
         .music_services
-        .catalog
+        .browse
         .list_albums(
             bob_dto.id,
             AlbumListQuery {
@@ -531,7 +578,7 @@ async fn sql_catalog_pushdown_scales_beyond_500_bound_tracks_and_isolates_users(
 
     let guest_artists = env
         .music_services
-        .catalog
+        .browse
         .list_artists(
             admin.id,
             ArtistQuery {
@@ -740,7 +787,13 @@ async fn audio_proxy_requires_enabled_source_and_enforces_2gib_content_length_an
         })
         .await
         .unwrap();
-    let admin = auth_svc.authenticate_jwt(&admin_sess.token).await.unwrap();
+    let admin = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&admin_sess.token),
+            None,
+        )
+        .await
+        .unwrap();
     let _member = auth_svc
         .create_user(
             &admin,
@@ -753,8 +806,14 @@ async fn audio_proxy_requires_enabled_source_and_enforces_2gib_content_length_an
         )
         .await
         .unwrap();
-    let member_sess = auth_svc.login("member", "password123").await.unwrap();
-    let member = auth_svc.authenticate_jwt(&member_sess.token).await.unwrap();
+    let member_sess = auth_svc.login("member", "password123", None).await.unwrap();
+    let member = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&member_sess.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let imported = music_services
         .online

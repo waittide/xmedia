@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::media::SortOrder;
 
@@ -72,8 +72,10 @@ pub enum AlbumListType {
     ByGenre,
 }
 
-impl AlbumListType {
-    pub fn parse(raw: &str) -> DomainResult<Self> {
+impl std::str::FromStr for AlbumListType {
+    type Err = DomainError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim() {
             "newest" => Ok(Self::Newest),
             "recent" => Ok(Self::Recent),

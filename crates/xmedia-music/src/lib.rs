@@ -26,11 +26,15 @@ use xmedia_source::crud::{SourceCrudService, SourceRepository};
 use xmedia_source::http::HttpClientConfig;
 
 use application::MusicServices;
+use application::browse::MusicBrowseService;
 use application::catalog::MusicCatalogService;
 use application::collection::MusicCollectionService;
 use application::ingest::MusicIngestService;
+use application::lifecycle::MusicDomainLifecycle;
 use application::online::{MusicOnlineService, MusicTrackingDeps};
+use application::projector::MusicProjector;
 use application::streaming::MusicStreamingService;
+use application::tracks::MusicTrackService;
 use domain::online::MusicSourceSpec;
 use infra::audio_probe::LoftyAudioProbe;
 use infra::lyrics::HybridLyricsResolver;
@@ -41,7 +45,7 @@ use infra::source::{HttpMusicMediaProxy, MusicSourceEngine};
 use infra::storage::{LocalMusicScanner, LocalMusicStorage};
 use infra::transcoder::FfmpegAudioTranscoder;
 
-pub use infra::persistence::{ensure_music_schema, register_music_models};
+pub use infra::persistence::{ensure_music_indexes, ensure_music_schema, register_music_models};
 
 pub fn init_music_module(
     db: Db,
@@ -111,37 +115,64 @@ pub fn init_music_module_with_bindings(
     let lyrics = Arc::new(HybridLyricsResolver);
     let transcoder = Arc::new(FfmpegAudioTranscoder::new(ffmpeg));
 
-    let catalog = Arc::new(MusicCatalogService::new(
-        libraries_repo.clone(),
+    let projector = MusicProjector::new(
         catalog_repo.clone(),
         collections_repo.clone(),
         bindings.clone(),
-        storage.clone(),
-        lyrics,
+    );
+    let catalog = Arc::new(MusicCatalogService::new(
+        catalog_repo.clone(),
+        collections_repo.clone(),
+        projector.clone(),
+    ));
+    let browse = Arc::new(MusicBrowseService::new(
+        libraries_repo.clone(),
+        catalog_repo.clone(),
+        collections_repo.clone(),
+        projector.clone(),
+    ));
+    let tracks = Arc::new(MusicTrackService::new(
+        catalog_repo.clone(),
+        collections_repo.clone(),
+        bindings.clone(),
+        projector.clone(),
     ));
     let collection = Arc::new(MusicCollectionService::new(
         catalog_repo.clone(),
         collections_repo.clone(),
-        (*catalog).clone(),
+        bindings.clone(),
+        projector.clone(),
     ));
     let ingest = Arc::new(MusicIngestService::new(
         libraries_repo.clone(),
         catalog_repo.clone(),
-        collections_repo,
+        collections_repo.clone(),
         bindings.clone(),
-        (*catalog).clone(),
+        projector.clone(),
+        storage.clone(),
+        probe.clone(),
+        events.clone(),
+    ));
+    let lifecycle = Arc::new(MusicDomainLifecycle::new(
+        libraries_repo.clone(),
+        catalog_repo.clone(),
+        collections_repo.clone(),
+        bindings.clone(),
+        ingest.clone(),
         storage.clone(),
         scanner,
         probe.clone(),
         events.clone(),
     ));
-    library_service.register_lifecycle(ingest.clone());
+    library_service.register_lifecycle(lifecycle);
 
     let streaming = Arc::new(MusicStreamingService::new(
         libraries_repo.clone(),
         catalog_repo.clone(),
-        bindings,
+        collections_repo,
+        bindings.clone(),
         storage.clone(),
+        lyrics,
         transcoder,
     ));
 
@@ -158,7 +189,9 @@ pub fn init_music_module_with_bindings(
             MusicTrackingDeps {
                 libraries: libraries_repo,
                 catalog_repo,
-                catalog_service: catalog.clone(),
+                bindings,
+                projector,
+                tracks_service: tracks.clone(),
                 ingest_service: ingest.clone(),
                 storage,
                 probe,
@@ -174,6 +207,8 @@ pub fn init_music_module_with_bindings(
 
     Ok(MusicServices::new(
         catalog,
+        browse,
+        tracks,
         collection,
         ingest,
         streaming,

@@ -13,13 +13,15 @@ use crate::infra::persistence::repositories::db_err;
 impl ToastyMusicCatalogRepository {
     pub(super) async fn list_tags_impl(&self) -> DomainResult<Vec<MusicTagStat>> {
         let mut db = self.db.clone();
-        let b = SqlBuilder::default();
-        let sql = "SELECT MIN(tt.tag), COUNT(*) \
-                   FROM music_track_tags tt INNER JOIN music_tracks t ON t.id = tt.track_id \
-                   WHERE t.is_missing = 0 \
-                   GROUP BY tt.tag_lower \
-                   ORDER BY COUNT(*) DESC, tt.tag_lower ASC"
-            .to_string();
+        let mut b = SqlBuilder::new(&db);
+        let not_missing = b.not_missing("t.is_missing");
+        let sql = format!(
+            "SELECT MIN(tt.tag), COUNT(*) \
+             FROM music_track_tags tt INNER JOIN music_tracks t ON t.id = tt.track_id \
+             WHERE {not_missing} \
+             GROUP BY tt.tag_lower \
+             ORDER BY COUNT(*) DESC, tt.tag_lower ASC"
+        );
         let rows = b.exec_rows(sql, &mut db).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -32,31 +34,6 @@ impl ToastyMusicCatalogRepository {
             }
         }
         Ok(out)
-    }
-
-    pub(super) async fn count_active_tags_impl(
-        &self,
-        active_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<u64> {
-        if active_track_ids.is_empty() {
-            return Ok(0);
-        }
-        let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
-        let scope = b.bind_track_scope("t.id", active_track_ids);
-        let sql = format!(
-            "SELECT COUNT(DISTINCT tt.tag_lower) \
-             FROM music_track_tags tt INNER JOIN music_tracks t ON t.id = tt.track_id \
-             WHERE t.is_missing = 0 AND {scope}"
-        );
-        let rows = b.exec_rows(sql, &mut db).await?;
-        let count = rows
-            .first()
-            .and_then(|r| row_fields(r).ok())
-            .and_then(|f| f.first())
-            .and_then(|v| val_i64(v).ok())
-            .unwrap_or(0);
-        Ok(u64::try_from(count.max(0)).unwrap_or(0))
     }
 
     pub(super) async fn get_tags_for_tracks_impl(

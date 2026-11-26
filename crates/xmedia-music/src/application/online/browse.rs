@@ -8,7 +8,8 @@ use xmedia_core::domain::user::User;
 use xmedia_source::rate_limit::get_or_insert_rate_limiter;
 
 use crate::domain::online::{
-    MusicSourceSpec, OnlineMusicTrackItem, is_http_url, url_encode_component,
+    MusicRuleKind, MusicSourceSpec, OnlineMusicTrackItem, is_http_url, parse_concurrent_rate,
+    url_encode_component,
 };
 
 use super::dto::{
@@ -112,20 +113,10 @@ impl MusicOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut sources = self.sources.repository().list_all().await?;
-        let is_admin = actor.role.is_admin();
-
-        if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
-            sources.retain(|s| filter_ids.contains(&s.id) && (is_admin || s.enabled));
-        } else {
-            sources.retain(|s| s.enabled);
-        }
-
-        if sources.is_empty() {
-            return Err(DomainError::Validation("没有可用的已启用音源".into()));
-        }
-
-        sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+        let sources = self
+            .sources
+            .select_sources(actor, source_ids.as_deref())
+            .await?;
         let page_num = page.max(1);
         let limit_num = limit.clamp(1, 50);
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
@@ -161,8 +152,8 @@ impl MusicOnlineService {
                     }
                 };
                 let qualities = parsed.supported_qualities.clone();
-                let has_cover_rule = parsed.rule_cover.is_some();
-                if let Some(rate) = parsed.parse_concurrent_rate()
+                let has_cover_rule = parsed.has_rule(MusicRuleKind::Cover);
+                if let Some(rate) = parse_concurrent_rate(parsed.concurrent_rate.as_deref())
                     && let Err(e) = rate_limiter.acquire(rate, op_timeout).await
                 {
                     return (
@@ -300,12 +291,16 @@ impl MusicOnlineService {
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
         let op_timeout = self.op_timeout;
-        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
-            .await
-            .map_err(DomainError::Validation)?;
+        self.acquire_rate_slot(
+            source_id,
+            parse_concurrent_rate(parsed.concurrent_rate.as_deref()),
+            op_timeout,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let qualities = parsed.supported_qualities.clone();
-        let has_cover_rule = parsed.rule_cover.is_some();
+        let has_cover_rule = parsed.has_rule(MusicRuleKind::Cover);
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();

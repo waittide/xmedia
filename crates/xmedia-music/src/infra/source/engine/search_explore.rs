@@ -10,164 +10,14 @@ use xmedia_source::rule::{RuleValue, split_js_pipeline};
 
 use super::super::session::MusicSourceSession;
 use super::template::{
-    MusicTemplateVars, eval_rule_or_literal, eval_template_expression, fetch_api, non_empty_opt,
-    resolve_literal_http_url, substitute_static_explore_placeholders,
+    MusicTemplateVars, eval_rule_or_literal, fetch_api, non_empty_opt, resolve_literal_http_url,
+    substitute_static_explore_placeholders,
 };
 use super::{MusicSourceEngine, infer_audio_format, normalize_artist, parse_duration_secs};
 use crate::domain::online::{
     MusicSearchRule, MusicSourceSpec, MusicTrackContext, OnlineMusicExploreCategory,
     OnlineMusicExploreResult, OnlineMusicTrackItem,
 };
-
-fn normalize_explore_category_url(raw_url: &str, base_url: &str) -> String {
-    let trimmed = raw_url.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    if split_js_pipeline(trimmed).is_some() || trimmed.contains("{{") || trimmed.contains("}}") {
-        return trimmed.to_string();
-    }
-    resolve_relative_url_preserving_options(trimmed, base_url)
-}
-
-fn split_explore_entries_outside_js(raw: &str) -> Vec<&str> {
-    let bytes = raw.as_bytes();
-    let mut entries = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    let mut in_tag_js = false;
-    let mut in_at_js = false;
-
-    while i < bytes.len() {
-        if !in_tag_js
-            && bytes
-                .get(i..i + 4)
-                .is_some_and(|s| s.eq_ignore_ascii_case(b"<js>"))
-        {
-            in_tag_js = true;
-            in_at_js = false;
-            i += 4;
-            continue;
-        }
-        if in_tag_js
-            && bytes
-                .get(i..i + 5)
-                .is_some_and(|s| s.eq_ignore_ascii_case(b"</js>"))
-        {
-            in_tag_js = false;
-            i += 5;
-            continue;
-        }
-        if !in_tag_js
-            && !in_at_js
-            && bytes
-                .get(i..i + 4)
-                .is_some_and(|s| s.eq_ignore_ascii_case(b"@js:"))
-        {
-            in_at_js = true;
-            i += 4;
-            continue;
-        }
-        if !in_tag_js {
-            if bytes[i] == b'\n' || bytes[i] == b'\r' {
-                entries.push(&raw[start..i]);
-                in_at_js = false;
-                i += 1;
-                start = i;
-                continue;
-            }
-            if !in_at_js && bytes.get(i..i + 2) == Some(b"&&") {
-                entries.push(&raw[start..i]);
-                i += 2;
-                start = i;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    if start < bytes.len() {
-        entries.push(&raw[start..]);
-    }
-    entries
-}
-
-fn split_title_and_explore_url(entry: &str) -> Option<(&str, &str)> {
-    let lower = entry.to_ascii_lowercase();
-    let js_offset = [lower.find("@js:"), lower.find("<js>")]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(entry.len());
-    let (title, url) = entry.split_once("::")?;
-    if title.len() < js_offset {
-        Some((title, url))
-    } else {
-        None
-    }
-}
-
-pub fn parse_explore_categories(raw: &str, base_url: &str) -> Vec<OnlineMusicExploreCategory> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    if trimmed.starts_with('[')
-        && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed)
-    {
-        let mut out = Vec::new();
-        for item in arr {
-            let title = item
-                .get("title")
-                .or_else(|| item.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let url = item
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            if !title.is_empty() && !url.is_empty() {
-                out.push(OnlineMusicExploreCategory {
-                    title: title.to_string(),
-                    url: normalize_explore_category_url(url, base_url),
-                });
-            }
-        }
-        if !out.is_empty() {
-            return out;
-        }
-    }
-
-    let mut out = Vec::new();
-    for raw_entry in split_explore_entries_outside_js(trimmed) {
-        let entry = raw_entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        if let Some((title, url)) = split_title_and_explore_url(entry) {
-            let t = title.trim();
-            let u = url.trim();
-            if !t.is_empty() && !u.is_empty() {
-                out.push(OnlineMusicExploreCategory {
-                    title: t.to_string(),
-                    url: normalize_explore_category_url(u, base_url),
-                });
-            }
-        } else if entry.starts_with("http://")
-            || entry.starts_with("https://")
-            || entry.starts_with('/')
-            || split_js_pipeline(entry).is_some()
-        {
-            out.push(OnlineMusicExploreCategory {
-                title: "默认榜单".to_string(),
-                url: normalize_explore_category_url(entry, base_url),
-            });
-        }
-    }
-    out
-}
 
 fn extract_tracks_with_rule(
     session: &mut MusicSourceSession,
@@ -264,10 +114,7 @@ impl MusicSourceEngine {
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
         let mut run = || -> Result<Vec<OnlineMusicTrackItem>, String> {
-            let rule = source
-                .rule_search
-                .as_ref()
-                .ok_or_else(|| format!("音源「{}」未配置 ruleSearch", source.source_name))?;
+            let rule = source.list_rule(false)?;
             let raw_tpl = source
                 .search_url
                 .as_deref()
@@ -279,20 +126,9 @@ impl MusicSourceEngine {
             let limit_clamped = limit.clamp(1, 50);
             session.set_search_vars(keyword, page_clamped, limit_clamped)?;
 
-            let vars = MusicTemplateVars {
-                key: keyword,
-                page: page_clamped,
-                limit: limit_clamped,
-                ..Default::default()
-            };
+            let vars = MusicTemplateVars::for_search(keyword, page_clamped, limit_clamped);
             let empty_input = RuleValue::Text(String::new());
-            let evaluated = eval_template_expression(
-                &mut session,
-                raw_tpl,
-                &vars,
-                &empty_input,
-                &source.source_url,
-            )?;
+            let evaluated = vars.eval(&mut session, raw_tpl, &empty_input, &source.source_url)?;
             if evaluated.trim().is_empty() {
                 return Err("searchUrl 求值结果为空".into());
             }
@@ -354,14 +190,10 @@ impl MusicSourceEngine {
             let categories = source
                 .explore_url
                 .as_deref()
-                .map(|raw| parse_explore_categories(raw, &source.source_url))
+                .map(|raw| OnlineMusicExploreCategory::parse_list(raw, &source.source_url))
                 .unwrap_or_default();
 
-            let rule = source
-                .rule_explore
-                .as_ref()
-                .or(source.rule_search.as_ref())
-                .ok_or_else(|| format!("音源「{}」未配置浏览解析规则", source.source_name))?;
+            let rule = source.list_rule(true)?;
 
             let page_clamped = page.max(1);
             let limit_clamped = limit.clamp(1, 50);
@@ -373,16 +205,11 @@ impl MusicSourceEngine {
             let target_url = if let Some(raw_override) = override_trimmed {
                 if let Some(matched_cat) = categories.iter().find(|c| c.url == raw_override) {
                     session.set_search_vars("", page_clamped, limit_clamped)?;
-                    let vars = MusicTemplateVars {
-                        page: page_clamped,
-                        limit: limit_clamped,
-                        ..Default::default()
-                    };
+                    let vars = MusicTemplateVars::for_explore(page_clamped, limit_clamped);
                     let empty_input = RuleValue::Text(String::new());
-                    let evaluated = eval_template_expression(
+                    let evaluated = vars.eval(
                         &mut session,
                         &matched_cat.url,
-                        &vars,
                         &empty_input,
                         &source.source_url,
                     )?;
@@ -406,16 +233,11 @@ impl MusicSourceEngine {
                     .first()
                     .ok_or_else(|| format!("音源「{}」未配置 exploreUrl", source.source_name))?;
                 session.set_search_vars("", page_clamped, limit_clamped)?;
-                let vars = MusicTemplateVars {
-                    page: page_clamped,
-                    limit: limit_clamped,
-                    ..Default::default()
-                };
+                let vars = MusicTemplateVars::for_explore(page_clamped, limit_clamped);
                 let empty_input = RuleValue::Text(String::new());
-                let evaluated = eval_template_expression(
+                let evaluated = vars.eval(
                     &mut session,
                     &default_cat.url,
-                    &vars,
                     &empty_input,
                     &source.source_url,
                 )?;
@@ -500,13 +322,8 @@ impl MusicSourceEngine {
                 .filter(|s| !s.is_empty())
             {
                 let empty_input = RuleValue::Text(String::new());
-                let evaluated_url = eval_template_expression(
-                    &mut session,
-                    req_tpl,
-                    &vars,
-                    &empty_input,
-                    &source.source_url,
-                )?;
+                let evaluated_url =
+                    vars.eval(&mut session, req_tpl, &empty_input, &source.source_url)?;
                 if evaluated_url.trim().is_empty() {
                     return Err("ruleTrackDetail.requestUrl 求值结果为空".into());
                 }

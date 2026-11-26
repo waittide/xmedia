@@ -1,5 +1,3 @@
-mod scan;
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,44 +11,46 @@ use xmedia_core::application::ports::{RealtimeEventPort, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{User, UserId, require_admin};
+use xmedia_core::domain::user::{User, UserId};
 
-use crate::application::catalog::MusicCatalogService;
 use crate::application::dto::{
-    BindMusicItemsInput, GlobalScanStatusDto, UploadBatchResultDto, UploadFilePathItem,
+    BindMusicItemsInput, GlobalScanStatusDto, PoolTrackDto, UploadBatchResultDto,
+    UploadFilePathItem,
 };
-use crate::application::ports::{
-    AudioMetadataProbePort, MusicScannerPort, MusicStoragePort, ProbedAudioMetadata,
-};
+use crate::application::ports::{AudioMetadataProbePort, MusicStoragePort, ProbedAudioMetadata};
+use crate::application::projector::MusicProjector;
 use crate::domain::catalog::{
-    Album, AlbumId, Artist, ArtistId, AudioFormat, Track, TrackId, TrackSource,
+    Album, AlbumId, AlbumSpec, Artist, ArtistId, AudioFormat, PagedResult, ProbedTrackInit, Track,
+    TrackId, TrackQuery, TrackSource,
 };
-use crate::domain::repository::{MusicCatalogRepository, MusicCollectionRepository};
+use crate::domain::repository::{
+    AlbumScope, ArtistScope, CatalogFacetQuery, CatalogFacetResult, CatalogMutation,
+    CollectionPurgeScope, MusicCatalogRepository, MusicCollectionRepository, TrackDeleteScope,
+    TrackScope,
+};
 
 #[derive(Clone)]
 pub struct MusicIngestService {
-    pub(super) libraries: Arc<dyn LibraryRepository>,
-    pub(super) catalog_repo: Arc<dyn MusicCatalogRepository>,
-    pub(super) collections: Arc<dyn MusicCollectionRepository>,
-    pub(super) bindings: Arc<MediaBindingService>,
-    pub(super) catalog_service: MusicCatalogService,
-    pub(super) storage: Arc<dyn MusicStoragePort>,
-    pub(super) scanner: Arc<dyn MusicScannerPort>,
-    pub(super) probe: Arc<dyn AudioMetadataProbePort>,
-    pub(super) events: Arc<dyn RealtimeEventPort>,
+    libraries: Arc<dyn LibraryRepository>,
+    catalog_repo: Arc<dyn MusicCatalogRepository>,
+    collections: Arc<dyn MusicCollectionRepository>,
+    bindings: Arc<MediaBindingService>,
+    projector: MusicProjector,
+    storage: Arc<dyn MusicStoragePort>,
+    probe: Arc<dyn AudioMetadataProbePort>,
+    events: Arc<dyn RealtimeEventPort>,
     managed_lib_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MusicIngestService {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         libraries: Arc<dyn LibraryRepository>,
         catalog_repo: Arc<dyn MusicCatalogRepository>,
         collections: Arc<dyn MusicCollectionRepository>,
         bindings: Arc<MediaBindingService>,
-        catalog_service: MusicCatalogService,
+        projector: MusicProjector,
         storage: Arc<dyn MusicStoragePort>,
-        scanner: Arc<dyn MusicScannerPort>,
         probe: Arc<dyn AudioMetadataProbePort>,
         events: Arc<dyn RealtimeEventPort>,
     ) -> Self {
@@ -59,9 +59,8 @@ impl MusicIngestService {
             catalog_repo,
             collections,
             bindings,
-            catalog_service,
+            projector,
             storage,
-            scanner,
             probe,
             events,
             managed_lib_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -69,13 +68,45 @@ impl MusicIngestService {
     }
 
     pub async fn get_scan_status(&self, user_id: UserId) -> DomainResult<GlobalScanStatusDto> {
-        let libs = self.libraries.list_by_media(MediaKind::Music).await?;
+        let libs = self.libraries.list(Some(MediaKind::Music)).await?;
         let scanning = libs.iter().any(|l| l.scan_status.is_scanning());
-        let count = self
-            .catalog_service
-            .count_bound_active_tracks(user_id)
-            .await?;
+        let allowed = self.projector.bound_track_ids(user_id).await?;
+        let count = match self
+            .catalog_repo
+            .query_facets(CatalogFacetQuery::LibraryTrackCounts(&allowed))
+            .await?
+        {
+            CatalogFacetResult::LibraryTrackCounts(by_lib) => by_lib.values().sum(),
+            _ => 0,
+        };
         Ok(GlobalScanStatusDto { scanning, count })
+    }
+
+    pub async fn list_pool_tracks(
+        &self,
+        user_id: UserId,
+        mut query: TrackQuery,
+    ) -> DomainResult<PagedResult<PoolTrackDto>> {
+        query.exclude_online_tracked = true;
+        let bound_ids = self
+            .bindings
+            .list_bound_ids(user_id, MediaKind::Music)
+            .await?;
+        let paged = self.catalog_repo.search_tracks(None, &query).await?;
+        let track_dtos = self.projector.enrich_tracks(user_id, paged.items).await?;
+        let items = track_dtos
+            .into_iter()
+            .map(|track| {
+                let bound = bound_ids.contains(&track.id.0);
+                PoolTrackDto { track, bound }
+            })
+            .collect();
+        Ok(PagedResult {
+            items,
+            total: paged.total,
+            page: paged.page,
+            page_size: paged.page_size,
+        })
     }
 
     pub async fn upload_files_from_paths(
@@ -83,7 +114,7 @@ impl MusicIngestService {
         actor: &User,
         files: Vec<UploadFilePathItem>,
     ) -> DomainResult<UploadBatchResultDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         if files.is_empty() {
             return Err(DomainError::Validation("no files uploaded".into()));
         }
@@ -97,7 +128,7 @@ impl MusicIngestService {
             let (stem, ext) = split_filename_stem_and_ext(&item.filename);
             if ext.eq_ignore_ascii_case("lrc") {
                 lrc_by_stem.insert(stem.to_lowercase(), item.temp_path);
-            } else if AudioFormat::from_extension(&ext).is_some() {
+            } else if ext.parse::<AudioFormat>().is_ok() {
                 audio_items.push((stem, ext, item.temp_path));
             } else {
                 return Err(DomainError::UnsupportedFormat(format!(
@@ -171,14 +202,16 @@ impl MusicIngestService {
                 )
                 .await?;
 
-            self.catalog_repo.save_track(&track).await?;
+            self.catalog_repo
+                .save(CatalogMutation::Track(&track))
+                .await?;
             created_tracks.push(track);
         }
 
         if lrc_by_stem.len() > consumed_lrc_stems.len() {
             let existing_managed = self
                 .catalog_repo
-                .list_tracks_by_library(managed_lib.id)
+                .query_tracks(TrackScope::Library(managed_lib.id))
                 .await?;
             for (stem_lower, lrc_path) in lrc_by_stem {
                 if consumed_lrc_stems.contains(&stem_lower) {
@@ -194,8 +227,10 @@ impl MusicIngestService {
                         .storage
                         .save_managed_sidecar_lrc_from_path(matched.id, &lrc_path)
                         .await?;
-                    if matched.attach_managed_sidecar_lrc(key, Timestamp::now()) {
-                        self.catalog_repo.save_track(&matched).await?;
+                    if matched.attach_sidecar_lrc(key, Timestamp::now()) {
+                        self.catalog_repo
+                            .save(CatalogMutation::Track(&matched))
+                            .await?;
                         attached_lyrics_count += 1;
                     }
                 }
@@ -208,7 +243,9 @@ impl MusicIngestService {
             ));
         }
 
-        self.catalog_repo.recompute_catalog_aggregates().await?;
+        self.catalog_repo
+            .save(CatalogMutation::RecomputeAggregates)
+            .await?;
         let created_ids: Vec<Uuid> = created_tracks.iter().map(|t| t.id.0).collect();
         if !created_ids.is_empty() {
             self.bindings
@@ -219,7 +256,7 @@ impl MusicIngestService {
             media_kind: MediaKind::Music,
         });
         let uploaded_dtos = self
-            .catalog_service
+            .projector
             .enrich_tracks(actor.id, created_tracks)
             .await?;
 
@@ -234,15 +271,15 @@ impl MusicIngestService {
         actor: &User,
         input: BindMusicItemsInput,
     ) -> DomainResult<BindMediaItemsResultDto> {
-        let target_user_id = MediaBindingService::resolve_target_user_id(actor, input.user_id)?;
+        let target_user_id = MediaBindingService::resolve_target_user(actor, input.user_id)?;
         let mut to_bind: Vec<Uuid> = Vec::new();
         if let Some(lib_uuid) = input.library_id {
             for tr in self
                 .catalog_repo
-                .list_tracks_by_library(LibraryId(lib_uuid))
+                .query_tracks(TrackScope::Library(LibraryId(lib_uuid)))
                 .await?
             {
-                if !tr.is_missing && !tr.source.is_online_tracked() {
+                if !tr.is_missing && !matches!(tr.source, TrackSource::OnlineTracked(_)) {
                     to_bind.push(tr.id.0);
                 }
             }
@@ -250,10 +287,13 @@ impl MusicIngestService {
         if let Some(alb_uuid) = input.album_id {
             for tr in self
                 .catalog_repo
-                .list_tracks_by_album(AlbumId(alb_uuid))
+                .query_tracks(TrackScope::Album {
+                    album_id: AlbumId(alb_uuid),
+                    allowed: None,
+                })
                 .await?
             {
-                if !tr.is_missing && !tr.source.is_online_tracked() {
+                if !tr.is_missing && !matches!(tr.source, TrackSource::OnlineTracked(_)) {
                     to_bind.push(tr.id.0);
                 }
             }
@@ -261,22 +301,31 @@ impl MusicIngestService {
         if let Some(ar_uuid) = input.artist_id {
             for tr in self
                 .catalog_repo
-                .list_tracks_by_artist(ArtistId(ar_uuid))
+                .query_tracks(TrackScope::Artist {
+                    artist_id: ArtistId(ar_uuid),
+                    allowed: None,
+                })
                 .await?
             {
-                if !tr.is_missing && !tr.source.is_online_tracked() {
+                if !tr.is_missing && !matches!(tr.source, TrackSource::OnlineTracked(_)) {
                     to_bind.push(tr.id.0);
                 }
             }
         }
         for raw_id in input.item_ids {
-            let Some(tr) = self.catalog_repo.find_track_by_id(TrackId(raw_id)).await? else {
+            let Some(tr) = self
+                .catalog_repo
+                .query_tracks(TrackScope::Id(TrackId(raw_id)))
+                .await?
+                .into_iter()
+                .next()
+            else {
                 continue;
             };
             if tr.is_missing {
                 continue;
             }
-            if tr.source.is_online_tracked()
+            if matches!(tr.source, TrackSource::OnlineTracked(_))
                 && !actor.role.is_admin()
                 && !self
                     .bindings
@@ -304,12 +353,17 @@ impl MusicIngestService {
         track_id: TrackId,
         requested_user_id: Option<Uuid>,
     ) -> DomainResult<UnbindMediaItemResultDto> {
-        let target_user_id = MediaBindingService::resolve_target_user_id(actor, requested_user_id)?;
+        let target_user_id = MediaBindingService::resolve_target_user(actor, requested_user_id)?;
         let (unbound, remaining_bindings, deleted_from_pool) = self
             .bindings
             .unbind_with_gc(target_user_id, MediaKind::Music, track_id.0, || async {
-                if let Some(tr) = self.catalog_repo.find_track_by_id(track_id).await?
-                    && tr.source.is_online_tracked()
+                if let Some(tr) = self
+                    .catalog_repo
+                    .query_tracks(TrackScope::Id(track_id))
+                    .await?
+                    .into_iter()
+                    .next()
+                    && matches!(tr.source, TrackSource::OnlineTracked(_))
                 {
                     self.delete_track_without_bindings(tr).await?;
                     return Ok(true);
@@ -319,7 +373,10 @@ impl MusicIngestService {
             .await?;
         if unbound && !deleted_from_pool {
             self.collections
-                .delete_by_user_and_track(target_user_id, track_id)
+                .purge(CollectionPurgeScope::UserTrack {
+                    user_id: target_user_id,
+                    track_id,
+                })
                 .await?;
         }
         Ok(UnbindMediaItemResultDto {
@@ -329,27 +386,44 @@ impl MusicIngestService {
         })
     }
 
-    async fn delete_track_internal(&self, track: Track) -> DomainResult<()> {
-        self.bindings
-            .delete_item_bindings(MediaKind::Music, track.id.0)
+    pub async fn delete_track(&self, actor: &User, track_id: TrackId) -> DomainResult<()> {
+        actor.ensure_admin()?;
+        let track = self
+            .catalog_repo
+            .query_tracks(TrackScope::Id(track_id))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
+        let _ = self
+            .bindings
+            .purge(xmedia_core::domain::repository::BindingDeleteScope::Item {
+                media_kind: MediaKind::Music,
+                item_id: track.id.0,
+            })
             .await?;
         self.delete_track_without_bindings(track).await
     }
 
-    pub(super) async fn delete_track_without_bindings(&self, track: Track) -> DomainResult<()> {
+    pub(crate) async fn delete_track_without_bindings(&self, track: Track) -> DomainResult<()> {
         let track_id = track.id;
         for key in track.source.managed_file_keys() {
             let _ = self.storage.delete_managed_file(key).await;
         }
 
-        self.catalog_repo.delete_track(track_id).await?;
-        self.catalog_repo.recompute_catalog_aggregates().await?;
+        self.catalog_repo
+            .delete_tracks(TrackDeleteScope::Id(track_id))
+            .await?;
+        self.catalog_repo
+            .save(CatalogMutation::RecomputeAggregates)
+            .await?;
 
         let deleted_album_ids: Vec<AlbumId> = if self
             .catalog_repo
-            .find_album_by_id(track.album_id)
+            .query_albums(AlbumScope::Id(track.album_id))
             .await?
-            .is_none()
+            .items
+            .is_empty()
         {
             vec![track.album_id]
         } else {
@@ -360,31 +434,26 @@ impl MusicIngestService {
             if !deleted_artist_ids.contains(&cand_artist)
                 && self
                     .catalog_repo
-                    .find_artist_by_id(cand_artist)
+                    .query_artists(ArtistScope::Id(cand_artist))
                     .await?
-                    .is_none()
+                    .items
+                    .is_empty()
             {
                 deleted_artist_ids.push(cand_artist);
             }
         }
         self.collections
-            .delete_tracks_references(&[track_id], &deleted_album_ids, &deleted_artist_ids)
+            .purge(CollectionPurgeScope::DeletedCatalog {
+                track_ids: &[track_id],
+                album_ids: &deleted_album_ids,
+                artist_ids: &deleted_artist_ids,
+            })
             .await?;
 
         self.events.publish(SystemEvent::MediaChanged {
             media_kind: MediaKind::Music,
         });
         Ok(())
-    }
-
-    pub async fn delete_track(&self, actor: &User, track_id: TrackId) -> DomainResult<()> {
-        require_admin(actor)?;
-        let track = self
-            .catalog_repo
-            .find_track_by_id(track_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
-        self.delete_track_internal(track).await
     }
 
     pub(crate) async fn ensure_default_managed_library(&self) -> DomainResult<Library> {
@@ -396,13 +465,13 @@ impl MusicIngestService {
         {
             return Ok(existing);
         }
-        let lib = Library::new_managed(MediaKind::Music, MediaKind::Music.default_managed_name())?;
+        let lib = Library::new_managed(MediaKind::Music)?;
         self.libraries.save(&lib).await?;
         Ok(lib)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn upsert_probed_track(
+    pub(crate) async fn upsert_probed_track(
         &self,
         library_id: LibraryId,
         track_id: TrackId,
@@ -415,72 +484,74 @@ impl MusicIngestService {
         source: TrackSource,
     ) -> DomainResult<Track> {
         let now = Timestamp::now();
-
-        let track_artist = self
-            .ensure_artist(&probed.track_artist, false, true, cover_key.as_deref())
-            .await?;
-        let album_artist = if probed
+        let same_artist = probed
             .album_artist
             .trim()
-            .eq_ignore_ascii_case(probed.track_artist.trim())
-        {
-            let mut same = track_artist.clone();
-            if same.mark_album_artist(now) {
-                self.catalog_repo.save_artist(&same).await?;
-            }
-            same
+            .eq_ignore_ascii_case(probed.track_artist.trim());
+
+        let track_artist = self
+            .ensure_artist(
+                &probed.track_artist,
+                same_artist,
+                true,
+                cover_key.as_deref(),
+            )
+            .await?;
+        let album_artist = if same_artist {
+            track_artist.clone()
         } else {
             self.ensure_artist(&probed.album_artist, true, false, cover_key.as_deref())
                 .await?
         };
 
         let album = self
-            .ensure_album(
+            .ensure_album(AlbumSpec {
                 library_id,
-                &probed.album_title,
-                album_artist.id,
-                &album_artist.name,
-                probed.year,
-                probed.genre.as_deref(),
-                probed.is_compilation,
-                cover_key.as_deref(),
-            )
+                raw_title: &probed.album_title,
+                album_artist_id: album_artist.id,
+                album_artist_name: &album_artist.name,
+                year: probed.year,
+                genre: probed.genre.as_deref(),
+                is_compilation: probed.is_compilation,
+                cover_hint: cover_key.as_deref(),
+            })
             .await?;
 
         let final_cover = cover_key.or_else(|| album.cover_key.clone());
 
-        Ok(Track {
-            id: track_id,
-            library_id,
-            album_id: album.id,
-            artist_id: track_artist.id,
-            album_artist_id: album_artist.id,
-            title: probed.title,
-            artist_name: track_artist.name,
-            album_artist_name: album_artist.name,
-            album_title: album.title,
-            track_number: probed.track_number,
-            disc_number: probed.disc_number,
-            year: probed.year,
-            genre: probed.genre,
-            duration_secs: probed.duration_secs,
-            bit_rate_kbps: probed.bit_rate_kbps,
-            sample_rate_hz: probed.sample_rate_hz,
-            bit_depth: probed.bit_depth,
-            channels: probed.channels,
-            format: probed.format,
-            file_size,
-            file_hash,
-            replay_gain: probed.replay_gain,
-            has_embedded_lyrics: probed.has_embedded_lyrics,
-            has_sidecar_lyrics,
-            is_compilation: probed.is_compilation,
-            cover_key: final_cover,
-            source,
-            is_missing: false,
-            created_at: existing_created_at.unwrap_or(now),
-            updated_at: now,
-        })
+        Ok(Track::from_probed(
+            ProbedTrackInit {
+                id: track_id,
+                library_id,
+                album_id: album.id,
+                album_title: album.title,
+                artist_id: track_artist.id,
+                artist_name: track_artist.name,
+                album_artist_id: album_artist.id,
+                album_artist_name: album_artist.name,
+                title: probed.title,
+                track_number: probed.track_number,
+                disc_number: probed.disc_number,
+                year: probed.year,
+                genre: probed.genre,
+                duration_secs: probed.duration_secs,
+                bit_rate_kbps: probed.bit_rate_kbps,
+                sample_rate_hz: probed.sample_rate_hz,
+                bit_depth: probed.bit_depth,
+                channels: probed.channels,
+                format: probed.format,
+                file_size,
+                file_hash,
+                replay_gain: probed.replay_gain,
+                has_embedded_lyrics: probed.has_embedded_lyrics,
+                has_sidecar_lyrics,
+                is_compilation: probed.is_compilation,
+                cover_key: final_cover,
+                source,
+                existing_created_at,
+            },
+            now,
+        ))
     }
 
     pub(crate) async fn ensure_artist(
@@ -491,55 +562,50 @@ impl MusicIngestService {
         cover_hint: Option<&str>,
     ) -> DomainResult<Artist> {
         let name = Artist::normalize_name(raw_name);
-        let now = Timestamp::now();
-        if let Some(mut existing) = self.catalog_repo.find_artist_by_name(&name).await? {
-            if existing.merge_roles_and_cover(as_album_artist, as_track_artist, cover_hint, now) {
-                self.catalog_repo.save_artist(&existing).await?;
-            }
-            Ok(existing)
-        } else {
-            let artist = Artist::new(&name, as_album_artist, as_track_artist, cover_hint, now);
-            self.catalog_repo.save_artist(&artist).await?;
-            Ok(artist)
+        let existing = self
+            .catalog_repo
+            .query_artists(ArtistScope::Name(&name))
+            .await?
+            .items
+            .into_iter()
+            .next();
+        let (artist, dirty) = Artist::reconcile(
+            existing,
+            &name,
+            as_album_artist,
+            as_track_artist,
+            cover_hint,
+            Timestamp::now(),
+        );
+        if dirty {
+            self.catalog_repo
+                .save(CatalogMutation::Artist(&artist))
+                .await?;
         }
+        Ok(artist)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn ensure_album(
-        &self,
-        library_id: LibraryId,
-        raw_title: &str,
-        album_artist_id: ArtistId,
-        album_artist_name: &str,
-        year: Option<i32>,
-        genre: Option<&str>,
-        is_compilation: bool,
-        cover_hint: Option<&str>,
-    ) -> DomainResult<Album> {
-        let title = Album::normalize_title(raw_title);
-        let album_key = Album::compute_key(library_id, &title, album_artist_name, is_compilation);
-        let now = Timestamp::now();
-
-        if let Some(mut existing) = self.catalog_repo.find_album_by_key(&album_key).await? {
-            if existing.merge_metadata(year, genre, cover_hint, now) {
-                self.catalog_repo.save_album(&existing).await?;
-            }
-            Ok(existing)
-        } else {
-            let album = Album::new(
-                library_id,
-                &title,
-                album_artist_id,
-                album_artist_name,
-                year,
-                genre,
-                is_compilation,
-                cover_hint,
-                now,
-            );
-            self.catalog_repo.save_album(&album).await?;
-            Ok(album)
+    pub(crate) async fn ensure_album(&self, spec: AlbumSpec<'_>) -> DomainResult<Album> {
+        let (_, album_key) = Album::lookup_key(
+            spec.library_id,
+            spec.raw_title,
+            spec.album_artist_name,
+            spec.is_compilation,
+        );
+        let existing = self
+            .catalog_repo
+            .query_albums(AlbumScope::Key(&album_key))
+            .await?
+            .items
+            .into_iter()
+            .next();
+        let (album, dirty) = Album::reconcile(existing, spec, Timestamp::now());
+        if dirty {
+            self.catalog_repo
+                .save(CatalogMutation::Album(&album))
+                .await?;
         }
+        Ok(album)
     }
 }
 

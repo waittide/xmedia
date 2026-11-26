@@ -10,7 +10,7 @@ use super::{
     album_to_dir_node, album_to_id3_node, artist_to_node, parse_uuid_param,
     resolve_library_id_value, resolve_optional_library_id, track_to_node,
 };
-use crate::application::catalog::MusicDirectoryNode;
+use crate::application::browse::MusicDirectoryNode;
 use crate::domain::catalog::{
     AlbumId, AlbumListQuery, AlbumListType, ArtistId, ArtistQuery, SearchQuery, TrackId,
 };
@@ -72,7 +72,7 @@ pub(super) async fn handle_browsing_method(
                 .await?;
             let counts = state
                 .services
-                .catalog
+                .browse
                 .count_bound_tracks_by_library(user.id)
                 .await?;
             let folders: Vec<SsNode> = libs
@@ -92,7 +92,7 @@ pub(super) async fn handle_browsing_method(
             let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let artists = state
                 .services
-                .catalog
+                .browse
                 .list_artists(
                     user.id,
                     ArtistQuery {
@@ -175,7 +175,7 @@ pub(super) async fn handle_browsing_method(
                 tracks,
             } = state
                 .services
-                .catalog
+                .browse
                 .get_music_directory(user.id, &resolved_id)
                 .await?;
 
@@ -209,7 +209,7 @@ pub(super) async fn handle_browsing_method(
             let id = parse_uuid_param(params, "id")?;
             let detail = state
                 .services
-                .catalog
+                .browse
                 .get_artist_detail(user.id, ArtistId(id))
                 .await?;
             let album_nodes: Vec<SsNode> = detail.albums.iter().map(album_to_id3_node).collect();
@@ -226,7 +226,7 @@ pub(super) async fn handle_browsing_method(
             let id = parse_uuid_param(params, "id")?;
             let detail = state
                 .services
-                .catalog
+                .browse
                 .get_album_detail(user.id, AlbumId(id))
                 .await?;
             let song_nodes: Vec<SsNode> = detail.tracks.iter().map(track_to_node).collect();
@@ -238,7 +238,7 @@ pub(super) async fn handle_browsing_method(
             let id = parse_uuid_param(params, "id")?;
             let track = state
                 .services
-                .catalog
+                .tracks
                 .get_track(user.id, TrackId(id))
                 .await?;
             Ok(render_ok(params, Some(("song", track_to_node(&track)))))
@@ -248,7 +248,7 @@ pub(super) async fn handle_browsing_method(
             let raw_type = params
                 .first("type")
                 .ok_or_else(|| SubsonicError::missing_param("type"))?;
-            let list_type = AlbumListType::parse(raw_type)?;
+            let list_type = raw_type.parse::<AlbumListType>()?;
             let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let q = AlbumListQuery {
                 list_type,
@@ -260,7 +260,7 @@ pub(super) async fn handle_browsing_method(
                 offset: params.u32("offset").unwrap_or(0),
                 size: params.u32("size").unwrap_or(10).clamp(1, 500),
             };
-            let paged = state.services.catalog.list_albums(user.id, q).await?;
+            let paged = state.services.browse.list_albums(user.id, q).await?;
             if method == "getAlbumList2" {
                 let nodes: Vec<SsNode> = paged.items.iter().map(album_to_id3_node).collect();
                 let wrapper = SsNode::new().child_list("album", nodes);
@@ -277,7 +277,7 @@ pub(super) async fn handle_browsing_method(
             let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let tracks = state
                 .services
-                .catalog
+                .tracks
                 .get_random_tracks(
                     user.id,
                     size,
@@ -301,7 +301,7 @@ pub(super) async fn handle_browsing_method(
             let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let tracks = state
                 .services
-                .catalog
+                .tracks
                 .get_tracks_by_genre(user.id, genre, offset, count, lib_id)
                 .await?;
             let nodes: Vec<SsNode> = tracks.iter().map(track_to_node).collect();
@@ -316,7 +316,7 @@ pub(super) async fn handle_browsing_method(
             let count = params.u32("count").unwrap_or(50).clamp(1, 200);
             let tracks = state
                 .services
-                .catalog
+                .tracks
                 .get_top_tracks_for_artist_name(user.id, artist_name, count)
                 .await?;
             let nodes: Vec<SsNode> = tracks.iter().map(track_to_node).collect();

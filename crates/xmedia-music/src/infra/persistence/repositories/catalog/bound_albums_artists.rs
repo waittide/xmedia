@@ -13,7 +13,7 @@ use crate::domain::catalog::{
     Album, AlbumId, AlbumListQuery, AlbumListType, Artist, ArtistId, ArtistQuery, ArtistRoleFilter,
     PagedResult, TrackId,
 };
-use crate::domain::collection::{RatingEntry, StarTargetKind, StarredEntry, TrackPlayStat};
+use crate::domain::collection::{StarTargetKind, StarredEntry, TrackPlayStat};
 
 impl ToastyMusicCatalogRepository {
     pub(super) async fn query_bound_albums_impl(
@@ -22,7 +22,6 @@ impl ToastyMusicCatalogRepository {
         query: &AlbumListQuery,
         starred_ids: &[StarredEntry],
         play_stats: &[TrackPlayStat],
-        _ratings: &[RatingEntry],
     ) -> DomainResult<PagedResult<Album>> {
         let size = query.size.max(1);
         let page = (query.offset / size) + 1;
@@ -89,7 +88,7 @@ impl ToastyMusicCatalogRepository {
             _ => {
                 let mut db = self.db.clone();
                 let total = {
-                    let mut b = SqlBuilder::default();
+                    let mut b = SqlBuilder::new(&db);
                     let mut conds = Vec::new();
                     append_album_query_conditions(&mut b, &mut conds, allowed_track_ids, query);
                     let where_sql = conds.join(" AND ");
@@ -114,8 +113,8 @@ impl ToastyMusicCatalogRepository {
                     });
                 }
 
-                let order_sql = album_order_by_sql(query);
-                let mut b = SqlBuilder::default();
+                let mut b = SqlBuilder::new(&db);
+                let order_sql = album_order_by_sql(&b, query);
                 let mut conds = Vec::new();
                 append_album_query_conditions(&mut b, &mut conds, allowed_track_ids, query);
                 let where_sql = conds.join(" AND ");
@@ -156,9 +155,10 @@ impl ToastyMusicCatalogRepository {
             return Ok(HashSet::new());
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
+        let not_missing = b.not_missing("t.is_missing");
         let scope = b.bind_track_scope("t.id", &candidate_ids);
-        let sql = format!("SELECT t.id FROM music_tracks t WHERE t.is_missing = 0 AND {scope}");
+        let sql = format!("SELECT t.id FROM music_tracks t WHERE {not_missing} AND {scope}");
         let rows = b.exec_rows(sql, &mut db).await?;
         let mut out = HashSet::with_capacity(rows.len());
         for row in &rows {
@@ -188,7 +188,7 @@ impl ToastyMusicCatalogRepository {
         }
         let unique_album_ids: HashSet<AlbumId> = ordered_ids.iter().copied().collect();
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let mut conds = Vec::new();
         append_album_query_conditions(&mut b, &mut conds, allowed_track_ids, query);
         conds.push(b.bind_uuid_set(
@@ -242,9 +242,9 @@ impl ToastyMusicCatalogRepository {
         }
         let unique_ids: HashSet<AlbumId> = album_ids.iter().copied().collect();
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let mut conds = vec![
-            "t.is_missing = 0".to_string(),
+            b.not_missing("t.is_missing"),
             b.bind_track_scope("t.id", allowed_track_ids),
             b.bind_uuid_set("a.id", unique_ids.iter().map(|id| id.0), unique_ids.len()),
         ];
@@ -285,13 +285,14 @@ impl ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let p_artist = b.bind_uuid(artist_id.0);
+        let not_missing = b.not_missing("t.is_missing");
         let scope = b.bind_track_scope("t.id", allowed_track_ids);
         let sql = format!(
             "SELECT {PROJECTED_ALBUM_SELECT_COLUMNS} FROM music_albums a \
              INNER JOIN music_tracks t ON t.album_id = a.id \
-             WHERE a.album_artist_id = {p_artist} AND t.is_missing = 0 AND {scope} \
+             WHERE a.album_artist_id = {p_artist} AND {not_missing} AND {scope} \
              GROUP BY a.id \
              ORDER BY a.year DESC, LOWER(a.title) ASC"
         );
@@ -317,7 +318,7 @@ impl ToastyMusicCatalogRepository {
         let mut db = self.db.clone();
 
         let total = {
-            let mut b = SqlBuilder::default();
+            let mut b = SqlBuilder::new(&db);
             let cte = build_artist_agg_cte(&mut b, allowed_track_ids, query.library_id);
             let where_sql = build_artist_filter_where(&mut b, query);
             let sql = format!(
@@ -341,7 +342,7 @@ impl ToastyMusicCatalogRepository {
             });
         }
 
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let cte = build_artist_agg_cte(&mut b, allowed_track_ids, query.library_id);
         let where_sql = build_artist_filter_where(&mut b, query);
         let p_limit = b.bind_val(i64::from(size));
@@ -376,9 +377,9 @@ impl ToastyMusicCatalogRepository {
         }
         let unique_ids: HashSet<ArtistId> = artist_ids.iter().copied().collect();
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let mut track_conds = vec![
-            "t.is_missing = 0".to_string(),
+            b.not_missing("t.is_missing"),
             b.bind_track_scope("t.id", allowed_track_ids),
         ];
         if let Some(lid) = library_id {
@@ -444,7 +445,7 @@ fn append_album_query_conditions(
     allowed_track_ids: &HashSet<TrackId>,
     query: &AlbumListQuery,
 ) {
-    conds.push("t.is_missing = 0".to_string());
+    conds.push(b.not_missing("t.is_missing"));
     conds.push(b.bind_track_scope("t.id", allowed_track_ids));
     if let Some(lib_id) = query.library_id {
         let p = b.bind_uuid(lib_id.0);
@@ -477,14 +478,11 @@ fn append_album_query_conditions(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
     {
-        let p = b.bind_val(kw_lower);
-        conds.push(format!(
-            "(INSTR(LOWER(a.title), {p}) > 0 OR INSTR(LOWER(a.album_artist_name), {p}) > 0)"
-        ));
+        conds.push(b.contains_any_lower(&["a.title", "a.album_artist_name"], &kw_lower));
     }
 }
 
-fn album_order_by_sql(query: &AlbumListQuery) -> &'static str {
+fn album_order_by_sql(b: &SqlBuilder, query: &AlbumListQuery) -> &'static str {
     match query.list_type {
         AlbumListType::Newest => "a.created_at DESC, LOWER(a.title) ASC",
         AlbumListType::AlphabeticalByName | AlbumListType::ByGenre => {
@@ -504,7 +502,7 @@ fn album_order_by_sql(query: &AlbumListQuery) -> &'static str {
                 "a.year ASC, LOWER(a.title) ASC"
             }
         }
-        AlbumListType::Random => "RANDOM()",
+        AlbumListType::Random => b.random_order_sql(),
         AlbumListType::Starred | AlbumListType::Frequent | AlbumListType::Recent => {
             "a.created_at DESC"
         }
@@ -517,7 +515,7 @@ fn build_artist_agg_cte(
     library_id: Option<LibraryId>,
 ) -> String {
     let mut track_conds = vec![
-        "t.is_missing = 0".to_string(),
+        b.not_missing("t.is_missing"),
         b.bind_track_scope("t.id", allowed_track_ids),
     ];
     if let Some(lid) = library_id {
@@ -556,8 +554,7 @@ fn build_artist_filter_where(b: &mut SqlBuilder, query: &ArtistQuery) -> String 
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
     {
-        let p = b.bind_val(kw_lower);
-        conds.push(format!("INSTR(LOWER(ar.name), {p}) > 0"));
+        conds.push(b.contains_any_lower(&["ar.name"], &kw_lower));
     }
     if conds.is_empty() {
         String::new()

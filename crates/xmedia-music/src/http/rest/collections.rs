@@ -156,7 +156,7 @@ pub(super) async fn star_items(
     state
         .services
         .collection
-        .star_items(user.id, &body.ids, &body.album_ids, &body.artist_ids)
+        .set_starred(user.id, true, &body.ids, &body.album_ids, &body.artist_ids)
         .await?;
     Ok(Json(OkResponse { ok: true }))
 }
@@ -169,7 +169,7 @@ pub(super) async fn unstar_items(
     state
         .services
         .collection
-        .unstar_items(user.id, &body.ids, &body.album_ids, &body.artist_ids)
+        .set_starred(user.id, false, &body.ids, &body.album_ids, &body.artist_ids)
         .await?;
     Ok(Json(OkResponse { ok: true }))
 }

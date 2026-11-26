@@ -10,27 +10,6 @@ use crate::domain::catalog::{
 };
 
 impl ToastyMusicCatalogRepository {
-    pub(super) async fn count_bound_active_tracks_impl(
-        &self,
-        allowed_track_ids: &HashSet<TrackId>,
-    ) -> DomainResult<u64> {
-        if allowed_track_ids.is_empty() {
-            return Ok(0);
-        }
-        let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
-        let scope = b.bind_track_scope("t.id", allowed_track_ids);
-        let sql = format!("SELECT COUNT(*) FROM music_tracks t WHERE t.is_missing = 0 AND {scope}");
-        let rows = b.exec_rows(sql, &mut db).await?;
-        let count = rows
-            .first()
-            .and_then(|r| row_fields(r).ok())
-            .and_then(|f| f.first())
-            .and_then(|v| val_i64(v).ok())
-            .unwrap_or(0);
-        Ok(u64::try_from(count.max(0)).unwrap_or(0))
-    }
-
     pub(super) async fn count_bound_tracks_by_library_impl(
         &self,
         allowed_track_ids: &HashSet<TrackId>,
@@ -39,11 +18,12 @@ impl ToastyMusicCatalogRepository {
             return Ok(HashMap::new());
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
+        let not_missing = b.not_missing("t.is_missing");
         let scope = b.bind_track_scope("t.id", allowed_track_ids);
         let sql = format!(
             "SELECT t.library_id, COUNT(*) FROM music_tracks t \
-             WHERE t.is_missing = 0 AND {scope} GROUP BY t.library_id"
+             WHERE {not_missing} AND {scope} GROUP BY t.library_id"
         );
         let rows = b.exec_rows(sql, &mut db).await?;
         let mut out = HashMap::with_capacity(rows.len());
@@ -68,10 +48,11 @@ impl ToastyMusicCatalogRepository {
         let mut db = self.db.clone();
 
         let id_rows = {
-            let mut b = SqlBuilder::default();
+            let mut b = SqlBuilder::new(&db);
+            let not_missing = b.not_missing("t.is_missing");
             let scope = b.bind_track_scope("t.id", allowed_track_ids);
             let sql = format!(
-                "SELECT t.id, t.album_id FROM music_tracks t WHERE t.is_missing = 0 AND {scope}"
+                "SELECT t.id, t.album_id FROM music_tracks t WHERE {not_missing} AND {scope}"
             );
             b.exec_rows(sql, &mut db).await?
         };
@@ -90,12 +71,13 @@ impl ToastyMusicCatalogRepository {
         }
 
         let agg_rows = {
-            let mut b = SqlBuilder::default();
+            let mut b = SqlBuilder::new(&db);
+            let not_missing = b.not_missing("t.is_missing");
             let scope = b.bind_track_scope("t.id", &active_track_ids);
             let sql = format!(
                 "WITH bt AS ( \
                     SELECT id, library_id, album_id, artist_id, album_artist_id, genre \
-                    FROM music_tracks t WHERE t.is_missing = 0 AND {scope} \
+                    FROM music_tracks t WHERE {not_missing} AND {scope} \
                  ), \
                  ar AS ( \
                     SELECT artist_id AS aid FROM bt \
@@ -147,12 +129,13 @@ impl ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
+        let not_missing = b.not_missing("t.is_missing");
         let scope = b.bind_track_scope("t.id", allowed_track_ids);
         let sql = format!(
             "SELECT MIN(TRIM(t.genre)), COUNT(*), COUNT(DISTINCT t.album_id) \
              FROM music_tracks t \
-             WHERE t.is_missing = 0 AND t.genre IS NOT NULL AND TRIM(t.genre) != '' AND {scope} \
+             WHERE {not_missing} AND t.genre IS NOT NULL AND TRIM(t.genre) != '' AND {scope} \
              GROUP BY LOWER(TRIM(t.genre)) \
              ORDER BY COUNT(*) DESC, LOWER(MIN(TRIM(t.genre))) ASC"
         );
@@ -179,12 +162,13 @@ impl ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
+        let not_missing = b.not_missing("t.is_missing");
         let scope = b.bind_track_scope("t.id", allowed_track_ids);
         let sql = format!(
             "SELECT MIN(tt.tag), COUNT(*) \
              FROM music_track_tags tt INNER JOIN music_tracks t ON t.id = tt.track_id \
-             WHERE t.is_missing = 0 AND {scope} \
+             WHERE {not_missing} AND {scope} \
              GROUP BY tt.tag_lower \
              ORDER BY COUNT(*) DESC, tt.tag_lower ASC"
         );
@@ -211,11 +195,11 @@ impl ToastyMusicCatalogRepository {
             return Ok(false);
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let p_id = b.bind_uuid(track_id.0);
-        let sql = format!(
-            "SELECT 1 FROM music_tracks t WHERE t.id = {p_id} AND t.is_missing = 0 LIMIT 1"
-        );
+        let not_missing = b.not_missing("t.is_missing");
+        let sql =
+            format!("SELECT 1 FROM music_tracks t WHERE t.id = {p_id} AND {not_missing} LIMIT 1");
         Ok(!b.exec_rows(sql, &mut db).await?.is_empty())
     }
 
@@ -228,12 +212,13 @@ impl ToastyMusicCatalogRepository {
             return Ok(false);
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
+        let mut b = SqlBuilder::new(&db);
         let p_alb = b.bind_uuid(album_id.0);
+        let not_missing = b.not_missing("t.is_missing");
         let scope = b.bind_track_scope("t.id", allowed_track_ids);
         let sql = format!(
             "SELECT 1 FROM music_tracks t \
-             WHERE t.album_id = {p_alb} AND t.is_missing = 0 AND {scope} LIMIT 1"
+             WHERE t.album_id = {p_alb} AND {not_missing} AND {scope} LIMIT 1"
         );
         Ok(!b.exec_rows(sql, &mut db).await?.is_empty())
     }
@@ -247,12 +232,14 @@ impl ToastyMusicCatalogRepository {
             return Ok(false);
         }
         let mut db = self.db.clone();
-        let mut b = SqlBuilder::default();
-        let p_ar = b.bind_uuid(artist_id.0);
+        let mut b = SqlBuilder::new(&db);
+        let not_missing = b.not_missing("t.is_missing");
+        let p_ar1 = b.bind_uuid(artist_id.0);
+        let p_ar2 = b.bind_uuid(artist_id.0);
         let scope = b.bind_track_scope("t.id", allowed_track_ids);
         let sql = format!(
             "SELECT 1 FROM music_tracks t \
-             WHERE t.is_missing = 0 AND (t.artist_id = {p_ar} OR t.album_artist_id = {p_ar}) \
+             WHERE {not_missing} AND (t.artist_id = {p_ar1} OR t.album_artist_id = {p_ar2}) \
              AND {scope} LIMIT 1"
         );
         Ok(!b.exec_rows(sql, &mut db).await?.is_empty())

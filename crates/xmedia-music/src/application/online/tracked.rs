@@ -1,6 +1,7 @@
 mod cache;
 
 use jiff::Timestamp;
+use uuid::Uuid;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{LibraryId, MediaKind};
@@ -8,12 +9,14 @@ use xmedia_core::domain::user::User;
 
 use crate::application::dto::TrackDto;
 use crate::domain::catalog::{
-    Album, Artist, AudioFormat, OnlineTrackedTrackSource, ReplayGain, Track, TrackId, TrackSource,
+    Album, AlbumSpec, Artist, AudioFormat, OnlineTrackedInit, OnlineTrackedTrackSource, Track,
+    TrackId, TrackSource,
 };
 use crate::domain::online::{MusicTrackContext, infer_audio_format};
+use crate::domain::repository::{CatalogMutation, TrackScope};
 
 use super::dto::TrackOnlineMusicInput;
-use super::{MusicOnlineService, MusicTrackingDeps, get_or_insert_weak_lock};
+use super::{MusicOnlineService, MusicTrackingDeps, weak_lock};
 
 pub(super) const MAX_TRACKED_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BATCH_TRACK_COUNT: usize = 200;
@@ -69,13 +72,12 @@ impl MusicOnlineService {
             .await?;
         let item_id = canonical_item_id(&input);
 
-        let track_lock =
-            get_or_insert_weak_lock(&self.track_locks, (input.source_id, item_id.clone()));
+        let track_lock = weak_lock(&self.track_locks, (input.source_id, item_id.clone()));
         let _track_guard = track_lock.lock().await;
 
         let fresh_existing = deps
             .catalog_repo
-            .list_tracks_by_library(managed_lib_id)
+            .query_tracks(TrackScope::Library(managed_lib_id))
             .await?;
         *existing_tracks = fresh_existing;
 
@@ -90,7 +92,12 @@ impl MusicOnlineService {
         }
 
         let artist_name = Artist::normalize_name(&input.artist);
-        let album_title = Album::normalize_title(input.album.as_deref().unwrap_or(""));
+        let (album_title, _) = Album::lookup_key(
+            managed_lib_id,
+            input.album.as_deref().unwrap_or(""),
+            &artist_name,
+            false,
+        );
 
         let track_id = TrackId::new();
         let mut cover_url = clean_opt(input.cover_url.clone());
@@ -128,80 +135,65 @@ impl MusicOnlineService {
             .await?;
         let album = deps
             .ingest_service
-            .ensure_album(
-                managed_lib_id,
-                &album_title,
-                artist.id,
-                &artist.name,
-                None,
-                None,
-                false,
-                cover_key.as_deref(),
-            )
+            .ensure_album(AlbumSpec {
+                library_id: managed_lib_id,
+                raw_title: &album_title,
+                album_artist_id: artist.id,
+                album_artist_name: &artist.name,
+                year: None,
+                genre: None,
+                is_compilation: false,
+                cover_hint: cover_key.as_deref(),
+            })
             .await?;
 
         let final_cover = cover_key.or_else(|| album.cover_key.clone());
         let format = input
             .format
             .as_deref()
-            .and_then(|f| AudioFormat::parse(f).ok())
+            .and_then(|f| f.parse::<AudioFormat>().ok())
             .or_else(|| {
                 input
                     .play_url
                     .as_deref()
                     .and_then(infer_audio_format)
-                    .and_then(|ext| AudioFormat::parse(&ext).ok())
+                    .and_then(|ext| ext.parse::<AudioFormat>().ok())
             })
             .unwrap_or(AudioFormat::Mp3);
 
-        let now = Timestamp::now();
-        let track = Track {
-            id: track_id,
-            library_id: managed_lib_id,
-            album_id: album.id,
-            artist_id: artist.id,
-            album_artist_id: artist.id,
-            title,
-            artist_name: artist.name.clone(),
-            album_artist_name: artist.name,
-            album_title: album.title,
-            track_number: None,
-            disc_number: None,
-            year: None,
-            genre: None,
-            duration_secs: input.duration_secs.unwrap_or(0),
-            bit_rate_kbps: None,
-            sample_rate_hz: None,
-            bit_depth: None,
-            channels: None,
-            format,
-            file_size: 0,
-            file_hash: format!("online:{}:{item_id}", input.source_id),
-            replay_gain: ReplayGain::default(),
-            has_embedded_lyrics: false,
-            has_sidecar_lyrics: false,
-            is_compilation: false,
-            cover_key: final_cover,
-            source: TrackSource::OnlineTracked(Box::new(OnlineTrackedTrackSource {
-                storage_key: None,
-                source_id: input.source_id,
-                item_id,
-                detail_url: clean_opt(input.detail_url),
-                play_url: clean_opt(input.play_url),
-                url_id: clean_opt(input.url_id),
-                cover_url,
-                cover_id: clean_opt(input.cover_id),
-                lyric_id: clean_opt(input.lyric_id),
-                quality: clean_opt(input.quality),
-                cached: false,
-                sidecar_lrc_key: None,
-            })),
-            is_missing: false,
-            created_at: now,
-            updated_at: now,
-        };
+        let track = Track::new_online_tracked(
+            OnlineTrackedInit {
+                id: track_id,
+                library_id: managed_lib_id,
+                album_id: album.id,
+                album_title: album.title,
+                artist_id: artist.id,
+                artist_name: artist.name,
+                title,
+                duration_secs: input.duration_secs.unwrap_or(0),
+                format,
+                cover_key: final_cover,
+                tracked: OnlineTrackedTrackSource {
+                    storage_key: None,
+                    source_id: input.source_id,
+                    item_id,
+                    detail_url: clean_opt(input.detail_url),
+                    play_url: clean_opt(input.play_url),
+                    url_id: clean_opt(input.url_id),
+                    cover_url,
+                    cover_id: clean_opt(input.cover_id),
+                    lyric_id: clean_opt(input.lyric_id),
+                    quality: clean_opt(input.quality),
+                    cached: false,
+                    sidecar_lrc_key: None,
+                },
+            },
+            Timestamp::now(),
+        );
 
-        deps.catalog_repo.save_track(&track).await?;
+        deps.catalog_repo
+            .save(CatalogMutation::Track(&track))
+            .await?;
         existing_tracks.push(track.clone());
         Ok((track, true))
     }
@@ -215,7 +207,7 @@ impl MusicOnlineService {
         let managed_lib = deps.ingest_service.ensure_default_managed_library().await?;
         let mut existing = deps
             .catalog_repo
-            .list_tracks_by_library(managed_lib.id)
+            .query_tracks(TrackScope::Library(managed_lib.id))
             .await?;
 
         let (track, created) = self
@@ -223,19 +215,18 @@ impl MusicOnlineService {
             .await?;
 
         if created {
-            deps.catalog_repo.recompute_catalog_aggregates().await?;
+            deps.catalog_repo
+                .save(CatalogMutation::RecomputeAggregates)
+                .await?;
             deps.events.publish(SystemEvent::MediaChanged {
                 media_kind: MediaKind::Music,
             });
         }
-        deps.catalog_service
-            .bind_track_for_user(actor.id, track.id)
+        deps.bindings
+            .bind(actor.id, MediaKind::Music, track.id.0)
             .await?;
 
-        let mut list = deps
-            .catalog_service
-            .enrich_tracks(actor.id, vec![track])
-            .await?;
+        let mut list = deps.projector.enrich_tracks(actor.id, vec![track]).await?;
         list.pop()
             .ok_or_else(|| DomainError::NotFound("track not found".into()))
     }
@@ -258,7 +249,7 @@ impl MusicOnlineService {
         let managed_lib = deps.ingest_service.ensure_default_managed_library().await?;
         let mut existing = deps
             .catalog_repo
-            .list_tracks_by_library(managed_lib.id)
+            .query_tracks(TrackScope::Library(managed_lib.id))
             .await?;
 
         let mut tracks = Vec::with_capacity(inputs.len());
@@ -272,17 +263,19 @@ impl MusicOnlineService {
         }
 
         if any_created {
-            deps.catalog_repo.recompute_catalog_aggregates().await?;
+            deps.catalog_repo
+                .save(CatalogMutation::RecomputeAggregates)
+                .await?;
             deps.events.publish(SystemEvent::MediaChanged {
                 media_kind: MediaKind::Music,
             });
         }
-        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
-        deps.catalog_service
-            .bind_tracks_for_user(actor.id, &track_ids)
+        let track_ids: Vec<Uuid> = tracks.iter().map(|t| t.id.0).collect();
+        deps.bindings
+            .bind_batch(actor.id, MediaKind::Music, &track_ids)
             .await?;
 
-        deps.catalog_service.enrich_tracks(actor.id, tracks).await
+        deps.projector.enrich_tracks(actor.id, tracks).await
     }
 
     pub async fn cache_tracked_track(
@@ -291,10 +284,7 @@ impl MusicOnlineService {
         track_id: TrackId,
     ) -> DomainResult<TrackDto> {
         let deps = self.require_tracking()?;
-        deps.catalog_service
-            .require_track_bound(actor.id, track_id)
-            .await?;
-        self.ensure_tracked_track_cached(track_id).await?;
-        deps.catalog_service.get_track(actor.id, track_id).await
+        self.ensure_tracked_track_cached(actor.id, track_id).await?;
+        deps.tracks_service.get_track(actor.id, track_id).await
     }
 }
