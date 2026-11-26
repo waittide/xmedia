@@ -202,14 +202,14 @@ defineExpose({
         :icon="LuPlay"
         @click="playerStore.playOnlineTracks(displayTracks, 0)"
       >
-        {{ t('common.playAll') }}
+        {{ t('common.playAllBtn') }}
       </MdButton>
       <MdButton
         variant="text"
         :icon="LuShuffle"
         @click="playerStore.shuffleAndPlayOnline(displayTracks)"
       >
-        {{ t('common.shufflePlay') }}
+        {{ t('common.shufflePlayBtn') }}
       </MdButton>
     </template>
 

@@ -106,7 +106,7 @@ async function handleResetUserPassword(u: UserDto): Promise<void> {
   const pwd = resetPwdMap.value[u.id] ?? ''
   if (pwd.length < 6) return
   const confirmed = await dialogStore.confirm({
-    title: t('admin.resetPasswordBtn'),
+    title: t('admin.resetPasswordTitle'),
     message: t('admin.confirmResetPassword', { username: u.username }),
     confirmText: t('admin.resetPasswordBtn'),
     danger: true,

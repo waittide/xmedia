@@ -64,6 +64,7 @@ async function handleRotateApiKey(): Promise<void> {
   const ok = await dialogStore.confirm({
     title: t('settings.rotateApiKey'),
     message: t('settings.rotateApiKeyConfirm'),
+    confirmText: t('settings.rotateApiKeyBtn'),
     danger: true,
   })
   if (!ok) return
@@ -179,7 +180,7 @@ async function handleRotateApiKey(): Promise<void> {
         :loading="rotatingKey"
         @click="handleRotateApiKey"
       >
-        {{ t('settings.rotateApiKey') }}
+        {{ t('settings.rotateApiKeyBtn') }}
       </MdButton>
     </div>
   </MdCard>

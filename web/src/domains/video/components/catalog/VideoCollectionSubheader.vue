@@ -176,7 +176,7 @@ async function handleCreateShelf(): Promise<void> {
       :loading="creatingShelf"
       :disabled="!newShelfName.trim()"
     >
-      {{ t('nav.newShelf') }}
+      {{ t('shelf.createBtn') }}
     </MdButton>
   </form>
 </template>

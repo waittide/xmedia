@@ -1543,7 +1543,7 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/更多|more|菜单|menu|⋮/i]);
           await clickButtonMatching(cdp, [/调试|测试|debug|test/i]);
           await cdp.waitForSelector('[role="dialog"]', { visible: true });
-          await clickButtonMatching(cdp, [/开始测试|运行|run|test/i], {
+          await clickButtonMatching(cdp, [/开始测试|测试|运行|run|test/i], {
             rootSelector: '[role="dialog"]',
           });
           await cdp.waitForFn(
@@ -3235,7 +3235,7 @@ function buildTier1Cases() {
           assert.equal(verifyInspect.json?.metadata?.data?.title, 'Edited Via MdSheet');
 
           // Transition from MdSheet header action into ScrapeWorkbenchView (#/comic/scrape)
-          await clickButtonMatching(cdp, [/刮削工作台|Scrape Workbench/i], {
+          await clickButtonMatching(cdp, [/刮削工作台|刮削|匹配|Scrape Workbench|^Scrape$|^Match$/i], {
             rootSelector: '[role="dialog"][aria-modal="true"]',
           });
 

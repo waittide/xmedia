@@ -363,14 +363,14 @@ defineExpose({
                 :icon="LuPlay"
                 @click="playerStore.playRemoteSongs(activeSourceId, activeSourceName, searchSongs, 0)"
               >
-                {{ t('common.playAll') }}
+                {{ t('common.playAllBtn') }}
               </MdButton>
               <MdButton
                 variant="text"
                 :icon="LuShuffle"
                 @click="playerStore.shuffleAndPlayRemoteSongs(activeSourceId, activeSourceName, searchSongs)"
               >
-                {{ t('common.shufflePlay') }}
+                {{ t('common.shufflePlayBtn') }}
               </MdButton>
             </div>
           </div>
@@ -541,14 +541,14 @@ defineExpose({
             :icon="LuPlay"
             @click="playerStore.playRemoteSongs(activeSourceId, activeSourceName, albumSongs, 0)"
           >
-            {{ t('common.playAll') }}
+            {{ t('common.playAllBtn') }}
           </MdButton>
           <MdButton
             variant="tonal"
             :icon="LuShuffle"
             @click="playerStore.shuffleAndPlayRemoteSongs(activeSourceId, activeSourceName, albumSongs)"
           >
-            {{ t('common.shufflePlay') }}
+            {{ t('common.shufflePlayBtn') }}
           </MdButton>
         </div>
       </template>

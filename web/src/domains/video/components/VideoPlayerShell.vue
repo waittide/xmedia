@@ -557,7 +557,7 @@ defineExpose({
                 :aria-label="t('player.episodes')"
                 @click="activeSheet = activeSheet === 'episodes' ? null : 'episodes'"
               >
-                <span class="hidden sm:inline">{{ t('player.episodes') }}</span>
+                <span class="hidden sm:inline">{{ t('player.episodesBtn') }}</span>
               </MdButton>
 
               <MdIconButton

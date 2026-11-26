@@ -447,14 +447,14 @@ defineExpose({ refresh })
               :icon="LuPlay"
               @click="playerStore.playQueue(filteredRecentTracks, 0)"
             >
-              {{ t('common.playAll') }}
+              {{ t('common.playAllBtn') }}
             </MdButton>
             <MdButton
               variant="text"
               :icon="LuShuffle"
               @click="playerStore.shuffleAndPlay(filteredRecentTracks)"
             >
-              {{ t('common.shufflePlay') }}
+              {{ t('common.shufflePlayBtn') }}
             </MdButton>
           </div>
         </div>

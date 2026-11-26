@@ -99,7 +99,7 @@ const fitOptions = computed<SegmentedOption<ReaderFitMode>[]>(() => [
           :disabled="zoomPercent === 100"
           @click="emit('reset-zoom')"
         >
-          {{ t('reader.zoomReset') }}
+          {{ t('reader.zoomResetBtn') }}
         </MdButton>
       </div>
       <div class="flex items-center justify-between gap-2 rounded-corner-md bg-surface-container-low px-3 py-1.5">

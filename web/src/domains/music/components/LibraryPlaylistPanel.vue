@@ -229,7 +229,7 @@ watch(() => props.playlistId, loadPlaylist)
               :icon="LuPlay"
               @click="playerStore.playQueue(detail.tracks, 0)"
             >
-              {{ t('common.playAll') }}
+              {{ t('common.playAllBtn') }}
             </MdButton>
 
             <MdButton
@@ -238,7 +238,7 @@ watch(() => props.playlistId, loadPlaylist)
               :icon="LuShuffle"
               @click="playerStore.shuffleAndPlay(detail.tracks)"
             >
-              {{ t('common.shufflePlay') }}
+              {{ t('common.shufflePlayBtn') }}
             </MdButton>
 
             <MdMenu placement="bottom-end" :min-width="200" :aria-label="t('common.moreActions')">

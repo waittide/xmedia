@@ -32,6 +32,7 @@ import {
   browserLogin,
   buildMinimalZip,
   clickButtonByText,
+  clickButtonMatching,
   deleteSourceSafe,
   ensureBootstrapped as sharedEnsureBootstrapped,
   getMockRequests,
@@ -1126,8 +1127,18 @@ export async function runTier3(context = {}) {
               `(() => { const a = document.querySelector('audio'); return Boolean(a && a.src.includes('audio-proxy') && !a.paused); })()`,
             );
             assert.equal(stillPlayingBeforeVideo, true, 'Music audio must still be playing before video starts');
-            await clickButtonByText(cdp, ['Mock Blender Open Movie'], { timeoutMs: 8000 });
-            await clickButtonByText(cdp, ['立即播放', 'Play Now', '360'], { timeoutMs: 8000 });
+            await clickButtonMatching(cdp, [/Mock Blender Open Movie/], {
+              rootSelector: 'main',
+              timeoutMs: 8000,
+            });
+            await cdp.waitForFn(`window.location.pathname.startsWith('/video/item/online')`, {
+              timeoutMs: 8000,
+              label: 'Navigated to /video/item/online',
+            });
+            await clickButtonMatching(cdp, [/^立即播放$|^播放$|^play now$|^play$|360p?/i], {
+              rootSelector: 'main',
+              timeoutMs: 8000,
+            });
 
             await cdp.waitForFn(
               `(() => {
@@ -1179,7 +1190,10 @@ export async function runTier3(context = {}) {
               `document.body.textContent.includes('Ep.1 Prologue')`,
               { timeoutMs: 10000, label: 'WEBTOON chapter list rendered' },
             );
-            await clickButtonByText(cdp, ['Ep.1 Prologue', '开始阅读', 'Read'], { timeoutMs: 8000 });
+            await clickButtonMatching(cdp, [/Ep\.1 Prologue|^开始阅读$|^阅读$|^Start Reading$|^Read$/i], {
+              rootSelector: 'main',
+              timeoutMs: 8000,
+            });
 
             await cdp.waitForFn(
               `(() => {

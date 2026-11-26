@@ -338,7 +338,7 @@ function handleFileInputChange(ev: Event): void {
                 :icon="LuPlay"
                 @click="playerStore.playQueue(overview!.random_tracks, 0)"
               >
-                {{ t('common.playAll') }}
+                {{ t('common.playAllBtn') }}
               </MdButton>
               <MdIconButton
                 size="sm"

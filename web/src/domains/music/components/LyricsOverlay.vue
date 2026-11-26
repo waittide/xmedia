@@ -184,7 +184,7 @@ function navigateAndClose(path: string): void {
               :icon="LuChevronDown"
               @click="playerStore.lyricsOpen = false"
             >
-              {{ t('player.closeLyrics') }}
+              {{ t('player.closeLyricsBtn') }}
             </MdButton>
             <span
               v-if="playerStore.qualitySummary"

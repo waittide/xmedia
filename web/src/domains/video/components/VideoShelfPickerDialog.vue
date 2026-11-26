@@ -99,7 +99,7 @@ async function handleCreateAndAdd(): Promise<void> {
           :loading="creating"
           :disabled="!newShelfName.trim() || !videoId"
         >
-          {{ t('nav.newShelf') }}
+          {{ t('shelf.createBtn') }}
         </MdButton>
       </form>
 

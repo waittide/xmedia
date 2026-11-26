@@ -52,7 +52,7 @@ const { t } = useComicI18n()
           :icon="LuPencil"
           @click="emit('edit', activeCollection)"
         >
-          {{ t('shelves.editShelf') }}
+          {{ t('shelves.editShelfBtn') }}
         </MdButton>
         <MdIconButton
           variant="standard"

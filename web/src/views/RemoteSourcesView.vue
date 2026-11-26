@@ -237,7 +237,7 @@ onMounted(async () => {
         :icon="LuPlus"
         @click="openAddSourceDialog(embeddedProtocol ?? 'opds')"
       >
-        {{ t('remote.addSource') }}
+        {{ t('remote.addSourceBtn') }}
       </MdButton>
     </div>
 

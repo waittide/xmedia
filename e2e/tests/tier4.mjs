@@ -33,6 +33,7 @@ import {
   browserLogin,
   buildMinimalZip,
   clickButtonByText,
+  clickButtonMatching,
   deleteSourceSafe,
   ensureBootstrapped as sharedEnsureBootstrapped,
   importSources,
@@ -284,7 +285,7 @@ export async function runTier4(context = {}) {
               `document.body.textContent.includes('Ep.1 Prologue')`,
               { timeoutMs: 10000, label: 'WEBTOON chapters rendered' },
             );
-            await clickButtonByText(cdp, ['Ep.1 Prologue', '开始阅读', 'Read'], { timeoutMs: 8000 });
+            await clickButtonByText(cdp, ['Ep.1 Prologue', '开始阅读', '阅读', 'Read'], { timeoutMs: 8000 });
 
             await cdp.waitForFn(
               `(() => {
@@ -317,7 +318,7 @@ export async function runTier4(context = {}) {
               `document.body.textContent.includes('Arrival')`,
               { timeoutMs: 10000, label: 'MangaDex chapters rendered' },
             );
-            await clickButtonByText(cdp, ['Arrival', '开始阅读', 'Read'], { timeoutMs: 8000 });
+            await clickButtonByText(cdp, ['Arrival', '开始阅读', '阅读', 'Read'], { timeoutMs: 8000 });
             await cdp.waitForFn(
               `(() => {
                 if (!window.location.pathname.includes('/comic/play/online')) return false;
@@ -538,8 +539,18 @@ export async function runTier4(context = {}) {
               `document.body.textContent.includes('Mock Blender Open Movie')`,
               { timeoutMs: 12000, label: 'PeerTube search card rendered' },
             );
-            await clickButtonByText(cdp, ['Mock Blender Open Movie'], { timeoutMs: 8000 });
-            await clickButtonByText(cdp, ['播放', 'Play', '360'], { timeoutMs: 8000 });
+            await clickButtonMatching(cdp, [/Mock Blender Open Movie/], {
+              rootSelector: 'main',
+              timeoutMs: 8000,
+            });
+            await cdp.waitForFn(`window.location.pathname.startsWith('/video/item/online')`, {
+              timeoutMs: 8000,
+              label: 'Navigated to /video/item/online',
+            });
+            await clickButtonMatching(cdp, [/^立即播放$|^播放$|^play now$|^play$|360p?/i], {
+              rootSelector: 'main',
+              timeoutMs: 8000,
+            });
             await cdp.waitForFn(
               `(() => {
                 const v = document.querySelector('video');
@@ -577,7 +588,7 @@ export async function runTier4(context = {}) {
 
           await cdp.waitForSelector('textarea', { visible: true, timeoutMs: 8000 });
           await cdp.type('textarea', JSON.stringify(edgeMocks.cookieGated));
-          await clickButtonByText(cdp, ['确认导入', '提交', 'Import', 'Submit'], { timeoutMs: 8000 });
+          await clickButtonByText(cdp, ['确认导入', '导入', '提交', 'Import', 'Submit'], { timeoutMs: 8000 });
 
           await cdp.waitForFn(
             `document.body.textContent.includes('Edge Cookie Gated Comic')`,

@@ -177,7 +177,7 @@ const movieSpecs = computed<MediaDetailSpec[]>(() => {
     :primary-action-label="primaryActionLabel"
     :primary-action-icon="LuPlay"
     :primary-action-to="primaryActionTo"
-    :secondary-action-label="video ? t('common.addToShelf') : ''"
+    :secondary-action-label="video ? t('common.addToShelfBtn') : ''"
     :secondary-action-icon="LuFolderPlus"
     :show-favorite="Boolean(video)"
     :favorite="Boolean(video?.is_favorite)"

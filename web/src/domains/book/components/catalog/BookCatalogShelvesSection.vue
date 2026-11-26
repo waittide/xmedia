@@ -45,7 +45,7 @@ const { t } = useBookI18n()
 
     <div v-if="!activeShelf.is_favorite" class="flex items-center gap-1">
       <MdButton variant="text" :icon="LuPencil" @click="emit('rename', activeShelf)">
-        {{ t('collections.renameShelf') }}
+        {{ t('collections.renameShelfBtn') }}
       </MdButton>
       <MdButton
         variant="text"
@@ -53,7 +53,7 @@ const { t } = useBookI18n()
         :icon="LuTrash2"
         @click="emit('delete', activeShelf)"
       >
-        {{ t('collections.deleteShelf') }}
+        {{ t('collections.deleteShelfBtn') }}
       </MdButton>
     </div>
   </div>

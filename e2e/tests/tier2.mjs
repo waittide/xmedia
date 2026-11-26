@@ -1437,7 +1437,7 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/更多|more|菜单|menu|⋮/i]);
           await clickButtonMatching(cdp, [/调试|测试|debug|test/i]);
           await cdp.waitForSelector('[role="dialog"]', { visible: true });
-          await clickButtonMatching(cdp, [/开始测试|运行|run|test/i], {
+          await clickButtonMatching(cdp, [/开始测试|测试|运行|run|test/i], {
             rootSelector: '[role="dialog"]',
           });
           await cdp.waitForFn(
@@ -1450,7 +1450,7 @@ function buildTier2Cases() {
           await cdp.waitForFn(
             `(() => {
               const btns = [...document.querySelectorAll('[role="dialog"] button')];
-              const runBtn = btns.find((b) => /开始测试|运行|run|test/i.test(b.innerText || ''));
+              const runBtn = btns.find((b) => /开始测试|测试|运行|run|test/i.test(b.innerText || ''));
               const stopBtn = btns.find((b) => /取消|中止|停止|abort|cancel|stop/i.test(b.innerText || ''));
               return Boolean(runBtn && !runBtn.disabled && !stopBtn);
             })()`,
@@ -1909,7 +1909,7 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock XKCD Strip/]);
           await clickButtonMatching(cdp, [/Broken Chapter/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]')) && /图片加载失败|Failed to load page/i.test(document.body.innerText) && [...document.querySelectorAll('button')].some((b) => /重试本页|Retry Page/i.test(b.innerText || ''))`,
+            `location.pathname.includes('/comic/play/online') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]')) && /图片加载失败|Failed to load page/i.test(document.body.innerText) && [...document.querySelectorAll('button')].some((b) => /重试本页|重试|Retry Page|Retry/i.test(b.innerText || ''))`,
             { timeoutMs: 12000, label: 'broken image error message and Retry Page button rendered' },
           );
           assert.equal(cdp.exceptions.length, 0);
@@ -2567,7 +2567,7 @@ function buildTier2Cases() {
             timeoutMs: 10000,
           });
           await clickButtonMatching(cdp, [/Mock Blender Open Movie/], { rootSelector: 'main' });
-          await clickButtonMatching(cdp, [/立即播放|play now|360p/i], { rootSelector: 'main' });
+          await clickButtonMatching(cdp, [/立即播放|播放|play now|play|360p/i], { rootSelector: 'main' });
           await cdp.waitForFn(
             `(() => {
               const v = document.querySelector('video');
@@ -2795,7 +2795,7 @@ function buildTier2Cases() {
           // Music /online/explore 400 (initial, hasSearched=false) & 500 (after results, hasSearched=true)
           await cdp.goto(`${ctx.baseUrl}/music/library?scope=online&source=${musicMocks.audius.id}`);
           await cdp.waitForFn(
-            `[...document.querySelectorAll('main button')].some((b) => /浏览榜单|Explore/i.test(b.innerText || ''))`,
+            `[...document.querySelectorAll('main button')].some((b) => /浏览榜单|榜单|Explore/i.test(b.innerText || ''))`,
             { timeoutMs: 10000, label: 'music single-source Explore button visible' },
           );
 
@@ -2804,7 +2804,7 @@ function buildTier2Cases() {
             patterns: [{ urlPattern: '*/api/v1/music/online/explore', requestStage: 'Request' }],
           });
           await cdp.evalJs(`(() => {
-            const btn = [...document.querySelectorAll('main button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
+            const btn = [...document.querySelectorAll('main button')].find((b) => /浏览榜单|榜单|Explore/i.test(b.innerText || ''));
             if (!btn) throw new Error('missing music explore button');
             btn.click();
           })()`);
@@ -2838,7 +2838,7 @@ function buildTier2Cases() {
             patterns: [{ urlPattern: '*/api/v1/music/online/explore', requestStage: 'Request' }],
           });
           await cdp.evalJs(`(() => {
-            const btn = [...document.querySelectorAll('main button')].find((b) => /浏览榜单|Explore/i.test(b.innerText || ''));
+            const btn = [...document.querySelectorAll('main button')].find((b) => /浏览榜单|榜单|Explore/i.test(b.innerText || ''));
             if (!btn) throw new Error('missing music explore button');
             btn.click();
           })()`);

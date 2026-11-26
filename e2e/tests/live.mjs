@@ -54,6 +54,7 @@ import {
 import {
   browserLogin,
   clickButtonByText as sharedClickButtonByText,
+  clickButtonMatching,
   ensureBootstrapped as sharedEnsureBootstrapped,
   toRelativeApiPath,
 } from '../lib/helpers.mjs';
@@ -912,8 +913,13 @@ export async function runLiveTests(context = {}) {
             let detailState = await cdp.waitForFn(
               () => {
                 if (!window.location.pathname.includes('/comic/item/online')) return false;
+                const btns = [...document.querySelectorAll('main button, main a')].map((b) =>
+                  (b.textContent || '').trim(),
+                );
+                if (btns.some((t) => ['开始阅读', '阅读', 'Start Reading', 'Read'].includes(t))) {
+                  return 'ready';
+                }
                 const txt = document.body.textContent || '';
-                if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
                 if (txt.includes('重试') || txt.includes('Retry')) return 'error';
                 return false;
               },
@@ -926,8 +932,13 @@ export async function runLiveTests(context = {}) {
               detailState = await cdp.waitForFn(
                 () => {
                   if (!window.location.pathname.includes('/comic/item/online')) return false;
+                  const btns = [...document.querySelectorAll('main button, main a')].map((b) =>
+                    (b.textContent || '').trim(),
+                  );
+                  if (btns.some((t) => ['开始阅读', '阅读', 'Start Reading', 'Read'].includes(t))) {
+                    return 'ready';
+                  }
                   const txt = document.body.textContent || '';
-                  if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
                   if (txt.includes('重试') || txt.includes('Retry')) return 'error';
                   return false;
                 },
@@ -956,7 +967,8 @@ export async function runLiveTests(context = {}) {
                 .filter((r) => isComicImageProxyUrl(r.url))
                 .map((r) => r.requestId),
             );
-            await clickButtonByText(cdp, ['开始阅读', 'Start Reading'], {
+            await clickButtonMatching(cdp, [/^开始阅读$|^阅读$|^Start Reading$|^Read$/i], {
+              rootSelector: 'main',
               timeoutMs: 20000,
             });
             await cdp.waitForFn(
@@ -1026,13 +1038,13 @@ export async function runLiveTests(context = {}) {
             );
             await clickButtonByText(cdp, [liveVideoSample.title], { timeoutMs: 10000 });
             await cdp.waitForFn(
-              `window.location.pathname.includes('/video/item/online') && (document.body.textContent.includes('立即播放') || document.body.textContent.includes('Play Now'))`,
+              `window.location.pathname.includes('/video/item/online') && [...document.querySelectorAll('main button, main a')].some(b => ['立即播放', '播放', 'Play Now', 'Play'].includes((b.textContent || '').trim()))`,
               { timeoutMs: 30000, label: 'LIVE-09 video detail loaded' },
             );
-            await clickButtonByText(
+            await clickButtonMatching(
               cdp,
-              ['立即播放', 'Play Now'],
-              { timeoutMs: 20000 },
+              [/^立即播放$|^播放$|^Play Now$|^Play$/i],
+              { rootSelector: 'main', timeoutMs: 20000 },
             );
             await cdp.waitForFn(
               `(() => {

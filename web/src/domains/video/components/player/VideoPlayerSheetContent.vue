@@ -192,7 +192,7 @@ const filteredEpisodes = computed(() => {
 
     <div v-if="downloadUrl" class="pt-2">
       <MdButton variant="tonal" :icon="LuDownload" :href="downloadUrl" block>
-        {{ t('common.download') }}
+        {{ t('common.downloadBtn') }}
       </MdButton>
     </div>
   </div>

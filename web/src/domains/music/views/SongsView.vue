@@ -283,7 +283,7 @@ function handlePoolChanged(): void {
             :icon="LuPlay"
             @click="playerStore.playQueue(tracks, 0)"
           >
-            {{ t('common.playAll') }}
+            {{ t('common.playAllBtn') }}
           </MdButton>
           <MdIconButton
             size="sm"

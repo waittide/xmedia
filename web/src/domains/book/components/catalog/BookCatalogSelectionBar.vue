@@ -79,7 +79,7 @@ async function batchAddTag(): Promise<void> {
         :icon="LuTag"
         @click="batchAddTag"
       >
-        {{ t('catalog.batchAddTag') }}
+        {{ t('catalog.batchAddTagBtn') }}
       </MdButton>
       <MdButton variant="text" @click="catalogStore.clearSelection()">
         {{ t('catalog.clearSelection') }}

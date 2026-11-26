@@ -139,7 +139,7 @@ async function handleDelete(pl: PlaylistSummaryDto): Promise<void> {
         {{ filteredPlaylists.length }}
       </span>
       <MdButton variant="tonal" :icon="LuPlus" @click="handleCreatePlaylist">
-        {{ t('nav.newPlaylist') }}
+        {{ t('playlist.createBtn') }}
       </MdButton>
     </div>
 
@@ -151,7 +151,7 @@ async function handleDelete(pl: PlaylistSummaryDto): Promise<void> {
     >
       <template #action>
         <MdButton variant="tonal" :icon="LuPlus" @click="handleCreatePlaylist">
-          {{ t('nav.newPlaylist') }}
+          {{ t('playlist.createBtn') }}
         </MdButton>
       </template>
     </MdEmptyState>
