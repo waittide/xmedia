@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use xmedia_source::crud::{ParsedSourceSummaryMeta, SourceSpecAdapter};
 use xmedia_source::http::is_forbidden_custom_header;
-pub use xmedia_source::http::proxy::has_origin_affinity;
+pub use xmedia_source::http::proxy::{has_origin_affinity, strip_cross_origin_headers};
 pub use xmedia_source::model::{
     BrowserRedirectHint, ConcurrentRateSpec, ExecutionDiagnostics, LoginUiItem, LoginUiStyle,
     SourceCallError, SourceCallOutput, SourceMetadata, SourceRuntimeState, de_bool_true,
@@ -37,15 +37,6 @@ where
         }
         _ => 2,
     })
-}
-
-pub fn parse_reading_direction_opt(raw: &str) -> Option<ReadingDirection> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "rtl" => Some(ReadingDirection::Rtl),
-        "ltr" => Some(ReadingDirection::Ltr),
-        "webtoon" | "vertical" | "scroll" => Some(ReadingDirection::Webtoon),
-        _ => None,
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +280,88 @@ fn canonicalize_group_key_in_value(val: &mut serde_json::Value) {
     }
 }
 
+impl ComicSourceSpec {
+    fn is_blank(&self) -> bool {
+        self.source_name.trim().is_empty() && self.source_url.trim().is_empty()
+    }
+
+    pub fn default_test_keyword(&self) -> String {
+        self.rule_search
+            .as_ref()
+            .and_then(|r| r.check_key_word.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("海贼王")
+            .to_string()
+    }
+
+    pub fn supports_stage(&self, mode: ComicSourceTestMode) -> bool {
+        match mode {
+            ComicSourceTestMode::Detail => self.rule_detail.is_some(),
+            ComicSourceTestMode::Chapters => self
+                .rule_toc
+                .as_ref()
+                .and_then(|t| t.chapter_list.as_deref())
+                .is_some_and(|s| !s.trim().is_empty()),
+            ComicSourceTestMode::Search => self.rule_search.is_some(),
+            ComicSourceTestMode::Explore => {
+                self.rule_explore.is_some() || self.rule_search.is_some()
+            }
+            ComicSourceTestMode::Pages => self.rule_pages.is_some(),
+            ComicSourceTestMode::Full => true,
+        }
+    }
+
+    pub fn list_rules(
+        &self,
+        explore: bool,
+    ) -> Result<(Option<&ComicSearchRule>, Option<&ComicSearchRule>), SourceCallError> {
+        if explore {
+            if self.rule_explore.is_none() && self.rule_search.is_none() {
+                return Err(SourceCallError::new(
+                    format!(
+                        "漫画源「{}」未配置 ruleExplore 或 ruleSearch",
+                        self.source_name
+                    ),
+                    ExecutionDiagnostics::default(),
+                ));
+            }
+            Ok((self.rule_explore.as_ref(), self.rule_search.as_ref()))
+        } else {
+            let rule = self.rule_search.as_ref().ok_or_else(|| {
+                SourceCallError::new(
+                    format!("漫画源「{}」未配置 ruleSearch", self.source_name),
+                    ExecutionDiagnostics::default(),
+                )
+            })?;
+            Ok((Some(rule), None))
+        }
+    }
+
+    pub fn detail_rule_or_fallback(
+        &self,
+        comic_url: &str,
+        final_url: &str,
+        fallback_hint: Option<&ComicJsContext>,
+    ) -> Result<&ComicDetailRule, Box<OnlineComicDetail>> {
+        self.rule_detail.as_ref().ok_or_else(|| {
+            Box::new(OnlineComicDetail {
+                title: fallback_hint.map(|h| h.name.clone()).unwrap_or_default(),
+                author: fallback_hint.map(|h| h.author.clone()).unwrap_or_default(),
+                comic_url: comic_url.to_string(),
+                toc_url: final_url.to_string(),
+                cover_url: fallback_hint.and_then(|h| h.cover_url.clone()),
+                intro: fallback_hint.and_then(|h| h.intro.clone()),
+                kind: None,
+                status: None,
+                last_chapter: None,
+                word_count: None,
+                reading_direction: Some(self.effective_reading_direction()),
+            })
+        })
+    }
+}
+
 impl SourceSpecAdapter for ComicSourceSpec {
     const ENTITY_LABEL: &'static str = "漫画源";
     const JSON_GROUP_KEY: &'static str = "sourceGroup";
@@ -407,30 +480,8 @@ fn remove_header_case_insensitive(map: &mut HashMap<String, String>, target: &st
     }
 }
 
-pub fn strip_cross_origin_sensitive_headers(
-    headers: &mut HashMap<String, String>,
-    source_url: &str,
-    target_url: &str,
-) {
-    let same_affinity = has_origin_affinity(source_url, target_url);
-    headers.retain(|k, _| {
-        let trimmed = k.trim();
-        !trimmed.eq_ignore_ascii_case("proxy-authorization")
-            && (same_affinity || !xmedia_source::http::proxy::is_sensitive_origin_header(trimmed))
-    });
-}
-
 impl ComicSourceSpec {
-    pub fn is_blank(&self) -> bool {
-        self.source_name.trim().is_empty() && self.source_url.trim().is_empty()
-    }
-
-    /// Parses either a single JSON object or a JSON array of comic sources.
-    pub fn parse_json_batch(raw: &str) -> Result<Vec<(Self, String)>, String> {
-        <Self as SourceSpecAdapter>::parse_batch(raw)
-    }
-
-    pub fn parse_login_ui(&self) -> Vec<LoginUiItem> {
+    fn parse_login_ui(&self) -> Vec<LoginUiItem> {
         parse_login_ui_json(self.login_ui.as_deref())
     }
 
@@ -441,11 +492,19 @@ impl ComicSourceSpec {
     pub fn effective_reading_direction(&self) -> ReadingDirection {
         self.reading_direction
             .as_deref()
-            .and_then(parse_reading_direction_opt)
-            .unwrap_or(ReadingDirection::Rtl)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default()
     }
 
-    pub fn merged_image_headers(&self) -> HashMap<String, String> {
+    pub fn image_headers(&self, target_url: Option<&str>) -> HashMap<String, String> {
+        let mut out = self.base_image_headers();
+        if let Some(url) = target_url {
+            strip_cross_origin_headers(&mut out, &self.source_url, url);
+        }
+        out
+    }
+
+    fn base_image_headers(&self) -> HashMap<String, String> {
         let mut out = HashMap::new();
         overlay_header_json(&mut out, self.header.as_deref());
         let had_base_accept = has_header_case_insensitive(&out, "accept");
@@ -466,12 +525,6 @@ impl ComicSourceSpec {
             remove_header_case_insensitive(&mut out, "accept");
             out.insert("Accept".to_string(), DEFAULT_IMAGE_ACCEPT.to_string());
         }
-        out
-    }
-
-    pub fn merged_image_headers_for_target(&self, target_url: &str) -> HashMap<String, String> {
-        let mut out = self.merged_image_headers();
-        strip_cross_origin_sensitive_headers(&mut out, &self.source_url, target_url);
         out
     }
 }
@@ -563,8 +616,7 @@ mod origin_affinity_tests {
             ..Default::default()
         };
 
-        let same_site =
-            spec.merged_image_headers_for_target("https://img.cdn.manga-site.co.uk/1.jpg");
+        let same_site = spec.image_headers(Some("https://img.cdn.manga-site.co.uk/1.jpg"));
         assert_eq!(
             same_site.get("Authorization").map(String::as_str),
             Some("Bearer secret-tok")
@@ -577,7 +629,7 @@ mod origin_affinity_tests {
             "https://attacker.example.org/steal.png",
             "http://192.0.2.10/1.jpg",
         ] {
-            let filtered = spec.merged_image_headers_for_target(cross_url);
+            let filtered = spec.image_headers(Some(cross_url));
             assert!(
                 !filtered
                     .keys()

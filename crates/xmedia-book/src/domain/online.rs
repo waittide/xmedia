@@ -172,20 +172,50 @@ impl From<&LegadoBookSource> for SourceMetadata {
 }
 
 impl LegadoBookSource {
-    /// Parses either a single Legado JSON object or a JSON array of book sources.
-    pub fn parse_json_batch(raw: &str) -> Result<Vec<(Self, String)>, String> {
-        xmedia_source::crud::parse_json_batch(
-            raw,
-            "书源",
-            "未解析到有效书源（缺少 bookSourceName / bookSourceUrl）",
-            |parsed: &Self| {
-                parsed.book_source_name.trim().is_empty()
-                    && parsed.book_source_url.trim().is_empty()
-            },
-        )
+    pub fn default_test_keyword(&self) -> String {
+        self.rule_search
+            .as_ref()
+            .and_then(|r| r.check_key_word.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("我的")
+            .to_string()
     }
 
-    pub fn parse_login_ui(&self) -> Vec<LoginUiItem> {
+    pub fn require_search_rule(&self) -> Result<&LegadoSearchRule, SourceCallError> {
+        self.rule_search.as_ref().ok_or_else(|| {
+            SourceCallError::new(
+                format!("书源「{}」未配置 ruleSearch", self.book_source_name),
+                ExecutionDiagnostics::default(),
+            )
+        })
+    }
+
+    pub fn book_info_or_fallback(
+        &self,
+        book_url: &str,
+        final_url: &str,
+        fallback_hint: Option<&BookJsContext>,
+    ) -> Result<&LegadoBookInfoRule, Box<OnlineBookDetail>> {
+        self.rule_book_info.as_ref().ok_or_else(|| {
+            Box::new(OnlineBookDetail {
+                name: fallback_hint.map(|h| h.name.clone()).unwrap_or_default(),
+                author: fallback_hint.map(|h| h.author.clone()).unwrap_or_default(),
+                book_url: book_url.to_string(),
+                toc_url: final_url.to_string(),
+                cover_url: fallback_hint.and_then(|h| h.cover_url.clone()),
+                intro: fallback_hint.and_then(|h| h.intro.clone()),
+                kind: None,
+                last_chapter: None,
+                word_count: None,
+            })
+        })
+    }
+    fn is_blank(&self) -> bool {
+        self.book_source_name.trim().is_empty() && self.book_source_url.trim().is_empty()
+    }
+
+    fn parse_login_ui(&self) -> Vec<LoginUiItem> {
         parse_login_ui_json(self.login_ui.as_deref())
     }
 
@@ -197,47 +227,101 @@ impl LegadoBookSource {
     /// Returns `true` when this Legado book source uses `data:` pseudo-URLs (e.g.
     /// `data:;base64,...,{"type":"gydetail"}`) to pass structured state between stages.
     pub fn supports_data_pseudo_urls(&self) -> bool {
-        fn has_data_marker(opt: Option<&str>) -> bool {
-            let Some(raw) = opt else {
-                return false;
-            };
-            let lower = raw.to_ascii_lowercase();
-            lower.contains("data:") || lower.contains("hexdecodetostring")
-        }
-
-        if has_data_marker(self.search_url.as_deref())
+        has_data_marker(self.search_url.as_deref())
             || has_data_marker(self.explore_url.as_deref())
             || has_data_marker(self.js_lib.as_deref())
-        {
-            return true;
-        }
-        if let Some(ref r) = self.rule_search
-            && (has_data_marker(r.book_list.as_deref()) || has_data_marker(r.book_url.as_deref()))
-        {
-            return true;
-        }
-        if let Some(ref r) = self.rule_explore
-            && (has_data_marker(r.book_list.as_deref()) || has_data_marker(r.book_url.as_deref()))
-        {
-            return true;
-        }
-        if let Some(ref r) = self.rule_book_info
-            && (has_data_marker(r.init.as_deref()) || has_data_marker(r.toc_url.as_deref()))
-        {
-            return true;
-        }
-        if let Some(ref r) = self.rule_toc
-            && (has_data_marker(r.chapter_list.as_deref())
-                || has_data_marker(r.chapter_url.as_deref()))
-        {
-            return true;
-        }
-        if let Some(ref r) = self.rule_content
-            && (has_data_marker(r.content.as_deref()) || has_data_marker(r.title.as_deref()))
-        {
-            return true;
-        }
-        false
+            || search_rule_has_data(self.rule_search.as_ref())
+            || search_rule_has_data(self.rule_explore.as_ref())
+            || info_rule_has_data(self.rule_book_info.as_ref())
+            || toc_rule_has_data(self.rule_toc.as_ref())
+            || content_rule_has_data(self.rule_content.as_ref())
+    }
+}
+
+fn has_data_marker(opt: Option<&str>) -> bool {
+    let Some(raw) = opt else {
+        return false;
+    };
+    let lower = raw.to_ascii_lowercase();
+    lower.contains("data:") || lower.contains("hexdecodetostring")
+}
+
+fn search_rule_has_data(rule: Option<&LegadoSearchRule>) -> bool {
+    rule.is_some_and(|r| {
+        has_data_marker(r.book_list.as_deref()) || has_data_marker(r.book_url.as_deref())
+    })
+}
+
+fn info_rule_has_data(rule: Option<&LegadoBookInfoRule>) -> bool {
+    rule.is_some_and(|r| {
+        has_data_marker(r.init.as_deref()) || has_data_marker(r.toc_url.as_deref())
+    })
+}
+
+fn toc_rule_has_data(rule: Option<&LegadoTocRule>) -> bool {
+    rule.is_some_and(|r| {
+        has_data_marker(r.chapter_list.as_deref()) || has_data_marker(r.chapter_url.as_deref())
+    })
+}
+
+fn content_rule_has_data(rule: Option<&LegadoContentRule>) -> bool {
+    rule.is_some_and(|r| {
+        has_data_marker(r.content.as_deref()) || has_data_marker(r.title.as_deref())
+    })
+}
+
+fn is_windows_reserved_stem(stem: &str) -> bool {
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+fn replace_illegal_stem_chars(name: &str) -> String {
+    name.trim()
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+pub fn sanitize_novel_stem(name: &str) -> String {
+    let cleaned = replace_illegal_stem_chars(name);
+    let trimmed = cleaned.trim_matches('.').trim();
+    if trimmed.is_empty() {
+        return "novel".to_string();
+    }
+    let truncated: String = trimmed.chars().take(80).collect();
+    if is_windows_reserved_stem(&truncated) {
+        format!("_{truncated}")
+    } else {
+        truncated
     }
 }
 
@@ -246,7 +330,12 @@ impl SourceSpecAdapter for LegadoBookSource {
     const JSON_GROUP_KEY: &'static str = "bookSourceGroup";
 
     fn parse_batch(raw_json: &str) -> Result<Vec<(Self, String)>, String> {
-        Self::parse_json_batch(raw_json)
+        xmedia_source::crud::parse_json_batch(
+            raw_json,
+            Self::ENTITY_LABEL,
+            "未解析到有效书源（缺少 bookSourceName / bookSourceUrl）",
+            Self::is_blank,
+        )
     }
 
     fn source_name(&self) -> &str {

@@ -1,15 +1,11 @@
-use std::io::{Read, Seek};
 use std::path::Path;
 
 use quick_xml::Reader;
 use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, Event};
-use zip::ZipArchive;
 
 use super::BookTocEntry;
-use super::epub::{MAX_EPUB_METADATA_BYTES, normalize_zip_path, read_zip_entry};
-use super::opf::ParsedOpfDocument;
-use crate::common::xml_attr_value;
+use crate::common::{normalize_zip_path, xml_attr_value};
 
 fn decode_xml_text(raw: &str) -> String {
     unescape(raw)
@@ -214,64 +210,4 @@ pub fn parse_nav_xhtml_toc(nav_xml: &[u8], nav_dir: &Path) -> Vec<BookTocEntry> 
     } else {
         fallback_toc
     }
-}
-
-pub(crate) fn extract_toc<R: Read + Seek>(
-    archive: &mut ZipArchive<R>,
-    opf_dir: &Path,
-    opf: &ParsedOpfDocument,
-) -> Vec<BookTocEntry> {
-    let by_id = opf.manifest_by_id();
-    let mut nav_toc = Vec::new();
-    if let Some(nav_item) = opf
-        .manifest
-        .iter()
-        .find(|item| item.properties.split_whitespace().any(|p| p == "nav"))
-    {
-        let nav_path = normalize_zip_path(opf_dir, &nav_item.href);
-        let nav_dir = Path::new(&nav_path).parent().unwrap_or(Path::new(""));
-        if let Some(bytes) = read_zip_entry(archive, &nav_path, MAX_EPUB_METADATA_BYTES) {
-            nav_toc = parse_nav_xhtml_toc(&bytes, nav_dir);
-        }
-    }
-
-    let mut ncx_toc = Vec::new();
-    let ncx_item = opf
-        .spine_toc_id
-        .as_deref()
-        .and_then(|id| by_id.get(id).copied())
-        .or_else(|| {
-            opf.manifest
-                .iter()
-                .find(|i| i.media_type.contains("dtbncx"))
-        });
-    if let Some(ncx) = ncx_item {
-        let ncx_path = normalize_zip_path(opf_dir, &ncx.href);
-        let ncx_dir = Path::new(&ncx_path).parent().unwrap_or(Path::new(""));
-        if let Some(bytes) = read_zip_entry(archive, &ncx_path, MAX_EPUB_METADATA_BYTES) {
-            ncx_toc = parse_ncx_toc(&bytes, ncx_dir);
-        }
-    }
-
-    if ncx_toc.len() > nav_toc.len() && nav_toc.len() <= 1 {
-        return ncx_toc;
-    }
-    if !nav_toc.is_empty() {
-        return nav_toc;
-    }
-    if !ncx_toc.is_empty() {
-        return ncx_toc;
-    }
-
-    opf.spine_ids
-        .iter()
-        .filter_map(|id| by_id.get(id.as_str()).copied())
-        .enumerate()
-        .map(|(i, item)| BookTocEntry {
-            index: u32::try_from(i).unwrap_or(0),
-            title: format!("Section {}", i + 1),
-            href: normalize_zip_path(opf_dir, &item.href),
-            level: 0,
-        })
-        .collect()
 }

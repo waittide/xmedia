@@ -10,9 +10,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 use xmedia_source::crud::merge_diagnostics;
 use xmedia_source::http::HttpClientConfig;
-use xmedia_source::proxy::{
-    DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_validated_image_bytes_with_config,
-};
+use xmedia_source::proxy::{DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_image};
 
 use crate::domain::online::{ComicSearchResult, ComicSourceSpec};
 
@@ -65,20 +63,10 @@ impl ComicOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut sources = self.source_crud.repository().list_all().await?;
-        let is_admin = actor.role.is_admin();
-
-        if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
-            sources.retain(|s| filter_ids.contains(&s.id) && (is_admin || s.enabled));
-        } else {
-            sources.retain(|s| s.enabled);
-        }
-
-        if sources.is_empty() {
-            return Err(DomainError::Validation("没有可用的已启用漫画源".into()));
-        }
-
-        sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+        let sources = self
+            .source_crud
+            .select_sources(actor, source_ids.as_deref())
+            .await?;
         let page_num = page.max(1);
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
 
@@ -359,7 +347,7 @@ impl ComicOnlineService {
             let rec = self.source_crud.load_source_for_actor(actor, sid).await?;
             let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
                 .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
-            let mut headers = parsed.merged_image_headers_for_target(raw_url);
+            let mut headers = parsed.image_headers(Some(raw_url));
             headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
             Some(headers)
         } else {
@@ -371,7 +359,7 @@ impl ComicOnlineService {
             allow_private_ips: self.allow_private_ips,
             proxy_url: None,
         };
-        let (bytes, mime) = fetch_validated_image_bytes_with_config(
+        let (bytes, mime) = fetch_image(
             raw_url,
             custom_headers.as_ref(),
             COMIC_IMAGE_PROXY_MAX_BYTES,

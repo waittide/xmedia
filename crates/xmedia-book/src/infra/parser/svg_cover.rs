@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use xmedia_core::domain::xml::xml_escape;
+use xmedia_formats::common::xml_escape_clean as xml_escape;
 
 use crate::application::ports::CoverPayload;
 

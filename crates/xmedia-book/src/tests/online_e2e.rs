@@ -109,7 +109,13 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
         })
         .await
         .unwrap();
-    let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let lib_svc = Arc::new(LibraryService::new(
         libs_repo.clone(),
         events.clone(),
@@ -251,19 +257,21 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
         .unwrap();
     let updated_item = book_services
         .online_items
-        .update_progress(
+        .update(
             admin.id,
             online_item.id,
-            xmedia_core::domain::online_item::OnlineItemProgress {
-                unit_index: Some(1),
-                unit_key: Some(toc.chapters[1].url.clone()),
-                unit_title: Some("第二章 开门".into()),
-                unit_group: None,
-                position: 0.5,
-                duration: Some(1.0),
-                total_units: Some(2),
-                completed: false,
-            },
+            xmedia_core::application::online_items::OnlineItemMutation::Progress(Some(
+                xmedia_core::domain::online_item::OnlineItemProgress {
+                    unit_index: Some(1),
+                    unit_key: Some(toc.chapters[1].url.clone()),
+                    unit_title: Some("第二章 开门".into()),
+                    unit_group: None,
+                    position: 0.5,
+                    duration: Some(1.0),
+                    total_units: Some(2),
+                    completed: false,
+                },
+            )),
         )
         .await
         .unwrap();
@@ -367,7 +375,13 @@ async fn deleting_user_cleans_up_online_items_entries() {
         })
         .await
         .unwrap();
-    let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let member = auth
         .create_user(
             &admin,
@@ -393,11 +407,13 @@ async fn deleting_user_cleans_up_online_items_entries() {
         .unwrap();
     let source_id = imported.sources[0].id;
 
-    let _member_user =
-        xmedia_core::domain::repository::UserRepository::find_by_id(users.as_ref(), member.id)
-            .await
-            .unwrap()
-            .unwrap();
+    let _member_user = xmedia_core::domain::repository::UserRepository::find(
+        users.as_ref(),
+        xmedia_core::domain::repository::UserLookup::Id(member.id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     book_services
         .online_items
         .upsert(
@@ -482,7 +498,13 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         })
         .await
         .unwrap();
-    let admin = auth.authenticate_jwt(&admin_session.token).await.unwrap();
+    let admin = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&admin_session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let _ = auth
         .create_user(
             &admin,
@@ -495,7 +517,7 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         )
         .await
         .unwrap();
-    let member_session = auth.login("member", "password123").await.unwrap();
+    let member_session = auth.login("member", "password123", None).await.unwrap();
 
     let state = BookHttpState::new(auth.clone(), lib_svc.clone(), book_services.clone());
     let app = Router::new().nest("/api/v1/book", rest_router(state));
@@ -671,7 +693,13 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
     assert_eq!(default_member_res.status(), StatusCode::NOT_FOUND);
 
     // Non-admin member can manually track the same online book -> reuses deduplicated pool entry
-    let member_user = auth.authenticate_jwt(&member_session.token).await.unwrap();
+    let member_user = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&member_session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let tracked_by_member = book_services
         .online
         .track_online_book(
@@ -1797,7 +1825,10 @@ async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
         .await
         .unwrap();
     let admin = auth_svc
-        .authenticate_jwt(&admin_session.token)
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&admin_session.token),
+            None,
+        )
         .await
         .unwrap();
 

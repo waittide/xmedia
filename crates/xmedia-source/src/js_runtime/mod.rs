@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use rquickjs::{CatchResultExt, Context, Function, Object, Runtime, Value};
 
-use crate::http::LegadoHttpClient;
+use crate::http::{HttpFetchResult, LegadoHttpClient};
 use crate::model::{ExecutionDiagnostics, SourceMetadata, SourceRuntimeState};
 use crate::rule::{JsRuleEvaluator, RuleValue, eval_rule_list, eval_rule_string, rule_needs_js};
 
@@ -511,24 +511,34 @@ impl ReusableSourceSession {
         }
     }
 
-    pub fn http(&self) -> &LegadoHttpClient {
-        &self.http
+    pub fn fetch(&self, target_url: &str, base_url: &str) -> Result<HttpFetchResult, String> {
+        self.check_active()?;
+        let remaining = self.remaining_budget();
+        if remaining.is_zero() {
+            return Err("执行超过单次操作总超时上限 (interrupted)".into());
+        }
+        self.http
+            .fetch_with_timeout(target_url, base_url, Some(remaining))
     }
 
-    pub fn metadata(&self) -> &SourceMetadata {
-        &self.metadata
-    }
-
-    pub fn state_arc(&self) -> &Arc<Mutex<SourceRuntimeState>> {
-        &self.state_arc
-    }
-
-    pub fn cookies_arc(&self) -> &Arc<Mutex<HashMap<String, String>>> {
-        &self.cookies_arc
-    }
-
-    pub fn diag_arc(&self) -> &Arc<Mutex<ExecutionDiagnostics>> {
-        &self.diag_arc
+    pub fn fetch_resilient(
+        &self,
+        target_url: &str,
+        base_url: &str,
+        max_retries: usize,
+    ) -> Result<HttpFetchResult, String> {
+        self.check_active()?;
+        let remaining = self.remaining_budget();
+        if remaining.is_zero() {
+            return Err("执行超过单次操作总超时上限 (interrupted)".into());
+        }
+        self.http.fetch_with_timeout_resilient(
+            target_url,
+            base_url,
+            Some(remaining),
+            max_retries,
+            Some(&self.cancel_flag),
+        )
     }
 
     pub fn check_active(&self) -> Result<(), String> {

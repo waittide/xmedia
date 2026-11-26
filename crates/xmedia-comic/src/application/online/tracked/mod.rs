@@ -10,19 +10,17 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::user::User;
 use xmedia_source::http::{HttpClientConfig, resolve_literal_http_url};
-use xmedia_source::proxy::{
-    DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_validated_image_bytes_with_config,
-};
+use xmedia_source::proxy::{DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_image};
 
 pub use cache::ComicCacheReportDto;
 
 use crate::application::dto::SeriesDetailDto;
-use crate::domain::chapter::{Chapter, OnlineTrackedChapterMeta};
+use crate::domain::chapter::{Chapter, ChapterKind, ChapterSource, OnlineTrackedChapterMeta};
 use crate::domain::id::SeriesId;
 use crate::domain::online::{ComicJsContext, ComicSourceSpec, OnlineComicChapter};
-use crate::domain::series::{OnlineTrackedSeriesMeta, ReadingDirection, Series, SeriesStatus};
+use crate::domain::series::{CoverUpdate, OnlineTrackedSeriesMeta, Series, SeriesStatus};
 
-use super::helpers::get_or_insert_weak_lock;
+use super::helpers::weak_lock;
 use super::{COMIC_IMAGE_PROXY_MAX_BYTES, ComicOnlineService};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,20 +56,15 @@ impl ComicOnlineService {
         parsed: &ComicSourceSpec,
         raw_url: &str,
     ) -> DomainResult<(Vec<u8>, String)> {
-        let mut headers = parsed.merged_image_headers_for_target(raw_url);
+        let mut headers = parsed.image_headers(Some(raw_url));
         headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         let cfg = HttpClientConfig {
             timeout_secs: DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
             allow_private_ips: self.allow_private_ips,
             proxy_url: None,
         };
-        let (bytes, mime) = fetch_validated_image_bytes_with_config(
-            raw_url,
-            Some(&headers),
-            COMIC_IMAGE_PROXY_MAX_BYTES,
-            &cfg,
-        )
-        .await?;
+        let (bytes, mime) =
+            fetch_image(raw_url, Some(&headers), COMIC_IMAGE_PROXY_MAX_BYTES, &cfg).await?;
         Ok((bytes, mime.to_string()))
     }
 
@@ -107,7 +100,7 @@ impl ComicOnlineService {
             .map(|u| resolve_literal_http_url(u, Some(&parsed.source_url)))
             .transpose()?;
 
-        let lock = get_or_insert_weak_lock(
+        let lock = weak_lock(
             &self.track_locks,
             (input.source_id, clean_comic_url.clone()),
         );
@@ -116,8 +109,13 @@ impl ComicOnlineService {
         let managed_lib = self.ensure_managed_comic_library().await?;
         if let Some(found) = self
             .series
-            .find_online_tracked(input.source_id, &clean_comic_url)
+            .query(crate::domain::repository::SeriesQuery::OnlineTracked {
+                source_id: input.source_id,
+                comic_url: clean_comic_url.clone(),
+            })
             .await?
+            .into_iter()
+            .next()
         {
             self.catalog
                 .bind_series_for_user(actor.id, found.id)
@@ -175,7 +173,7 @@ impl ComicOnlineService {
                         d.cover_url.or(clean_input_cover),
                         resolved_toc,
                         d.status.or_else(|| input.status.clone()),
-                        Some(d.reading_direction.as_str().to_string()),
+                        Some(d.reading_direction.as_ref().to_string()),
                         resp.chapters,
                     )
                 }
@@ -224,8 +222,11 @@ impl ComicOnlineService {
             comic_url: clean_comic_url.clone(),
             toc_url: clean_toc_url.clone(),
         };
-        let mut series =
-            Series::new_online_tracked(managed_lib.id, title.clone(), series_meta.clone())?;
+        let mut series = Series::new(
+            managed_lib.id,
+            title.clone(),
+            crate::domain::series::SeriesSource::OnlineTracked(series_meta.clone()),
+        )?;
         if let Some(ref au) = author {
             let writers: Vec<String> = au
                 .split(['/', ',', '、', ';'])
@@ -251,7 +252,7 @@ impl ComicOnlineService {
             series.status = parse_series_status_hint(st);
         }
         if let Some(ref dir) = direction_str {
-            series.reading_direction = ReadingDirection::parse(dir);
+            series.reading_direction = dir.parse().unwrap_or_default();
         }
 
         let now = Timestamp::now();
@@ -264,7 +265,7 @@ impl ComicOnlineService {
                 .generate_from_bytes(&thumb_key, &cov_bytes)
                 .await
             {
-                let _ = series.set_scanned_cover(saved_key, now);
+                let _ = series.apply_cover(CoverUpdate::Scanned(saved_key), now);
             }
         }
 
@@ -294,17 +295,22 @@ impl ComicOnlineService {
         self.catalog.require_series_bound(actor, series_id).await?;
         let mut series = self
             .series
-            .find_by_id(series_id)
+            .query(crate::domain::repository::SeriesQuery::Id(series_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound("series not found".into()))?;
-        let Some(series_ref) = series.online_tracking().cloned() else {
+        let Some(series_ref) = series.source.online_tracking().cloned() else {
             return Err(DomainError::Validation("该漫画系列不是在线追更系列".into()));
         };
 
-        let existing = self.chapters.list_by_series(series_id).await?;
+        let existing = self
+            .chapters
+            .query(crate::domain::repository::ChapterQuery::Series(series_id))
+            .await?;
         let existing_urls: HashSet<String> = existing
             .iter()
-            .filter_map(|c| c.online_tracking().map(|t| t.chapter_url.clone()))
+            .filter_map(|c| c.source.online_tracking().map(|t| t.chapter_url.clone()))
             .collect();
         let start_number = existing.len() as u32;
 
@@ -315,7 +321,7 @@ impl ComicOnlineService {
             toc_url: series_ref.toc_url.clone(),
             cover_url: None,
             intro: Some(series.summary.clone()),
-            reading_direction: Some(series.reading_direction.as_str().to_string()),
+            reading_direction: Some(series.reading_direction.as_ref().to_string()),
             ..Default::default()
         };
 
@@ -341,7 +347,7 @@ impl ComicOnlineService {
         if added > 0 {
             let total = self
                 .chapters
-                .list_by_series(series_id)
+                .query(crate::domain::repository::ChapterQuery::Series(series_id))
                 .await?
                 .into_iter()
                 .filter(|c| !c.is_missing)
@@ -384,12 +390,17 @@ impl ComicOnlineService {
                 chapter_url: url.to_string(),
                 cached_archive_path: None,
             };
-            let chapter = Chapter::new_online_tracked(
+            let chapter = Chapter::new(
                 series.id,
                 series.library_id,
+                ChapterKind::Chapter,
                 num,
+                None,
                 item.title.clone(),
-                ch_meta,
+                0,
+                ChapterSource::OnlineTracked(ch_meta),
+                0,
+                String::new(),
             )?;
             self.chapters.save(&chapter).await?;
             added += 1;

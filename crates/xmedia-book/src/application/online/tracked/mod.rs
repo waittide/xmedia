@@ -15,7 +15,7 @@ use crate::domain::online::{
 };
 
 use super::dto::{TrackOnlineBookInput, TrackedChapterResponseDto, TrackedTocResponseDto};
-use super::helpers::{ChapterFetchOptions, get_or_insert_weak_lock};
+use super::helpers::{ChapterFetchOptions, weak_lock};
 use super::{BookOnlineService, TRACKED_EPUB_IMMEDIATE_BATCH};
 
 impl BookOnlineService {
@@ -23,15 +23,15 @@ impl BookOnlineService {
         &self,
         book_id: BookId,
     ) -> Arc<tokio::sync::Mutex<()>> {
-        get_or_insert_weak_lock(&self.book_state_locks, book_id)
+        weak_lock(&self.book_state_locks, book_id)
     }
 
     pub(super) fn epub_lock_for(&self, book_id: BookId) -> Arc<tokio::sync::Mutex<()>> {
-        get_or_insert_weak_lock(&self.epub_sync_locks, book_id)
+        weak_lock(&self.epub_sync_locks, book_id)
     }
 
     fn track_lock_for(&self, source_id: Uuid, book_url: &str) -> Arc<tokio::sync::Mutex<()>> {
-        get_or_insert_weak_lock(&self.track_locks, (source_id, book_url.to_string()))
+        weak_lock(&self.track_locks, (source_id, book_url.to_string()))
     }
 
     pub(in crate::application::online) fn bump_sync_gen(
@@ -60,17 +60,6 @@ impl BookOnlineService {
             .get(&book_id)
             .map(|(g, _)| *g)
             .unwrap_or(0)
-    }
-
-    fn parse_tags_from_kind(raw: Option<&str>) -> Vec<String> {
-        raw.map(|s| {
-            s.split([',', '，', '|', '/'])
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
     }
 
     pub async fn track_online_book(
@@ -210,17 +199,15 @@ impl BookOnlineService {
             .save_managed_epub_and_cover(book_id, Bytes::from(epub_bytes), cover_payload)
             .await?;
 
-        let mut metadata = BookMetadata::new(input.name)?;
-        if !input.author.trim().is_empty() {
-            metadata.authors = vec![input.author.trim().to_string()];
-        }
-        metadata.description = BookMetadata::normalize_optional(input.intro);
-        metadata.tags =
-            BookMetadata::normalize_list(Self::parse_tags_from_kind(input.kind.as_deref()));
-        metadata.language = Some("zh-CN".to_string());
-        metadata.chapter_count = (total_chapters > 0).then_some(total_chapters);
+        let metadata = BookMetadata::from_online_tracked(
+            input.name,
+            &input.author,
+            input.intro,
+            input.kind.as_deref(),
+            total_chapters,
+        )?;
 
-        let book = Book::with_id(
+        let book = Book::new(
             book_id,
             managed_lib.id,
             BookFormat::Epub,
@@ -385,12 +372,12 @@ impl BookOnlineService {
         let new_total = manifest.chapters.len() as u32;
         let new_cached = manifest.chapters.iter().filter(|c| c.cached).count() as u32;
         let new_last = manifest.chapters.last().map(|c| c.title.clone());
-        let latest_dirty = latest_book.record_tracked_toc_refresh(
+        let latest_dirty = latest_book.sync_tracked(crate::domain::book::TrackedSync::TocRefresh {
             effective_toc_url,
-            new_last.clone(),
+            new_last_chapter: new_last.clone(),
             new_cached,
             new_total,
-        );
+        });
         self.catalog.save_book_raw(&latest_book).await?;
 
         Ok(TrackedTocResponseDto {
@@ -556,7 +543,10 @@ impl BookOnlineService {
 
             let (sync_gen, should_flush_now) = self.bump_sync_gen(book_id, 1);
 
-            latest_book.record_tracked_chapter_cached(new_cached, new_total);
+            latest_book.sync_tracked(crate::domain::book::TrackedSync::ChapterCached {
+                new_cached,
+                new_total,
+            });
             self.catalog.save_book_raw(&latest_book).await?;
 
             (new_cached, new_total, sync_gen, should_flush_now)

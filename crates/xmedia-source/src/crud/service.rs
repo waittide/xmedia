@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
@@ -17,11 +17,11 @@ use super::dto::{
 };
 use super::helpers::{
     ParsedSourceSummaryMeta, SourceRecordSnapshot, build_source_summary, compute_reorder_targets,
-    dedup_preserve_order_uuids, format_export_batch_json, get_or_insert_weak_lock,
-    merge_login_info_preserving_masked, merge_runtime_state_with_base, parse_json_batch,
-    sync_raw_json_fields,
+    dedup_preserve_order_uuids, format_export_batch_json, merge_login_info_preserving_masked,
+    merge_runtime_state_with_base, parse_json_batch, sync_raw_json_fields,
 };
 use super::repository::{SourceMetadataUpdate, SourceRecord, SourceRepository};
+use crate::concurrency::{AsyncLockMap, weak_lock};
 use crate::model::{SourceCallError, SourceCallOutput, SourceRuntimeState};
 
 /// Adapter connecting a domain-specific rule specification (`LegadoBookSource`, `ComicSourceSpec`,
@@ -58,7 +58,7 @@ pub trait SourceSpecAdapter: DeserializeOwned + Send + Sync + 'static {
 pub struct SourceCrudService<Spec: SourceSpecAdapter> {
     repo: Arc<dyn SourceRepository>,
     seed_import_lock: tokio::sync::Mutex<()>,
-    state_locks: std::sync::Mutex<HashMap<Uuid, Weak<tokio::sync::Mutex<()>>>>,
+    state_locks: AsyncLockMap<Uuid>,
     _marker: PhantomData<fn() -> Spec>,
 }
 
@@ -67,17 +67,36 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         Self {
             repo,
             seed_import_lock: tokio::sync::Mutex::new(()),
-            state_locks: std::sync::Mutex::new(HashMap::new()),
+            state_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             _marker: PhantomData,
         }
     }
 
-    pub fn repository(&self) -> &Arc<dyn SourceRepository> {
-        &self.repo
+    pub fn state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+        weak_lock(&self.state_locks, id)
     }
 
-    pub fn state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
-        get_or_insert_weak_lock(&self.state_locks, id)
+    /// Loads candidate sources for search/browse ordered by weight desc then name asc.
+    pub async fn select_sources(
+        &self,
+        actor: &User,
+        source_ids: Option<&[Uuid]>,
+    ) -> DomainResult<Vec<SourceRecord>> {
+        let mut sources = self.repo.list_all().await?;
+        let is_admin = actor.role.is_admin();
+        if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
+            sources.retain(|s| filter_ids.contains(&s.id) && (is_admin || s.enabled));
+        } else {
+            sources.retain(|s| s.enabled);
+        }
+        if sources.is_empty() {
+            return Err(DomainError::Validation(format!(
+                "没有可用的已启用{}",
+                Spec::ENTITY_LABEL
+            )));
+        }
+        sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+        Ok(sources)
     }
 
     pub fn record_to_summary(rec: &SourceRecord, is_admin: bool) -> SourceSummaryDto {
@@ -581,11 +600,8 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             source: Self::record_to_summary(&refreshed, true),
         })
     }
-}
 
-#[async_trait]
-impl<Spec: SourceSpecAdapter> OnlineSourceDirectory for SourceCrudService<Spec> {
-    async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
+    async fn directory_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
         let rows = self.repo.list_all().await?;
         Ok(rows
             .into_iter()
@@ -601,10 +617,21 @@ impl<Spec: SourceSpecAdapter> OnlineSourceDirectory for SourceCrudService<Spec> 
             .collect())
     }
 
-    async fn find_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
+    async fn directory_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
         Ok(self.repo.find_by_id(id).await?.map(|r| OnlineSourceInfo {
             name: r.name,
             enabled: r.enabled,
         }))
+    }
+}
+
+#[async_trait]
+impl<Spec: SourceSpecAdapter> OnlineSourceDirectory for SourceCrudService<Spec> {
+    async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
+        self.directory_sources().await
+    }
+
+    async fn find_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
+        self.directory_source(id).await
     }
 }

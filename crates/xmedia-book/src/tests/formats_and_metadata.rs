@@ -201,7 +201,13 @@ async fn setup_test_book_app() -> (
         })
         .await
         .unwrap();
-    let admin_user = auth.authenticate_jwt(&session.token).await.unwrap();
+    let admin_user = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let state = BookHttpState::new(auth, library_svc.clone(), book_services);
     let app = Router::new()

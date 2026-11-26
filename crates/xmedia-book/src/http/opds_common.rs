@@ -184,11 +184,7 @@ pub(crate) async fn query_feed_recent(
     state: &BookHttpState,
     actor: &User,
 ) -> ApiResult<OpdsAcquisitionData> {
-    let items = state
-        .services
-        .reading
-        .list_recent_books(actor, 50, &state.services.catalog)
-        .await?;
+    let items = state.services.reading.list_recent_books(actor, 50).await?;
     let total = items.len() as u64;
     Ok(OpdsAcquisitionData {
         feed_id: "urn:xmedia:book:opds:v1:recent".into(),

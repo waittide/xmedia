@@ -92,7 +92,7 @@ impl BookSummaryDto {
             library_id: book.library_id,
             library_name,
             format: book.format,
-            is_managed: book.source.is_managed(),
+            is_managed: book.source.storage_key().is_some(),
             file_size: book.file_size,
             has_cover: book.cover_key.is_some(),
             cover_mime: book

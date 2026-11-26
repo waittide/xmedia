@@ -2,7 +2,7 @@ use super::*;
 use crate::application::auth::AuthService;
 use crate::application::bindings::MediaBindingService;
 use crate::application::dto::{CreateUserInput, SetupAdminInput};
-use crate::domain::repository::UserRepository;
+use crate::domain::repository::{UserLookup, UserRepository};
 use crate::domain::user::UserRole;
 use crate::infra::persistence::models::{LibraryModel, UserModel};
 use crate::infra::persistence::repositories::{
@@ -202,27 +202,27 @@ async fn continue_and_favorite_views_filter_and_sort() {
         .await
         .unwrap();
 
-    svc.update_progress(
+    svc.update(
         user,
         a.id,
-        OnlineItemProgress {
+        OnlineItemMutation::Progress(Some(OnlineItemProgress {
             unit_index: Some(1),
             total_units: Some(4),
             position: 5.0,
             duration: Some(10.0),
             ..Default::default()
-        },
+        })),
     )
     .await
     .unwrap();
     let b_progress = svc
-        .update_progress(
+        .update(
             user,
             b.id,
-            OnlineItemProgress {
+            OnlineItemMutation::Progress(Some(OnlineItemProgress {
                 position: 1.0,
                 ..Default::default()
-            },
+            })),
         )
         .await
         .unwrap();
@@ -230,13 +230,13 @@ async fn continue_and_favorite_views_filter_and_sort() {
         b_progress.availability,
         OnlineItemAvailability::SourceDisabled
     );
-    svc.update_progress(
+    svc.update(
         user,
         c.id,
-        OnlineItemProgress {
+        OnlineItemMutation::Progress(Some(OnlineItemProgress {
             completed: true,
             ..Default::default()
-        },
+        })),
     )
     .await
     .unwrap();
@@ -259,13 +259,13 @@ async fn continue_and_favorite_views_filter_and_sort() {
     );
     assert_eq!(cont.items[1].progress_ratio, Some(0.375));
 
-    svc.patch(
+    svc.update(
         user,
         c.id,
-        PatchOnlineItemInput {
+        OnlineItemMutation::Metadata(PatchOnlineItemInput {
             favorite: Some(true),
             ..Default::default()
-        },
+        }),
     )
     .await
     .unwrap();
@@ -308,7 +308,10 @@ async fn continue_and_favorite_views_filter_and_sort() {
         .unwrap();
     assert_eq!(searched.total, 1);
 
-    let cleared = svc.clear_progress(user, a.id).await.unwrap();
+    let cleared = svc
+        .update(user, a.id, OnlineItemMutation::Progress(None))
+        .await
+        .unwrap();
     assert!(cleared.progress.is_none());
     assert!(cleared.progress_at.is_none());
 }
@@ -402,8 +405,7 @@ async fn auth_service_delete_user_purges_online_items_and_bindings_via_ports() {
         Arc::new(JwtTokenService::new("purge-test-secret", 3600)),
         Arc::new(RwLock::new(HashMap::new())),
     )
-    .with_online_items(online_repo.clone())
-    .with_bindings(bindings.clone());
+    .with_cleanup(None, Some(online_repo.clone()), Some(bindings.clone()));
 
     let admin_sess = auth
         .setup_initial_admin(SetupAdminInput {
@@ -414,7 +416,7 @@ async fn auth_service_delete_user_purges_online_items_and_bindings_via_ports() {
         .await
         .unwrap();
     let admin = users_repo
-        .find_by_id(admin_sess.user.id)
+        .find(UserLookup::Id(admin_sess.user.id))
         .await
         .unwrap()
         .unwrap();

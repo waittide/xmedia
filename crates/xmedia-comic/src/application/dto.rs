@@ -7,9 +7,7 @@ use xmedia_core::domain::user::{ComicFitMode, ComicReaderMode};
 
 use crate::domain::chapter::{Chapter, ChapterKind, ChapterSourceKind};
 use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
-use crate::domain::reading::{
-    ComicBookmark, ComicShelf, ContinueReadingPointer, SeriesReaderPref, format_chapter_number,
-};
+use crate::domain::reading::{ComicBookmark, ComicShelf, ContinueReadingPointer, SeriesReaderPref};
 use crate::domain::series::{ReadingDirection, Series, SeriesStatus};
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -131,13 +129,16 @@ impl ChapterItemDto {
             .cover_path
             .as_ref()
             .map(|key| format!("/api/v1/comic/covers/{key}"));
-        let number_label = format_chapter_number(ch.number);
-        let source_kind = ch.source_kind();
-        let online_tracking = ch.online_tracking().map(|info| OnlineTrackedChapterDto {
-            source_id: info.source_id,
-            chapter_url: info.chapter_url.clone(),
-            cached: info.cached_archive_path.is_some(),
-        });
+        let number_label = ch.number_label();
+        let source_kind = ChapterSourceKind::from(&ch.source);
+        let online_tracking = ch
+            .source
+            .online_tracking()
+            .map(|info| OnlineTrackedChapterDto {
+                source_id: info.source_id,
+                chapter_url: info.chapter_url.clone(),
+                cached: info.cached_archive_path.is_some(),
+            });
         Self {
             id: ch.id,
             series_id: ch.series_id,

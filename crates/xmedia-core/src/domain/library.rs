@@ -1,4 +1,7 @@
 #[cfg(feature = "server")]
+use std::path::{Path, PathBuf};
+
+#[cfg(feature = "server")]
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +29,8 @@ impl MediaKind {
         }
     }
 
-    pub fn default_managed_name(self) -> &'static str {
+    #[cfg(feature = "server")]
+    fn default_managed_name(self) -> &'static str {
         match self {
             Self::Book => "Uploaded Books",
             Self::Comic => "Uploaded Comics",
@@ -100,6 +104,22 @@ impl ScanStatus {
 }
 
 #[cfg(feature = "server")]
+fn paths_overlap(a: &Path, b: &Path) -> bool {
+    a == b || a.starts_with(b) || b.starts_with(a)
+}
+
+#[cfg(feature = "server")]
+fn verify_mount_prefixes(canonical_path: &Path, prefixes: &[PathBuf]) -> DomainResult<()> {
+    if prefixes.is_empty() || prefixes.iter().any(|p| canonical_path.starts_with(p)) {
+        Ok(())
+    } else {
+        Err(DomainError::Forbidden(
+            "mount path is outside the configured allowed mount prefixes".into(),
+        ))
+    }
+}
+
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Library {
     pub id: LibraryId,
@@ -114,8 +134,8 @@ pub struct Library {
 
 #[cfg(feature = "server")]
 impl Library {
-    pub fn new_managed(media_kind: MediaKind, name: impl Into<String>) -> DomainResult<Self> {
-        let name = Self::validate_name(name.into())?;
+    pub fn new_managed(media_kind: MediaKind) -> DomainResult<Self> {
+        let name = Self::validate_name(media_kind.default_managed_name().to_string())?;
         let now = Timestamp::now();
         Ok(Self {
             id: LibraryId::new(),
@@ -132,10 +152,14 @@ impl Library {
     pub fn new_local_mount(
         media_kind: MediaKind,
         name: impl Into<String>,
-        root_path: impl Into<String>,
+        canonical_path: &Path,
+        allowed_prefixes: &[PathBuf],
+        data_dir: Option<&Path>,
+        existing_mounts: &[(String, PathBuf)],
     ) -> DomainResult<Self> {
         let name = Self::validate_name(name.into())?;
-        let root_path = root_path.into().trim().to_string();
+        Self::check_mount_overlap(canonical_path, allowed_prefixes, data_dir, existing_mounts)?;
+        let root_path = canonical_path.to_string_lossy().trim().to_string();
         if root_path.is_empty() {
             return Err(DomainError::Validation(
                 "library root path cannot be empty".into(),
@@ -152,6 +176,30 @@ impl Library {
             created_at: now,
             updated_at: now,
         })
+    }
+
+    fn check_mount_overlap(
+        canonical_path: &Path,
+        allowed_prefixes: &[PathBuf],
+        data_dir: Option<&Path>,
+        existing_mounts: &[(String, PathBuf)],
+    ) -> DomainResult<()> {
+        verify_mount_prefixes(canonical_path, allowed_prefixes)?;
+        if let Some(data) = data_dir
+            && paths_overlap(canonical_path, data)
+        {
+            return Err(DomainError::Validation(
+                "mount path cannot overlap with xmedia data directory".into(),
+            ));
+        }
+        for (existing_name, existing_path) in existing_mounts {
+            if paths_overlap(canonical_path, existing_path) {
+                return Err(DomainError::Validation(format!(
+                    "mount path overlaps with existing library '{existing_name}'"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn validate_name(raw: String) -> DomainResult<String> {
@@ -171,28 +219,13 @@ impl Library {
         Ok(())
     }
 
-    pub fn mark_scanning(&mut self, scanned: u64, total: Option<u64>) {
-        self.scan_status = ScanStatus::Scanning { scanned, total };
-        self.updated_at = Timestamp::now();
-    }
-
-    pub fn mark_scan_completed(&mut self, scanned: u64, added: u64, updated: u64, missing: u64) {
+    pub fn set_scan_status(&mut self, status: ScanStatus) {
         let now = Timestamp::now();
-        self.scan_status = ScanStatus::Completed {
-            scanned,
-            added,
-            updated,
-            missing,
-        };
-        self.last_scanned_at = Some(now);
+        if matches!(status, ScanStatus::Completed { .. }) {
+            self.last_scanned_at = Some(now);
+        }
+        self.scan_status = status;
         self.updated_at = now;
-    }
-
-    pub fn mark_scan_failed(&mut self, message: impl Into<String>) {
-        self.scan_status = ScanStatus::Failed {
-            message: message.into(),
-        };
-        self.updated_at = Timestamp::now();
     }
 
     pub fn ensure_scannable(&self) -> DomainResult<()> {
@@ -220,7 +253,9 @@ impl Library {
 
     pub fn recover_interrupted_scan(&mut self, reason: impl Into<String>) -> bool {
         if self.scan_status.is_scanning() {
-            self.mark_scan_failed(reason);
+            self.set_scan_status(ScanStatus::Failed {
+                message: reason.into(),
+            });
             true
         } else {
             false

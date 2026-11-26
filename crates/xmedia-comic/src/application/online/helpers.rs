@@ -1,6 +1,6 @@
 use uuid::Uuid;
 pub(super) use xmedia_source::concurrency::{
-    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
+    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, weak_lock,
 };
 pub(super) use xmedia_source::rate_limit::{RateLimiterMap, get_or_insert_rate_limiter};
 

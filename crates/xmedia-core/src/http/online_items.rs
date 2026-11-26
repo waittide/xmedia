@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::application::auth::AuthService;
 use crate::application::online_items::{
-    LookupOnlineItemsInput, OnlineItemDto, OnlineItemListDto, OnlineItemQuery,
+    LookupOnlineItemsInput, OnlineItemDto, OnlineItemListDto, OnlineItemMutation, OnlineItemQuery,
     OnlineLibraryService, PatchOnlineItemInput, UpsertOnlineItemInput,
 };
 use crate::domain::online_item::OnlineItemProgress;
@@ -80,7 +80,10 @@ async fn patch_item(
     Path(id): Path<Uuid>,
     Json(input): Json<PatchOnlineItemInput>,
 ) -> ApiResult<Json<OnlineItemDto>> {
-    Ok(Json(svc.patch(user.id, id, input).await?))
+    Ok(Json(
+        svc.update(user.id, id, OnlineItemMutation::Metadata(input))
+            .await?,
+    ))
 }
 
 async fn delete_item(
@@ -98,7 +101,10 @@ async fn update_progress(
     Path(id): Path<Uuid>,
     Json(input): Json<OnlineItemProgress>,
 ) -> ApiResult<Json<OnlineItemDto>> {
-    Ok(Json(svc.update_progress(user.id, id, input).await?))
+    Ok(Json(
+        svc.update(user.id, id, OnlineItemMutation::Progress(Some(input)))
+            .await?,
+    ))
 }
 
 async fn clear_progress(
@@ -106,5 +112,8 @@ async fn clear_progress(
     WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OnlineItemDto>> {
-    Ok(Json(svc.clear_progress(user.id, id).await?))
+    Ok(Json(
+        svc.update(user.id, id, OnlineItemMutation::Progress(None))
+            .await?,
+    ))
 }

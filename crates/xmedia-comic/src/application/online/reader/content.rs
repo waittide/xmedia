@@ -17,7 +17,7 @@ use crate::application::online::{
     ComicOnlineService, READER_OP_TIMEOUT, SEARCH_PER_SOURCE_TIMEOUT,
 };
 use crate::domain::online::{
-    ComicChapterJsContext, ComicJsContext, ComicSourceSpec, parse_reading_direction_opt,
+    ComicChapterJsContext, ComicJsContext, ComicSourceSpec, ComicSourceTestMode,
 };
 
 impl ComicOnlineService {
@@ -56,11 +56,7 @@ impl ComicOnlineService {
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let parsed_for_detail = parsed.clone();
-        let has_toc_rule = parsed
-            .rule_toc
-            .as_ref()
-            .and_then(|t| t.chapter_list.as_deref())
-            .is_some_and(|s| !s.trim().is_empty());
+        let has_toc_rule = parsed.supports_stage(ComicSourceTestMode::Chapters);
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
         let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
@@ -98,7 +94,7 @@ impl ComicOnlineService {
                         reading_direction: out
                             .data
                             .reading_direction
-                            .map(|d| d.as_str().to_string()),
+                            .map(|d| d.as_ref().to_string()),
                         dur_chapter_index: 0,
                         dur_chapter_title: String::new(),
                         custom_variable: String::new(),
@@ -342,7 +338,7 @@ impl ComicOnlineService {
         let reading_direction = comic_ctx
             .reading_direction
             .as_deref()
-            .and_then(parse_reading_direction_opt)
+            .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| parsed.effective_reading_direction());
 
         let engine = self.engine.clone();

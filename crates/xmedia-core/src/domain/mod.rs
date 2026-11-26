@@ -10,4 +10,3 @@ pub mod preferences;
 pub mod repository;
 #[cfg(feature = "server")]
 pub mod user;
-pub mod xml;

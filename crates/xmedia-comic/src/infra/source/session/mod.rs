@@ -6,7 +6,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use xmedia_source::http::{HttpFetchResult, LegadoHttpClient};
+use xmedia_source::http::{
+    HttpFetchResult, LegadoHttpClient, resolve_relative_url_preserving_options,
+};
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::RuleValue;
 
@@ -17,7 +19,6 @@ use self::html_pages::{
     segment_page_content,
 };
 use self::pagination::{PaginationCycleGuard, is_placeholder_or_fragment_url};
-use super::engine::resolve_relative_url_preserving_options;
 use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, ExecutionDiagnostics,
     OnlineComicChapter, SourceMetadata, SourceRuntimeState,
@@ -122,7 +123,6 @@ impl ReusableComicContext {
             inner,
             op_timeout,
             op_deadline: Instant::now() + op_timeout,
-            cancel_flag,
         }
     }
 }
@@ -132,7 +132,6 @@ pub struct ReusableComicSession {
     pub(super) inner: ReusableSourceSession,
     pub(super) op_timeout: Duration,
     pub(super) op_deadline: Instant,
-    pub(super) cancel_flag: Arc<AtomicBool>,
 }
 
 impl ReusableComicSession {
@@ -141,25 +140,14 @@ impl ReusableComicSession {
     }
 
     pub(super) fn http_fetch(&self, raw_url: &str) -> Result<HttpFetchResult, String> {
-        self.check_active()?;
-        let remaining = self.op_deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("执行超过单次操作总超时上限 (interrupted)".into());
-        }
         const MIN_RETRY_OP_BUDGET: Duration = Duration::from_secs(8);
         const MIN_RETRY_REMAINING: Duration = Duration::from_secs(7);
+        let remaining = self.op_deadline.saturating_duration_since(Instant::now());
         if self.op_timeout >= MIN_RETRY_OP_BUDGET && remaining >= MIN_RETRY_REMAINING {
-            self.inner.http().fetch_with_timeout_resilient(
-                raw_url,
-                &self.source.source_url,
-                Some(remaining),
-                1,
-                Some(&self.cancel_flag),
-            )
-        } else {
             self.inner
-                .http()
-                .fetch_with_timeout(raw_url, &self.source.source_url, Some(remaining))
+                .fetch_resilient(raw_url, &self.source.source_url, 1)
+        } else {
+            self.inner.fetch(raw_url, &self.source.source_url)
         }
     }
 

@@ -127,7 +127,7 @@ impl BookParserPort for CompositeBookParser {
                 Some(generate_placeholder_svg_cover(
                     &metadata.title,
                     metadata.authors.first().map(String::as_str),
-                    format.badge_label(),
+                    &format.as_ref().to_ascii_uppercase(),
                 ))
             });
 

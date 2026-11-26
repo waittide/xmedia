@@ -20,13 +20,7 @@ pub(super) async fn home_overview(
     State(state): State<BookHttpState>,
     WebAuth(actor): WebAuth,
 ) -> ApiResult<Json<BookHomeOverviewDto>> {
-    Ok(Json(
-        state
-            .services
-            .catalog
-            .home_overview(&actor, &state.services.reading)
-            .await?,
-    ))
+    Ok(Json(state.services.reading.home_overview(&actor).await?))
 }
 
 pub(super) async fn list_recent_books(
@@ -37,7 +31,7 @@ pub(super) async fn list_recent_books(
     let items = state
         .services
         .reading
-        .list_recent_books(&actor, q.limit.unwrap_or(20), &state.services.catalog)
+        .list_recent_books(&actor, q.limit.unwrap_or(20))
         .await?;
     Ok(Json(items))
 }

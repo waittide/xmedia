@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Seek};
+use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::RwLock;
 use std::time::UNIX_EPOCH;
@@ -10,17 +10,9 @@ use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::stream::open_file_range_stream_spec;
 use xmedia_formats::FormatError;
-use xmedia_formats::book::BookFormatExt;
-use xmedia_formats::book::opf::parse_opf_xml;
-use xmedia_formats::comic::comicinfo::{
-    ComicInfoMeta, apply_epub_opf_into_comic_meta, extract_existing_comic_info_bytes,
-    parse_comic_info_pages_map, parse_comic_info_xml,
-};
-use xmedia_formats::comic::filename::natural_page_entry_cmp;
 use xmedia_formats::comic::{
-    ComicFormatExt, ProbedComicPage, is_comic_image_entry, probe_comic_pages,
+    ComicFormatExt, ProbedComicPage, inspect_comic_path, inspect_comic_reader,
 };
-use xmedia_formats::common::probe_reader_dimensions;
 use zip::ZipArchive;
 
 use crate::application::ports::{
@@ -165,12 +157,13 @@ impl ArchiveReaderPort for PureRustArchiveReader {
         tokio::task::spawn_blocking(move || {
             let file_size = owned.len() as u64;
             let file_hash = blake3::hash(&owned).to_hex().to_string();
-            let cursor = Cursor::new(owned);
-            let (pages, _, comic_info) = inspect_zip_reader(cursor, is_epub)?;
+            let inspected =
+                inspect_comic_reader(Cursor::new(owned), is_epub).map_err(map_format_error)?;
+            let (pages, _) = probed_to_descriptors(inspected.pages);
             Ok(ArchiveInspection {
                 page_count: pages.len() as u32,
                 pages,
-                comic_info,
+                comic_info: inspected.comic_info.map(ComicInfoMetadata::from),
                 file_size,
                 file_hash,
             })
@@ -355,201 +348,20 @@ pub fn fast_file_fingerprint(path: &Path) -> DomainResult<(u64, String)> {
 }
 
 fn inspect_archive_file(path: &Path) -> DomainResult<(ArchiveInspection, Vec<PageEntryRef>)> {
-    let fmt = ensure_zip_based_format(path)?;
+    ensure_zip_based_format(path)?;
     let (file_size, file_hash) = fast_file_fingerprint(path)?;
-    if fmt == Some(ComicFormatExt::Epub) {
-        let file = File::open(path).map_err(|e| {
-            DomainError::Storage(format!("failed to open archive '{}': {e}", path.display()))
-        })?;
-        let (pages, refs, comic_info) = inspect_zip_reader(file, true)?;
-        return Ok((
-            ArchiveInspection {
-                page_count: pages.len() as u32,
-                pages,
-                comic_info,
-                file_size,
-                file_hash,
-            },
-            refs,
-        ));
-    }
-
-    let probed = probe_comic_pages(path).map_err(map_format_error)?;
-    let comic_info = extract_existing_comic_info_bytes(path)
-        .and_then(|xml| parse_comic_info_xml(&xml))
-        .map(ComicInfoMetadata::from);
-    let (pages, refs) = probed_to_descriptors(probed);
+    let inspected = inspect_comic_path(path).map_err(map_format_error)?;
+    let (pages, refs) = probed_to_descriptors(inspected.pages);
     Ok((
         ArchiveInspection {
             page_count: pages.len() as u32,
             pages,
-            comic_info,
+            comic_info: inspected.comic_info.map(ComicInfoMetadata::from),
             file_size,
             file_hash,
         },
         refs,
     ))
-}
-
-#[allow(clippy::type_complexity)]
-fn inspect_zip_reader<R: Read + Seek>(
-    reader: R,
-    is_epub: bool,
-) -> DomainResult<(
-    Vec<PageDescriptor>,
-    Vec<PageEntryRef>,
-    Option<ComicInfoMetadata>,
-)> {
-    let mut archive = ZipArchive::new(reader)
-        .map_err(|e| DomainError::Validation(format!("invalid zip/cbz/epub archive: {e}")))?;
-
-    const MAX_ZIP_ENTRIES: usize = 65_536;
-    const MAX_XML_ENTRY_BYTES: u64 = 4 * 1024 * 1024;
-
-    if archive.len() > MAX_ZIP_ENTRIES {
-        return Err(DomainError::Validation(format!(
-            "comic archive exceeds maximum entry count ({MAX_ZIP_ENTRIES})"
-        )));
-    }
-
-    let mut image_entries: Vec<(String, u64)> = Vec::new();
-    let mut comic_info_entry: Option<String> = None;
-    let mut opf_candidates: Vec<String> = Vec::new();
-
-    for i in 0..archive.len() {
-        let Ok(entry) = archive.by_index_raw(i) else {
-            continue;
-        };
-        if entry.is_dir() {
-            continue;
-        }
-        let Ok(name_cow) = entry.name() else {
-            continue;
-        };
-        let name = name_cow.into_owned();
-        let lower = name.to_ascii_lowercase();
-        let base = lower.rsplit('/').next().unwrap_or(&lower);
-        if base == "comicinfo.xml" {
-            comic_info_entry = Some(name);
-            continue;
-        }
-        if is_epub && lower.ends_with(".opf") {
-            opf_candidates.push(name);
-            continue;
-        }
-        if is_comic_image_entry(&name) {
-            image_entries.push((name, entry.size()));
-        }
-    }
-
-    let mut pages_map = HashMap::new();
-    let mut comic_info_meta: Option<ComicInfoMeta> = None;
-    if let Some(ci_name) = comic_info_entry
-        && let Ok(entry) = archive.by_name(&ci_name)
-    {
-        let mut xml = Vec::new();
-        if entry
-            .take(MAX_XML_ENTRY_BYTES + 1)
-            .read_to_end(&mut xml)
-            .is_ok()
-            && (xml.len() as u64) <= MAX_XML_ENTRY_BYTES
-        {
-            pages_map = parse_comic_info_pages_map(&xml);
-            comic_info_meta = parse_comic_info_xml(&xml);
-        }
-    }
-
-    let mut ordered_by_opf = false;
-    if is_epub
-        && let Some(opf_path) = opf_candidates.first()
-        && let Ok(opf_entry) = archive.by_name(opf_path)
-    {
-        let mut opf_bytes = Vec::new();
-        if opf_entry
-            .take(MAX_XML_ENTRY_BYTES + 1)
-            .read_to_end(&mut opf_bytes)
-            .is_ok()
-            && (opf_bytes.len() as u64) <= MAX_XML_ENTRY_BYTES
-        {
-            if comic_info_meta.is_none() {
-                let mut fallback = ComicInfoMeta::default();
-                apply_epub_opf_into_comic_meta(&opf_bytes, &mut fallback);
-                if fallback != ComicInfoMeta::default() {
-                    comic_info_meta = Some(fallback);
-                }
-            }
-            let ordered_imgs = ordered_epub_manifest_images(&opf_bytes, opf_path);
-            if !ordered_imgs.is_empty() {
-                let sizes: HashMap<String, u64> = image_entries.iter().cloned().collect();
-                let filtered: Vec<(String, u64)> = ordered_imgs
-                    .into_iter()
-                    .filter_map(|p| sizes.get(&p).map(|&sz| (p, sz)))
-                    .collect();
-                if !filtered.is_empty() {
-                    image_entries = filtered;
-                    ordered_by_opf = true;
-                }
-            }
-        }
-    }
-    if !ordered_by_opf {
-        image_entries.sort_by(|a, b| natural_page_entry_cmp(&a.0, &b.0));
-    }
-
-    let mut pages = Vec::with_capacity(image_entries.len());
-    let mut refs = Vec::with_capacity(image_entries.len());
-    for (idx, (entry_name, file_size)) in image_entries.into_iter().enumerate() {
-        let existing = pages_map.get(&idx);
-        let (width, height) = if let Some(ex) = existing
-            && ex.width.is_some()
-            && ex.height.is_some()
-        {
-            (ex.width, ex.height)
-        } else if let Ok(entry) = archive.by_name(&entry_name) {
-            probe_reader_dimensions(entry, file_size)
-                .map_or((None, None), |(w, h)| (Some(w), Some(h)))
-        } else {
-            (None, None)
-        };
-        let mime_type = guess_image_mime(&entry_name);
-        pages.push(PageDescriptor {
-            page_number: (idx + 1) as u32,
-            entry_name: entry_name.clone(),
-            mime_type: mime_type.clone(),
-            file_size,
-            width,
-            height,
-            page_type: existing.and_then(|e| e.page_type.clone()),
-            double_page: existing.and_then(|e| e.double_page),
-        });
-        refs.push(PageEntryRef {
-            entry_name,
-            mime_type,
-        });
-    }
-
-    Ok((pages, refs, comic_info_meta.map(ComicInfoMetadata::from)))
-}
-
-fn ordered_epub_manifest_images(opf_bytes: &[u8], opf_path: &str) -> Vec<String> {
-    let base_dir = opf_path
-        .rsplit_once('/')
-        .map(|(dir, _)| format!("{dir}/"))
-        .unwrap_or_default();
-    let opf = parse_opf_xml(opf_bytes, BookFormatExt::Epub, "");
-    let mut seen = HashSet::new();
-    let mut images = Vec::new();
-    for item in opf.manifest {
-        let is_img = item.media_type.starts_with("image/") || is_comic_image_entry(&item.href);
-        if is_img {
-            let full = format!("{base_dir}{}", item.href.trim_start_matches("./"));
-            if seen.insert(full.clone()) {
-                images.push(full);
-            }
-        }
-    }
-    images.sort_by(|a, b| natural_page_entry_cmp(a, b));
-    images
 }
 
 fn inspect_image_directory(dir: &Path) -> DomainResult<(ArchiveInspection, Vec<PageEntryRef>)> {
@@ -559,10 +371,9 @@ fn inspect_image_directory(dir: &Path) -> DomainResult<(ArchiveInspection, Vec<P
             dir.display()
         )));
     }
-    let probed = probe_comic_pages(dir).map_err(map_format_error)?;
-    let comic_info = extract_existing_comic_info_bytes(dir)
-        .and_then(|xml| parse_comic_info_xml(&xml))
-        .map(ComicInfoMetadata::from);
+    let inspected = inspect_comic_path(dir).map_err(map_format_error)?;
+    let probed = inspected.pages;
+    let comic_info = inspected.comic_info.map(ComicInfoMetadata::from);
 
     let mut total_size = 0_u64;
     let mut hasher = blake3::Hasher::new();

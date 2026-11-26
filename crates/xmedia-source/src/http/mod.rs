@@ -19,7 +19,7 @@ pub use client::{
 };
 pub use proxy::{
     filter_header_map_for_target_origin, filter_headers_for_target_origin, has_origin_affinity,
-    is_sensitive_origin_header, registrable_domain,
+    is_sensitive_origin_header, registrable_domain, strip_cross_origin_headers,
 };
 pub use ssrf::{
     SsrfSafeResolver, has_ssrf_io_error_in_chain, is_restricted_hostname, is_restricted_ip,

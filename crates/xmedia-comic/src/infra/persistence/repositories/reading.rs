@@ -9,7 +9,9 @@ use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
 use crate::domain::reading::{
     ChapterProgress, ComicBookmark, ComicShelf, FavoriteSeries, SeriesReaderPref,
 };
-use crate::domain::repository::ComicReadingRepository;
+use crate::domain::repository::{
+    ComicProgressScope, ComicReadingDeleteScope, ComicReadingMutation, ComicReadingRepository,
+};
 
 use super::super::models::{
     ComicBookmarkModel, ComicChapterProgressModel, ComicFavoriteSeriesModel,
@@ -74,246 +76,40 @@ impl ToastyComicReadingRepository {
 
 #[async_trait]
 impl ComicReadingRepository for ToastyComicReadingRepository {
-    async fn get_chapter_progress(
+    async fn query_progress(
         &self,
         user_id: UserId,
-        chapter_id: ChapterId,
-    ) -> DomainResult<Option<ChapterProgress>> {
-        let mut db = self.db.clone();
-        let key = Self::ch_key(user_id, chapter_id);
-        let row = ComicChapterProgressModel::filter_by_composite_key(&key)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.map(Self::progress_to_domain))
-    }
-
-    async fn list_series_progress(
-        &self,
-        user_id: UserId,
-        series_id: SeriesId,
+        scope: ComicProgressScope,
     ) -> DomainResult<Vec<ChapterProgress>> {
         let mut db = self.db.clone();
-        let rows = ComicChapterProgressModel::filter_by_user_id(user_id.0)
-            .filter(
-                ComicChapterProgressModel::fields()
-                    .series_id()
-                    .eq(series_id.0),
-            )
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::progress_to_domain).collect())
-    }
-
-    async fn list_user_progress(&self, user_id: UserId) -> DomainResult<Vec<ChapterProgress>> {
-        let mut db = self.db.clone();
-        let rows = ComicChapterProgressModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::progress_to_domain).collect())
-    }
-
-    async fn save_chapter_progress(&self, p: &ChapterProgress) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        let key = Self::ch_key(p.user_id, p.chapter_id);
-        let existing = ComicChapterProgressModel::filter_by_composite_key(&key)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-
-        if let Some(mut record) = existing {
-            record
-                .update()
-                .current_page(i64::from(p.current_page))
-                .total_pages(i64::from(p.total_pages))
-                .is_completed(p.is_completed)
-                .updated_at(p.updated_at)
+        let rows = match scope {
+            ComicProgressScope::Chapter(chapter_id) => {
+                let key = Self::ch_key(user_id, chapter_id);
+                ComicChapterProgressModel::filter_by_composite_key(&key)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                    .into_iter()
+                    .collect()
+            }
+            ComicProgressScope::Series(series_id) => {
+                ComicChapterProgressModel::filter_by_user_id(user_id.0)
+                    .filter(
+                        ComicChapterProgressModel::fields()
+                            .series_id()
+                            .eq(series_id.0),
+                    )
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            }
+            ComicProgressScope::All => ComicChapterProgressModel::filter_by_user_id(user_id.0)
                 .exec(&mut db)
                 .await
-                .map_err(db_err)?;
-        } else {
-            toasty::create!(ComicChapterProgressModel {
-                composite_key: key,
-                user_id: p.user_id.0,
-                series_id: p.series_id.0,
-                chapter_id: p.chapter_id.0,
-                current_page: i64::from(p.current_page),
-                total_pages: i64::from(p.total_pages),
-                is_completed: p.is_completed,
-                updated_at: p.updated_at,
-            })
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        }
-        Ok(())
-    }
-
-    async fn delete_chapter_progress(
-        &self,
-        user_id: UserId,
-        chapter_id: ChapterId,
-    ) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        let key = Self::ch_key(user_id, chapter_id);
-        ComicChapterProgressModel::filter_by_composite_key(&key)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn delete_by_chapter(&self, chapter_id: ChapterId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        ComicChapterProgressModel::filter_by_chapter_id(chapter_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicBookmarkModel::filter_by_chapter_id(chapter_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn delete_by_series(&self, series_id: SeriesId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        ComicChapterProgressModel::filter_by_series_id(series_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicSeriesReaderPrefModel::filter_by_series_id(series_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicFavoriteSeriesModel::filter_by_series_id(series_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicBookmarkModel::filter_by_series_id(series_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        for mut shelf in ComicShelfModel::all().exec(&mut db).await.map_err(db_err)? {
-            if shelf.series_ids.0.contains(&series_id.0) {
-                let filtered: Vec<Uuid> = shelf
-                    .series_ids
-                    .0
-                    .iter()
-                    .copied()
-                    .filter(|&id| id != series_id.0)
-                    .collect();
-                shelf
-                    .update()
-                    .series_ids(toasty::Json(filtered))
-                    .updated_at(Timestamp::now())
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        ComicChapterProgressModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicSeriesReaderPrefModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicFavoriteSeriesModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicShelfModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicBookmarkModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn delete_by_user_and_series(
-        &self,
-        user_id: UserId,
-        series_id: SeriesId,
-    ) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        let progs = ComicChapterProgressModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        for p in progs {
-            if p.series_id == series_id.0 {
-                p.delete().exec(&mut db).await.map_err(db_err)?;
-            }
-        }
-        let pref_key = Self::series_key(user_id, series_id);
-        ComicSeriesReaderPrefModel::filter_by_composite_key(&pref_key)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        ComicFavoriteSeriesModel::filter_by_composite_key(&pref_key)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        let bookmarks = ComicBookmarkModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        for bm in bookmarks {
-            if bm.series_id == series_id.0 {
-                bm.delete().exec(&mut db).await.map_err(db_err)?;
-            }
-        }
-        for mut shelf in ComicShelfModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            if shelf.series_ids.0.contains(&series_id.0) {
-                let filtered: Vec<Uuid> = shelf
-                    .series_ids
-                    .0
-                    .iter()
-                    .copied()
-                    .filter(|&id| id != series_id.0)
-                    .collect();
-                shelf
-                    .update()
-                    .series_ids(toasty::Json(filtered))
-                    .updated_at(Timestamp::now())
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
-            }
-        }
-        Ok(())
+                .map_err(db_err)?,
+        };
+        Ok(rows.into_iter().map(Self::progress_to_domain).collect())
     }
 
     async fn get_series_pref(
@@ -329,49 +125,6 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
             .await
             .map_err(db_err)?;
         Ok(row.map(|r| r.pref.0))
-    }
-
-    async fn save_series_pref(&self, pref: &SeriesReaderPref) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        let key = Self::series_key(pref.user_id, pref.series_id);
-        let existing = ComicSeriesReaderPrefModel::filter_by_composite_key(&key)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-
-        if let Some(mut record) = existing {
-            record
-                .update()
-                .pref(toasty::Json(pref.clone()))
-                .updated_at(pref.updated_at)
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
-        } else {
-            toasty::create!(ComicSeriesReaderPrefModel {
-                composite_key: key,
-                user_id: pref.user_id.0,
-                series_id: pref.series_id.0,
-                pref: toasty::Json(pref.clone()),
-                updated_at: pref.updated_at,
-            })
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        }
-        Ok(())
-    }
-
-    async fn is_favorite(&self, user_id: UserId, series_id: SeriesId) -> DomainResult<bool> {
-        let mut db = self.db.clone();
-        let key = Self::series_key(user_id, series_id);
-        let row = ComicFavoriteSeriesModel::filter_by_composite_key(&key)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.is_some())
     }
 
     async fn list_favorites(&self, user_id: UserId) -> DomainResult<Vec<FavoriteSeries>> {
@@ -391,162 +144,379 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
             .collect())
     }
 
-    async fn add_favorite(&self, fav: &FavoriteSeries) -> DomainResult<()> {
+    async fn query_shelves(
+        &self,
+        user_id: Option<UserId>,
+        shelf_id: Option<ComicShelfId>,
+    ) -> DomainResult<Vec<ComicShelf>> {
         let mut db = self.db.clone();
-        let key = Self::series_key(fav.user_id, fav.series_id);
-        if ComicFavoriteSeriesModel::filter_by_composite_key(&key)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-            .is_none()
-        {
-            toasty::create!(ComicFavoriteSeriesModel {
-                composite_key: key,
-                user_id: fav.user_id.0,
-                series_id: fav.series_id.0,
-                created_at: fav.created_at,
-            })
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        }
-        Ok(())
-    }
-
-    async fn remove_favorite(&self, user_id: UserId, series_id: SeriesId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        let key = Self::series_key(user_id, series_id);
-        ComicFavoriteSeriesModel::filter_by_composite_key(&key)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn find_shelf(&self, id: ComicShelfId) -> DomainResult<Option<ComicShelf>> {
-        let mut db = self.db.clone();
-        let row = ComicShelfModel::filter_by_id(id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.map(Self::shelf_to_domain))
-    }
-
-    async fn list_shelves(&self, user_id: UserId) -> DomainResult<Vec<ComicShelf>> {
-        let mut db = self.db.clone();
-        let mut rows = ComicShelfModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+        let mut rows = match (user_id, shelf_id) {
+            (Some(uid), Some(sid)) => ComicShelfModel::filter_by_id(sid.0)
+                .first()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                .into_iter()
+                .filter(|r| r.user_id == uid.0)
+                .collect(),
+            (None, Some(sid)) => ComicShelfModel::filter_by_id(sid.0)
+                .first()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                .into_iter()
+                .collect(),
+            (Some(uid), None) => ComicShelfModel::filter_by_user_id(uid.0)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?,
+            (None, None) => ComicShelfModel::all().exec(&mut db).await.map_err(db_err)?,
+        };
         rows.sort_by_key(|a| a.created_at);
         Ok(rows.into_iter().map(Self::shelf_to_domain).collect())
     }
 
-    async fn save_shelf(&self, shelf: &ComicShelf) -> DomainResult<()> {
+    async fn list_bookmarks(
+        &self,
+        user_id: UserId,
+        chapter_id: Option<ChapterId>,
+    ) -> DomainResult<Vec<ComicBookmark>> {
         let mut db = self.db.clone();
-        let existing = ComicShelfModel::filter_by_id(shelf.id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        let raw_ids: Vec<Uuid> = shelf.series_ids.iter().map(|s| s.0).collect();
+        match chapter_id {
+            Some(cid) => {
+                let mut rows = ComicBookmarkModel::filter_by_user_id(user_id.0)
+                    .filter(ComicBookmarkModel::fields().chapter_id().eq(cid.0))
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                rows.sort_by_key(|a| a.page_number);
+                Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
+            }
+            None => {
+                let mut rows = ComicBookmarkModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
+                Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
+            }
+        }
+    }
 
-        if let Some(mut record) = existing {
-            record
-                .update()
-                .name(shelf.name.clone())
-                .description(shelf.description.clone())
-                .series_ids(toasty::Json(raw_ids))
-                .updated_at(shelf.updated_at)
+    async fn save(&self, mutation: ComicReadingMutation<'_>) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        match mutation {
+            ComicReadingMutation::Progress(p) => {
+                let key = Self::ch_key(p.user_id, p.chapter_id);
+                let existing = ComicChapterProgressModel::filter_by_composite_key(&key)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                if let Some(mut record) = existing {
+                    record
+                        .update()
+                        .current_page(i64::from(p.current_page))
+                        .total_pages(i64::from(p.total_pages))
+                        .is_completed(p.is_completed)
+                        .updated_at(p.updated_at)
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                } else {
+                    toasty::create!(ComicChapterProgressModel {
+                        composite_key: key,
+                        user_id: p.user_id.0,
+                        series_id: p.series_id.0,
+                        chapter_id: p.chapter_id.0,
+                        current_page: i64::from(p.current_page),
+                        total_pages: i64::from(p.total_pages),
+                        is_completed: p.is_completed,
+                        updated_at: p.updated_at,
+                    })
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                }
+            }
+            ComicReadingMutation::SeriesPref(pref) => {
+                let key = Self::series_key(pref.user_id, pref.series_id);
+                let existing = ComicSeriesReaderPrefModel::filter_by_composite_key(&key)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                if let Some(mut record) = existing {
+                    record
+                        .update()
+                        .pref(toasty::Json(pref.clone()))
+                        .updated_at(pref.updated_at)
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                } else {
+                    toasty::create!(ComicSeriesReaderPrefModel {
+                        composite_key: key,
+                        user_id: pref.user_id.0,
+                        series_id: pref.series_id.0,
+                        pref: toasty::Json(pref.clone()),
+                        updated_at: pref.updated_at,
+                    })
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                }
+            }
+            ComicReadingMutation::Favorite {
+                user_id,
+                series_id,
+                favorite,
+                now,
+            } => {
+                let key = Self::series_key(user_id, series_id);
+                if favorite {
+                    if ComicFavoriteSeriesModel::filter_by_composite_key(&key)
+                        .first()
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?
+                        .is_none()
+                    {
+                        toasty::create!(ComicFavoriteSeriesModel {
+                            composite_key: key,
+                            user_id: user_id.0,
+                            series_id: series_id.0,
+                            created_at: now,
+                        })
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                    }
+                } else {
+                    ComicFavoriteSeriesModel::filter_by_composite_key(&key)
+                        .delete()
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                }
+            }
+            ComicReadingMutation::Shelf(shelf) => {
+                let existing = ComicShelfModel::filter_by_id(shelf.id.0)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                let raw_ids: Vec<Uuid> = shelf.series_ids.iter().map(|s| s.0).collect();
+                if let Some(mut record) = existing {
+                    record
+                        .update()
+                        .name(shelf.name.clone())
+                        .description(shelf.description.clone())
+                        .series_ids(toasty::Json(raw_ids))
+                        .updated_at(shelf.updated_at)
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                } else {
+                    toasty::create!(ComicShelfModel {
+                        id: shelf.id.0,
+                        user_id: shelf.user_id.0,
+                        name: shelf.name.clone(),
+                        description: shelf.description.clone(),
+                        series_ids: toasty::Json(raw_ids),
+                        created_at: shelf.created_at,
+                        updated_at: shelf.updated_at,
+                    })
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                }
+            }
+            ComicReadingMutation::Bookmark(bookmark) => {
+                toasty::create!(ComicBookmarkModel {
+                    id: bookmark.id.0,
+                    user_id: bookmark.user_id.0,
+                    series_id: bookmark.series_id.0,
+                    chapter_id: bookmark.chapter_id.0,
+                    page_number: i64::from(bookmark.page_number),
+                    title: bookmark.title.clone(),
+                    created_at: bookmark.created_at,
+                })
                 .exec(&mut db)
                 .await
                 .map_err(db_err)?;
-        } else {
-            toasty::create!(ComicShelfModel {
-                id: shelf.id.0,
-                user_id: shelf.user_id.0,
-                name: shelf.name.clone(),
-                description: shelf.description.clone(),
-                series_ids: toasty::Json(raw_ids),
-                created_at: shelf.created_at,
-                updated_at: shelf.updated_at,
-            })
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+            }
         }
         Ok(())
     }
 
-    async fn delete_shelf(&self, id: ComicShelfId) -> DomainResult<()> {
+    async fn delete_scope(&self, scope: ComicReadingDeleteScope) -> DomainResult<()> {
         let mut db = self.db.clone();
-        ComicShelfModel::filter_by_id(id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn list_chapter_bookmarks(
-        &self,
-        user_id: UserId,
-        chapter_id: ChapterId,
-    ) -> DomainResult<Vec<ComicBookmark>> {
-        let mut db = self.db.clone();
-        let mut rows = ComicBookmarkModel::filter_by_user_id(user_id.0)
-            .filter(ComicBookmarkModel::fields().chapter_id().eq(chapter_id.0))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|a| a.page_number);
-        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
-    }
-
-    async fn list_user_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<ComicBookmark>> {
-        let mut db = self.db.clone();
-        let mut rows = ComicBookmarkModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
-    }
-
-    async fn save_bookmark(&self, bookmark: &ComicBookmark) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        toasty::create!(ComicBookmarkModel {
-            id: bookmark.id.0,
-            user_id: bookmark.user_id.0,
-            series_id: bookmark.series_id.0,
-            chapter_id: bookmark.chapter_id.0,
-            page_number: i64::from(bookmark.page_number),
-            title: bookmark.title.clone(),
-            created_at: bookmark.created_at,
-        })
-        .exec(&mut db)
-        .await
-        .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn delete_bookmark(
-        &self,
-        user_id: UserId,
-        bookmark_id: ComicBookmarkId,
-    ) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        if let Some(record) = ComicBookmarkModel::filter_by_id(bookmark_id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-            && record.user_id == user_id.0
-        {
-            record.delete().exec(&mut db).await.map_err(db_err)?;
+        match scope {
+            ComicReadingDeleteScope::ChapterProgress {
+                user_id,
+                chapter_id,
+            } => {
+                let key = Self::ch_key(user_id, chapter_id);
+                ComicChapterProgressModel::filter_by_composite_key(&key)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+            ComicReadingDeleteScope::Chapter(chapter_id) => {
+                ComicChapterProgressModel::filter_by_chapter_id(chapter_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicBookmarkModel::filter_by_chapter_id(chapter_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+            ComicReadingDeleteScope::Series(series_id) => {
+                ComicChapterProgressModel::filter_by_series_id(series_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicSeriesReaderPrefModel::filter_by_series_id(series_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicFavoriteSeriesModel::filter_by_series_id(series_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicBookmarkModel::filter_by_series_id(series_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                for mut shelf in ComicShelfModel::all().exec(&mut db).await.map_err(db_err)? {
+                    if shelf.series_ids.0.contains(&series_id.0) {
+                        let filtered: Vec<Uuid> = shelf
+                            .series_ids
+                            .0
+                            .iter()
+                            .copied()
+                            .filter(|&id| id != series_id.0)
+                            .collect();
+                        shelf
+                            .update()
+                            .series_ids(toasty::Json(filtered))
+                            .updated_at(Timestamp::now())
+                            .exec(&mut db)
+                            .await
+                            .map_err(db_err)?;
+                    }
+                }
+            }
+            ComicReadingDeleteScope::User(user_id) => {
+                ComicChapterProgressModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicSeriesReaderPrefModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicFavoriteSeriesModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicShelfModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicBookmarkModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+            ComicReadingDeleteScope::UserSeries { user_id, series_id } => {
+                for row in ComicChapterProgressModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if row.series_id == series_id.0 {
+                        row.delete().exec(&mut db).await.map_err(db_err)?;
+                    }
+                }
+                let pref_key = Self::series_key(user_id, series_id);
+                ComicSeriesReaderPrefModel::filter_by_composite_key(&pref_key)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                ComicFavoriteSeriesModel::filter_by_composite_key(&pref_key)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                for bm in ComicBookmarkModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if bm.series_id == series_id.0 {
+                        bm.delete().exec(&mut db).await.map_err(db_err)?;
+                    }
+                }
+                for mut shelf in ComicShelfModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if shelf.series_ids.0.contains(&series_id.0) {
+                        let filtered: Vec<Uuid> = shelf
+                            .series_ids
+                            .0
+                            .iter()
+                            .copied()
+                            .filter(|&id| id != series_id.0)
+                            .collect();
+                        shelf
+                            .update()
+                            .series_ids(toasty::Json(filtered))
+                            .updated_at(Timestamp::now())
+                            .exec(&mut db)
+                            .await
+                            .map_err(db_err)?;
+                    }
+                }
+            }
+            ComicReadingDeleteScope::Shelf(id) => {
+                ComicShelfModel::filter_by_id(id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+            ComicReadingDeleteScope::Bookmark {
+                user_id,
+                bookmark_id,
+            } => {
+                if let Some(record) = ComicBookmarkModel::filter_by_id(bookmark_id.0)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                    && record.user_id == user_id.0
+                {
+                    record.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+            }
         }
         Ok(())
     }

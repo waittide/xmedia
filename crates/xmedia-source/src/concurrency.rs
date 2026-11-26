@@ -69,10 +69,7 @@ impl Drop for CancelTasksOnDrop {
 
 pub type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
 
-pub fn get_or_insert_weak_lock<K: Eq + Hash>(
-    map: &AsyncLockMap<K>,
-    key: K,
-) -> Arc<tokio::sync::Mutex<()>> {
+pub fn weak_lock<K: Eq + Hash>(map: &AsyncLockMap<K>, key: K) -> Arc<tokio::sync::Mutex<()>> {
     let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = guard.get(&key).and_then(Weak::upgrade) {
         return existing;

@@ -1,22 +1,15 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use jiff::civil::Date;
-use jiff::tz::TimeZone;
-use jiff::{Timestamp, ToSpan};
-use serde::{Deserialize, Serialize};
+use jiff::Timestamp;
+use serde::Deserialize;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
-use crate::domain::activity::{UserActivityDaily, UserActivityRepository};
-use crate::domain::error::{DomainError, DomainResult};
+pub use crate::domain::activity::{ActivityDayDto, ActivityHeatmapDto, ActivitySummaryDto};
+use crate::domain::activity::{HeartbeatEvent, UserActivityDaily, UserActivityRepository};
+use crate::domain::error::DomainResult;
 use crate::domain::library::MediaKind;
 use crate::domain::user::UserId;
-
-const MAX_HEARTBEAT_DELTA_SECS: u32 = 600;
-const MAX_DAILY_DURATION_SECS: u64 = 86_400;
-const MAX_TITLE_CHARS: usize = 120;
-const DEFAULT_ROLLING_DAYS: i64 = 365;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RecordActivityInput {
@@ -38,42 +31,6 @@ pub struct ActivityHeatmapQuery {
     pub year: Option<i16>,
     /// Client local "today" in `YYYY-MM-DD` so streaks & rolling window match client timezone.
     pub today: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActivityDayDto {
-    pub date: String,
-    pub duration_secs: u64,
-    pub active_sessions: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_item_title: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActivitySummaryDto {
-    pub total_secs: u64,
-    pub today_secs: u64,
-    pub week_secs: u64,
-    pub month_secs: u64,
-    pub active_days: u32,
-    pub current_streak: u32,
-    pub longest_streak: u32,
-    pub avg_active_day_secs: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub peak_day: Option<ActivityDayDto>,
-    pub available_years: Vec<i16>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActivityHeatmapDto {
-    pub media_kind: MediaKind,
-    pub today: String,
-    pub start_date: String,
-    pub end_date: String,
-    pub days: Vec<ActivityDayDto>,
-    pub summary: ActivitySummaryDto,
-    /// Accumulated seconds per weekday in `[start_date, end_date]`, Monday = 0 .. Sunday = 6.
-    pub weekday_totals: [u64; 7],
 }
 
 type KeyLockMap = Mutex<HashMap<(UserId, MediaKind, String), Arc<Mutex<()>>>>;
@@ -106,68 +63,27 @@ impl ActivityService {
         user_id: UserId,
         input: RecordActivityInput,
     ) -> DomainResult<ActivityDayDto> {
-        if input.delta_secs == 0 || input.delta_secs > MAX_HEARTBEAT_DELTA_SECS {
-            return Err(DomainError::Validation(format!(
-                "delta_secs must be between 1 and {MAX_HEARTBEAT_DELTA_SECS}"
-            )));
-        }
-
-        let parsed_date = parse_calendar_date(&input.date)?;
-        let utc_today = Timestamp::now().to_zoned(TimeZone::UTC).date();
-        let max_allowed = utc_today
-            .checked_add(2.days())
-            .map_err(|e| DomainError::Validation(format!("date overflow: {e}")))?;
-        if parsed_date > max_allowed {
-            return Err(DomainError::Validation(
-                "activity date cannot be in the future".into(),
-            ));
-        }
-        let date_str = parsed_date.to_string();
-
-        let normalized_title = input
-            .item_title
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.chars().take(MAX_TITLE_CHARS).collect::<String>());
-
+        let now = Timestamp::now();
+        let date_str = UserActivityDaily::prepare_date(&input.date, input.delta_secs, now)?;
         let lock = self.lock_for(user_id, input.media_kind, &date_str).await;
         let _guard = lock.lock().await;
 
-        let now = Timestamp::now();
-        let mut record = match self
+        let existing = self
             .repo
             .find_by_key(user_id, input.media_kind, &date_str)
-            .await?
-        {
-            Some(mut existing) => {
-                existing.duration_secs = existing
-                    .duration_secs
-                    .saturating_add(u64::from(input.delta_secs))
-                    .min(MAX_DAILY_DURATION_SECS);
-                if input.new_session || existing.active_sessions == 0 {
-                    existing.active_sessions = existing.active_sessions.saturating_add(1);
-                }
-                if normalized_title.is_some() {
-                    existing.last_item_title = normalized_title;
-                }
-                existing.updated_at = now;
-                existing
-            }
-            None => UserActivityDaily {
-                id: Uuid::now_v7(),
+            .await?;
+        let record = UserActivityDaily::record_heartbeat(
+            existing,
+            HeartbeatEvent {
                 user_id,
                 media_kind: input.media_kind,
-                activity_date: date_str,
-                duration_secs: u64::from(input.delta_secs).min(MAX_DAILY_DURATION_SECS),
-                active_sessions: 1,
-                last_item_title: normalized_title,
-                updated_at: now,
+                date_str: &date_str,
+                delta_secs: input.delta_secs,
+                new_session: input.new_session,
+                item_title: input.item_title.as_deref(),
+                now: Timestamp::now(),
             },
-        };
-
-        // Ensure duration stays bounded even if persisted value was modified externally.
-        record.duration_secs = record.duration_secs.min(MAX_DAILY_DURATION_SECS);
+        );
         self.repo.save(&record).await?;
 
         Ok(ActivityDayDto {
@@ -183,149 +99,17 @@ impl ActivityService {
         user_id: UserId,
         query: ActivityHeatmapQuery,
     ) -> DomainResult<ActivityHeatmapDto> {
-        let today = match query
-            .today
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(raw) => parse_calendar_date(raw)?,
-            None => Timestamp::now().to_zoned(TimeZone::UTC).date(),
-        };
-
-        let (start_date, end_date) = match query.year {
-            Some(y) => {
-                if !(2000..=2100).contains(&y) {
-                    return Err(DomainError::Validation("year out of range".into()));
-                }
-                let start = Date::new(y, 1, 1)
-                    .map_err(|e| DomainError::Validation(format!("invalid year {y}: {e}")))?;
-                let end = Date::new(y, 12, 31)
-                    .map_err(|e| DomainError::Validation(format!("invalid year {y}: {e}")))?;
-                (start, end)
-            }
-            None => {
-                let start = today
-                    .checked_sub((DEFAULT_ROLLING_DAYS - 1).days())
-                    .map_err(|e| DomainError::Validation(format!("date underflow: {e}")))?;
-                (start, today)
-            }
-        };
-
         let all_records = self
             .repo
             .list_by_user_and_domain(user_id, query.media_kind)
             .await?;
-
-        let mut years_set = BTreeSet::new();
-        years_set.insert(today.year());
-
-        let mut all_active_dates = HashSet::new();
-        let mut today_secs = 0u64;
-        let mut week_secs = 0u64;
-        let mut month_secs = 0u64;
-        let week_start = today.checked_sub(6.days()).unwrap_or(start_date);
-        let month_start = today.checked_sub(29.days()).unwrap_or(start_date);
-
-        let mut range_days: Vec<(Date, ActivityDayDto)> = Vec::new();
-        let mut weekday_totals = [0u64; 7];
-
-        for rec in all_records {
-            if rec.duration_secs == 0 {
-                continue;
-            }
-            let Ok(d) = parse_calendar_date(&rec.activity_date) else {
-                continue;
-            };
-            years_set.insert(d.year());
-            all_active_dates.insert(d);
-
-            if d == today {
-                today_secs = today_secs.saturating_add(rec.duration_secs);
-            }
-            if d >= week_start && d <= today {
-                week_secs = week_secs.saturating_add(rec.duration_secs);
-            }
-            if d >= month_start && d <= today {
-                month_secs = month_secs.saturating_add(rec.duration_secs);
-            }
-
-            if d >= start_date && d <= end_date {
-                let weekday_idx = usize::try_from(d.weekday().to_monday_zero_offset()).unwrap_or(0);
-                if weekday_idx < 7 {
-                    weekday_totals[weekday_idx] =
-                        weekday_totals[weekday_idx].saturating_add(rec.duration_secs);
-                }
-                range_days.push((
-                    d,
-                    ActivityDayDto {
-                        date: rec.activity_date,
-                        duration_secs: rec.duration_secs,
-                        active_sessions: rec.active_sessions,
-                        last_item_title: rec.last_item_title,
-                    },
-                ));
-            }
-        }
-
-        range_days.sort_by_key(|(d, _)| *d);
-
-        let mut total_secs = 0u64;
-        let mut peak_day: Option<ActivityDayDto> = None;
-        let mut longest_streak = 0u32;
-        let mut run_streak = 0u32;
-        let mut prev_date: Option<Date> = None;
-
-        for (d, dto) in &range_days {
-            total_secs = total_secs.saturating_add(dto.duration_secs);
-            if peak_day
-                .as_ref()
-                .is_none_or(|p| dto.duration_secs > p.duration_secs)
-            {
-                peak_day = Some(dto.clone());
-            }
-            if let Some(prev) = prev_date
-                && prev.checked_add(1.days()).ok() == Some(*d)
-            {
-                run_streak = run_streak.saturating_add(1);
-            } else {
-                run_streak = 1;
-            }
-            if run_streak > longest_streak {
-                longest_streak = run_streak;
-            }
-            prev_date = Some(*d);
-        }
-
-        let current_streak = compute_current_streak(&all_active_dates, today);
-        let active_days = u32::try_from(range_days.len()).unwrap_or(u32::MAX);
-        let avg_active_day_secs = if active_days > 0 {
-            total_secs / u64::from(active_days)
-        } else {
-            0
-        };
-        let available_years: Vec<i16> = years_set.into_iter().rev().collect();
-
-        Ok(ActivityHeatmapDto {
-            media_kind: query.media_kind,
-            today: today.to_string(),
-            start_date: start_date.to_string(),
-            end_date: end_date.to_string(),
-            days: range_days.into_iter().map(|(_, dto)| dto).collect(),
-            summary: ActivitySummaryDto {
-                total_secs,
-                today_secs,
-                week_secs,
-                month_secs,
-                active_days,
-                current_streak,
-                longest_streak,
-                avg_active_day_secs,
-                peak_day,
-                available_years,
-            },
-            weekday_totals,
-        })
+        ActivityHeatmapDto::compute(
+            query.media_kind,
+            query.today.as_deref(),
+            query.year,
+            all_records,
+            Timestamp::now(),
+        )
     }
 
     pub async fn purge_user(&self, user_id: UserId) -> DomainResult<()> {
@@ -336,46 +120,12 @@ impl ActivityService {
     }
 }
 
-fn parse_calendar_date(raw: &str) -> DomainResult<Date> {
-    let trimmed = raw.trim();
-    if trimmed.len() != 10 {
-        return Err(DomainError::Validation(format!(
-            "invalid calendar date '{trimmed}', expected YYYY-MM-DD"
-        )));
-    }
-    trimmed.parse::<Date>().map_err(|_| {
-        DomainError::Validation(format!(
-            "invalid calendar date '{trimmed}', expected YYYY-MM-DD"
-        ))
-    })
-}
-
-fn compute_current_streak(active_dates: &HashSet<Date>, today: Date) -> u32 {
-    let mut cursor = if active_dates.contains(&today) {
-        today
-    } else if let Ok(yesterday) = today.checked_sub(1.days())
-        && active_dates.contains(&yesterday)
-    {
-        yesterday
-    } else {
-        return 0;
-    };
-
-    let mut streak = 0u32;
-    while active_dates.contains(&cursor) {
-        streak = streak.saturating_add(1);
-        match cursor.checked_sub(1.days()) {
-            Ok(prev) => cursor = prev,
-            Err(_) => break,
-        }
-    }
-    streak
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use jiff::ToSpan;
+    use jiff::tz::TimeZone;
 
     #[derive(Default)]
     struct MemActivityRepo {

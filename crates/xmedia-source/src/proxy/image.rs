@@ -188,27 +188,9 @@ async fn attempt_fetch_validated_image_bytes(
     Ok(ImageAttemptOutcome::Done((bytes, safe_mime)))
 }
 
-pub async fn fetch_validated_image_bytes(
-    client: &reqwest::Client,
-    raw_url: &str,
-    headers: Option<&HashMap<String, String>>,
-    max_bytes: usize,
-    allow_private_ips: bool,
-) -> DomainResult<(Vec<u8>, &'static str)> {
-    fetch_validated_image_bytes_for_source(
-        client,
-        None,
-        raw_url,
-        headers,
-        max_bytes,
-        allow_private_ips,
-    )
-    .await
-}
-
-/// Fetches and validates a raster image while enforcing origin-affinity credential filtering
-/// whenever `source_url` is provided.
-pub async fn fetch_validated_image_bytes_for_source(
+/// Fetches and validates a raster image with an explicit `reqwest::Client`, enforcing
+/// origin-affinity credential filtering whenever `source_url` is provided.
+pub(super) async fn fetch_client_image(
     client: &reqwest::Client,
     source_url: Option<&str>,
     raw_url: &str,
@@ -261,17 +243,16 @@ pub async fn fetch_validated_image_bytes_for_source(
     ))
 }
 
-pub async fn fetch_validated_image_bytes_with_config(
+pub async fn fetch_image(
     raw_url: &str,
     headers: Option<&HashMap<String, String>>,
     max_bytes: usize,
     config: &HttpClientConfig,
 ) -> DomainResult<(Vec<u8>, &'static str)> {
-    fetch_validated_image_bytes_with_config_for_source(None, raw_url, headers, max_bytes, config)
-        .await
+    fetch_source_image(None, raw_url, headers, max_bytes, config).await
 }
 
-pub async fn fetch_validated_image_bytes_with_config_for_source(
+pub async fn fetch_source_image(
     source_url: Option<&str>,
     raw_url: &str,
     headers: Option<&HashMap<String, String>>,
@@ -284,7 +265,7 @@ pub async fn fetch_validated_image_bytes_with_config_for_source(
         config.proxy_url.as_deref(),
     )
     .map_err(DomainError::Storage)?;
-    fetch_validated_image_bytes_for_source(
+    fetch_client_image(
         &client,
         source_url,
         raw_url,

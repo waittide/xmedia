@@ -5,8 +5,10 @@ use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
 
+use xmedia_source::crud::SourceCrudService;
+
 use crate::application::BookServices;
-use crate::application::online::BookOnlineSourceDirectory;
+use crate::domain::online::LegadoBookSource;
 
 #[derive(Clone)]
 pub struct BookHttpState {
@@ -28,7 +30,7 @@ impl FromRef<BookHttpState> for Arc<OnlineLibraryService> {
     }
 }
 
-impl FromRef<BookHttpState> for Arc<BookOnlineSourceDirectory> {
+impl FromRef<BookHttpState> for Arc<SourceCrudService<LegadoBookSource>> {
     fn from_ref(input: &BookHttpState) -> Self {
         input.services.sources.clone()
     }

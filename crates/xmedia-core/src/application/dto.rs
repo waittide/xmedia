@@ -134,6 +134,18 @@ pub struct ChangePasswordInput {
 
 #[cfg(feature = "server")]
 #[derive(Debug, Clone)]
+pub enum AuthCredential<'a> {
+    Jwt(&'a str),
+    ApiKey(&'a str),
+    Basic {
+        username: &'a str,
+        password: &'a str,
+    },
+    Subsonic(SubsonicCredentials),
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, Clone)]
 pub enum SubsonicCredentials {
     ApiKey(String),
     Password {

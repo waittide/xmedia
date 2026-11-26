@@ -80,12 +80,13 @@ where
 #[cfg(feature = "server")]
 async fn authed_upload_fonts<S>(
     State(state): State<S>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
     multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<Vec<CustomFontDto>>)>
 where
     Arc<FsFontStore>: FromRef<S>,
 {
+    actor.ensure_admin()?;
     let store = Arc::<FsFontStore>::from_ref(&state);
     upload_custom_fonts(store.as_ref(), multipart).await
 }
@@ -93,12 +94,13 @@ where
 #[cfg(feature = "server")]
 async fn authed_delete_font<S>(
     State(state): State<S>,
-    WebAuth(_actor): WebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<FontDeleteOkDto>>
 where
     Arc<FsFontStore>: FromRef<S>,
 {
+    actor.ensure_admin()?;
     let store = Arc::<FsFontStore>::from_ref(&state);
     delete_custom_font(store.as_ref(), id).await
 }

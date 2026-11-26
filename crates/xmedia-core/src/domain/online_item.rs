@@ -1,8 +1,5 @@
 //! Per-user persisted state (favorite + reading/playback progress) for items that live in an
 //! online rule source or a remote server (OPDS/Subsonic) rather than in a local library.
-//!
-//! Items are identified by the natural key `(user, media_kind, source_kind, source_id, item_key)`
-//! so clients can idempotently upsert them straight from search/browse results.
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -12,13 +9,13 @@ use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
 use crate::domain::user::UserId;
 
-pub const MAX_ITEM_KEY_CHARS: usize = 2048;
-pub const MAX_SOURCE_ID_CHARS: usize = 128;
-pub const MAX_TITLE_CHARS: usize = 512;
-pub const MAX_SHORT_TEXT_CHARS: usize = 512;
-pub const MAX_INTRO_CHARS: usize = 8192;
-pub const MAX_URL_CHARS: usize = 2048;
-pub const MAX_EXTRA_JSON_BYTES: usize = 16 * 1024;
+const MAX_ITEM_KEY_CHARS: usize = 2048;
+const MAX_SOURCE_ID_CHARS: usize = 128;
+const MAX_TITLE_CHARS: usize = 512;
+const MAX_SHORT_TEXT_CHARS: usize = 512;
+const MAX_INTRO_CHARS: usize = 8192;
+const MAX_URL_CHARS: usize = 2048;
+const MAX_EXTRA_JSON_BYTES: usize = 16 * 1024;
 
 /// Where an online library item comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -50,11 +47,41 @@ impl OnlineItemSourceKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OnlineItemKey {
+    source_kind: OnlineItemSourceKind,
+    source_id: String,
+    source_uuid: Option<Uuid>,
+    item_key: String,
+}
+
+impl OnlineItemKey {
+    fn parse(
+        source_kind: OnlineItemSourceKind,
+        source_id: &str,
+        item_key: &str,
+    ) -> DomainResult<Self> {
+        let source_id = validate_key(source_id, "source_id", MAX_SOURCE_ID_CHARS)?;
+        let item_key = validate_key(item_key, "item_key", MAX_ITEM_KEY_CHARS)?;
+        let (source_id, source_uuid) = match source_kind {
+            OnlineItemSourceKind::Online => {
+                let id = Uuid::parse_str(&source_id).map_err(|_| {
+                    DomainError::Validation("source_id must be a UUID for online sources".into())
+                })?;
+                (id.to_string(), Some(id))
+            }
+            OnlineItemSourceKind::Remote => (source_id, None),
+        };
+        Ok(Self {
+            source_kind,
+            source_id,
+            source_uuid,
+            item_key,
+        })
+    }
+}
+
 /// Reading / playback position inside an online item.
-///
-/// * comic: `unit_*` = chapter, `position` = 0-based page, `duration` = page count
-/// * video: `unit_*` = episode (`unit_group` = play line), `position`/`duration` = seconds
-/// * music: no unit, `position`/`duration` = seconds
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct OnlineItemProgress {
     #[serde(default)]
@@ -76,8 +103,7 @@ pub struct OnlineItemProgress {
 }
 
 impl OnlineItemProgress {
-    /// Validates and clamps the progress payload into storable bounds.
-    pub fn normalized(mut self) -> DomainResult<Self> {
+    fn normalized(mut self) -> DomainResult<Self> {
         if !self.position.is_finite() {
             return Err(DomainError::Validation(
                 "progress position is invalid".into(),
@@ -102,7 +128,7 @@ impl OnlineItemProgress {
     }
 
     /// Overall completion ratio in `0..=1`, combining unit index and in-unit position.
-    pub fn ratio(&self) -> Option<f64> {
+    fn ratio(&self) -> Option<f64> {
         if self.completed {
             return Some(1.0);
         }
@@ -115,6 +141,35 @@ impl OnlineItemProgress {
             _ => in_unit,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnlineItemView {
+    #[default]
+    All,
+    Continue,
+    Favorites,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OnlineItemFilter {
+    pub view: OnlineItemView,
+    pub source_kind: Option<OnlineItemSourceKind>,
+    pub source_id: Option<String>,
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OnlineItemFields {
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub cover_url: Option<String>,
+    pub intro: Option<String>,
+    pub kind: Option<String>,
+    pub extra: Option<serde_json::Value>,
+    pub favorite: Option<bool>,
+    pub progress: Option<OnlineItemProgress>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,7 +195,155 @@ pub struct OnlineLibraryItem {
 }
 
 impl OnlineLibraryItem {
-    pub fn matches_key(
+    pub fn filter_and_sort(mut items: Vec<Self>, filter: &OnlineItemFilter) -> Vec<Self> {
+        let needle = normalize_search_needle(filter.query.as_deref());
+        let source_id = normalize_source_filter(filter.source_id.as_deref());
+        items.retain(|item| {
+            item.matches_filter(
+                filter.view,
+                filter.source_kind,
+                source_id.as_deref(),
+                needle.as_deref(),
+            )
+        });
+        sort_items_for_view(&mut items, filter.view);
+        items
+    }
+
+    pub fn lookup_matching(
+        items: Vec<Self>,
+        raw_refs: &[(OnlineItemSourceKind, &str, &str)],
+    ) -> Vec<Self> {
+        let keys: Vec<OnlineItemKey> = raw_refs
+            .iter()
+            .filter_map(|(kind, sid, ikey)| OnlineItemKey::parse(*kind, sid, ikey).ok())
+            .collect();
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        items
+            .into_iter()
+            .filter(|item| {
+                keys.iter()
+                    .any(|k| item.matches_key(k.source_kind, &k.source_id, &k.item_key))
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_in(
+        existing: Vec<Self>,
+        max_items: usize,
+        user_id: UserId,
+        media_kind: MediaKind,
+        source_kind: OnlineItemSourceKind,
+        raw_source_id: &str,
+        raw_item_key: &str,
+        fields: OnlineItemFields,
+        now: Timestamp,
+    ) -> DomainResult<(Self, Option<Uuid>)> {
+        let key = OnlineItemKey::parse(source_kind, raw_source_id, raw_item_key)?;
+        let count = existing.len();
+        if let Some(mut item) = existing
+            .into_iter()
+            .find(|i| i.matches_key(key.source_kind, &key.source_id, &key.item_key))
+        {
+            item.apply_fields(fields, now)?;
+            return Ok((item, None));
+        }
+        if count >= max_items {
+            return Err(DomainError::Conflict(format!(
+                "online item limit reached ({max_items})"
+            )));
+        }
+        let new_source_uuid = key.source_uuid;
+        let created = Self::create(user_id, media_kind, key, fields, now)?;
+        Ok((created, new_source_uuid))
+    }
+
+    fn create(
+        user_id: UserId,
+        media_kind: MediaKind,
+        key: OnlineItemKey,
+        fields: OnlineItemFields,
+        now: Timestamp,
+    ) -> DomainResult<Self> {
+        let title = validate_title(fields.title.as_deref().unwrap_or(""))?;
+        let mut item = Self {
+            id: Uuid::now_v7(),
+            user_id,
+            media_kind,
+            source_kind: key.source_kind,
+            source_id: key.source_id,
+            item_key: key.item_key,
+            title,
+            subtitle: None,
+            cover_url: None,
+            intro: None,
+            kind: None,
+            extra: serde_json::json!({}),
+            favorite: false,
+            favorited_at: None,
+            progress: None,
+            progress_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        item.apply_fields(
+            OnlineItemFields {
+                title: None,
+                ..fields
+            },
+            now,
+        )?;
+        Ok(item)
+    }
+
+    pub fn apply_fields(&mut self, fields: OnlineItemFields, now: Timestamp) -> DomainResult<()> {
+        if let Some(title) = fields.title {
+            self.title = validate_title(&title)?;
+        }
+        if let Some(subtitle) = fields.subtitle {
+            self.subtitle = normalize_opt_text(Some(subtitle), MAX_SHORT_TEXT_CHARS);
+        }
+        if let Some(cover_url) = fields.cover_url {
+            self.cover_url = validate_cover_url(Some(cover_url))?;
+        }
+        if let Some(intro) = fields.intro {
+            self.intro = normalize_opt_text(Some(intro), MAX_INTRO_CHARS);
+        }
+        if let Some(kind) = fields.kind {
+            self.kind = normalize_opt_text(Some(kind), MAX_SHORT_TEXT_CHARS);
+        }
+        if let Some(extra) = fields.extra {
+            self.extra = validate_extra(Some(extra))?;
+        }
+        if let Some(favorite) = fields.favorite {
+            self.set_favorite(favorite, now);
+        }
+        if let Some(progress) = fields.progress {
+            self.set_progress(Some(progress.normalized()?), now);
+        }
+        self.updated_at = now;
+        Ok(())
+    }
+
+    pub fn progress_ratio(&self) -> Option<f64> {
+        self.progress.as_ref().and_then(OnlineItemProgress::ratio)
+    }
+
+    pub fn apply_progress(
+        &mut self,
+        progress: Option<OnlineItemProgress>,
+        now: Timestamp,
+    ) -> DomainResult<()> {
+        let normalized = progress.map(OnlineItemProgress::normalized).transpose()?;
+        self.set_progress(normalized, now);
+        self.updated_at = now;
+        Ok(())
+    }
+
+    fn matches_key(
         &self,
         source_kind: OnlineItemSourceKind,
         source_id: &str,
@@ -149,7 +352,31 @@ impl OnlineLibraryItem {
         self.source_kind == source_kind && self.source_id == source_id && self.item_key == item_key
     }
 
-    pub fn set_favorite(&mut self, favorite: bool, now: Timestamp) {
+    fn matches_filter(
+        &self,
+        view: OnlineItemView,
+        source_kind: Option<OnlineItemSourceKind>,
+        source_id: Option<&str>,
+        needle: Option<&str>,
+    ) -> bool {
+        let view_ok = match view {
+            OnlineItemView::All => true,
+            OnlineItemView::Continue => self.is_in_progress(),
+            OnlineItemView::Favorites => self.favorite,
+        };
+        view_ok
+            && source_kind.is_none_or(|k| self.source_kind == k)
+            && source_id.is_none_or(|s| self.source_id == s)
+            && needle.is_none_or(|n| {
+                self.title.to_lowercase().contains(n)
+                    || self
+                        .subtitle
+                        .as_deref()
+                        .is_some_and(|s| s.to_lowercase().contains(n))
+            })
+    }
+
+    fn set_favorite(&mut self, favorite: bool, now: Timestamp) {
         if favorite && !self.favorite {
             self.favorited_at = Some(now);
         } else if !favorite {
@@ -158,14 +385,38 @@ impl OnlineLibraryItem {
         self.favorite = favorite;
     }
 
-    pub fn set_progress(&mut self, progress: Option<OnlineItemProgress>, now: Timestamp) {
+    fn set_progress(&mut self, progress: Option<OnlineItemProgress>, now: Timestamp) {
         self.progress_at = progress.as_ref().map(|_| now);
         self.progress = progress;
     }
 
-    /// Whether the item belongs in a "continue reading/watching/listening" view.
-    pub fn is_in_progress(&self) -> bool {
+    fn is_in_progress(&self) -> bool {
         self.progress.as_ref().is_some_and(|p| !p.completed)
+    }
+}
+
+fn normalize_search_needle(raw: Option<&str>) -> Option<String> {
+    raw.map(|q| q.trim().to_lowercase())
+        .filter(|q| !q.is_empty())
+}
+
+fn normalize_source_filter(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim).filter(|s| !s.is_empty()).map(|s| {
+        Uuid::parse_str(s)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| s.to_string())
+    })
+}
+
+fn sort_items_for_view(items: &mut [OnlineLibraryItem], view: OnlineItemView) {
+    match view {
+        OnlineItemView::All => items.sort_by_key(|i| std::cmp::Reverse(i.updated_at)),
+        OnlineItemView::Continue => {
+            items.sort_by_key(|i| std::cmp::Reverse(i.progress_at.unwrap_or(i.updated_at)))
+        }
+        OnlineItemView::Favorites => {
+            items.sort_by_key(|i| std::cmp::Reverse(i.favorited_at.unwrap_or(i.updated_at)))
+        }
     }
 }
 
@@ -177,8 +428,7 @@ fn truncate_chars(raw: &str, max_chars: usize) -> String {
     raw.chars().take(max_chars).collect()
 }
 
-/// Trims, drops empty values and truncates free-form text.
-pub fn normalize_opt_text(raw: Option<String>, max_chars: usize) -> Option<String> {
+fn normalize_opt_text(raw: Option<String>, max_chars: usize) -> Option<String> {
     let trimmed = raw?.trim().to_string();
     if trimmed.is_empty() {
         None
@@ -187,8 +437,7 @@ pub fn normalize_opt_text(raw: Option<String>, max_chars: usize) -> Option<Strin
     }
 }
 
-/// Validates an identifier-like field (source id / item key): non-empty, bounded, no control chars.
-pub fn validate_key(raw: &str, field: &str, max_chars: usize) -> DomainResult<String> {
+fn validate_key(raw: &str, field: &str, max_chars: usize) -> DomainResult<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(DomainError::Validation(format!("{field} cannot be empty")));
@@ -206,8 +455,7 @@ pub fn validate_key(raw: &str, field: &str, max_chars: usize) -> DomainResult<St
     Ok(trimmed.to_string())
 }
 
-/// Validates the display title.
-pub fn validate_title(raw: &str) -> DomainResult<String> {
+fn validate_title(raw: &str) -> DomainResult<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(DomainError::Validation("title cannot be empty".into()));
@@ -215,9 +463,7 @@ pub fn validate_title(raw: &str) -> DomainResult<String> {
     Ok(truncate_chars(trimmed, MAX_TITLE_CHARS))
 }
 
-/// Accepts only absolute `http(s)://` URLs or same-origin absolute paths (`/...`, not `//...`)
-/// so stored cover URLs can never smuggle `javascript:`/`data:` schemes into the client.
-pub fn validate_cover_url(raw: Option<String>) -> DomainResult<Option<String>> {
+fn validate_cover_url(raw: Option<String>) -> DomainResult<Option<String>> {
     let Some(url) = normalize_opt_text(raw, usize::MAX) else {
         return Ok(None);
     };
@@ -240,8 +486,7 @@ pub fn validate_cover_url(raw: Option<String>) -> DomainResult<Option<String>> {
     Ok(Some(url))
 }
 
-/// Ensures `extra` is a JSON object (or null) within the size budget.
-pub fn validate_extra(raw: Option<serde_json::Value>) -> DomainResult<serde_json::Value> {
+fn validate_extra(raw: Option<serde_json::Value>) -> DomainResult<serde_json::Value> {
     let value = match raw {
         None | Some(serde_json::Value::Null) => {
             return Ok(serde_json::Value::Object(Default::default()));
@@ -269,9 +514,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_kind_round_trips() {
+    fn source_kind_roundtrips() {
         assert_eq!(
-            OnlineItemSourceKind::parse(" Remote ").unwrap(),
+            OnlineItemSourceKind::parse(" REMOTE ").unwrap(),
             OnlineItemSourceKind::Remote
         );
         assert_eq!(OnlineItemSourceKind::Online.as_str(), "online");

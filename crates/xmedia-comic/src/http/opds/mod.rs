@@ -11,11 +11,11 @@ use serde::Deserialize;
 use uuid::Uuid;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::User;
-use xmedia_core::domain::xml::xml_escape;
 use xmedia_core::http::{ApiResult, OpdsAuth, into_range_http_response, parse_http_range_spec};
+use xmedia_formats::common::xml_escape_clean as xml_escape;
 
 use crate::application::dto::UpdateProgressInput;
-use crate::application::opds::OpdsFeed;
+use crate::application::opds::{OpdsFeed, OpdsFeedKind};
 use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
 use crate::http::rest::respond_with_etag;
 use crate::http::state::ComicHttpState;
@@ -47,21 +47,6 @@ impl OpdsVersion {
     }
 }
 
-enum FeedKind {
-    Root,
-    Continue,
-    Latest,
-    AllSeries(Option<String>),
-    SeriesChapters(SeriesId),
-    Libraries,
-    LibrarySeries(LibraryId),
-    Tags,
-    TagSeries { name: String, is_genre: bool },
-    Shelves,
-    ShelfSeries(ComicShelfId),
-    Favorites,
-}
-
 pub fn router() -> Router<ComicHttpState> {
     let base = Router::new()
         .route(
@@ -81,7 +66,7 @@ pub fn router() -> Router<ComicHttpState> {
             "/v2",
             get(
                 |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, OpdsVersion::V20, FeedKind::Root).await
+                    serve_feed(state, user, OpdsVersion::V20, OpdsFeedKind::Root).await
                 },
             ),
         );
@@ -100,7 +85,7 @@ fn mount_versioned_feeds(
             base,
             get(
                 move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, version, FeedKind::Root).await
+                    serve_feed(state, user, version, OpdsFeedKind::Root).await
                 },
             ),
         )
@@ -108,7 +93,7 @@ fn mount_versioned_feeds(
             &format!("{base}/continue"),
             get(
                 move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, version, FeedKind::Continue).await
+                    serve_feed(state, user, version, OpdsFeedKind::Continue).await
                 },
             ),
         )
@@ -116,7 +101,7 @@ fn mount_versioned_feeds(
             &format!("{base}/latest"),
             get(
                 move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, version, FeedKind::Latest).await
+                    serve_feed(state, user, version, OpdsFeedKind::Latest).await
                 },
             ),
         )
@@ -126,7 +111,7 @@ fn mount_versioned_feeds(
                 move |State(state): State<ComicHttpState>,
                       OpdsAuth(user): OpdsAuth,
                       Query(q): Query<OpdsSearchQuery>| async move {
-                    serve_feed(state, user, version, FeedKind::AllSeries(q.q)).await
+                    serve_feed(state, user, version, OpdsFeedKind::AllSeries(q.q)).await
                 },
             ),
         )
@@ -136,7 +121,13 @@ fn mount_versioned_feeds(
                 move |State(state): State<ComicHttpState>,
                       OpdsAuth(user): OpdsAuth,
                       Path(id): Path<Uuid>| async move {
-                    serve_feed(state, user, version, FeedKind::SeriesChapters(SeriesId(id))).await
+                    serve_feed(
+                        state,
+                        user,
+                        version,
+                        OpdsFeedKind::SeriesChapters(SeriesId(id)),
+                    )
+                    .await
                 },
             ),
         )
@@ -144,7 +135,7 @@ fn mount_versioned_feeds(
             &format!("{base}/libraries"),
             get(
                 move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, version, FeedKind::Libraries).await
+                    serve_feed(state, user, version, OpdsFeedKind::Libraries).await
                 },
             ),
         )
@@ -154,7 +145,13 @@ fn mount_versioned_feeds(
                 move |State(state): State<ComicHttpState>,
                       OpdsAuth(user): OpdsAuth,
                       Path(id): Path<Uuid>| async move {
-                    serve_feed(state, user, version, FeedKind::LibrarySeries(LibraryId(id))).await
+                    serve_feed(
+                        state,
+                        user,
+                        version,
+                        OpdsFeedKind::LibrarySeries(LibraryId(id)),
+                    )
+                    .await
                 },
             ),
         )
@@ -162,7 +159,7 @@ fn mount_versioned_feeds(
             &format!("{base}/tags"),
             get(
                 move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, version, FeedKind::Tags).await
+                    serve_feed(state, user, version, OpdsFeedKind::Tags).await
                 },
             ),
         )
@@ -176,7 +173,7 @@ fn mount_versioned_feeds(
                         state,
                         user,
                         version,
-                        FeedKind::TagSeries {
+                        OpdsFeedKind::TagSeries {
                             name: tag,
                             is_genre: false,
                         },
@@ -195,7 +192,7 @@ fn mount_versioned_feeds(
                         state,
                         user,
                         version,
-                        FeedKind::TagSeries {
+                        OpdsFeedKind::TagSeries {
                             name: genre,
                             is_genre: true,
                         },
@@ -208,7 +205,7 @@ fn mount_versioned_feeds(
             &format!("{base}/shelves"),
             get(
                 move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, version, FeedKind::Shelves).await
+                    serve_feed(state, user, version, OpdsFeedKind::Shelves).await
                 },
             ),
         )
@@ -222,7 +219,7 @@ fn mount_versioned_feeds(
                         state,
                         user,
                         version,
-                        FeedKind::ShelfSeries(ComicShelfId(id)),
+                        OpdsFeedKind::ShelfSeries(ComicShelfId(id)),
                     )
                     .await
                 },
@@ -232,7 +229,7 @@ fn mount_versioned_feeds(
             &format!("{base}/favorites"),
             get(
                 move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
-                    serve_feed(state, user, version, FeedKind::Favorites).await
+                    serve_feed(state, user, version, OpdsFeedKind::Favorites).await
                 },
             ),
         )
@@ -242,39 +239,15 @@ async fn serve_feed(
     state: ComicHttpState,
     user: User,
     version: OpdsVersion,
-    kind: FeedKind,
+    kind: OpdsFeedKind,
 ) -> ApiResult<Response> {
     let p = state.opds_prefix.as_ref();
     let vp = version.version_prefix(p);
-    let opds = &state.services.opds;
-    let catalog = &state.services.catalog;
-
-    let feed = match kind {
-        FeedKind::Root => opds.root_feed(&vp),
-        FeedKind::Continue => opds.continue_reading_feed(&user, catalog, p, &vp).await?,
-        FeedKind::Latest => opds.latest_series_feed(&user, catalog, p, &vp).await?,
-        FeedKind::AllSeries(search) => opds.all_series_feed(&user, catalog, search, p, &vp).await?,
-        FeedKind::SeriesChapters(series_id) => {
-            opds.series_chapters_feed(&user, series_id, p, &vp).await?
-        }
-        FeedKind::Libraries => opds.libraries_feed(&user, catalog, &vp).await?,
-        FeedKind::LibrarySeries(lib_id) => {
-            opds.library_series_feed(&user, catalog, lib_id, p, &vp)
-                .await?
-        }
-        FeedKind::Tags => opds.tags_feed(&user, catalog, &vp).await?,
-        FeedKind::TagSeries { name, is_genre } => {
-            opds.tag_series_feed(&user, catalog, &name, is_genre, p, &vp)
-                .await?
-        }
-        FeedKind::Shelves => opds.shelves_feed(&user, &vp).await?,
-        FeedKind::ShelfSeries(shelf_id) => {
-            opds.shelf_series_feed(&user, catalog, shelf_id, p, &vp)
-                .await?
-        }
-        FeedKind::Favorites => opds.favorites_series_feed(&user, catalog, p, &vp).await?,
-    };
-
+    let feed = state
+        .services
+        .opds
+        .serve_feed(&user, &state.services.catalog, p, &vp, kind)
+        .await?;
     Ok(version.render(p, &feed))
 }
 

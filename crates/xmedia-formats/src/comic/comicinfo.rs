@@ -45,7 +45,7 @@ pub struct ComicInfoMeta {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ComicInfoPageAttr {
+pub(super) struct ComicInfoPageAttr {
     pub page_type: Option<String>,
     pub double_page: Option<bool>,
     pub width: Option<u32>,
@@ -191,7 +191,7 @@ pub fn parse_comic_info_xml(xml_bytes: &[u8]) -> Option<ComicInfoMeta> {
 }
 
 /// Parses `<Pages><Page Image="..." .../></Pages>` attributes indexed by page number.
-pub fn parse_comic_info_pages_map(xml_bytes: &[u8]) -> HashMap<usize, ComicInfoPageAttr> {
+pub(super) fn parse_comic_info_pages_map(xml_bytes: &[u8]) -> HashMap<usize, ComicInfoPageAttr> {
     let (xml_str, _) = decode_text_smart(xml_bytes);
     let mut reader = Reader::from_str(&xml_str);
     reader.config_mut().trim_text(true);
@@ -261,7 +261,7 @@ pub fn extract_existing_comic_info_bytes(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Applies fallback metadata from an EPUB `content.opf` document into `ComicInfoMeta`.
-pub fn apply_epub_opf_into_comic_meta(opf_bytes: &[u8], meta: &mut ComicInfoMeta) {
+pub(super) fn apply_epub_opf_into_comic_meta(opf_bytes: &[u8], meta: &mut ComicInfoMeta) {
     let opf = parse_opf_xml(opf_bytes, BookFormatExt::Epub, "");
     if !opf.meta.title.is_empty() {
         if meta.series.is_none() {

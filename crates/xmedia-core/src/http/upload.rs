@@ -60,19 +60,30 @@ impl Drop for TempUploadFile {
 
 static CONFIGURED_TEMP_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-/// Ensures `dir` exists and removes any leftover `*.tmp` files from previous interrupted runs.
+/// Ensures `dir` exists and removes leftover temporary files/directories from previous interrupted runs.
 pub fn prepare_temp_dir(dir: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file()
-                && path
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if path.is_dir() {
+                if name_str.starts_with("xmedia-hls-") {
+                    let _ = std::fs::remove_dir_all(path);
+                }
+                continue;
+            }
+            if path.is_file() {
+                let is_tmp_ext = path
                     .extension()
                     .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
-            {
-                let _ = std::fs::remove_file(path);
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"));
+                let is_scoped_temp =
+                    name_str.starts_with("xmedia_import_") || name_str.starts_with("xmedia-video-");
+                if is_tmp_ext || is_scoped_temp {
+                    let _ = std::fs::remove_file(path);
+                }
             }
         }
     }

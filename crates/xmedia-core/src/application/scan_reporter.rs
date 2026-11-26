@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use crate::application::ports::{RealtimeEventPort, SystemEvent};
 use crate::domain::error::{DomainError, DomainResult};
-use crate::domain::library::Library;
-use crate::domain::repository::LibraryRepository;
+use crate::domain::library::{Library, ScanStatus};
+use crate::domain::repository::{LibraryMutation, LibraryRepository};
 
 /// Reusable throttled scan progress reporter shared across media domain lifecycle scanners.
-/// Handles persisting `ScanStatus` updates and broadcasting `SystemEvent` notifications.
 pub struct ScanProgressReporter {
     library: Library,
     libraries: Arc<dyn LibraryRepository>,
@@ -44,29 +43,26 @@ impl ScanProgressReporter {
         self
     }
 
-    pub fn library(&self) -> &Library {
-        &self.library
-    }
-
-    pub fn scanned(&self) -> u64 {
-        self.scanned
-    }
-
-    /// Marks the library as scanning at 0 items and broadcasts the initial progress event.
-    pub async fn start(&mut self) {
-        self.scanned = 0;
-        self.library.mark_scanning(0, self.total);
-        let updated = self
-            .libraries
-            .update_scan_state(
+    async fn persist_scan_state(&self) -> DomainResult<bool> {
+        self.libraries
+            .update(
                 self.library.id,
-                &self.library.scan_status,
-                self.library.last_scanned_at,
+                LibraryMutation::ScanState {
+                    status: &self.library.scan_status,
+                    last_scanned_at: self.library.last_scanned_at,
+                },
                 self.library.updated_at,
             )
             .await
-            .unwrap_or(false);
-        if updated {
+    }
+
+    pub async fn start(&mut self) {
+        self.scanned = 0;
+        self.library.set_scan_status(ScanStatus::Scanning {
+            scanned: 0,
+            total: self.total,
+        });
+        if self.persist_scan_state().await.unwrap_or(false) {
             self.events.publish(SystemEvent::LibraryScanProgress {
                 library_id: self.library.id,
                 library_name: self.library.name.clone(),
@@ -77,29 +73,20 @@ impl ScanProgressReporter {
         }
     }
 
-    /// Increments the scanned item counter by 1 and emits a throttled progress update.
     pub async fn advance(&mut self) {
         self.scanned = self.scanned.saturating_add(1);
         self.report(self.scanned).await;
     }
 
-    /// Records the current scanned count and persists/broadcasts when hitting the throttle step or total.
     pub async fn report(&mut self, scanned: u64) {
         self.scanned = scanned;
         let reached_total = self.total.is_some_and(|t| scanned >= t);
         if scanned.is_multiple_of(self.progress_step) || reached_total {
-            self.library.mark_scanning(scanned, self.total);
-            let updated = self
-                .libraries
-                .update_scan_state(
-                    self.library.id,
-                    &self.library.scan_status,
-                    self.library.last_scanned_at,
-                    self.library.updated_at,
-                )
-                .await
-                .unwrap_or(false);
-            if updated {
+            self.library.set_scan_status(ScanStatus::Scanning {
+                scanned,
+                total: self.total,
+            });
+            if self.persist_scan_state().await.unwrap_or(false) {
                 self.events.publish(SystemEvent::LibraryScanProgress {
                     library_id: self.library.id,
                     library_name: self.library.name.clone(),
@@ -111,15 +98,12 @@ impl ScanProgressReporter {
         }
     }
 
-    /// Finalizes the scan using the internally tracked `scanned` count, persists completion,
-    /// broadcasts `LibraryScanCompleted`, and emits `MediaChanged` if any items changed.
     pub async fn complete(self, added: u64, updated: u64, missing: u64) -> DomainResult<Library> {
         let scanned = self.scanned;
         self.complete_with_scanned(scanned, added, updated, missing)
             .await
     }
 
-    /// Finalizes the scan with an explicit `scanned` count.
     pub async fn complete_with_scanned(
         mut self,
         scanned: u64,
@@ -127,18 +111,13 @@ impl ScanProgressReporter {
         updated: u64,
         missing: u64,
     ) -> DomainResult<Library> {
-        self.library
-            .mark_scan_completed(scanned, added, updated, missing);
-        let existed = self
-            .libraries
-            .update_scan_state(
-                self.library.id,
-                &self.library.scan_status,
-                self.library.last_scanned_at,
-                self.library.updated_at,
-            )
-            .await?;
-        if !existed {
+        self.library.set_scan_status(ScanStatus::Completed {
+            scanned,
+            added,
+            updated,
+            missing,
+        });
+        if !self.persist_scan_state().await? {
             return Err(DomainError::NotFound(
                 "library was deleted while scan was in progress".into(),
             ));
@@ -160,21 +139,12 @@ impl ScanProgressReporter {
         Ok(self.library)
     }
 
-    /// Marks the scan as failed, persists best-effort, and broadcasts `LibraryScanFailed`.
     pub async fn fail(mut self, message: impl Into<String>) {
         let msg = message.into();
-        self.library.mark_scan_failed(msg.clone());
-        let existed = self
-            .libraries
-            .update_scan_state(
-                self.library.id,
-                &self.library.scan_status,
-                self.library.last_scanned_at,
-                self.library.updated_at,
-            )
-            .await
-            .unwrap_or(false);
-        if existed {
+        self.library.set_scan_status(ScanStatus::Failed {
+            message: msg.clone(),
+        });
+        if self.persist_scan_state().await.unwrap_or(false) {
             self.events.publish(SystemEvent::LibraryScanFailed {
                 library_id: self.library.id,
                 library_name: self.library.name.clone(),

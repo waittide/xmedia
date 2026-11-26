@@ -3,22 +3,6 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use crate::domain::error::{DomainError, DomainResult};
-use crate::domain::user::User;
-use crate::infra::stream::sha256_hex;
-
-/// Computes a deterministic credential version fingerprint from a user's password hash, API key,
-/// and role so password changes, admin password resets, API key rotations, and role changes
-/// immediately invalidate all previously issued JWTs even across server restarts.
-pub(super) fn compute_user_cred_ver(user: &User) -> String {
-    let material = format!(
-        "{}\0{}\0{}",
-        user.password_hash,
-        user.api_key,
-        user.role.as_str()
-    );
-    let full = sha256_hex(material.as_bytes());
-    full[..16].to_string()
-}
 
 /// Constant-time byte-slice comparison using XOR accumulation to avoid timing side-channels
 /// when comparing API keys or secrets.

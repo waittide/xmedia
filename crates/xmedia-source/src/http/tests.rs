@@ -1043,7 +1043,7 @@ async fn proxied_requests_enforce_dns_ssrf_validation_before_contacting_proxy() 
         "proxied blocking client must reject SSRF target before opening proxy connection"
     );
 
-    let async_err = crate::proxy::fetch_validated_image_bytes_with_config(
+    let async_err = crate::proxy::fetch_image(
         "http://definitely-nonexistent-ssrf-host.invalid/cover.png",
         None,
         1024,

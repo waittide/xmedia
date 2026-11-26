@@ -13,6 +13,7 @@ server = [
     "dep:base64",
     "dep:blake3",
     "dep:form_urlencoded",
+    "dep:getrandom",
     "dep:hex",
     "dep:image",
     "dep:jiff",
@@ -36,6 +37,7 @@ chardetng.workspace = true
 encoding_rs.workspace = true
 form_urlencoded = { workspace = true, optional = true }
 futures-core.workspace = true
+getrandom = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 jiff = { workspace = true, optional = true }

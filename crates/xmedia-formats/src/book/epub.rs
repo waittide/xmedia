@@ -1,23 +1,22 @@
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use zip::ZipArchive;
 
-use super::epub_toc::extract_toc;
 pub use super::epub_toc::{parse_nav_xhtml_toc, parse_ncx_toc};
 use super::opf::{OpfManifestItem, ParsedOpfDocument, parse_opf_xml};
 use super::{BookFormatExt, BookTocEntry, ParsedBookMeta, ParsedBookPackage};
-use crate::common::{BinaryAsset, sniff_raster_image_mime, xml_attr_value};
+use crate::common::{BinaryAsset, normalize_zip_path, sniff_raster_image_mime, xml_attr_value};
 use crate::error::{FormatError, FormatResult};
 
-pub const MAX_EPUB_METADATA_BYTES: u64 = 4 * 1024 * 1024;
-pub const MAX_EPUB_RESOURCE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_EPUB_METADATA_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_EPUB_RESOURCE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ZIP_PREALLOC_BYTES: usize = 1024 * 1024;
 
-pub enum BoundedZipRead {
+enum BoundedZipRead {
     Ok(Vec<u8>),
     NotFound,
     TooLarge,
@@ -35,7 +34,7 @@ pub struct InspectedEpubArchive {
     pub meta: ParsedBookMeta,
 }
 
-pub fn guess_epub_mime(path: &str) -> &'static str {
+fn guess_epub_mime(path: &str) -> &'static str {
     let ext = Path::new(path)
         .extension()
         .and_then(|s| s.to_str())
@@ -63,49 +62,6 @@ pub fn guess_epub_mime(path: &str) -> &'static str {
     }
 }
 
-fn decode_percent_path(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let (Some(hi), Some(lo)) = (
-                (bytes[i + 1] as char).to_digit(16),
-                (bytes[i + 2] as char).to_digit(16),
-            )
-        {
-            out.push(((hi << 4) | lo) as u8);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-pub fn normalize_zip_path(base_dir: &Path, relative: &str) -> String {
-    let without_frag = relative.split('#').next().unwrap_or(relative);
-    let without_query = without_frag.split('?').next().unwrap_or(without_frag);
-    let decoded = decode_percent_path(without_query);
-    let joined = base_dir.join(decoded);
-    let mut out = PathBuf::new();
-    for comp in joined.components() {
-        match comp {
-            Component::Normal(part) => out.push(part),
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
-        }
-    }
-    out.components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 fn read_bounded_zip_file<R: Read>(
     file: &mut R,
     declared_size: u64,
@@ -130,7 +86,7 @@ fn read_bounded_zip_file<R: Read>(
     BoundedZipRead::Ok(buf)
 }
 
-pub fn read_zip_entry_bounded<R: Read + Seek>(
+fn read_zip_entry_bounded<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
     max_bytes: u64,
@@ -162,7 +118,7 @@ pub fn read_zip_entry_bounded<R: Read + Seek>(
     read_bounded_zip_file(&mut file, size, max_bytes)
 }
 
-pub fn read_zip_entry<R: Read + Seek>(
+fn read_zip_entry<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
     max_bytes: u64,
@@ -234,25 +190,89 @@ fn extract_safe_cover<R: Read + Seek>(
     Some(BinaryAsset::new(bytes, safe_mime))
 }
 
+fn read_archive_opf<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    fallback_title: &str,
+) -> FormatResult<(String, ParsedOpfDocument)> {
+    let container_bytes =
+        read_zip_entry(archive, "META-INF/container.xml", MAX_EPUB_METADATA_BYTES)
+            .ok_or_else(|| FormatError::Validation("EPUB missing META-INF/container.xml".into()))?;
+    let opf_path = find_opf_path_in_container(&container_bytes)
+        .ok_or_else(|| FormatError::Validation("EPUB container.xml missing rootfile".into()))?;
+    let opf_bytes = read_zip_entry(archive, &opf_path, MAX_EPUB_METADATA_BYTES)
+        .ok_or_else(|| FormatError::Validation(format!("EPUB missing OPF package: {opf_path}")))?;
+    let opf = parse_opf_xml(&opf_bytes, BookFormatExt::Epub, fallback_title);
+    Ok((opf_path, opf))
+}
+
+fn extract_toc<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    opf_dir: &Path,
+    opf: &ParsedOpfDocument,
+) -> Vec<BookTocEntry> {
+    let by_id = opf.manifest_by_id();
+    let mut nav_toc = Vec::new();
+    if let Some(nav_item) = opf
+        .manifest
+        .iter()
+        .find(|item| item.properties.split_whitespace().any(|p| p == "nav"))
+    {
+        let nav_path = normalize_zip_path(opf_dir, &nav_item.href);
+        let nav_dir = Path::new(&nav_path).parent().unwrap_or(Path::new(""));
+        if let Some(bytes) = read_zip_entry(archive, &nav_path, MAX_EPUB_METADATA_BYTES) {
+            nav_toc = parse_nav_xhtml_toc(&bytes, nav_dir);
+        }
+    }
+
+    let mut ncx_toc = Vec::new();
+    let ncx_item = opf
+        .spine_toc_id
+        .as_deref()
+        .and_then(|id| by_id.get(id).copied())
+        .or_else(|| {
+            opf.manifest
+                .iter()
+                .find(|i| i.media_type.contains("dtbncx"))
+        });
+    if let Some(ncx) = ncx_item {
+        let ncx_path = normalize_zip_path(opf_dir, &ncx.href);
+        let ncx_dir = Path::new(&ncx_path).parent().unwrap_or(Path::new(""));
+        if let Some(bytes) = read_zip_entry(archive, &ncx_path, MAX_EPUB_METADATA_BYTES) {
+            ncx_toc = parse_ncx_toc(&bytes, ncx_dir);
+        }
+    }
+
+    if ncx_toc.len() > nav_toc.len() && nav_toc.len() <= 1 {
+        return ncx_toc;
+    }
+    if !nav_toc.is_empty() {
+        return nav_toc;
+    }
+    if !ncx_toc.is_empty() {
+        return ncx_toc;
+    }
+
+    opf.spine_ids
+        .iter()
+        .filter_map(|id| by_id.get(id.as_str()).copied())
+        .enumerate()
+        .map(|(i, item)| BookTocEntry {
+            index: u32::try_from(i).unwrap_or(0),
+            title: format!("Section {}", i + 1),
+            href: normalize_zip_path(opf_dir, &item.href),
+            level: 0,
+        })
+        .collect()
+}
+
 pub fn parse_epub_reader<R: Read + Seek>(
     reader: R,
     fallback_title: &str,
 ) -> FormatResult<ParsedBookPackage> {
     let mut archive = ZipArchive::new(reader)
         .map_err(|e| FormatError::Validation(format!("invalid EPUB archive: {e}")))?;
-    let container_bytes = read_zip_entry(
-        &mut archive,
-        "META-INF/container.xml",
-        MAX_EPUB_METADATA_BYTES,
-    )
-    .ok_or_else(|| FormatError::Validation("EPUB missing META-INF/container.xml".into()))?;
-    let opf_path = find_opf_path_in_container(&container_bytes)
-        .ok_or_else(|| FormatError::Validation("EPUB container.xml missing rootfile".into()))?;
-    let opf_bytes = read_zip_entry(&mut archive, &opf_path, MAX_EPUB_METADATA_BYTES)
-        .ok_or_else(|| FormatError::Validation(format!("EPUB missing OPF package: {opf_path}")))?;
-
+    let (opf_path, mut opf) = read_archive_opf(&mut archive, fallback_title)?;
     let opf_dir = Path::new(&opf_path).parent().unwrap_or(Path::new(""));
-    let mut opf = parse_opf_xml(&opf_bytes, BookFormatExt::Epub, fallback_title);
     let toc = extract_toc(&mut archive, opf_dir, &opf);
     opf.meta.chapter_count = u32::try_from(toc.len().max(opf.spine_ids.len())).ok();
     let cover = extract_safe_cover(&mut archive, opf_dir, &opf);
@@ -274,24 +294,12 @@ pub fn inspect_epub_path(path: &Path) -> FormatResult<InspectedEpubArchive> {
         .map_err(|e| FormatError::Io(format!("failed opening '{}': {e}", path.display())))?;
     let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|e| FormatError::Validation(format!("invalid epub archive: {e}")))?;
-
-    let container_xml = read_zip_entry(
-        &mut archive,
-        "META-INF/container.xml",
-        MAX_EPUB_METADATA_BYTES,
-    )
-    .ok_or_else(|| FormatError::Validation("missing META-INF/container.xml in epub".into()))?;
-    let opf_path = find_opf_path_in_container(&container_xml)
-        .ok_or_else(|| FormatError::Validation("rootfile missing in container.xml".into()))?;
-    let opf_bytes = read_zip_entry(&mut archive, &opf_path, MAX_EPUB_METADATA_BYTES)
-        .ok_or_else(|| FormatError::Validation(format!("OPF '{opf_path}' missing in epub")))?;
-
-    let opf_dir = Path::new(&opf_path).parent().unwrap_or(Path::new(""));
     let fallback_title = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled");
-    let mut opf = parse_opf_xml(&opf_bytes, BookFormatExt::Epub, fallback_title);
+    let (opf_path, mut opf) = read_archive_opf(&mut archive, fallback_title)?;
+    let opf_dir = Path::new(&opf_path).parent().unwrap_or(Path::new(""));
     let cover_item = select_cover_manifest_item(&opf).cloned();
     let cover_href = cover_item
         .as_ref()
@@ -315,18 +323,8 @@ pub fn inspect_epub_path(path: &Path) -> FormatResult<InspectedEpubArchive> {
 pub fn list_epub_toc_from_reader<R: Read + Seek>(reader: R) -> FormatResult<Vec<BookTocEntry>> {
     let mut archive = ZipArchive::new(reader)
         .map_err(|e| FormatError::Validation(format!("invalid EPUB archive: {e}")))?;
-    let container_bytes = read_zip_entry(
-        &mut archive,
-        "META-INF/container.xml",
-        MAX_EPUB_METADATA_BYTES,
-    )
-    .ok_or_else(|| FormatError::Validation("EPUB missing META-INF/container.xml".into()))?;
-    let opf_path = find_opf_path_in_container(&container_bytes)
-        .ok_or_else(|| FormatError::Validation("EPUB container.xml missing rootfile".into()))?;
-    let opf_bytes = read_zip_entry(&mut archive, &opf_path, MAX_EPUB_METADATA_BYTES)
-        .ok_or_else(|| FormatError::Validation(format!("EPUB missing OPF package: {opf_path}")))?;
+    let (opf_path, opf) = read_archive_opf(&mut archive, "Untitled")?;
     let opf_dir = Path::new(&opf_path).parent().unwrap_or(Path::new(""));
-    let opf = parse_opf_xml(&opf_bytes, BookFormatExt::Epub, "Untitled");
     Ok(extract_toc(&mut archive, opf_dir, &opf))
 }
 

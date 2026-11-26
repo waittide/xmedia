@@ -14,6 +14,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
 use super::{ApiError, ApiResult};
 use crate::application::auth::AuthService;
+use crate::application::dto::AuthCredential;
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::user::User;
 
@@ -35,6 +36,28 @@ where
     }
 }
 
+/// Direct TCP peer IP address (before forwarded headers) for loopback reverse-proxy detection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PeerIp(pub Option<IpAddr>);
+
+impl<S> FromRequestParts<S> for PeerIp
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(extract_peer_ip(parts)))
+    }
+}
+
+pub fn extract_peer_ip(parts: &Parts) -> Option<IpAddr> {
+    parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_canonical())
+}
+
 fn parse_forwarded_ip_token(raw: &str) -> Option<IpAddr> {
     let trimmed = raw.trim().trim_matches('"');
     if trimmed.is_empty() {
@@ -49,7 +72,7 @@ fn parse_forwarded_ip_token(raw: &str) -> Option<IpAddr> {
     None
 }
 
-pub(crate) fn extract_client_ip_from_headers_and_peer(
+pub(crate) fn client_ip_from_headers(
     headers: &HeaderMap,
     peer_ip: Option<IpAddr>,
     trust_proxy: bool,
@@ -59,10 +82,15 @@ pub(crate) fn extract_client_ip_from_headers_and_peer(
 
     if may_trust_forwarded {
         if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            for candidate in xff.split(',') {
-                if let Some(ip) = parse_forwarded_ip_token(candidate) {
-                    return Some(ip);
-                }
+            let parsed: Vec<IpAddr> = xff
+                .rsplit(',')
+                .filter_map(parse_forwarded_ip_token)
+                .collect();
+            if let Some(non_loopback) = parsed.iter().copied().find(|ip| !ip.is_loopback()) {
+                return Some(non_loopback);
+            }
+            if let Some(any_ip) = parsed.first().copied() {
+                return Some(any_ip);
             }
         }
         if let Some(xri) = headers.get("x-real-ip").and_then(|v| v.to_str().ok())
@@ -86,7 +114,7 @@ pub fn extract_client_ip(parts: &Parts) -> Option<IpAddr> {
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip())
         .or_else(|| parts.extensions.get::<SocketAddr>().map(SocketAddr::ip));
-    extract_client_ip_from_headers_and_peer(&parts.headers, peer_ip, cached_trust_proxy())
+    client_ip_from_headers(&parts.headers, peer_ip, cached_trust_proxy())
 }
 
 fn cached_cookie_secure_override() -> Option<bool> {
@@ -114,11 +142,15 @@ fn cached_trust_proxy() -> bool {
     })
 }
 
-fn is_https_request(headers: &HeaderMap) -> bool {
+fn may_trust_forwarded_for_peer(peer_ip: Option<IpAddr>) -> bool {
+    cached_trust_proxy() || peer_ip.is_some_and(|ip| ip.to_canonical().is_loopback())
+}
+
+fn is_https_request_for_peer(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> bool {
     if let Some(explicit) = cached_cookie_secure_override() {
         return explicit;
     }
-    if !cached_trust_proxy() {
+    if !may_trust_forwarded_for_peer(peer_ip) {
         return false;
     }
     headers
@@ -133,12 +165,13 @@ fn is_https_request(headers: &HeaderMap) -> bool {
         })
 }
 
-pub fn build_session_cookie(
+pub fn session_cookie(
     token: &str,
     max_age_secs: u64,
     req_headers: &HeaderMap,
+    peer_ip: Option<IpAddr>,
 ) -> HeaderValue {
-    let secure_attr = if is_https_request(req_headers) {
+    let secure_attr = if is_https_request_for_peer(req_headers, peer_ip) {
         "; Secure"
     } else {
         ""
@@ -149,8 +182,8 @@ pub fn build_session_cookie(
     HeaderValue::from_str(&raw).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
-pub fn build_clear_cookie(req_headers: &HeaderMap) -> HeaderValue {
-    if is_https_request(req_headers) {
+pub fn clear_cookie(req_headers: &HeaderMap, peer_ip: Option<IpAddr>) -> HeaderValue {
+    if is_https_request_for_peer(req_headers, peer_ip) {
         HeaderValue::from_static("xmedia_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure")
     } else {
         HeaderValue::from_static("xmedia_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
@@ -246,7 +279,7 @@ fn parse_origin_tuple(
 }
 
 fn resolve_target_host_and_port(parts: &Parts) -> Option<(String, Option<u16>)> {
-    if cached_trust_proxy()
+    if may_trust_forwarded_for_peer(extract_peer_ip(parts))
         && let Some(fwd_host) = parts
             .headers
             .get("x-forwarded-host")
@@ -295,7 +328,7 @@ fn resolve_target_host_and_port(parts: &Parts) -> Option<(String, Option<u16>)> 
 fn origin_matches_target(
     origin: &(String, String, Option<u16>),
     target: &(String, Option<u16>),
-    headers: &HeaderMap,
+    is_https: bool,
 ) -> bool {
     let (origin_scheme, origin_host, origin_port) = origin;
     let (target_host, target_port) = target;
@@ -307,10 +340,10 @@ fn origin_matches_target(
     if let Some(tp) = *target_port {
         return origin_effective_port == tp;
     }
-    if is_https_request(headers) {
+    if is_https {
         return origin_scheme == "https" && origin_effective_port == 443;
     }
-    origin_port.is_none()
+    origin_scheme == "http" && origin_effective_port == 80
 }
 
 /// Validates `Sec-Fetch-Site` and `Origin` (with `Referer` fallback) against CSRF on
@@ -357,7 +390,8 @@ pub fn verify_cookie_csrf(parts: &Parts) -> DomainResult<()> {
                     .into(),
             ));
         };
-        if !origin_matches_target(&parsed_origin, &target, &parts.headers) {
+        let is_https = is_https_request_for_peer(&parts.headers, extract_peer_ip(parts));
+        if !origin_matches_target(&parsed_origin, &target, is_https) {
             return Err(DomainError::Forbidden(
                 "cross-origin session cookie request blocked (CSRF)".into(),
             ));
@@ -382,7 +416,8 @@ pub fn verify_cookie_csrf(parts: &Parts) -> DomainResult<()> {
                     .into(),
             ));
         };
-        if !origin_matches_target(&parsed_ref, &target, &parts.headers) {
+        let is_https = is_https_request_for_peer(&parts.headers, extract_peer_ip(parts));
+        if !origin_matches_target(&parsed_ref, &target, is_https) {
             return Err(DomainError::Forbidden(
                 "cross-origin session cookie request blocked (CSRF)".into(),
             ));
@@ -401,19 +436,25 @@ pub fn extract_request_token(parts: &Parts) -> Option<String> {
 pub async fn authenticate_web_parts(parts: &Parts, auth: &AuthService) -> ApiResult<User> {
     let client_ip = extract_client_ip(parts);
     if let Some(token) = extract_bearer_token(&parts.headers) {
-        return Ok(auth.authenticate_jwt(&token).await?);
+        return Ok(auth
+            .authenticate(AuthCredential::Jwt(&token), client_ip)
+            .await?);
     }
     if let Some(api_key) = parts.headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
         return Ok(auth
-            .authenticate_api_key_with_ip(api_key, client_ip)
+            .authenticate(AuthCredential::ApiKey(api_key), client_ip)
             .await?);
     }
     if let Some(cookie_token) = extract_session_cookie_token(&parts.headers) {
         verify_cookie_csrf(parts)?;
-        return Ok(auth.authenticate_jwt(&cookie_token).await?);
+        return Ok(auth
+            .authenticate(AuthCredential::Jwt(&cookie_token), client_ip)
+            .await?);
     }
     if let Some(query_token) = extract_query_token(parts) {
-        return Ok(auth.authenticate_jwt(&query_token).await?);
+        return Ok(auth
+            .authenticate(AuthCredential::Jwt(&query_token), client_ip)
+            .await?);
     }
     Err(ApiError(DomainError::Unauthorized(
         "missing authentication token".into(),
@@ -447,14 +488,16 @@ pub async fn authenticate_opds_parts(
         && let Ok(decoded_str) = String::from_utf8(decoded_bytes)
         && let Some((username, password)) = decoded_str.split_once(':')
         && let Ok(user) = auth
-            .verify_basic_credentials_with_ip(username, password, client_ip)
+            .authenticate(AuthCredential::Basic { username, password }, client_ip)
             .await
     {
         return Ok(user);
     }
 
     if let Some(api_key) = parts.headers.get("x-api-key").and_then(|v| v.to_str().ok())
-        && let Ok(user) = auth.authenticate_api_key_with_ip(api_key, client_ip).await
+        && let Ok(user) = auth
+            .authenticate(AuthCredential::ApiKey(api_key), client_ip)
+            .await
     {
         return Ok(user);
     }
@@ -463,7 +506,9 @@ pub async fn authenticate_opds_parts(
         for (k, v) in form_urlencoded::parse(query.as_bytes()) {
             if (k == "api_key" || k == "apiKey")
                 && !v.trim().is_empty()
-                && let Ok(user) = auth.authenticate_api_key_with_ip(&v, client_ip).await
+                && let Ok(user) = auth
+                    .authenticate(AuthCredential::ApiKey(&v), client_ip)
+                    .await
             {
                 return Ok(user);
             }
@@ -471,10 +516,16 @@ pub async fn authenticate_opds_parts(
     }
 
     if let Some(token) = extract_request_token(parts) {
-        if let Ok(user) = auth.authenticate_jwt(&token).await {
+        if let Ok(user) = auth
+            .authenticate(AuthCredential::Jwt(&token), client_ip)
+            .await
+        {
             return Ok(user);
         }
-        if let Ok(user) = auth.authenticate_api_key_with_ip(&token, client_ip).await {
+        if let Ok(user) = auth
+            .authenticate(AuthCredential::ApiKey(&token), client_ip)
+            .await
+        {
             return Ok(user);
         }
     }

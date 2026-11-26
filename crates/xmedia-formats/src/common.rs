@@ -1,4 +1,6 @@
+use std::cmp::Ordering;
 use std::io::{Cursor, Read};
+use std::path::{Component, Path, PathBuf};
 
 use blake3::Hasher as Blake3Hasher;
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
@@ -252,4 +254,136 @@ pub fn blake3_hex(bytes: &[u8]) -> String {
     let mut hasher = Blake3Hasher::new();
     hasher.update(bytes);
     hasher.finalize().to_hex().to_string()
+}
+
+fn decode_percent_path(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push(((hi << 4) | lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Normalizes a relative archive path (stripping query/fragment, percent-decoding, and resolving `..` safely).
+pub fn normalize_zip_path(base_dir: &Path, relative: &str) -> String {
+    let without_frag = relative.split('#').next().unwrap_or(relative);
+    let without_query = without_frag.split('?').next().unwrap_or(without_frag);
+    let decoded = decode_percent_path(without_query);
+    let joined = base_dir.join(decoded);
+    let mut out = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            Component::Normal(part) => out.push(part),
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    out.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NumberToken {
+    int_part: u128,
+    frac_part: String,
+    raw_len: usize,
+}
+
+fn take_number_tokens<I>(iter: &mut std::iter::Peekable<I>) -> NumberToken
+where
+    I: Iterator<Item = char> + Clone,
+{
+    let mut raw_int = String::new();
+    while let Some(&c) = iter.peek() {
+        if c.is_ascii_digit() {
+            raw_int.push(c);
+            iter.next();
+        } else {
+            break;
+        }
+    }
+
+    let mut frac_part = String::new();
+    let mut clone = iter.clone();
+    if clone.next() == Some('.') && clone.peek().is_some_and(|c| c.is_ascii_digit()) {
+        iter.next();
+        while let Some(&c) = iter.peek() {
+            if c.is_ascii_digit() {
+                frac_part.push(c);
+                iter.next();
+            } else {
+                break;
+            }
+        }
+    }
+
+    NumberToken {
+        int_part: raw_int.parse::<u128>().unwrap_or(u128::MAX),
+        frac_part,
+        raw_len: raw_int.len(),
+    }
+}
+
+fn cmp_number_tokens(a: &NumberToken, b: &NumberToken) -> Ordering {
+    match a.int_part.cmp(&b.int_part) {
+        Ordering::Equal => {}
+        non_eq => return non_eq,
+    }
+    let fa = a.frac_part.trim_end_matches('0');
+    let fb = b.frac_part.trim_end_matches('0');
+    match fa.cmp(fb) {
+        Ordering::Equal => a.raw_len.cmp(&b.raw_len),
+        non_eq => non_eq,
+    }
+}
+
+/// Fractional-aware natural string comparator (`1 < 1.5 < 2 < 10`, case-insensitive).
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let mut ia = a.chars().peekable();
+    let mut ib = b.chars().peekable();
+
+    loop {
+        match (ia.peek(), ib.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&ca), Some(&cb)) => {
+                if ca.is_ascii_digit() && cb.is_ascii_digit() {
+                    let na = take_number_tokens(&mut ia);
+                    let nb = take_number_tokens(&mut ib);
+                    match cmp_number_tokens(&na, &nb) {
+                        Ordering::Equal => continue,
+                        non_eq => return non_eq,
+                    }
+                } else {
+                    let la = ca.to_lowercase().next().unwrap_or(ca);
+                    let lb = cb.to_lowercase().next().unwrap_or(cb);
+                    ia.next();
+                    ib.next();
+                    match la.cmp(&lb) {
+                        Ordering::Equal => continue,
+                        non_eq => return non_eq,
+                    }
+                }
+            }
+        }
+    }
 }

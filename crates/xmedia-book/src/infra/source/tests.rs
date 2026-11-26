@@ -376,10 +376,11 @@ async fn end_to_end_classic_html_css_legado_source() {
     })
     .to_string();
 
-    let (src, _) = LegadoBookSource::parse_json_batch(&raw_json)
-        .unwrap()
-        .pop()
-        .unwrap();
+    let (src, _) =
+        <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_batch(&raw_json)
+            .unwrap()
+            .pop()
+            .unwrap();
     let engine = BookSourceEngine::new(
         HttpClientConfig {
             allow_private_ips: true,
@@ -584,10 +585,11 @@ async fn end_to_end_jslib_data_url_json_aggregator_source() {
     })
     .to_string();
 
-    let (src, _) = LegadoBookSource::parse_json_batch(&raw_json)
-        .unwrap()
-        .pop()
-        .unwrap();
+    let (src, _) =
+        <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_batch(&raw_json)
+            .unwrap()
+            .pop()
+            .unwrap();
     let engine = BookSourceEngine::new(
         HttpClientConfig {
             allow_private_ips: true,

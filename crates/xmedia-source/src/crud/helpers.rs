@@ -1,29 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Weak};
 
 use jiff::Timestamp;
 use uuid::Uuid;
 
 use super::dto::{MASKED_SECRET_PLACEHOLDER, SourceSummaryDto, VARIABLE_PREVIEW_MAX_CHARS};
 use crate::model::{LoginUiItem, SourceRuntimeState};
-
-/// Returns a per-source async `Mutex<()>` backed by a bounded weak-reference map so dropped
-/// locks are reclaimed automatically.
-pub fn get_or_insert_weak_lock(
-    locks: &std::sync::Mutex<HashMap<Uuid, Weak<tokio::sync::Mutex<()>>>>,
-    id: Uuid,
-) -> Arc<tokio::sync::Mutex<()>> {
-    let mut guard = locks.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = guard.get(&id).and_then(Weak::upgrade) {
-        return existing;
-    }
-    if guard.len() >= 256 {
-        guard.retain(|_, weak| weak.strong_count() > 0);
-    }
-    let lock = Arc::new(tokio::sync::Mutex::new(()));
-    guard.insert(id, Arc::downgrade(&lock));
-    lock
-}
 
 /// Parses a single JSON object or JSON array (stripping whitespace + UTF-8 BOM `\u{feff}`),
 /// preserving each item's serialized raw JSON string and skipping entries where `is_blank(&item)`

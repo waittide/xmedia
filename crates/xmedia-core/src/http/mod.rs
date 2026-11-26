@@ -337,3 +337,26 @@ pub fn into_binary_cache_response(payload: BinaryPayload) -> Response {
     );
     res
 }
+
+/// Redacts sensitive authentication query parameters (`token`, `api_key`, `p`, `t`, `s`, etc.)
+/// before recording HTTP request URIs in tracing spans.
+pub fn redact_uri_for_log(uri: &axum::http::Uri) -> String {
+    let path = uri.path();
+    let Some(query) = uri.query() else {
+        return path.to_string();
+    };
+    let mut parts = Vec::new();
+    for seg in query.split('&') {
+        if let Some((k, _)) = seg.split_once('=')
+            && matches!(
+                k,
+                "token" | "api_key" | "apiKey" | "apikey" | "p" | "t" | "s" | "password"
+            )
+        {
+            parts.push(format!("{k}=[REDACTED]"));
+            continue;
+        }
+        parts.push(seg.to_string());
+    }
+    format!("{path}?{}", parts.join("&"))
+}

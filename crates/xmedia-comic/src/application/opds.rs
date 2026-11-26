@@ -12,8 +12,11 @@ use crate::application::catalog::ComicCatalogService;
 use crate::application::dto::SeriesQueryFilter;
 use crate::domain::chapter::{Chapter, ChapterSourceKind};
 use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
-use crate::domain::reading::{ChapterProgress, format_chapter_number};
-use crate::domain::repository::{ChapterRepository, ComicReadingRepository, SeriesRepository};
+use crate::domain::reading::ChapterProgress;
+use crate::domain::repository::{
+    ChapterQuery, ChapterRepository, ComicProgressScope, ComicReadingRepository, SeriesQuery,
+    SeriesRepository,
+};
 
 #[derive(Debug, Clone)]
 pub struct OpdsNavItem {
@@ -48,6 +51,21 @@ pub enum OpdsFeedPayload {
 }
 
 #[derive(Debug, Clone)]
+pub enum OpdsFeedKind {
+    Root,
+    Continue,
+    Latest,
+    AllSeries(Option<String>),
+    SeriesChapters(SeriesId),
+    Libraries,
+    LibrarySeries(LibraryId),
+    Tags,
+    TagSeries { name: String, is_genre: bool },
+    Shelves,
+    ShelfSeries(ComicShelfId),
+    Favorites,
+}
+
 pub struct OpdsFeed {
     pub id: String,
     pub title: String,
@@ -81,7 +99,55 @@ impl ComicOpdsService {
         }
     }
 
-    pub fn root_feed(&self, ver_prefix: &str) -> OpdsFeed {
+    pub async fn serve_feed(
+        &self,
+        user: &User,
+        catalog: &ComicCatalogService,
+        opds_root: &str,
+        ver_prefix: &str,
+        kind: OpdsFeedKind,
+    ) -> DomainResult<OpdsFeed> {
+        match kind {
+            OpdsFeedKind::Root => Ok(self.root_feed(ver_prefix)),
+            OpdsFeedKind::Continue => {
+                self.continue_reading_feed(user, catalog, opds_root, ver_prefix)
+                    .await
+            }
+            OpdsFeedKind::Latest => {
+                self.latest_series_feed(user, catalog, opds_root, ver_prefix)
+                    .await
+            }
+            OpdsFeedKind::AllSeries(search) => {
+                self.all_series_feed(user, catalog, search, opds_root, ver_prefix)
+                    .await
+            }
+            OpdsFeedKind::SeriesChapters(series_id) => {
+                self.series_chapters_feed(user, series_id, opds_root, ver_prefix)
+                    .await
+            }
+            OpdsFeedKind::Libraries => self.libraries_feed(user, catalog, ver_prefix).await,
+            OpdsFeedKind::LibrarySeries(lib_id) => {
+                self.library_series_feed(user, catalog, lib_id, opds_root, ver_prefix)
+                    .await
+            }
+            OpdsFeedKind::Tags => self.tags_feed(user, catalog, ver_prefix).await,
+            OpdsFeedKind::TagSeries { name, is_genre } => {
+                self.tag_series_feed(user, catalog, &name, is_genre, opds_root, ver_prefix)
+                    .await
+            }
+            OpdsFeedKind::Shelves => self.shelves_feed(user, ver_prefix).await,
+            OpdsFeedKind::ShelfSeries(shelf_id) => {
+                self.shelf_series_feed(user, catalog, shelf_id, opds_root, ver_prefix)
+                    .await
+            }
+            OpdsFeedKind::Favorites => {
+                self.favorites_series_feed(user, catalog, opds_root, ver_prefix)
+                    .await
+            }
+        }
+    }
+
+    fn root_feed(&self, ver_prefix: &str) -> OpdsFeed {
         let now = Timestamp::now();
         let items = vec![
             OpdsNavItem {
@@ -143,7 +209,7 @@ impl ComicOpdsService {
         }
     }
 
-    pub async fn continue_reading_feed(
+    async fn continue_reading_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -158,7 +224,7 @@ impl ComicOpdsService {
             .collect();
         let mut chapter_map: HashMap<ChapterId, Chapter> = self
             .chapters
-            .find_by_ids(&chapter_ids)
+            .query(ChapterQuery::Ids(chapter_ids))
             .await?
             .into_iter()
             .map(|c| (c.id, c))
@@ -187,7 +253,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn latest_series_feed(
+    async fn latest_series_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -227,7 +293,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn all_series_feed(
+    async fn all_series_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -268,13 +334,13 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn libraries_feed(
+    async fn libraries_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
         ver_prefix: &str,
     ) -> DomainResult<OpdsFeed> {
-        let libs = self.libraries.list_by_media(MediaKind::Comic).await?;
+        let libs = self.libraries.list(Some(MediaKind::Comic)).await?;
         let counts = catalog.count_bound_series_by_library(user).await?;
         let mut items = Vec::with_capacity(libs.len());
         for l in libs {
@@ -300,7 +366,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn library_series_feed(
+    async fn library_series_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -350,7 +416,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn tags_feed(
+    async fn tags_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -388,7 +454,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn tag_series_feed(
+    async fn tag_series_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -431,7 +497,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn shelves_feed(&self, user: &User, ver_prefix: &str) -> DomainResult<OpdsFeed> {
+    async fn shelves_feed(&self, user: &User, ver_prefix: &str) -> DomainResult<OpdsFeed> {
         let now = Timestamp::now();
         let bound_ids = self
             .bindings
@@ -453,7 +519,7 @@ impl ComicOpdsService {
             updated_at: now,
         }];
 
-        let shelves = self.reading.list_shelves(user.id).await?;
+        let shelves = self.reading.query_shelves(Some(user.id), None).await?;
         for sh in shelves {
             let count = sh
                 .series_ids
@@ -479,7 +545,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn favorites_series_feed(
+    async fn favorites_series_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -517,7 +583,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn shelf_series_feed(
+    async fn shelf_series_feed(
         &self,
         user: &User,
         catalog: &ComicCatalogService,
@@ -527,8 +593,10 @@ impl ComicOpdsService {
     ) -> DomainResult<OpdsFeed> {
         let shelf = self
             .reading
-            .find_shelf(shelf_id)
+            .query_shelves(None, Some(shelf_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound("shelf not found".into()))?;
         if shelf.user_id != user.id {
             return Err(DomainError::Forbidden("access denied to shelf".into()));
@@ -564,7 +632,7 @@ impl ComicOpdsService {
         })
     }
 
-    pub async fn series_chapters_feed(
+    async fn series_chapters_feed(
         &self,
         user: &User,
         series_id: SeriesId,
@@ -576,15 +644,17 @@ impl ComicOpdsService {
             .await?;
         let series = self
             .series
-            .find_by_id(series_id)
+            .query(SeriesQuery::Id(series_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound("series not found".into()))?;
-        let mut chapters = self.chapters.list_by_series(series_id).await?;
+        let mut chapters = self.chapters.query(ChapterQuery::Series(series_id)).await?;
         chapters.sort_by(|a, b| a.cmp_order(b));
 
         let prog_list = self
             .reading
-            .list_series_progress(user.id, series_id)
+            .query_progress(user.id, ComicProgressScope::Series(series_id))
             .await?;
         let prog_map: HashMap<ChapterId, ChapterProgress> =
             prog_list.into_iter().map(|p| (p.chapter_id, p)).collect();
@@ -633,9 +703,11 @@ fn to_opds_chapter(
     last_read_page: Option<u32>,
     last_read_at: Option<Timestamp>,
 ) -> OpdsChapterEntry {
-    let source_kind = ch.source_kind();
+    let source_kind = ChapterSourceKind::from(&ch.source);
     let archive_mime = ch
-        .managed_file_path()
+        .source
+        .resolved_local()
+        .and_then(|(k, p)| (k == ChapterSourceKind::ArchiveFile).then_some(p))
         .and_then(|p| xmedia_formats::comic::ComicFormatExt::from_path(std::path::Path::new(p)))
         .filter(|fmt| fmt.is_zip_based())
         .map_or("application/vnd.comicbook+zip", |fmt| fmt.mime_type());
@@ -648,7 +720,7 @@ fn to_opds_chapter(
         .cover_path
         .as_ref()
         .map(|k| format!("{opds_root}/covers/{k}"));
-    let num_label = format_chapter_number(ch.number);
+    let num_label = ch.number_label();
     let display_title = if ch.title.is_empty() {
         format!("#{num_label}")
     } else {

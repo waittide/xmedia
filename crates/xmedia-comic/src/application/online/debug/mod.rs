@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_source::crud::{format_test_failure_summary, format_timeout_step};
 
 use crate::domain::online::{ComicSourceSpec, ExecutionDiagnostics};
@@ -24,7 +24,7 @@ impl ComicOnlineService {
         id: Uuid,
         input: ComicSourceTestInput,
     ) -> DomainResult<ComicSourceTestReportDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let rec = self.source_crud.load_source(id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
@@ -42,14 +42,7 @@ impl ComicOnlineService {
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
 
-        let default_kw = parsed
-            .rule_search
-            .as_ref()
-            .and_then(|r| r.check_key_word.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("海贼王")
-            .to_string();
+        let default_kw = parsed.default_test_keyword();
 
         let explicit_explore_url = input
             .explore_url

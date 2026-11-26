@@ -11,9 +11,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use jiff::Timestamp;
 use uuid::Uuid;
-use xmedia_core::domain::xml::xml_escape;
 use xmedia_core::http::{ApiResult, OpdsAuth};
 use xmedia_formats::common::format_clean_float;
+use xmedia_formats::common::xml_escape_clean as xml_escape;
 
 use crate::domain::book::BookId;
 use crate::http::opds_common::{

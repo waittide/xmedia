@@ -10,7 +10,6 @@ use xmedia_core::application::bindings::{
     BindMediaItemsInput, BindMediaItemsResultDto, UnbindMediaItemResultDto,
 };
 use xmedia_core::domain::error::DomainError;
-use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
     ApiError, ApiResult, TempUploadFile, WebAuth, into_range_http_response, parse_http_range_spec,
     stream_multipart_field_to_temp_file,
@@ -196,7 +195,7 @@ async fn upload_series_cover(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<Series>> {
-    require_admin(&user)?;
+    user.ensure_admin()?;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -645,7 +644,7 @@ async fn upload_comic_archive(
     WebAuth(user): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadArchivesResponse>)> {
-    require_admin(&user)?;
+    user.ensure_admin()?;
     let mut target_series_id: Option<SeriesId> = None;
     let mut series_title_override: Option<String> = None;
     let mut files: Vec<(String, TempUploadFile)> = Vec::new();

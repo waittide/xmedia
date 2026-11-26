@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use axum::extract::FromRef;
 use xmedia_core::application::auth::AuthService;
-use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_source::crud::SourceCrudService;
 
@@ -12,7 +11,6 @@ use crate::domain::online::ComicSourceSpec;
 #[derive(Clone)]
 pub struct ComicHttpState {
     pub auth: Arc<AuthService>,
-    pub libraries: Arc<LibraryService>,
     pub services: ComicServices,
     pub opds_prefix: Arc<str>,
 }
@@ -36,14 +34,9 @@ impl FromRef<ComicHttpState> for Arc<SourceCrudService<ComicSourceSpec>> {
 }
 
 impl ComicHttpState {
-    pub fn new(
-        auth: Arc<AuthService>,
-        libraries: Arc<LibraryService>,
-        services: ComicServices,
-    ) -> Self {
+    pub fn new(auth: Arc<AuthService>, services: ComicServices) -> Self {
         Self {
             auth,
-            libraries,
             services,
             opds_prefix: Arc::from("/opds/comic"),
         }

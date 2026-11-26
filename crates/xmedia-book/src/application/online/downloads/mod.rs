@@ -8,7 +8,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 use xmedia_core::application::ports::{ByteChunkStream, ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::user::{User, UserId, require_admin};
+use xmedia_core::domain::user::{User, UserId};
 
 use crate::domain::book::{BookId, BookSource};
 
@@ -46,7 +46,7 @@ impl BookOnlineService {
         mut input: StartDownloadInput,
     ) -> DomainResult<OnlineDownloadJobDto> {
         if input.import_to_library || input.book_id.is_some() {
-            require_admin(actor)?;
+            actor.ensure_admin()?;
         }
         let src = self
             .sources

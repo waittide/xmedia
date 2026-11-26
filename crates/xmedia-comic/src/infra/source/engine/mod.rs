@@ -6,19 +6,21 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use xmedia_source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
+use xmedia_source::http::{
+    HttpClientConfig, LegadoHttpClient, resolve_relative_url,
+    resolve_relative_url_preserving_options,
+};
 pub use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, strip_js_wrapper};
-
-pub(super) use url_template::resolve_relative_url_preserving_options;
 
 use super::session::{ReusableComicContext, ReusableComicSession};
 use crate::application::ports::ComicSourceEnginePort;
 use crate::domain::online::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, ExecutionDiagnostics,
     ExploreCategoryItem, OnlineComicChapter, OnlineComicDetail, OnlineComicItem,
-    SourceRuntimeState, parse_reading_direction_opt,
+    SourceRuntimeState,
 };
+use crate::domain::series::ReadingDirection;
 
 #[derive(Debug, Clone)]
 pub struct ComicSourceEngine {
@@ -143,20 +145,13 @@ impl ComicSourceEngine {
             }
             let mut info_input = RuleValue::from_raw(fetched.body);
 
-            let Some(rule_detail) = source.rule_detail.as_ref() else {
-                return Ok(OnlineComicDetail {
-                    title: fallback_hint.map(|h| h.name.clone()).unwrap_or_default(),
-                    author: fallback_hint.map(|h| h.author.clone()).unwrap_or_default(),
-                    comic_url: comic_url.to_string(),
-                    toc_url: fetched.final_url,
-                    cover_url: fallback_hint.and_then(|h| h.cover_url.clone()),
-                    intro: fallback_hint.and_then(|h| h.intro.clone()),
-                    kind: None,
-                    status: None,
-                    last_chapter: None,
-                    word_count: None,
-                    reading_direction: Some(source.effective_reading_direction()),
-                });
+            let rule_detail = match source.detail_rule_or_fallback(
+                comic_url,
+                &fetched.final_url,
+                fallback_hint,
+            ) {
+                Ok(r) => r,
+                Err(fallback_detail) => return Ok(*fallback_detail),
             };
 
             if let Some(ref init_rule) = rule_detail.init
@@ -205,14 +200,14 @@ impl ComicSourceEngine {
             let reading_direction = rule_detail
                 .reading_direction
                 .as_deref()
-                .and_then(parse_reading_direction_opt)
+                .and_then(|s| s.parse::<ReadingDirection>().ok())
                 .or_else(|| {
                     let dir_extracted = session.eval_opt(
                         &info_input,
                         rule_detail.reading_direction.as_deref(),
                         &fetched.final_url,
                     );
-                    parse_reading_direction_opt(&dir_extracted)
+                    dir_extracted.parse::<ReadingDirection>().ok()
                 })
                 .or_else(|| Some(source.effective_reading_direction()));
             let toc_raw = session.eval_opt(

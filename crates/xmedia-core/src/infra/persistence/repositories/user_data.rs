@@ -9,7 +9,10 @@ use crate::domain::activity::{UserActivityDaily, UserActivityRepository};
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
 use crate::domain::online_item::{OnlineItemSourceKind, OnlineLibraryItem};
-use crate::domain::repository::{OnlineLibraryItemRepository, UserMediaBindingRepository};
+use crate::domain::repository::{
+    BindingCountQuery, BindingDeleteScope, OnlineItemDeleteScope, OnlineLibraryItemRepository,
+    UserMediaBindingRepository,
+};
 use crate::domain::user::UserId;
 
 use super::super::models::{OnlineLibraryItemModel, UserActivityDailyModel, UserMediaBindingModel};
@@ -132,23 +135,24 @@ impl OnlineLibraryItemRepository for ToastyOnlineLibraryItemRepository {
         Ok(())
     }
 
-    async fn delete(&self, id: Uuid) -> DomainResult<()> {
+    async fn delete_scope(&self, scope: OnlineItemDeleteScope) -> DomainResult<()> {
         let mut db = self.db.clone();
-        OnlineLibraryItemModel::filter_by_id(id)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(|e| online_item_err("delete", e))?;
-        Ok(())
-    }
-
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        OnlineLibraryItemModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(|e| online_item_err("purge", e))?;
+        match scope {
+            OnlineItemDeleteScope::Id(id) => {
+                OnlineLibraryItemModel::filter_by_id(id)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| online_item_err("delete", e))?;
+            }
+            OnlineItemDeleteScope::User(user_id) => {
+                OnlineLibraryItemModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| online_item_err("purge", e))?;
+            }
+        }
         Ok(())
     }
 }
@@ -275,6 +279,65 @@ impl ToastyUserMediaBindingRepository {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
+
+    async fn count_user_items(&self, user_id: UserId, media_kind: MediaKind) -> DomainResult<u64> {
+        let mut db = self.db.clone();
+        let cap = db.capability();
+        let dialect = cap.sql.unwrap_or(toasty::Dialect::Sqlite);
+        let (p1, p2) = match cap
+            .sql_placeholder
+            .unwrap_or(toasty::SqlPlaceholder::NumberedQuestionMark)
+        {
+            toasty::SqlPlaceholder::NumberedQuestionMark => ("?1", "?2"),
+            toasty::SqlPlaceholder::DollarNumber => ("$1", "$2"),
+            toasty::SqlPlaceholder::QuestionMark => ("?", "?"),
+        };
+        let uid_val: toasty::stmt::Value = match dialect {
+            toasty::Dialect::Sqlite => user_id.0.as_bytes().to_vec().into(),
+            _ => user_id.0.into(),
+        };
+        let sql = format!(
+            "SELECT COUNT(DISTINCT item_id) FROM user_media_bindings WHERE user_id = {p1} AND media_kind = {p2}"
+        );
+        let rows = toasty::sql::query(sql)
+            .bind(uid_val)
+            .bind(media_kind.as_str().to_string())
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("count user items", e))?;
+        Ok(extract_sql_u64(&rows))
+    }
+
+    async fn count_item_users(&self, media_kind: MediaKind, item_id: Uuid) -> DomainResult<u64> {
+        let mut db = self.db.clone();
+        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
+            .exec(&mut db)
+            .await
+            .map_err(|e| binding_err("count", e))?;
+        let wanted = media_kind.as_str();
+        let unique_users: HashSet<Uuid> = rows
+            .into_iter()
+            .filter(|m| m.media_kind == wanted)
+            .map(|m| m.user_id)
+            .collect();
+        Ok(unique_users.len() as u64)
+    }
+}
+
+fn extract_sql_u64(rows: &[toasty::stmt::Value]) -> u64 {
+    rows.first()
+        .and_then(|r| match r {
+            toasty::stmt::Value::Record(rec) => rec.first(),
+            _ => None,
+        })
+        .and_then(|v| match v {
+            toasty::stmt::Value::I64(n) => u64::try_from((*n).max(0)).ok(),
+            toasty::stmt::Value::U64(n) => Some(*n),
+            toasty::stmt::Value::I32(n) => u64::try_from((*n).max(0)).ok(),
+            toasty::stmt::Value::U32(n) => Some(u64::from(*n)),
+            _ => None,
+        })
+        .unwrap_or(0)
 }
 
 fn binding_err(action: &str, err: impl std::fmt::Display) -> DomainError {
@@ -318,134 +381,139 @@ impl UserMediaBindingRepository for ToastyUserMediaBindingRepository {
             .any(|m| m.user_id == user_id.0 && m.media_kind == wanted))
     }
 
-    async fn count_bindings_for_item(
-        &self,
-        media_kind: MediaKind,
-        item_id: Uuid,
-    ) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
-            .exec(&mut db)
-            .await
-            .map_err(|e| binding_err("count", e))?;
-        let wanted = media_kind.as_str();
-        let unique_users: HashSet<Uuid> = rows
-            .into_iter()
-            .filter(|m| m.media_kind == wanted)
-            .map(|m| m.user_id)
-            .collect();
-        Ok(unique_users.len() as u64)
+    async fn count(&self, query: BindingCountQuery) -> DomainResult<u64> {
+        match query {
+            BindingCountQuery::UserItems {
+                user_id,
+                media_kind,
+            } => self.count_user_items(user_id, media_kind).await,
+            BindingCountQuery::ItemUsers {
+                media_kind,
+                item_id,
+            } => self.count_item_users(media_kind, item_id).await,
+        }
     }
 
-    async fn insert_if_absent(
+    async fn insert_batch(
         &self,
         user_id: UserId,
         media_kind: MediaKind,
-        item_id: Uuid,
+        item_ids: &[Uuid],
         created_at: Timestamp,
-    ) -> DomainResult<bool> {
-        let mut db = self.db.clone();
-        let existing = UserMediaBindingModel::filter_by_item_id(item_id)
-            .exec(&mut db)
-            .await
-            .map_err(|e| binding_err("probe", e))?;
-        let wanted = media_kind.as_str();
-        if existing
-            .into_iter()
-            .any(|m| m.user_id == user_id.0 && m.media_kind == wanted)
-        {
-            return Ok(false);
+    ) -> DomainResult<usize> {
+        if item_ids.is_empty() {
+            return Ok(0);
         }
-        toasty::create!(UserMediaBindingModel {
-            id: Uuid::now_v7(),
-            user_id: user_id.0,
-            media_kind: wanted.to_string(),
-            item_id,
-            created_at,
-        })
-        .exec(&mut db)
-        .await
-        .map_err(|e| binding_err("insert", e))?;
-        Ok(true)
+        let existing = self.list_bound_item_ids(user_id, media_kind).await?;
+        let mut seen = HashSet::with_capacity(item_ids.len());
+        let to_insert: Vec<Uuid> = item_ids
+            .iter()
+            .copied()
+            .filter(|id| seen.insert(*id) && !existing.contains(id))
+            .collect();
+        if to_insert.is_empty() {
+            return Ok(0);
+        }
+        let wanted = media_kind.as_str().to_string();
+        let mut db = self.db.clone();
+        let mut tx = db
+            .transaction()
+            .await
+            .map_err(|e| binding_err("begin tx", e))?;
+        for item_id in &to_insert {
+            toasty::create!(UserMediaBindingModel {
+                id: Uuid::now_v7(),
+                user_id: user_id.0,
+                media_kind: wanted.clone(),
+                item_id: *item_id,
+                created_at,
+            })
+            .exec(&mut tx)
+            .await
+            .map_err(|e| binding_err("batch insert", e))?;
+        }
+        tx.commit().await.map_err(|e| binding_err("commit tx", e))?;
+        Ok(to_insert.len())
     }
 
-    async fn delete_binding(
-        &self,
-        user_id: UserId,
-        media_kind: MediaKind,
-        item_id: Uuid,
-    ) -> DomainResult<bool> {
+    async fn delete_scope(&self, scope: BindingDeleteScope) -> DomainResult<Vec<Uuid>> {
         let mut db = self.db.clone();
-        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
-            .exec(&mut db)
-            .await
-            .map_err(|e| binding_err("find", e))?;
-        let wanted = media_kind.as_str();
-        let mut removed = false;
-        for row in rows {
-            if row.user_id == user_id.0 && row.media_kind == wanted {
-                UserMediaBindingModel::filter_by_id(row.id)
+        match scope {
+            BindingDeleteScope::One {
+                user_id,
+                media_kind,
+                item_id,
+            } => {
+                let rows = UserMediaBindingModel::filter_by_item_id(item_id)
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| binding_err("find", e))?;
+                let wanted = media_kind.as_str();
+                let mut removed = Vec::new();
+                for row in rows {
+                    if row.user_id == user_id.0 && row.media_kind == wanted {
+                        UserMediaBindingModel::filter_by_id(row.id)
+                            .delete()
+                            .exec(&mut db)
+                            .await
+                            .map_err(|e| binding_err("delete", e))?;
+                        if removed.is_empty() {
+                            removed.push(item_id);
+                        }
+                    }
+                }
+                Ok(removed)
+            }
+            BindingDeleteScope::Item {
+                media_kind,
+                item_id,
+            } => {
+                let rows = UserMediaBindingModel::filter_by_item_id(item_id)
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| binding_err("list item", e))?;
+                let wanted = media_kind.as_str();
+                for row in rows {
+                    if row.media_kind == wanted {
+                        UserMediaBindingModel::filter_by_id(row.id)
+                            .delete()
+                            .exec(&mut db)
+                            .await
+                            .map_err(|e| binding_err("delete item", e))?;
+                    }
+                }
+                Ok(Vec::new())
+            }
+            BindingDeleteScope::UserMedia {
+                user_id,
+                media_kind,
+            } => {
+                let rows = UserMediaBindingModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(|e| binding_err("list user", e))?;
+                let wanted = media_kind.as_str();
+                let mut unbound_ids = Vec::new();
+                for row in rows {
+                    if row.media_kind == wanted {
+                        unbound_ids.push(row.item_id);
+                        UserMediaBindingModel::filter_by_id(row.id)
+                            .delete()
+                            .exec(&mut db)
+                            .await
+                            .map_err(|e| binding_err("purge user", e))?;
+                    }
+                }
+                Ok(unbound_ids)
+            }
+            BindingDeleteScope::User(user_id) => {
+                UserMediaBindingModel::filter_by_user_id(user_id.0)
                     .delete()
                     .exec(&mut db)
                     .await
-                    .map_err(|e| binding_err("delete", e))?;
-                removed = true;
+                    .map_err(|e| binding_err("purge user all", e))?;
+                Ok(Vec::new())
             }
         }
-        Ok(removed)
-    }
-
-    async fn delete_by_item(&self, media_kind: MediaKind, item_id: Uuid) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        let rows = UserMediaBindingModel::filter_by_item_id(item_id)
-            .exec(&mut db)
-            .await
-            .map_err(|e| binding_err("list item", e))?;
-        let wanted = media_kind.as_str();
-        for row in rows {
-            if row.media_kind == wanted {
-                UserMediaBindingModel::filter_by_id(row.id)
-                    .delete()
-                    .exec(&mut db)
-                    .await
-                    .map_err(|e| binding_err("delete item", e))?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn delete_by_user_and_media(
-        &self,
-        user_id: UserId,
-        media_kind: MediaKind,
-    ) -> DomainResult<Vec<Uuid>> {
-        let mut db = self.db.clone();
-        let rows = UserMediaBindingModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(|e| binding_err("list user", e))?;
-        let wanted = media_kind.as_str();
-        let mut unbound_ids = Vec::new();
-        for row in rows {
-            if row.media_kind == wanted {
-                unbound_ids.push(row.item_id);
-                UserMediaBindingModel::filter_by_id(row.id)
-                    .delete()
-                    .exec(&mut db)
-                    .await
-                    .map_err(|e| binding_err("purge user", e))?;
-            }
-        }
-        Ok(unbound_ids)
-    }
-
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        UserMediaBindingModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(|e| binding_err("purge user all", e))?;
-        Ok(())
     }
 }

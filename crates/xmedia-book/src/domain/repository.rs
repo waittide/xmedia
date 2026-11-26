@@ -3,69 +3,86 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
-use crate::domain::book::{Book, BookId, BookQuery, FacetCount, PagedResult};
+use crate::domain::book::{Book, BookId, BookQuery, PagedResult};
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
+
+#[derive(Debug, Clone)]
+pub enum BookCollectionQuery {
+    Id(BookId),
+    Ids(Vec<BookId>),
+    Library(LibraryId),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BookDeleteScope {
+    Id(BookId),
+    Library(LibraryId),
+}
 
 #[async_trait]
 pub trait BookRepository: Send + Sync {
-    async fn find_by_id(&self, id: BookId) -> DomainResult<Option<Book>>;
-    async fn find_by_ids(&self, ids: &[BookId]) -> DomainResult<Vec<Book>>;
+    async fn query(&self, scope: BookCollectionQuery) -> DomainResult<Vec<Book>>;
     async fn list_all_ids(&self) -> DomainResult<Vec<BookId>>;
-    async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Book>>;
     async fn search(&self, query: &BookQuery) -> DomainResult<PagedResult<Book>>;
-    async fn list_authors(&self) -> DomainResult<Vec<FacetCount>>;
-    async fn list_tags(&self) -> DomainResult<Vec<FacetCount>>;
-    async fn home_catalog_snapshot(
-        &self,
-        recent_limit: usize,
-    ) -> DomainResult<(Vec<Book>, u64, u64, u64)>;
     async fn save(&self, book: &Book) -> DomainResult<()>;
-    async fn delete(&self, id: BookId) -> DomainResult<()>;
-    async fn delete_by_library(&self, library_id: LibraryId) -> DomainResult<()>;
+    async fn delete_scope(&self, scope: BookDeleteScope) -> DomainResult<()>;
+}
+
+#[derive(Debug, Clone)]
+pub enum ReadingMutation<'a> {
+    Progress(&'a ReadingProgress),
+    Bookmark(&'a Bookmark),
+    Shelf(&'a Shelf),
+    Favorite {
+        user_id: UserId,
+        book_id: BookId,
+        favorite: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ReadingDeleteScope {
+    Bookmark {
+        user_id: UserId,
+        bookmark_id: BookmarkId,
+    },
+    Shelf {
+        user_id: UserId,
+        shelf_id: ShelfId,
+    },
+    Book(BookId),
+    Books(Vec<BookId>),
+    User(UserId),
+    UserBook {
+        user_id: UserId,
+        book_id: BookId,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProgressScope {
+    Book(BookId),
+    Recent(u32),
 }
 
 #[async_trait]
 pub trait BookReadingRepository: Send + Sync {
-    async fn get_progress(
+    async fn query_progress(
         &self,
         user_id: UserId,
-        book_id: BookId,
-    ) -> DomainResult<Option<ReadingProgress>>;
-    async fn list_recent_progress(
-        &self,
-        user_id: UserId,
-        limit: u32,
+        scope: ProgressScope,
     ) -> DomainResult<Vec<ReadingProgress>>;
-    async fn count_user_progress(&self, user_id: UserId) -> DomainResult<u64>;
-    async fn save_progress(&self, progress: &ReadingProgress) -> DomainResult<()>;
-
-    async fn list_bookmarks(&self, user_id: UserId, book_id: BookId)
-    -> DomainResult<Vec<Bookmark>>;
-    async fn list_user_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<Bookmark>>;
-    async fn save_bookmark(&self, bookmark: &Bookmark) -> DomainResult<()>;
-    async fn delete_bookmark(&self, user_id: UserId, bookmark_id: BookmarkId) -> DomainResult<()>;
-
-    async fn is_favorite(&self, user_id: UserId, book_id: BookId) -> DomainResult<bool>;
-    async fn list_favorite_book_ids(&self, user_id: UserId) -> DomainResult<Vec<BookId>>;
-    async fn set_favorite(
+    async fn list_bookmarks(
         &self,
         user_id: UserId,
-        book_id: BookId,
-        favorite: bool,
-    ) -> DomainResult<()>;
-
-    async fn list_shelves(&self, user_id: UserId) -> DomainResult<Vec<Shelf>>;
-    async fn find_shelf(&self, user_id: UserId, shelf_id: ShelfId) -> DomainResult<Option<Shelf>>;
-    async fn save_shelf(&self, shelf: &Shelf) -> DomainResult<()>;
-    async fn delete_shelf(&self, user_id: UserId, shelf_id: ShelfId) -> DomainResult<()>;
-
-    async fn delete_by_book(&self, book_id: BookId) -> DomainResult<()>;
-    async fn delete_by_books(&self, book_ids: &[BookId]) -> DomainResult<()> {
-        for &book_id in book_ids {
-            self.delete_by_book(book_id).await?;
-        }
-        Ok(())
-    }
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
-    async fn delete_by_user_and_book(&self, user_id: UserId, book_id: BookId) -> DomainResult<()>;
+        book_id: Option<BookId>,
+    ) -> DomainResult<Vec<Bookmark>>;
+    async fn list_favorite_book_ids(&self, user_id: UserId) -> DomainResult<Vec<BookId>>;
+    async fn query_shelves(
+        &self,
+        user_id: UserId,
+        shelf_id: Option<ShelfId>,
+    ) -> DomainResult<Vec<Shelf>>;
+    async fn save(&self, mutation: ReadingMutation<'_>) -> DomainResult<()>;
+    async fn delete_scope(&self, scope: ReadingDeleteScope) -> DomainResult<()>;
 }

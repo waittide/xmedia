@@ -22,10 +22,7 @@ use crate::domain::book::BookId;
 use crate::domain::online::LegadoBookSource;
 
 pub use dto::*;
-pub(crate) use helpers::validate_safe_cover_image;
 use helpers::{AsyncLockMap, StoredDownloadJob};
-
-pub type BookOnlineSourceDirectory = SourceCrudService<LegadoBookSource>;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -40,7 +37,7 @@ const TRACKED_EPUB_DEBOUNCE: Duration = Duration::from_secs(6);
 const TRACKED_EPUB_IMMEDIATE_BATCH: u32 = 20;
 
 pub struct BookOnlineService {
-    sources: Arc<BookOnlineSourceDirectory>,
+    sources: Arc<SourceCrudService<LegadoBookSource>>,
     pub(crate) catalog: Arc<BookCatalogService>,
     engine: Arc<dyn BookSourceEnginePort>,
     packager: Arc<dyn BookPackagerPort>,
@@ -58,7 +55,7 @@ pub struct BookOnlineService {
 
 impl BookOnlineService {
     pub fn new(
-        sources: Arc<BookOnlineSourceDirectory>,
+        sources: Arc<SourceCrudService<LegadoBookSource>>,
         data_dir: &Path,
         catalog: Arc<BookCatalogService>,
         engine: Arc<dyn BookSourceEnginePort>,
@@ -128,7 +125,7 @@ impl BookOnlineService {
         })
     }
 
-    pub fn sources(&self) -> &Arc<BookOnlineSourceDirectory> {
+    pub fn sources(&self) -> &Arc<SourceCrudService<LegadoBookSource>> {
         &self.sources
     }
 

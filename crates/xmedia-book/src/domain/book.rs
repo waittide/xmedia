@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -20,31 +20,8 @@ pub enum BookFormat {
     Fb2,
 }
 
-impl BookFormat {
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext
-            .trim()
-            .trim_start_matches('.')
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "epub" => Some(Self::Epub),
-            "txt" => Some(Self::Txt),
-            "pdf" => Some(Self::Pdf),
-            "mobi" | "prc" => Some(Self::Mobi),
-            "azw3" | "azw" | "kf8" => Some(Self::Azw3),
-            "fb2" => Some(Self::Fb2),
-            _ => None,
-        }
-    }
-
-    pub fn parse(value: &str) -> DomainResult<Self> {
-        Self::from_extension(value).ok_or_else(|| {
-            DomainError::UnsupportedFormat(format!("unsupported book format: {value}"))
-        })
-    }
-
-    pub fn as_str(self) -> &'static str {
+impl AsRef<str> for BookFormat {
+    fn as_ref(&self) -> &str {
         match self {
             Self::Epub => "epub",
             Self::Txt => "txt",
@@ -54,7 +31,38 @@ impl BookFormat {
             Self::Fb2 => "fb2",
         }
     }
+}
 
+impl std::fmt::Display for BookFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_ref())
+    }
+}
+
+impl std::str::FromStr for BookFormat {
+    type Err = DomainError;
+
+    fn from_str(ext: &str) -> Result<Self, Self::Err> {
+        match ext
+            .trim()
+            .trim_start_matches('.')
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "epub" => Ok(Self::Epub),
+            "txt" => Ok(Self::Txt),
+            "pdf" => Ok(Self::Pdf),
+            "mobi" | "prc" => Ok(Self::Mobi),
+            "azw3" | "azw" | "kf8" => Ok(Self::Azw3),
+            "fb2" => Ok(Self::Fb2),
+            _ => Err(DomainError::UnsupportedFormat(format!(
+                "unsupported book format: {ext}"
+            ))),
+        }
+    }
+}
+
+impl BookFormat {
     pub fn mime_type(self) -> &'static str {
         match self {
             Self::Epub => "application/epub+zip",
@@ -63,17 +71,6 @@ impl BookFormat {
             Self::Mobi => "application/x-mobipocket-ebook",
             Self::Azw3 => "application/vnd.amazon.ebook",
             Self::Fb2 => "application/x-fictionbook+xml",
-        }
-    }
-
-    pub fn badge_label(self) -> &'static str {
-        match self {
-            Self::Epub => "EPUB",
-            Self::Txt => "TXT",
-            Self::Pdf => "PDF",
-            Self::Mobi => "MOBI",
-            Self::Azw3 => "AZW3",
-            Self::Fb2 => "FB2",
         }
     }
 
@@ -109,13 +106,6 @@ pub enum BookSource {
 }
 
 impl BookSource {
-    pub fn is_managed(&self) -> bool {
-        matches!(
-            self,
-            Self::ManagedUpload { .. } | Self::OnlineTracked { .. }
-        )
-    }
-
     pub fn storage_key(&self) -> Option<&str> {
         match self {
             Self::ManagedUpload { storage_key } | Self::OnlineTracked { storage_key, .. } => {
@@ -151,6 +141,24 @@ pub struct BookMetadata {
 }
 
 impl BookMetadata {
+    pub fn from_online_tracked(
+        name: String,
+        author: &str,
+        intro: Option<String>,
+        kind: Option<&str>,
+        total_chapters: u32,
+    ) -> DomainResult<Self> {
+        let mut metadata = Self::new(name)?;
+        if !author.trim().is_empty() {
+            metadata.authors = vec![author.trim().to_string()];
+        }
+        metadata.description = Self::normalize_optional(intro);
+        metadata.tags = Self::normalize_list(parse_kind_tags(kind));
+        metadata.language = Some("zh-CN".to_string());
+        metadata.chapter_count = (total_chapters > 0).then_some(total_chapters);
+        Ok(metadata)
+    }
+
     pub fn new(title: impl Into<String>) -> DomainResult<Self> {
         let title = Self::normalize_title(title.into())?;
         Ok(Self {
@@ -170,7 +178,7 @@ impl BookMetadata {
         })
     }
 
-    pub fn normalize_title(raw: String) -> DomainResult<String> {
+    fn normalize_title(raw: String) -> DomainResult<String> {
         let trimmed = raw.trim().to_string();
         if trimmed.is_empty() {
             return Err(DomainError::Validation("book title cannot be empty".into()));
@@ -178,7 +186,7 @@ impl BookMetadata {
         Ok(trimmed)
     }
 
-    pub fn normalize_list(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    fn normalize_list(items: impl IntoIterator<Item = String>) -> Vec<String> {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         for item in items {
@@ -194,7 +202,7 @@ impl BookMetadata {
         out
     }
 
-    pub fn normalize_optional(val: Option<String>) -> Option<String> {
+    fn normalize_optional(val: Option<String>) -> Option<String> {
         val.and_then(|s| {
             let t = s.trim().to_string();
             (!t.is_empty()).then_some(t)
@@ -261,29 +269,8 @@ pub struct UpdateMetadataPatch {
 }
 
 impl Book {
-    pub fn new(
-        library_id: LibraryId,
-        format: BookFormat,
-        source: BookSource,
-        file_size: u64,
-        file_hash: impl Into<String>,
-        cover_key: Option<String>,
-        metadata: BookMetadata,
-    ) -> DomainResult<Self> {
-        Self::with_id(
-            BookId::new(),
-            library_id,
-            format,
-            source,
-            file_size,
-            file_hash,
-            cover_key,
-            metadata,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub fn with_id(
+    pub fn new(
         id: BookId,
         library_id: LibraryId,
         format: BookFormat,
@@ -310,13 +297,111 @@ impl Book {
         })
     }
 
-    pub fn update_metadata(&mut self, metadata: BookMetadata) -> DomainResult<()> {
+    pub fn apply_metadata(&mut self, update: BookMetadataUpdate) -> DomainResult<()> {
+        match update {
+            BookMetadataUpdate::Full(m) => self.update_metadata(m),
+            BookMetadataUpdate::Patch(p) => self.apply_metadata_patch(p),
+            BookMetadataUpdate::AdjustTags { add, remove } => {
+                self.adjust_tags(add, remove);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn set_cover(&mut self, cover_key: Option<String>) {
+        self.cover_key = cover_key;
+        self.updated_at = Timestamp::now();
+    }
+
+    pub fn sync_mounted(&mut self, state: MountedSync) {
+        match state {
+            MountedSync::Relocate {
+                relative_path,
+                file_mtime,
+            } => self.relocate_mounted_file(relative_path, file_mtime),
+            MountedSync::Missing => self.mark_missing(),
+            MountedSync::Present {
+                file_size,
+                file_hash,
+                new_mtime,
+            } => self.mark_present(file_size, file_hash, new_mtime),
+        }
+    }
+
+    pub fn sync_tracked(&mut self, state: TrackedSync) -> bool {
+        match state {
+            TrackedSync::MarkDirty => {
+                self.mark_tracked_epub_dirty();
+                true
+            }
+            TrackedSync::TocRefresh {
+                effective_toc_url,
+                new_last_chapter,
+                new_cached,
+                new_total,
+            } => self.record_tracked_toc_refresh(
+                effective_toc_url,
+                new_last_chapter,
+                new_cached,
+                new_total,
+            ),
+            TrackedSync::ChapterCached {
+                new_cached,
+                new_total,
+            } => {
+                self.record_tracked_chapter_cached(new_cached, new_total);
+                true
+            }
+            TrackedSync::SwitchSource {
+                new_source_id,
+                new_book_url,
+                new_toc_url,
+                new_last_chapter,
+                new_cached,
+                new_total,
+                new_intro,
+                new_cover_key,
+            } => {
+                self.switch_online_tracking(
+                    new_source_id,
+                    new_book_url,
+                    new_toc_url,
+                    new_last_chapter,
+                    new_cached,
+                    new_total,
+                    new_intro,
+                    new_cover_key,
+                );
+                true
+            }
+            TrackedSync::CommitEpub {
+                new_storage_key,
+                file_size,
+                file_hash,
+                cached_count,
+                total_count,
+                is_clean,
+            } => {
+                self.commit_synced_tracked_epub(
+                    new_storage_key,
+                    file_size,
+                    file_hash,
+                    cached_count,
+                    total_count,
+                    is_clean,
+                );
+                !is_clean
+            }
+        }
+    }
+
+    fn update_metadata(&mut self, metadata: BookMetadata) -> DomainResult<()> {
         self.metadata = metadata.normalized()?;
         self.updated_at = Timestamp::now();
         Ok(())
     }
 
-    pub fn apply_metadata_patch(&mut self, patch: UpdateMetadataPatch) -> DomainResult<()> {
+    fn apply_metadata_patch(&mut self, patch: UpdateMetadataPatch) -> DomainResult<()> {
         let mut meta = self.metadata.clone();
         if let Some(title) = patch.title {
             meta.title = title;
@@ -354,17 +439,46 @@ impl Book {
         self.update_metadata(meta)
     }
 
-    pub fn set_tags(&mut self, tags: Vec<String>) {
+    pub fn summarize_collection(mut bound_books: Vec<Self>) -> (u64, u64, u64, Vec<Self>) {
+        let authors_count = count_distinct_lower(
+            bound_books
+                .iter()
+                .flat_map(|b| b.metadata.authors.iter().map(String::as_str)),
+        );
+        let tags_count = count_distinct_lower(
+            bound_books
+                .iter()
+                .flat_map(|b| b.metadata.tags.iter().map(String::as_str)),
+        );
+        let lib_set: HashSet<LibraryId> = bound_books.iter().map(|b| b.library_id).collect();
+        let libraries_count = lib_set.len() as u64;
+        bound_books.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+        bound_books.truncate(12);
+        (authors_count, tags_count, libraries_count, bound_books)
+    }
+
+    fn adjust_tags(&mut self, add: Vec<String>, remove: Vec<String>) {
+        let remove_lower: HashSet<String> = remove
+            .into_iter()
+            .map(|t| t.trim().to_lowercase())
+            .collect();
+        let mut next_tags: Vec<String> = self
+            .metadata
+            .tags
+            .iter()
+            .filter(|t| !remove_lower.contains(&t.to_lowercase()))
+            .cloned()
+            .collect();
+        next_tags.extend(add);
+        self.set_tags(next_tags);
+    }
+
+    fn set_tags(&mut self, tags: Vec<String>) {
         self.metadata.tags = BookMetadata::normalize_list(tags);
         self.updated_at = Timestamp::now();
     }
 
-    pub fn set_cover(&mut self, cover_key: Option<String>) {
-        self.cover_key = cover_key;
-        self.updated_at = Timestamp::now();
-    }
-
-    pub fn relocate_mounted_file(&mut self, relative_path: String, file_mtime: i64) {
+    fn relocate_mounted_file(&mut self, relative_path: String, file_mtime: i64) {
         self.source = BookSource::MountedFile {
             relative_path,
             file_mtime,
@@ -372,14 +486,14 @@ impl Book {
         self.updated_at = Timestamp::now();
     }
 
-    pub fn mark_missing(&mut self) {
+    fn mark_missing(&mut self) {
         if !self.is_missing {
             self.is_missing = true;
             self.updated_at = Timestamp::now();
         }
     }
 
-    pub fn mark_present(&mut self, file_size: u64, file_hash: String, new_mtime: Option<i64>) {
+    fn mark_present(&mut self, file_size: u64, file_hash: String, new_mtime: Option<i64>) {
         self.is_missing = false;
         self.file_size = file_size;
         self.file_hash = file_hash;
@@ -391,14 +505,14 @@ impl Book {
         self.updated_at = Timestamp::now();
     }
 
-    pub fn mark_tracked_epub_dirty(&mut self) {
+    fn mark_tracked_epub_dirty(&mut self) {
         if let BookSource::OnlineTracked { epub_dirty, .. } = &mut self.source {
             *epub_dirty = true;
             self.updated_at = Timestamp::now();
         }
     }
 
-    pub fn record_tracked_toc_refresh(
+    fn record_tracked_toc_refresh(
         &mut self,
         effective_toc_url: String,
         new_last_chapter: Option<String>,
@@ -426,7 +540,7 @@ impl Book {
         dirty_flag
     }
 
-    pub fn record_tracked_chapter_cached(&mut self, new_cached: u32, new_total: u32) {
+    fn record_tracked_chapter_cached(&mut self, new_cached: u32, new_total: u32) {
         if let BookSource::OnlineTracked {
             cached_chapters,
             total_chapters,
@@ -442,7 +556,7 @@ impl Book {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn switch_online_tracking(
+    fn switch_online_tracking(
         &mut self,
         new_source_id: uuid::Uuid,
         new_book_url: String,
@@ -482,7 +596,7 @@ impl Book {
         self.updated_at = Timestamp::now();
     }
 
-    pub fn commit_synced_tracked_epub(
+    fn commit_synced_tracked_epub(
         &mut self,
         new_storage_key: String,
         file_size: u64,
@@ -588,4 +702,278 @@ impl Default for BookQuery {
 pub struct FacetCount {
     pub name: String,
     pub count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum BookMetadataUpdate {
+    Full(BookMetadata),
+    Patch(UpdateMetadataPatch),
+    AdjustTags {
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum MountedSync {
+    Relocate {
+        relative_path: String,
+        file_mtime: i64,
+    },
+    Missing,
+    Present {
+        file_size: u64,
+        file_hash: String,
+        new_mtime: Option<i64>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum TrackedSync {
+    MarkDirty,
+    TocRefresh {
+        effective_toc_url: String,
+        new_last_chapter: Option<String>,
+        new_cached: u32,
+        new_total: u32,
+    },
+    ChapterCached {
+        new_cached: u32,
+        new_total: u32,
+    },
+    SwitchSource {
+        new_source_id: uuid::Uuid,
+        new_book_url: String,
+        new_toc_url: String,
+        new_last_chapter: Option<String>,
+        new_cached: u32,
+        new_total: u32,
+        new_intro: Option<String>,
+        new_cover_key: Option<String>,
+    },
+    CommitEpub {
+        new_storage_key: String,
+        file_size: u64,
+        file_hash: String,
+        cached_count: u32,
+        total_count: u32,
+        is_clean: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookFacetKind {
+    Authors,
+    Tags,
+}
+
+impl BookQuery {
+    pub fn evaluate(
+        &self,
+        candidates: Vec<Book>,
+        fav_filter: Option<&HashSet<BookId>>,
+    ) -> PagedResult<Book> {
+        let shelf_filter: Option<HashSet<BookId>> = self
+            .shelf_book_ids
+            .as_ref()
+            .map(|ids| ids.iter().copied().collect());
+        let keyword_lower = self.keyword.as_ref().map(|k| k.to_lowercase());
+        let authors_lower: Vec<String> = self.authors.iter().map(|a| a.to_lowercase()).collect();
+        let tags_lower: Vec<String> = self.tags.iter().map(|t| t.to_lowercase()).collect();
+
+        let mut matched: Vec<Book> = candidates
+            .into_iter()
+            .filter(|book| {
+                self.matches_book(
+                    book,
+                    fav_filter,
+                    shelf_filter.as_ref(),
+                    &authors_lower,
+                    &tags_lower,
+                    keyword_lower.as_deref(),
+                )
+            })
+            .collect();
+
+        matched.sort_by(|a, b| compare_books(a, b, self.sort_by, self.sort_order));
+        paginate_books(matched, self.page, self.page_size)
+    }
+
+    fn matches_book(
+        &self,
+        book: &Book,
+        fav_filter: Option<&HashSet<BookId>>,
+        shelf_filter: Option<&HashSet<BookId>>,
+        authors_lower: &[String],
+        tags_lower: &[String],
+        keyword_lower: Option<&str>,
+    ) -> bool {
+        if self.exclude_online_tracked && book.source.is_online_tracked() {
+            return false;
+        }
+        if let Some(allowed) = &self.allowed_book_ids
+            && !allowed.contains(&book.id)
+        {
+            return false;
+        }
+        if let Some(favs) = fav_filter
+            && !favs.contains(&book.id)
+        {
+            return false;
+        }
+        if let Some(shelf_ids) = shelf_filter
+            && !shelf_ids.contains(&book.id)
+        {
+            return false;
+        }
+        matches_authors(book, authors_lower)
+            && matches_tags(book, tags_lower, self.tag_mode)
+            && matches_keyword(book, keyword_lower)
+    }
+}
+
+fn matches_authors(book: &Book, authors_lower: &[String]) -> bool {
+    if authors_lower.is_empty() {
+        return true;
+    }
+    let book_authors: Vec<String> = book
+        .metadata
+        .authors
+        .iter()
+        .map(|a| a.to_lowercase())
+        .collect();
+    authors_lower.iter().any(|want| book_authors.contains(want))
+}
+
+fn matches_tags(book: &Book, tags_lower: &[String], mode: TagMatchMode) -> bool {
+    if tags_lower.is_empty() {
+        return true;
+    }
+    let book_tags: Vec<String> = book
+        .metadata
+        .tags
+        .iter()
+        .map(|t| t.to_lowercase())
+        .collect();
+    match mode {
+        TagMatchMode::Any => tags_lower.iter().any(|want| book_tags.contains(want)),
+        TagMatchMode::All => tags_lower.iter().all(|want| book_tags.contains(want)),
+    }
+}
+
+fn matches_keyword(book: &Book, keyword_lower: Option<&str>) -> bool {
+    let Some(kw) = keyword_lower else {
+        return true;
+    };
+    book.metadata.title.to_lowercase().contains(kw)
+        || book
+            .metadata
+            .authors
+            .iter()
+            .any(|a| a.to_lowercase().contains(kw))
+        || book
+            .metadata
+            .tags
+            .iter()
+            .any(|t| t.to_lowercase().contains(kw))
+        || book
+            .metadata
+            .description
+            .as_ref()
+            .is_some_and(|d| d.to_lowercase().contains(kw))
+        || book
+            .metadata
+            .isbn
+            .as_ref()
+            .is_some_and(|i| i.to_lowercase().contains(kw))
+        || book
+            .metadata
+            .series
+            .as_ref()
+            .is_some_and(|s| s.to_lowercase().contains(kw))
+}
+
+fn compare_books(
+    a: &Book,
+    b: &Book,
+    sort_by: BookSortField,
+    sort_order: SortOrder,
+) -> std::cmp::Ordering {
+    let ord = match sort_by {
+        BookSortField::CreatedAt => a.created_at.cmp(&b.created_at),
+        BookSortField::UpdatedAt => a.updated_at.cmp(&b.updated_at),
+        BookSortField::Title => a
+            .metadata
+            .title
+            .to_lowercase()
+            .cmp(&b.metadata.title.to_lowercase()),
+        BookSortField::FileSize => a.file_size.cmp(&b.file_size),
+    };
+    match sort_order {
+        SortOrder::Asc => ord,
+        SortOrder::Desc => ord.reverse(),
+    }
+}
+
+fn parse_kind_tags(kind: Option<&str>) -> Vec<String> {
+    let Some(raw) = kind else {
+        return Vec::new();
+    };
+    raw.split([',', '，', '|', '/'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn count_distinct_lower<'a>(items: impl Iterator<Item = &'a str>) -> u64 {
+    let mut keys = HashSet::new();
+    for item in items {
+        let clean = item.trim().to_lowercase();
+        if !clean.is_empty() {
+            keys.insert(clean);
+        }
+    }
+    keys.len() as u64
+}
+
+fn paginate_books(matched: Vec<Book>, raw_page: u32, raw_page_size: u32) -> PagedResult<Book> {
+    let total = matched.len() as u64;
+    let page = raw_page.max(1);
+    let page_size = raw_page_size.max(1);
+    let start = ((page - 1) as usize).saturating_mul(page_size as usize);
+    let items = matched
+        .into_iter()
+        .skip(start)
+        .take(page_size as usize)
+        .collect();
+    PagedResult {
+        items,
+        total,
+        page,
+        page_size,
+    }
+}
+
+impl FacetCount {
+    pub fn tally(books: impl IntoIterator<Item = Book>, kind: BookFacetKind) -> Vec<Self> {
+        let mut counts: BTreeMap<String, (String, u64)> = BTreeMap::new();
+        for book in books {
+            let values = match kind {
+                BookFacetKind::Authors => &book.metadata.authors,
+                BookFacetKind::Tags => &book.metadata.tags,
+            };
+            for val in values {
+                let key = val.to_lowercase();
+                let entry = counts.entry(key).or_insert_with(|| (val.clone(), 0));
+                entry.1 += 1;
+            }
+        }
+        let mut out: Vec<Self> = counts
+            .into_values()
+            .map(|(name, count)| Self { name, count })
+            .collect();
+        out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+        out
+    }
 }

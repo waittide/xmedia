@@ -1,7 +1,8 @@
 use xmedia_source::http::{
-    LegadoUrlOptions, eval_json_options_template, has_suspicious_option_chars,
-    resolve_relative_url, split_legado_url_and_raw_options, split_legado_url_template_and_options,
-    substitute_url_part_vars, verify_js_pipeline_url_options,
+    eval_json_options_template, has_suspicious_option_chars, resolve_relative_url,
+    resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
+    split_legado_url_template_and_options, substitute_url_part_vars,
+    verify_js_pipeline_url_options,
 };
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
 
@@ -144,24 +145,6 @@ fn normalize_explore_url(raw_url: &str, base_url: &str) -> String {
         || split_legado_url_and_raw_options(trimmed).1.is_some()
     {
         return trimmed.to_string();
-    }
-    resolve_relative_url(trimmed, base_url)
-}
-
-pub(in crate::infra::source) fn resolve_relative_url_preserving_options(
-    raw_url: &str,
-    base_url: &str,
-) -> String {
-    let trimmed = raw_url.trim();
-    if let (url_part, Some(opt_json)) = split_legado_url_and_raw_options(trimmed)
-        && serde_json::from_str::<LegadoUrlOptions>(opt_json).is_ok()
-    {
-        let resolved_part = if url_part.trim().is_empty() {
-            base_url.to_string()
-        } else {
-            resolve_relative_url(url_part, base_url)
-        };
-        return format!("{resolved_part},{opt_json}");
     }
     resolve_relative_url(trimmed, base_url)
 }

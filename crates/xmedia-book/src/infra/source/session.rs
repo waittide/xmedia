@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::engine::{apply_content_replace_regex, clean_chapter_html_to_text};
+use super::content_clean::{apply_content_replace_regex, clean_chapter_html_to_text};
 use crate::application::ports::{BookBatchContextPort, BookBatchWorkerPort};
 use crate::domain::online::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineChapterContent,
@@ -165,14 +165,7 @@ impl ReusableWorkerSession {
         target_url: &str,
         base_url: &str,
     ) -> Result<HttpFetchResult, String> {
-        self.check_active()?;
-        let remaining = self.inner.remaining_budget();
-        if remaining.is_zero() {
-            return Err("执行超过单次操作总超时上限 (interrupted)".into());
-        }
-        self.inner
-            .http()
-            .fetch_with_timeout(target_url, base_url, Some(remaining))
+        self.inner.fetch(target_url, base_url)
     }
 
     pub(super) fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {

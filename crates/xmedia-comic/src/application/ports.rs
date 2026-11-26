@@ -16,59 +16,7 @@ use crate::domain::online::{
     OnlineComicChapter, OnlineComicDetail, OnlineComicItem, SourceCallError, SourceCallOutput,
     SourceRuntimeState,
 };
-use crate::domain::series::ReadingDirection;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ComicInfoMetadata {
-    pub series: Option<String>,
-    pub series_group: Option<String>,
-    pub title: Option<String>,
-    pub number: Option<f64>,
-    pub volume: Option<f64>,
-    pub summary: Option<String>,
-    pub writers: Vec<String>,
-    pub pencillers: Vec<String>,
-    pub publisher: Option<String>,
-    pub genres: Vec<String>,
-    pub tags: Vec<String>,
-    pub age_rating: Option<String>,
-    pub language_iso: Option<String>,
-    pub year: Option<i32>,
-    pub reading_direction: Option<ReadingDirection>,
-    pub page_count: Option<u32>,
-}
-
-impl From<xmedia_formats::comic::comicinfo::ComicInfoMeta> for ComicInfoMetadata {
-    fn from(ci: xmedia_formats::comic::comicinfo::ComicInfoMeta) -> Self {
-        let mut pencillers = ci.pencillers;
-        for artist in ci.cover_artists {
-            if !pencillers
-                .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(&artist))
-            {
-                pencillers.push(artist);
-            }
-        }
-        Self {
-            series: ci.series,
-            series_group: ci.series_group,
-            title: ci.title,
-            number: ci.number,
-            volume: ci.volume,
-            summary: ci.summary,
-            writers: ci.writers,
-            pencillers,
-            publisher: ci.publisher,
-            genres: ci.genres,
-            tags: ci.tags,
-            age_rating: ci.age_rating,
-            language_iso: ci.language_iso,
-            year: ci.year,
-            reading_direction: ci.reading_direction.map(ReadingDirection::from),
-            page_count: ci.page_count,
-        }
-    }
-}
+pub use crate::domain::series::ComicInfoMetadata;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageDescriptor {

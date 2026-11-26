@@ -32,20 +32,10 @@ impl BookOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut sources = self.sources.repository().list_all().await?;
-        let is_admin = actor.role.is_admin();
-
-        if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
-            sources.retain(|s| filter_ids.contains(&s.id) && (is_admin || s.enabled));
-        } else {
-            sources.retain(|s| s.enabled);
-        }
-
-        if sources.is_empty() {
-            return Err(DomainError::Validation("没有可用的已启用书源".into()));
-        }
-
-        sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+        let sources = self
+            .sources
+            .select_sources(actor, source_ids.as_deref())
+            .await?;
         let page_num = page.max(1);
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
         let op_timeout = self.op_timeout;
@@ -575,7 +565,7 @@ impl BookOnlineService {
             allow_private_ips: self.allow_private_ips,
             proxy_url: None,
         };
-        let (bytes, mime) = xmedia_source::proxy::fetch_validated_image_bytes_with_config(
+        let (bytes, mime) = xmedia_source::proxy::fetch_image(
             raw_url,
             None,
             xmedia_source::proxy::DEFAULT_IMAGE_PROXY_MAX_BYTES,

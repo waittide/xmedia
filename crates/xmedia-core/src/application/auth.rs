@@ -6,26 +6,28 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 use crate::application::activity::ActivityService;
 use crate::application::bindings::MediaBindingService;
 use crate::application::dto::{
-    AuthSessionDto, ChangePasswordInput, CreateUserInput, SetupAdminInput, SetupStatusDto,
-    SubsonicCredentials, UpdateUserInput, UserDto,
+    AuthCredential, AuthSessionDto, ChangePasswordInput, CreateUserInput, SetupAdminInput,
+    SetupStatusDto, SubsonicCredentials, UpdateUserInput, UserDto,
 };
 use crate::application::ports::{
     AuthClaims, MediaDomainLifecycle, PasswordHasherPort, TokenServicePort,
 };
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
-use crate::domain::repository::{OnlineLibraryItemRepository, UserRepository};
-use crate::domain::user::{User, UserId, UserPreferences, UserRole};
+use crate::domain::repository::{
+    BindingDeleteScope, OnlineItemDeleteScope, OnlineLibraryItemRepository, UserLookup,
+    UserMutation, UserRepository,
+};
+use crate::domain::user::{User, UserId, UserPreferences, UserRole, UserSecret, validate_password};
 
 pub use rate_limit::constant_time_eq;
 use rate_limit::{
     AUTH_RATE_LIMIT_MAX_FAILURES, AUTH_RATE_LIMIT_WINDOW, AuthRateLimiter, MAX_REVOKED_JTIS,
-    compute_user_cred_ver,
 };
 
 #[derive(Clone)]
@@ -39,6 +41,7 @@ pub struct AuthService {
     bindings: Option<Arc<MediaBindingService>>,
     setup_lock: Arc<Mutex<()>>,
     throttled_verify_lock: Arc<Mutex<()>>,
+    dummy_password_hash: Arc<OnceCell<String>>,
     revoked_jtis: Arc<RwLock<HashMap<String, u64>>>,
     rate_limiter: Arc<AuthRateLimiter>,
 }
@@ -60,6 +63,7 @@ impl AuthService {
             bindings: None,
             setup_lock: Arc::new(Mutex::new(())),
             throttled_verify_lock: Arc::new(Mutex::new(())),
+            dummy_password_hash: Arc::new(OnceCell::new()),
             revoked_jtis: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter: Arc::new(AuthRateLimiter::new(
                 AUTH_RATE_LIMIT_WINDOW,
@@ -68,31 +72,49 @@ impl AuthService {
         }
     }
 
-    pub fn with_activity(mut self, activity: Arc<ActivityService>) -> Self {
-        self.activity = Some(activity);
+    pub fn with_cleanup(
+        mut self,
+        activity: Option<Arc<ActivityService>>,
+        online_items: Option<Arc<dyn OnlineLibraryItemRepository>>,
+        bindings: Option<Arc<MediaBindingService>>,
+    ) -> Self {
+        self.activity = activity;
+        self.online_items = online_items;
+        self.bindings = bindings;
         self
     }
 
-    pub fn with_online_items(mut self, online_items: Arc<dyn OnlineLibraryItemRepository>) -> Self {
-        self.online_items = Some(online_items);
-        self
+    async fn verify_against_dummy_hash(&self, password: &str) {
+        if let Ok(dummy) = self
+            .dummy_password_hash
+            .get_or_try_init(|| {
+                self.hasher
+                    .hash_password("xmedia-dummy-password-mitigation")
+            })
+            .await
+        {
+            let _ = self.hasher.verify_password(password, dummy).await;
+        }
     }
 
-    pub fn with_bindings(mut self, bindings: Arc<MediaBindingService>) -> Self {
-        self.bindings = Some(bindings);
-        self
-    }
-
-    pub fn has_activity_cleanup(&self) -> bool {
-        self.activity.is_some()
-    }
-
-    pub fn has_online_items_cleanup(&self) -> bool {
-        self.online_items.is_some()
-    }
-
-    pub fn has_bindings_cleanup(&self) -> bool {
-        self.bindings.is_some()
+    async fn verify_password_rate_limited(
+        &self,
+        password: &str,
+        password_hash: &str,
+        client_ip: Option<IpAddr>,
+        rate_key: &str,
+    ) -> DomainResult<bool> {
+        if self.rate_limiter.is_limited(client_ip, rate_key) {
+            if client_ip.is_some() {
+                return Err(DomainError::TooManyRequests(
+                    "too many failed authentication attempts; please try again later".into(),
+                ));
+            }
+            let _throttle = self.throttled_verify_lock.lock().await;
+            self.hasher.verify_password(password, password_hash).await
+        } else {
+            self.hasher.verify_password(password, password_hash).await
+        }
     }
 
     /// Revokes a single JWT (by its `jti`) until its natural expiration timestamp.
@@ -131,72 +153,50 @@ impl AuthService {
     }
 
     pub async fn setup_status(&self) -> DomainResult<SetupStatusDto> {
-        let has_user = self.users.has_any_user().await?;
         Ok(SetupStatusDto {
-            needs_setup: !has_user,
+            needs_setup: self.users.count().await? == 0,
         })
     }
 
     pub async fn setup_initial_admin(&self, req: SetupAdminInput) -> DomainResult<AuthSessionDto> {
         let _guard = self.setup_lock.lock().await;
-        if self.users.has_any_user().await? {
+        if self.users.count().await? > 0 {
             return Err(DomainError::Conflict(
                 "initial administrator has already been configured".into(),
             ));
         }
-        Self::validate_password(&req.password)?;
-        let hash = self.hasher.hash_password(&req.password).await?;
-        let enc_secret = self.hasher.encrypt_subsonic_secret(&req.password)?;
-        let api_key = self.hasher.generate_api_key();
-
+        let (hash, enc_secret) = self.hash_new_password(&req.password).await?;
         let user = User::new(
             req.username,
             req.display_name.unwrap_or_default(),
             hash,
             enc_secret,
-            api_key,
+            self.hasher.generate_api_key(),
             UserRole::Admin,
         )?;
         self.users.save(&user).await?;
         self.issue_session(user)
     }
 
-    pub async fn login(&self, username: &str, password: &str) -> DomainResult<AuthSessionDto> {
-        self.login_with_ip(username, password, None).await
-    }
-
-    /// Authenticates `username`/`password` while scoping brute-force rate limiting to
-    /// `(client_ip, username)` so an attacker on IP A cannot lock out legitimate logins from IP B.
-    pub async fn login_with_ip(
+    pub async fn login(
         &self,
         username: &str,
         password: &str,
         client_ip: Option<IpAddr>,
     ) -> DomainResult<AuthSessionDto> {
-        let Some(user) = self.users.find_by_username(username.trim()).await? else {
+        let trimmed = username.trim();
+        let Some(user) = self.users.find(UserLookup::Username(trimmed)).await? else {
+            self.verify_against_dummy_hash(password).await;
             self.rate_limiter
                 .record_failure_and_check(client_ip, "login:<unknown>")?;
             return Err(DomainError::Unauthorized(
                 "invalid username or password".into(),
             ));
         };
-
         let rate_key = format!("login:{}", user.username);
-        let verified = if self.rate_limiter.is_limited(client_ip, &rate_key) {
-            if client_ip.is_some() {
-                return Err(DomainError::TooManyRequests(
-                    "too many failed authentication attempts; please try again later".into(),
-                ));
-            }
-            let _throttle = self.throttled_verify_lock.lock().await;
-            self.hasher
-                .verify_password(password, &user.password_hash)
-                .await?
-        } else {
-            self.hasher
-                .verify_password(password, &user.password_hash)
-                .await?
-        };
+        let verified = self
+            .verify_password_rate_limited(password, &user.password_hash, client_ip, &rate_key)
+            .await?;
         if !verified {
             self.rate_limiter
                 .record_failure_and_check(client_ip, &rate_key)?;
@@ -204,20 +204,17 @@ impl AuthService {
                 "invalid username or password".into(),
             ));
         }
-
         self.rate_limiter.clear_below_limit(client_ip, &rate_key);
         user.ensure_active()?;
         self.issue_session(user)
     }
 
-    /// Issues a session directly for an active local administrator without password verification.
-    /// Intended strictly for the in-process standalone loopback client gateway.
     pub async fn issue_local_admin_session(
         &self,
         preferred_username: Option<&str>,
     ) -> DomainResult<AuthSessionDto> {
         if let Some(username) = preferred_username.map(str::trim).filter(|u| !u.is_empty())
-            && let Some(user) = self.users.find_by_username(username).await?
+            && let Some(user) = self.users.find(UserLookup::Username(username)).await?
             && user.is_active
             && user.role.is_admin()
         {
@@ -237,18 +234,33 @@ impl AuthService {
         self.issue_session(admin)
     }
 
-    pub async fn authenticate_jwt(&self, raw_token: &str) -> DomainResult<User> {
+    pub async fn authenticate(
+        &self,
+        cred: AuthCredential<'_>,
+        client_ip: Option<IpAddr>,
+    ) -> DomainResult<User> {
+        match cred {
+            AuthCredential::Jwt(token) => self.authenticate_jwt(token).await,
+            AuthCredential::ApiKey(key) => self.verify_api_key(key, client_ip).await,
+            AuthCredential::Basic { username, password } => {
+                self.verify_basic(username, password, client_ip).await
+            }
+            AuthCredential::Subsonic(creds) => self.verify_subsonic(creds, client_ip).await,
+        }
+    }
+
+    async fn authenticate_jwt(&self, raw_token: &str) -> DomainResult<User> {
         let claims = self.tokens.verify_token(raw_token)?;
         if self.is_jti_revoked(&claims.jti) {
             return Err(DomainError::Unauthorized("token has been revoked".into()));
         }
         let user = self
             .users
-            .find_by_id(claims.user_id)
+            .find(UserLookup::Id(claims.user_id))
             .await?
             .ok_or_else(|| DomainError::Unauthorized("user no longer exists".into()))?;
         user.ensure_active()?;
-        let expected_ver = compute_user_cred_ver(&user);
+        let expected_ver = user.cred_version();
         if claims.cred_ver.is_empty()
             || !constant_time_eq(claims.cred_ver.as_bytes(), expected_ver.as_bytes())
         {
@@ -259,22 +271,14 @@ impl AuthService {
         Ok(user)
     }
 
-    pub async fn authenticate_api_key(&self, key: &str) -> DomainResult<User> {
-        self.authenticate_api_key_with_ip(key, None).await
-    }
-
-    pub async fn authenticate_api_key_with_ip(
-        &self,
-        key: &str,
-        client_ip: Option<IpAddr>,
-    ) -> DomainResult<User> {
+    async fn verify_api_key(&self, key: &str, client_ip: Option<IpAddr>) -> DomainResult<User> {
         let trimmed = key.trim();
         if trimmed.is_empty() {
             self.rate_limiter
                 .record_failure_and_check(client_ip, "api_key:<invalid>")?;
             return Err(DomainError::Unauthorized("empty api key".into()));
         }
-        let Some(user) = self.users.find_by_api_key(trimmed).await? else {
+        let Some(user) = self.users.find(UserLookup::ApiKey(trimmed)).await? else {
             self.rate_limiter
                 .record_failure_and_check(client_ip, "api_key:<invalid>")?;
             return Err(DomainError::Unauthorized("invalid api key".into()));
@@ -288,22 +292,18 @@ impl AuthService {
         Ok(user)
     }
 
-    pub async fn verify_basic_credentials(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> DomainResult<User> {
-        self.verify_basic_credentials_with_ip(username, password, None)
-            .await
-    }
-
-    pub async fn verify_basic_credentials_with_ip(
+    async fn verify_basic(
         &self,
         username: &str,
         password: &str,
         client_ip: Option<IpAddr>,
     ) -> DomainResult<User> {
-        let Some(user) = self.users.find_by_username(username.trim()).await? else {
+        let Some(user) = self
+            .users
+            .find(UserLookup::Username(username.trim()))
+            .await?
+        else {
+            self.verify_against_dummy_hash(password).await;
             self.rate_limiter
                 .record_failure_and_check(client_ip, "basic:<unknown>")?;
             return Err(DomainError::Unauthorized("invalid credentials".into()));
@@ -313,19 +313,8 @@ impl AuthService {
             && constant_time_eq(password.as_bytes(), user.api_key.as_bytes())
         {
             true
-        } else if self.rate_limiter.is_limited(client_ip, &rate_key) {
-            if client_ip.is_some() {
-                return Err(DomainError::TooManyRequests(
-                    "too many failed authentication attempts; please try again later".into(),
-                ));
-            }
-            let _throttle = self.throttled_verify_lock.lock().await;
-            self.hasher
-                .verify_password(password, &user.password_hash)
-                .await?
         } else {
-            self.hasher
-                .verify_password(password, &user.password_hash)
+            self.verify_password_rate_limited(password, &user.password_hash, client_ip, &rate_key)
                 .await?
         };
         if !ok {
@@ -338,30 +327,27 @@ impl AuthService {
         Ok(user)
     }
 
-    pub async fn authenticate_subsonic(&self, creds: SubsonicCredentials) -> DomainResult<User> {
-        self.authenticate_subsonic_with_ip(creds, None).await
-    }
-
-    pub async fn authenticate_subsonic_with_ip(
+    async fn verify_subsonic(
         &self,
         creds: SubsonicCredentials,
         client_ip: Option<IpAddr>,
     ) -> DomainResult<User> {
         match creds {
-            SubsonicCredentials::ApiKey(key) => {
-                self.authenticate_api_key_with_ip(&key, client_ip).await
-            }
+            SubsonicCredentials::ApiKey(key) => self.verify_api_key(&key, client_ip).await,
             SubsonicCredentials::Password { username, password } => {
                 let plain = decode_subsonic_password(&password)?;
-                self.verify_basic_credentials_with_ip(&username, &plain, client_ip)
-                    .await
+                self.verify_basic(&username, &plain, client_ip).await
             }
             SubsonicCredentials::TokenSalt {
                 username,
                 token,
                 salt,
             } => {
-                let Some(user) = self.users.find_by_username(username.trim()).await? else {
+                let Some(user) = self
+                    .users
+                    .find(UserLookup::Username(username.trim()))
+                    .await?
+                else {
                     self.rate_limiter
                         .record_failure_and_check(client_ip, "subsonic:<unknown>")?;
                     return Err(DomainError::Unauthorized(
@@ -369,7 +355,7 @@ impl AuthService {
                     ));
                 };
                 let rate_key = format!("subsonic:{}", user.username);
-                if client_ip.is_some() && self.rate_limiter.is_limited(client_ip, &rate_key) {
+                if self.rate_limiter.is_limited(client_ip, &rate_key) {
                     return Err(DomainError::TooManyRequests(
                         "too many failed authentication attempts; please try again later".into(),
                     ));
@@ -394,13 +380,18 @@ impl AuthService {
         }
     }
 
-    pub async fn get_me(&self, actor: &User) -> DomainResult<UserDto> {
-        let fresh = self
-            .users
-            .find_by_id(actor.id)
+    async fn load_user(&self, id: UserId, not_found_msg: &'static str) -> DomainResult<User> {
+        self.users
+            .find(UserLookup::Id(id))
             .await?
-            .ok_or_else(|| DomainError::NotFound("user not found".into()))?;
-        Ok(UserDto::from(fresh))
+            .ok_or_else(|| DomainError::NotFound(not_found_msg.into()))
+    }
+
+    async fn hash_new_password(&self, password: &str) -> DomainResult<(String, String)> {
+        validate_password(password)?;
+        let hash = self.hasher.hash_password(password).await?;
+        let enc = self.hasher.encrypt_subsonic_secret(password)?;
+        Ok((hash, enc))
     }
 
     pub async fn update_preferences(
@@ -408,15 +399,15 @@ impl AuthService {
         actor: &User,
         preferences: UserPreferences,
     ) -> DomainResult<UserDto> {
-        let mut user = self
-            .users
-            .find_by_id(actor.id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("user not found".into()))?;
-        user.update_preferences(preferences);
+        let mut user = self.load_user(actor.id, "user not found").await?;
+        user.set_preferences(preferences);
         if !self
             .users
-            .update_preferences(user.id, &user.preferences, user.updated_at)
+            .update(
+                user.id,
+                UserMutation::Preferences(&user.preferences),
+                user.updated_at,
+            )
             .await?
         {
             return Err(DomainError::NotFound("user not found".into()));
@@ -429,11 +420,7 @@ impl AuthService {
         actor: &User,
         input: ChangePasswordInput,
     ) -> DomainResult<AuthSessionDto> {
-        let mut user = self
-            .users
-            .find_by_id(actor.id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("user not found".into()))?;
+        let mut user = self.load_user(actor.id, "user not found").await?;
         if !self
             .hasher
             .verify_password(&input.current_password, &user.password_hash)
@@ -443,16 +430,19 @@ impl AuthService {
                 "current password is incorrect".into(),
             ));
         }
-        Self::validate_password(&input.new_password)?;
-        let hash = self.hasher.hash_password(&input.new_password).await?;
-        let enc_secret = self.hasher.encrypt_subsonic_secret(&input.new_password)?;
-        user.update_credentials(hash, enc_secret)?;
+        let (hash, enc_secret) = self.hash_new_password(&input.new_password).await?;
+        user.rotate_secret(UserSecret::Password {
+            password_hash: hash,
+            subsonic_secret_enc: enc_secret,
+        })?;
         if !self
             .users
-            .update_credentials(
+            .update(
                 user.id,
-                &user.password_hash,
-                &user.subsonic_secret_enc,
+                UserMutation::Credentials {
+                    password_hash: &user.password_hash,
+                    subsonic_secret_enc: &user.subsonic_secret_enc,
+                },
                 user.updated_at,
             )
             .await?
@@ -463,16 +453,15 @@ impl AuthService {
     }
 
     pub async fn rotate_api_key(&self, actor: &User) -> DomainResult<UserDto> {
-        let mut user = self
-            .users
-            .find_by_id(actor.id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("user not found".into()))?;
-        let new_key = self.hasher.generate_api_key();
-        user.rotate_api_key(new_key)?;
+        let mut user = self.load_user(actor.id, "user not found").await?;
+        user.rotate_secret(UserSecret::ApiKey(self.hasher.generate_api_key()))?;
         if !self
             .users
-            .update_api_key(user.id, &user.api_key, user.updated_at)
+            .update(
+                user.id,
+                UserMutation::ApiKey(&user.api_key),
+                user.updated_at,
+            )
             .await?
         {
             return Err(DomainError::NotFound("user not found".into()));
@@ -488,24 +477,21 @@ impl AuthService {
 
     pub async fn create_user(&self, actor: &User, input: CreateUserInput) -> DomainResult<UserDto> {
         actor.ensure_admin()?;
-        Self::validate_password(&input.password)?;
+        let (hash, enc_secret) = self.hash_new_password(&input.password).await?;
         if self
             .users
-            .find_by_username(input.username.trim())
+            .find(UserLookup::Username(input.username.trim()))
             .await?
             .is_some()
         {
             return Err(DomainError::Conflict("username already exists".into()));
         }
-        let hash = self.hasher.hash_password(&input.password).await?;
-        let enc_secret = self.hasher.encrypt_subsonic_secret(&input.password)?;
-        let api_key = self.hasher.generate_api_key();
         let user = User::new(
             input.username,
             input.display_name.unwrap_or_default(),
             hash,
             enc_secret,
-            api_key,
+            self.hasher.generate_api_key(),
             input.role,
         )?;
         self.users.save(&user).await?;
@@ -518,21 +504,17 @@ impl AuthService {
         target_id: UserId,
         input: UpdateUserInput,
     ) -> DomainResult<UserDto> {
-        actor.ensure_can_modify_user(target_id, input.role, input.is_active)?;
-        let mut target = self
-            .users
-            .find_by_id(target_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("target user not found".into()))?;
-
+        guard_self_admin_modification(actor, target_id, input.role, input.is_active)?;
+        let mut target = self.load_user(target_id, "target user not found").await?;
         target.update_profile(input.display_name, input.role, input.is_active)?;
         if let Some(ref new_pwd) = input.password
             && !new_pwd.trim().is_empty()
         {
-            Self::validate_password(new_pwd)?;
-            let hash = self.hasher.hash_password(new_pwd).await?;
-            let enc = self.hasher.encrypt_subsonic_secret(new_pwd)?;
-            target.update_credentials(hash, enc)?;
+            let (hash, enc) = self.hash_new_password(new_pwd).await?;
+            target.rotate_secret(UserSecret::Password {
+                password_hash: hash,
+                subsonic_secret_enc: enc,
+            })?;
         }
         self.users.save(&target).await?;
         if target.id == actor.id {
@@ -543,11 +525,13 @@ impl AuthService {
     }
 
     pub async fn delete_user(&self, actor: &User, target_id: UserId) -> DomainResult<()> {
-        actor.ensure_can_delete_user(target_id)?;
-        if self.users.find_by_id(target_id).await?.is_none() {
-            return Err(DomainError::NotFound("target user not found".into()));
-        }
+        guard_self_admin_deletion(actor, target_id)?;
+        let _ = self.load_user(target_id, "target user not found").await?;
+        self.purge_deleted_user_data(target_id).await?;
+        self.users.delete(target_id).await
+    }
 
+    async fn purge_deleted_user_data(&self, target_id: UserId) -> DomainResult<()> {
         let handlers: Vec<Arc<dyn MediaDomainLifecycle>> = self
             .lifecycles
             .read()
@@ -559,35 +543,21 @@ impl AuthService {
             handler.on_user_deleted(target_id).await?;
         }
         if let Some(ref online_items) = self.online_items {
-            online_items.delete_by_user(target_id).await?;
+            online_items
+                .delete_scope(OnlineItemDeleteScope::User(target_id))
+                .await?;
         }
         if let Some(ref bindings) = self.bindings {
-            bindings.purge_user(target_id).await?;
+            let _ = bindings.purge(BindingDeleteScope::User(target_id)).await?;
         }
         if let Some(ref activity) = self.activity {
             activity.purge_user(target_id).await?;
-        }
-
-        self.users.delete(target_id).await
-    }
-
-    fn validate_password(password: &str) -> DomainResult<()> {
-        let char_len = password.chars().count();
-        if !(6..=128).contains(&char_len) {
-            return Err(DomainError::Validation(
-                "password length must be between 6 and 128 characters".into(),
-            ));
-        }
-        if password.trim().is_empty() {
-            return Err(DomainError::Validation(
-                "password cannot consist solely of whitespace".into(),
-            ));
         }
         Ok(())
     }
 
     fn issue_session(&self, user: User) -> DomainResult<AuthSessionDto> {
-        let cred_ver = compute_user_cred_ver(&user);
+        let cred_ver = user.cred_version();
         let token = self.tokens.issue_token(&AuthClaims {
             user_id: user.id,
             username: user.username.clone(),
@@ -601,6 +571,40 @@ impl AuthService {
             user: UserDto::from(user),
         })
     }
+}
+
+fn guard_self_admin_modification(
+    actor: &User,
+    target_id: UserId,
+    role: Option<UserRole>,
+    is_active: Option<bool>,
+) -> DomainResult<()> {
+    actor.ensure_admin()?;
+    if actor.id == target_id {
+        if matches!(is_active, Some(false)) {
+            return Err(DomainError::Validation(
+                "cannot deactivate your own account".into(),
+            ));
+        }
+        if let Some(r) = role
+            && !r.is_admin()
+        {
+            return Err(DomainError::Validation(
+                "cannot demote your own admin role".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn guard_self_admin_deletion(actor: &User, target_id: UserId) -> DomainResult<()> {
+    actor.ensure_admin()?;
+    if actor.id == target_id {
+        return Err(DomainError::Validation(
+            "cannot delete your own account".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn decode_subsonic_password(raw: &str) -> DomainResult<String> {

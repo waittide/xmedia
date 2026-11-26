@@ -70,7 +70,13 @@ async fn book_upload_scan_range_and_opds_roundtrip() {
         })
         .await
         .unwrap();
-    let admin_user = auth.authenticate_jwt(&session.token).await.unwrap();
+    let admin_user = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let state = BookHttpState::new(auth.clone(), library_svc.clone(), book_services.clone());
     let app = Router::new()
@@ -633,7 +639,13 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
         })
         .await
         .unwrap();
-    let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let storage = Arc::new(RecordingStorage {
         inner: LocalBookStorage::new(tmp.path()).unwrap(),
@@ -727,7 +739,7 @@ async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failur
 async fn concurrent_ensure_managed_library_creates_single_library() {
     use async_trait::async_trait;
     use xmedia_core::domain::error::DomainResult;
-    use xmedia_core::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
+    use xmedia_core::domain::library::{Library, LibraryId, MediaKind};
     use xmedia_core::domain::repository::LibraryRepository;
 
     use crate::application::catalog::BookCatalogService;
@@ -746,11 +758,8 @@ async fn concurrent_ensure_managed_library_creates_single_library() {
         async fn find_by_id(&self, id: LibraryId) -> DomainResult<Option<Library>> {
             self.inner.find_by_id(id).await
         }
-        async fn list_all(&self) -> DomainResult<Vec<Library>> {
-            self.inner.list_all().await
-        }
-        async fn list_by_media(&self, kind: MediaKind) -> DomainResult<Vec<Library>> {
-            self.inner.list_by_media(kind).await
+        async fn list(&self, media_kind: Option<MediaKind>) -> DomainResult<Vec<Library>> {
+            self.inner.list(media_kind).await
         }
         async fn find_managed_by_media(&self, kind: MediaKind) -> DomainResult<Option<Library>> {
             let found = self.inner.find_managed_by_media(kind).await?;
@@ -762,24 +771,13 @@ async fn concurrent_ensure_managed_library_creates_single_library() {
         async fn save(&self, library: &Library) -> DomainResult<()> {
             self.inner.save(library).await
         }
-        async fn update_name(
+        async fn update(
             &self,
             id: LibraryId,
-            name: &str,
+            patch: xmedia_core::domain::repository::LibraryMutation<'_>,
             updated_at: jiff::Timestamp,
         ) -> DomainResult<bool> {
-            self.inner.update_name(id, name, updated_at).await
-        }
-        async fn update_scan_state(
-            &self,
-            id: LibraryId,
-            scan_status: &ScanStatus,
-            last_scanned_at: Option<jiff::Timestamp>,
-            updated_at: jiff::Timestamp,
-        ) -> DomainResult<bool> {
-            self.inner
-                .update_scan_state(id, scan_status, last_scanned_at, updated_at)
-                .await
+            self.inner.update(id, patch, updated_at).await
         }
         async fn delete(&self, id: LibraryId) -> DomainResult<()> {
             self.inner.delete(id).await
@@ -829,6 +827,6 @@ async fn concurrent_ensure_managed_library_creates_single_library() {
         ids.push(h.await.unwrap().id);
     }
     assert!(ids.windows(2).all(|w| w[0] == w[1]));
-    let all_libs = libs_repo.list_by_media(MediaKind::Book).await.unwrap();
+    let all_libs = libs_repo.list(Some(MediaKind::Book)).await.unwrap();
     assert_eq!(all_libs.len(), 1);
 }

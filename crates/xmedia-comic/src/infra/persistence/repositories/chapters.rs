@@ -4,11 +4,9 @@ use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
-use crate::domain::chapter::{
-    Chapter, ChapterKind, ChapterSource, ChapterSourceKind, OnlineTrackedChapterMeta,
-};
+use crate::domain::chapter::{Chapter, ChapterSource, ChapterSourceKind, OnlineTrackedChapterMeta};
 use crate::domain::id::{ChapterId, SeriesId};
-use crate::domain::repository::ChapterRepository;
+use crate::domain::repository::{ChapterDeleteScope, ChapterQuery, ChapterRepository};
 
 use super::super::models::ComicChapterModel;
 use super::db_err;
@@ -24,7 +22,11 @@ impl ToastyChapterRepository {
     }
 
     fn to_domain(m: ComicChapterModel) -> Chapter {
-        let source = match ChapterSourceKind::parse(&m.source_kind) {
+        let source = match m
+            .source_kind
+            .parse::<ChapterSourceKind>()
+            .unwrap_or_default()
+        {
             ChapterSourceKind::OnlineTracked => {
                 let mut meta =
                     m.online_meta
@@ -36,9 +38,7 @@ impl ToastyChapterRepository {
                             chapter_url: m.online_chapter_url.unwrap_or_default(),
                             cached_archive_path: None,
                         });
-                if m.cached_archive_path.is_some() {
-                    meta.cached_archive_path = m.cached_archive_path;
-                }
+                meta.cached_archive_path = m.cached_archive_path;
                 ChapterSource::OnlineTracked(meta)
             }
             ChapterSourceKind::ImageDirectory => ChapterSource::ImageFolder {
@@ -53,7 +53,7 @@ impl ToastyChapterRepository {
             id: ChapterId(m.id),
             series_id: SeriesId(m.series_id),
             library_id: LibraryId(m.library_id),
-            kind: ChapterKind::parse(&m.kind),
+            kind: m.kind.parse().unwrap_or_default(),
             number: m.number,
             volume_number: m.volume_number,
             title: m.title,
@@ -75,71 +75,57 @@ impl ToastyChapterRepository {
 
 #[async_trait]
 impl ChapterRepository for ToastyChapterRepository {
-    async fn find_by_id(&self, id: ChapterId) -> DomainResult<Option<Chapter>> {
+    async fn query(&self, scope: ChapterQuery) -> DomainResult<Vec<Chapter>> {
         let mut db = self.db.clone();
-        let row = ComicChapterModel::filter_by_id(id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.map(Self::to_domain))
-    }
-
-    async fn find_by_ids(&self, ids: &[ChapterId]) -> DomainResult<Vec<Chapter>> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut db = self.db.clone();
-        let raw_ids: Vec<Uuid> = ids.iter().map(|i| i.0).collect();
-        let rows = ComicChapterModel::filter(ComicChapterModel::fields().id().in_list(raw_ids))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::to_domain).collect())
-    }
-
-    async fn find_chapters_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Chapter>> {
-        let clean = cover_key.trim();
-        if clean.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut db = self.db.clone();
-        let rows = ComicChapterModel::filter_by_cover_path(clean.to_string())
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::to_domain).collect())
-    }
-
-    async fn list_by_series(&self, series_id: SeriesId) -> DomainResult<Vec<Chapter>> {
-        let mut db = self.db.clone();
-        let rows = ComicChapterModel::filter_by_series_id(series_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::to_domain).collect())
-    }
-
-    async fn list_by_series_ids(&self, series_ids: &[SeriesId]) -> DomainResult<Vec<Chapter>> {
-        if series_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut db = self.db.clone();
-        let raw_ids: Vec<Uuid> = series_ids.iter().map(|s| s.0).collect();
-        let rows =
-            ComicChapterModel::filter(ComicChapterModel::fields().series_id().in_list(raw_ids))
+        let rows = match scope {
+            ChapterQuery::Id(id) => ComicChapterModel::filter_by_id(id.0)
+                .first()
                 .exec(&mut db)
                 .await
-                .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::to_domain).collect())
-    }
-
-    async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Chapter>> {
-        let mut db = self.db.clone();
-        let rows = ComicChapterModel::filter_by_library_id(library_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+                .map_err(db_err)?
+                .into_iter()
+                .collect(),
+            ChapterQuery::Ids(ids) => {
+                if ids.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let raw_ids: Vec<Uuid> = ids.into_iter().map(|i| i.0).collect();
+                ComicChapterModel::filter(ComicChapterModel::fields().id().in_list(raw_ids))
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            }
+            ChapterQuery::CoverKey(cover_key) => {
+                let clean = cover_key.trim();
+                if clean.is_empty() {
+                    return Ok(Vec::new());
+                }
+                ComicChapterModel::filter_by_cover_path(clean.to_string())
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            }
+            ChapterQuery::Series(series_id) => ComicChapterModel::filter_by_series_id(series_id.0)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?,
+            ChapterQuery::SeriesIds(series_ids) => {
+                if series_ids.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let raw_ids: Vec<Uuid> = series_ids.into_iter().map(|s| s.0).collect();
+                ComicChapterModel::filter(ComicChapterModel::fields().series_id().in_list(raw_ids))
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            }
+            ChapterQuery::Library(library_id) => {
+                ComicChapterModel::filter_by_library_id(library_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            }
+        };
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
@@ -162,7 +148,7 @@ impl ChapterRepository for ToastyChapterRepository {
             online_meta,
         ) = match &c.source {
             ChapterSource::Archive { path } => (
-                ChapterSourceKind::ArchiveFile.as_str().to_string(),
+                ChapterSourceKind::ArchiveFile.to_string(),
                 path.clone(),
                 None,
                 None,
@@ -170,7 +156,7 @@ impl ChapterRepository for ToastyChapterRepository {
                 None,
             ),
             ChapterSource::ImageFolder { path } => (
-                ChapterSourceKind::ImageDirectory.as_str().to_string(),
+                ChapterSourceKind::ImageDirectory.to_string(),
                 path.clone(),
                 None,
                 None,
@@ -178,7 +164,7 @@ impl ChapterRepository for ToastyChapterRepository {
                 None,
             ),
             ChapterSource::OnlineTracked(meta) => (
-                ChapterSourceKind::OnlineTracked.as_str().to_string(),
+                ChapterSourceKind::OnlineTracked.to_string(),
                 String::new(),
                 Some(meta.source_id),
                 Some(meta.chapter_url.clone()),
@@ -192,7 +178,7 @@ impl ChapterRepository for ToastyChapterRepository {
                 .update()
                 .series_id(c.series_id.0)
                 .library_id(c.library_id.0)
-                .kind(c.kind.as_str().to_string())
+                .kind(c.kind.to_string())
                 .number(c.number)
                 .volume_number(c.volume_number)
                 .title(c.title.clone())
@@ -220,7 +206,7 @@ impl ChapterRepository for ToastyChapterRepository {
                 id: c.id.0,
                 series_id: c.series_id.0,
                 library_id: c.library_id.0,
-                kind: c.kind.as_str().to_string(),
+                kind: c.kind.to_string(),
                 number: c.number,
                 volume_number: c.volume_number,
                 title: c.title.clone(),
@@ -249,23 +235,24 @@ impl ChapterRepository for ToastyChapterRepository {
         Ok(())
     }
 
-    async fn delete(&self, id: ChapterId) -> DomainResult<()> {
+    async fn delete_scope(&self, scope: ChapterDeleteScope) -> DomainResult<()> {
         let mut db = self.db.clone();
-        ComicChapterModel::filter_by_id(id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn delete_by_series(&self, series_id: SeriesId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        ComicChapterModel::filter_by_series_id(series_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+        match scope {
+            ChapterDeleteScope::Id(id) => {
+                ComicChapterModel::filter_by_id(id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+            ChapterDeleteScope::Series(series_id) => {
+                ComicChapterModel::filter_by_series_id(series_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
+        }
         Ok(())
     }
 }

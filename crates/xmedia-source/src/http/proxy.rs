@@ -219,24 +219,29 @@ pub fn filter_headers_for_target_origin(
     filtered
 }
 
+/// In-place `HashMap<String, String>` counterpart of [`filter_headers_for_target_origin`].
+pub fn strip_cross_origin_headers(
+    headers: &mut HashMap<String, String>,
+    source_url: &str,
+    target_url: &str,
+) {
+    let same_affinity = has_origin_affinity(source_url, target_url);
+    headers.retain(|k, _| {
+        let trimmed = k.trim();
+        !trimmed.eq_ignore_ascii_case("proxy-authorization")
+            && (same_affinity || !is_sensitive_origin_header(trimmed))
+    });
+}
+
 /// `HashMap<String, String>` counterpart of [`filter_headers_for_target_origin`].
 pub fn filter_header_map_for_target_origin(
     source_url: &str,
     target_url: &str,
     headers: &HashMap<String, String>,
 ) -> HashMap<String, String> {
-    let same_affinity = has_origin_affinity(source_url, target_url);
-    headers
-        .iter()
-        .filter(|(k, _)| {
-            let trimmed = k.trim();
-            if trimmed.eq_ignore_ascii_case("proxy-authorization") {
-                return false;
-            }
-            same_affinity || !is_sensitive_origin_header(trimmed)
-        })
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
+    let mut cloned = headers.clone();
+    strip_cross_origin_headers(&mut cloned, source_url, target_url);
+    cloned
 }
 
 #[cfg(test)]

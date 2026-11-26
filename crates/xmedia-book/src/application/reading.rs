@@ -8,12 +8,17 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::User;
 
 use crate::application::catalog::BookCatalogService;
-use crate::application::dto::{BookBookmarkItemDto, BookSummaryDto, ShelfDto};
-use crate::domain::book::{Book, BookId};
-use crate::domain::reading::{
-    Bookmark, BookmarkId, ReadingLocation, ReadingProgress, Shelf, ShelfId,
+use xmedia_core::domain::repository::LibraryRepository;
+
+use crate::application::dto::{
+    BookBookmarkItemDto, BookHomeOverviewDto, BookLibraryStatsDto, BookSummaryDto, ShelfDto,
 };
-use crate::domain::repository::{BookReadingRepository, BookRepository};
+use crate::domain::book::{Book, BookId};
+use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
+use crate::domain::repository::{
+    BookCollectionQuery, BookReadingRepository, BookRepository, ProgressScope, ReadingDeleteScope,
+    ReadingMutation,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveProgressCommand {
@@ -38,20 +43,100 @@ pub struct CreateBookmarkCommand {
 pub struct BookReadingService {
     readings: Arc<dyn BookReadingRepository>,
     books: Arc<dyn BookRepository>,
+    libraries: Arc<dyn LibraryRepository>,
     bindings: Arc<MediaBindingService>,
+    catalog: Arc<BookCatalogService>,
 }
 
 impl BookReadingService {
     pub fn new(
         readings: Arc<dyn BookReadingRepository>,
         books: Arc<dyn BookRepository>,
+        libraries: Arc<dyn LibraryRepository>,
         bindings: Arc<MediaBindingService>,
+        catalog: Arc<BookCatalogService>,
     ) -> Self {
         Self {
             readings,
             books,
+            libraries,
             bindings,
+            catalog,
         }
+    }
+
+    pub async fn home_overview(&self, actor: &User) -> DomainResult<BookHomeOverviewDto> {
+        let bound_books = self.catalog.load_bound_active_books(actor.id).await?;
+        let total_books = bound_books.len() as u64;
+        let bound_id_set: HashSet<BookId> = bound_books.iter().map(|b| b.id).collect();
+        let by_id: HashMap<BookId, Book> = bound_books.iter().map(|b| (b.id, b.clone())).collect();
+        let (authors_count, tags_count, libraries_count, latest_raw) =
+            Book::summarize_collection(bound_books);
+
+        let libs = self.libraries.list(Some(MediaKind::Book)).await?;
+        let lib_names: HashMap<_, _> = libs.into_iter().map(|l| (l.id, l.name)).collect();
+
+        let fav_ids: Vec<BookId> = self
+            .readings
+            .list_favorite_book_ids(actor.id)
+            .await?
+            .into_iter()
+            .filter(|id| bound_id_set.contains(id))
+            .collect();
+        let favorites_count = fav_ids.len() as u64;
+        let fav_set: HashSet<BookId> = fav_ids.into_iter().collect();
+
+        let all_progress: Vec<ReadingProgress> = self
+            .readings
+            .query_progress(actor.id, ProgressScope::Recent(u32::MAX))
+            .await?
+            .into_iter()
+            .filter(|p| bound_id_set.contains(&p.book_id))
+            .collect();
+        let reading_count = all_progress.len() as u64;
+        let recent_ids: Vec<BookId> = all_progress.iter().take(6).map(|r| r.book_id).collect();
+        let progress_map: HashMap<BookId, ReadingProgress> =
+            all_progress.into_iter().map(|p| (p.book_id, p)).collect();
+
+        let recently_added = BookCatalogService::enrich_books_with_maps(
+            &latest_raw,
+            &lib_names,
+            &fav_set,
+            &progress_map,
+        );
+
+        let continue_reading = if recent_ids.is_empty() {
+            Vec::new()
+        } else {
+            let ordered: Vec<Book> = recent_ids
+                .into_iter()
+                .filter_map(|id| by_id.get(&id).cloned())
+                .collect();
+            BookCatalogService::enrich_books_with_maps(
+                &ordered,
+                &lib_names,
+                &fav_set,
+                &progress_map,
+            )
+        };
+
+        let bookmarks_count = self.count_user_bookmarks(actor).await?;
+        let shelves = self.list_shelves(actor).await?;
+
+        Ok(BookHomeOverviewDto {
+            stats: BookLibraryStatsDto {
+                total_books,
+                reading_count,
+                bookmarks_count,
+                favorites_count,
+                shelves_count: shelves.len() as u64,
+                tags_count,
+                authors_count,
+                libraries_count,
+            },
+            continue_reading,
+            recently_added,
+        })
     }
 
     pub async fn get_progress(
@@ -60,7 +145,12 @@ impl BookReadingService {
         book_id: BookId,
     ) -> DomainResult<Option<ReadingProgress>> {
         self.ensure_book_bound(actor, book_id).await?;
-        self.readings.get_progress(actor.id, book_id).await
+        Ok(self
+            .readings
+            .query_progress(actor.id, ProgressScope::Book(book_id))
+            .await?
+            .into_iter()
+            .next())
     }
 
     pub async fn save_progress(
@@ -70,7 +160,16 @@ impl BookReadingService {
         cmd: SaveProgressCommand,
     ) -> DomainResult<ReadingProgress> {
         self.ensure_book_bound(actor, book_id).await?;
-        let location = ReadingLocation::new(
+        let existing = self
+            .readings
+            .query_progress(actor.id, ProgressScope::Book(book_id))
+            .await?
+            .into_iter()
+            .next();
+        let progress = ReadingProgress::upsert(
+            existing,
+            actor.id,
+            book_id,
             cmd.progress_percent,
             cmd.locator,
             cmd.chapter_index,
@@ -78,15 +177,9 @@ impl BookReadingService {
             cmd.scroll_ratio,
         )?;
 
-        let progress = match self.readings.get_progress(actor.id, book_id).await? {
-            Some(mut existing) => {
-                existing.update_location(location);
-                existing
-            }
-            None => ReadingProgress::new(actor.id, book_id, location),
-        };
-
-        self.readings.save_progress(&progress).await?;
+        self.readings
+            .save(ReadingMutation::Progress(&progress))
+            .await?;
         Ok(progress)
     }
 
@@ -94,7 +187,6 @@ impl BookReadingService {
         &self,
         actor: &User,
         limit: u32,
-        catalog: &BookCatalogService,
     ) -> DomainResult<Vec<BookSummaryDto>> {
         let bound_ids = self
             .bindings
@@ -105,7 +197,7 @@ impl BookReadingService {
         }
         let recent = self
             .readings
-            .list_recent_progress(actor.id, u32::MAX)
+            .query_progress(actor.id, ProgressScope::Recent(u32::MAX))
             .await?;
         let ids: Vec<BookId> = recent
             .iter()
@@ -117,7 +209,10 @@ impl BookReadingService {
             return Ok(Vec::new());
         }
 
-        let found = self.books.find_by_ids(&ids).await?;
+        let found = self
+            .books
+            .query(BookCollectionQuery::Ids(ids.clone()))
+            .await?;
         let by_id: HashMap<BookId, Book> = found.into_iter().map(|b| (b.id, b)).collect();
 
         let ordered: Vec<Book> = ids
@@ -125,7 +220,7 @@ impl BookReadingService {
             .filter_map(|id| by_id.get(&id).cloned())
             .collect();
 
-        catalog.enrich_books(Some(actor), &ordered).await
+        self.catalog.enrich_books(Some(actor), &ordered).await
     }
 
     pub async fn list_bookmarks(
@@ -134,7 +229,7 @@ impl BookReadingService {
         book_id: BookId,
     ) -> DomainResult<Vec<Bookmark>> {
         self.ensure_book_bound(actor, book_id).await?;
-        self.readings.list_bookmarks(actor.id, book_id).await
+        self.readings.list_bookmarks(actor.id, Some(book_id)).await
     }
 
     pub async fn list_all_bookmarks(&self, actor: &User) -> DomainResult<Vec<BookBookmarkItemDto>> {
@@ -147,7 +242,7 @@ impl BookReadingService {
         }
         let bookmarks: Vec<Bookmark> = self
             .readings
-            .list_user_bookmarks(actor.id)
+            .list_bookmarks(actor.id, None)
             .await?
             .into_iter()
             .filter(|bm| bound_ids.contains(&bm.book_id.0))
@@ -161,7 +256,10 @@ impl BookReadingService {
                 unique_ids.push(bm.book_id);
             }
         }
-        let found = self.books.find_by_ids(&unique_ids).await?;
+        let found = self
+            .books
+            .query(BookCollectionQuery::Ids(unique_ids))
+            .await?;
         let by_id: HashMap<BookId, Book> = found.into_iter().map(|b| (b.id, b)).collect();
 
         let mut out = Vec::with_capacity(bookmarks.len());
@@ -187,7 +285,7 @@ impl BookReadingService {
             .await?;
         let list = self
             .readings
-            .list_recent_progress(actor.id, u32::MAX)
+            .query_progress(actor.id, ProgressScope::Recent(u32::MAX))
             .await?;
         Ok(list
             .into_iter()
@@ -202,7 +300,7 @@ impl BookReadingService {
             .await?;
         Ok(self
             .readings
-            .list_user_bookmarks(actor.id)
+            .list_bookmarks(actor.id, None)
             .await?
             .into_iter()
             .filter(|bm| bound_ids.contains(&bm.book_id.0))
@@ -230,20 +328,30 @@ impl BookReadingService {
         cmd: CreateBookmarkCommand,
     ) -> DomainResult<Bookmark> {
         self.ensure_book_bound(actor, book_id).await?;
-        let location = ReadingLocation::new(
+        let bookmark = Bookmark::create(
+            actor.id,
+            book_id,
+            cmd.title,
+            cmd.note,
             cmd.progress_percent,
             cmd.locator,
             cmd.chapter_index,
             cmd.page_number,
             cmd.scroll_ratio,
         )?;
-        let bookmark = Bookmark::new(actor.id, book_id, cmd.title, cmd.note, location)?;
-        self.readings.save_bookmark(&bookmark).await?;
+        self.readings
+            .save(ReadingMutation::Bookmark(&bookmark))
+            .await?;
         Ok(bookmark)
     }
 
     pub async fn delete_bookmark(&self, actor: &User, bookmark_id: BookmarkId) -> DomainResult<()> {
-        self.readings.delete_bookmark(actor.id, bookmark_id).await
+        self.readings
+            .delete_scope(ReadingDeleteScope::Bookmark {
+                user_id: actor.id,
+                bookmark_id,
+            })
+            .await
     }
 
     pub async fn set_favorite(
@@ -254,7 +362,11 @@ impl BookReadingService {
     ) -> DomainResult<()> {
         self.ensure_book_bound(actor, book_id).await?;
         self.readings
-            .set_favorite(actor.id, book_id, favorite)
+            .save(ReadingMutation::Favorite {
+                user_id: actor.id,
+                book_id,
+                favorite,
+            })
             .await
     }
 
@@ -270,9 +382,21 @@ impl BookReadingService {
             .await?;
         let mut count = 0;
         for book_id in book_ids {
-            if bound_ids.contains(&book_id.0) && self.books.find_by_id(book_id).await?.is_some() {
+            if bound_ids.contains(&book_id.0)
+                && self
+                    .books
+                    .query(BookCollectionQuery::Id(book_id))
+                    .await?
+                    .into_iter()
+                    .next()
+                    .is_some()
+            {
                 self.readings
-                    .set_favorite(actor.id, book_id, favorite)
+                    .save(ReadingMutation::Favorite {
+                        user_id: actor.id,
+                        book_id,
+                        favorite,
+                    })
                     .await?;
                 count += 1;
             }
@@ -285,7 +409,7 @@ impl BookReadingService {
             .bindings
             .list_bound_ids(actor.id, MediaKind::Book)
             .await?;
-        let shelves = self.readings.list_shelves(actor.id).await?;
+        let shelves = self.readings.query_shelves(actor.id, None).await?;
         Ok(shelves
             .into_iter()
             .map(|mut s| {
@@ -297,7 +421,7 @@ impl BookReadingService {
 
     pub async fn create_shelf(&self, actor: &User, name: String) -> DomainResult<ShelfDto> {
         let shelf = Shelf::new(actor.id, name, false)?;
-        self.readings.save_shelf(&shelf).await?;
+        self.readings.save(ReadingMutation::Shelf(&shelf)).await?;
         Ok(ShelfDto::from(&shelf))
     }
 
@@ -309,8 +433,10 @@ impl BookReadingService {
     ) -> DomainResult<ShelfDto> {
         let mut shelf = self
             .readings
-            .find_shelf(actor.id, shelf_id)
+            .query_shelves(actor.id, Some(shelf_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound(format!("shelf {shelf_id} not found")))?;
         if shelf.is_favorite {
             return Err(DomainError::Validation(
@@ -318,22 +444,29 @@ impl BookReadingService {
             ));
         }
         shelf.rename(name)?;
-        self.readings.save_shelf(&shelf).await?;
+        self.readings.save(ReadingMutation::Shelf(&shelf)).await?;
         Ok(ShelfDto::from(&shelf))
     }
 
     pub async fn delete_shelf(&self, actor: &User, shelf_id: ShelfId) -> DomainResult<()> {
         let shelf = self
             .readings
-            .find_shelf(actor.id, shelf_id)
+            .query_shelves(actor.id, Some(shelf_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound(format!("shelf {shelf_id} not found")))?;
         if shelf.is_favorite {
             return Err(DomainError::Validation(
                 "default favorites shelf cannot be deleted".into(),
             ));
         }
-        self.readings.delete_shelf(actor.id, shelf_id).await
+        self.readings
+            .delete_scope(ReadingDeleteScope::Shelf {
+                user_id: actor.id,
+                shelf_id,
+            })
+            .await
     }
 
     pub async fn add_book_to_shelf(
@@ -345,11 +478,13 @@ impl BookReadingService {
         self.ensure_book_bound(actor, book_id).await?;
         let mut shelf = self
             .readings
-            .find_shelf(actor.id, shelf_id)
+            .query_shelves(actor.id, Some(shelf_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound(format!("shelf {shelf_id} not found")))?;
-        shelf.add_book(book_id);
-        self.readings.save_shelf(&shelf).await?;
+        shelf.set_contains(book_id, true);
+        self.readings.save(ReadingMutation::Shelf(&shelf)).await?;
         Ok(ShelfDto::from(&shelf))
     }
 
@@ -361,11 +496,13 @@ impl BookReadingService {
     ) -> DomainResult<ShelfDto> {
         let mut shelf = self
             .readings
-            .find_shelf(actor.id, shelf_id)
+            .query_shelves(actor.id, Some(shelf_id))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| DomainError::NotFound(format!("shelf {shelf_id} not found")))?;
-        shelf.remove_book(book_id);
-        self.readings.save_shelf(&shelf).await?;
+        shelf.set_contains(book_id, false);
+        self.readings.save(ReadingMutation::Shelf(&shelf)).await?;
         Ok(ShelfDto::from(&shelf))
     }
 
@@ -378,7 +515,14 @@ impl BookReadingService {
                 &format!("book {book_id} not found"),
             )
             .await?;
-        if self.books.find_by_id(book_id).await?.is_none() {
+        if self
+            .books
+            .query(BookCollectionQuery::Id(book_id))
+            .await?
+            .into_iter()
+            .next()
+            .is_none()
+        {
             return Err(DomainError::NotFound(format!("book {book_id} not found")));
         }
         Ok(())

@@ -155,4 +155,7 @@ pub trait MediaDomainLifecycle: Send + Sync {
     async fn count_library_items(&self, library_id: LibraryId) -> DomainResult<u64>;
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()>;
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()>;
+    async fn list_bindable_item_ids(&self) -> DomainResult<Vec<uuid::Uuid>> {
+        Ok(Vec::new())
+    }
 }

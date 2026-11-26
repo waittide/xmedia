@@ -470,7 +470,7 @@ impl BookOnlineService {
                         BookSource::OnlineTracked { source_id, .. } if *source_id == input.source_id
                     )
                 {
-                    latest_book.mark_tracked_epub_dirty();
+                    latest_book.sync_tracked(crate::domain::book::TrackedSync::MarkDirty);
                     let _ = self.catalog.save_book_raw(&latest_book).await;
                 }
             }

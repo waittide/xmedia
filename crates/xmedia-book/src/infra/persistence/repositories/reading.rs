@@ -10,7 +10,9 @@ use xmedia_core::domain::user::UserId;
 use super::db_err;
 use crate::domain::book::BookId;
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
-use crate::domain::repository::BookReadingRepository;
+use crate::domain::repository::{
+    BookReadingRepository, ProgressScope, ReadingDeleteScope, ReadingMutation,
+};
 use crate::infra::persistence::models::{
     BookBookmarkModel, BookFavoriteModel, BookReadingProgressModel, BookShelfModel,
 };
@@ -61,51 +63,6 @@ impl ToastyBookReadingRepository {
             updated_at: m.updated_at,
         }
     }
-}
-
-#[async_trait]
-impl BookReadingRepository for ToastyBookReadingRepository {
-    async fn get_progress(
-        &self,
-        user_id: UserId,
-        book_id: BookId,
-    ) -> DomainResult<Option<ReadingProgress>> {
-        let mut db = self.db.clone();
-        let key = Self::pair_key(user_id, book_id);
-        let row = BookReadingProgressModel::filter_by_progress_key(&key)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.map(Self::progress_to_domain))
-    }
-
-    async fn list_recent_progress(
-        &self,
-        user_id: UserId,
-        limit: u32,
-    ) -> DomainResult<Vec<ReadingProgress>> {
-        let mut db = self.db.clone();
-        let mut rows = BookReadingProgressModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|a| std::cmp::Reverse(a.last_read_at));
-        Ok(rows
-            .into_iter()
-            .take(limit as usize)
-            .map(Self::progress_to_domain)
-            .collect())
-    }
-
-    async fn count_user_progress(&self, user_id: UserId) -> DomainResult<u64> {
-        let mut db = self.db.clone();
-        let rows = BookReadingProgressModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.len() as u64)
-    }
 
     async fn save_progress(&self, progress: &ReadingProgress) -> DomainResult<()> {
         let mut db = self.db.clone();
@@ -139,31 +96,6 @@ impl BookReadingRepository for ToastyBookReadingRepository {
         Ok(())
     }
 
-    async fn list_bookmarks(
-        &self,
-        user_id: UserId,
-        book_id: BookId,
-    ) -> DomainResult<Vec<Bookmark>> {
-        let mut db = self.db.clone();
-        let mut rows = BookBookmarkModel::filter_by_user_id(user_id.0)
-            .filter(BookBookmarkModel::fields().book_id().eq(book_id.0))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
-    }
-
-    async fn list_user_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<Bookmark>> {
-        let mut db = self.db.clone();
-        let mut rows = BookBookmarkModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
-    }
-
     async fn save_bookmark(&self, bookmark: &Bookmark) -> DomainResult<()> {
         let mut db = self.db.clone();
         toasty::create!(BookBookmarkModel {
@@ -179,41 +111,6 @@ impl BookReadingRepository for ToastyBookReadingRepository {
         .await
         .map_err(db_err)?;
         Ok(())
-    }
-
-    async fn delete_bookmark(&self, user_id: UserId, bookmark_id: BookmarkId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        if let Some(record) = BookBookmarkModel::filter_by_id(bookmark_id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-            && record.user_id == user_id.0
-        {
-            record.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        Ok(())
-    }
-
-    async fn is_favorite(&self, user_id: UserId, book_id: BookId) -> DomainResult<bool> {
-        let mut db = self.db.clone();
-        let key = Self::pair_key(user_id, book_id);
-        let row = BookFavoriteModel::filter_by_fav_key(&key)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.is_some())
-    }
-
-    async fn list_favorite_book_ids(&self, user_id: UserId) -> DomainResult<Vec<BookId>> {
-        let mut db = self.db.clone();
-        let mut rows = BookFavoriteModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-        Ok(rows.into_iter().map(|r| BookId(r.book_id)).collect())
     }
 
     async fn set_favorite(
@@ -250,36 +147,14 @@ impl BookReadingRepository for ToastyBookReadingRepository {
         Ok(())
     }
 
-    async fn list_shelves(&self, user_id: UserId) -> DomainResult<Vec<Shelf>> {
-        let mut db = self.db.clone();
-        let mut rows = BookShelfModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|r| (!r.is_favorite, r.created_at));
-        Ok(rows.into_iter().map(Self::shelf_to_domain).collect())
-    }
-
-    async fn find_shelf(&self, user_id: UserId, shelf_id: ShelfId) -> DomainResult<Option<Shelf>> {
-        let mut db = self.db.clone();
-        let row = BookShelfModel::filter_by_id(shelf_id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row
-            .filter(|r| r.user_id == user_id.0)
-            .map(Self::shelf_to_domain))
-    }
-
     async fn save_shelf(&self, shelf: &Shelf) -> DomainResult<()> {
         let mut db = self.db.clone();
+        let raw_ids: Vec<Uuid> = shelf.book_ids.iter().map(|id| id.0).collect();
         let existing = BookShelfModel::filter_by_id(shelf.id.0)
             .first()
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        let raw_ids: Vec<Uuid> = shelf.book_ids.iter().map(|b| b.0).collect();
 
         if let Some(mut record) = existing {
             record
@@ -308,30 +183,14 @@ impl BookReadingRepository for ToastyBookReadingRepository {
         Ok(())
     }
 
-    async fn delete_shelf(&self, user_id: UserId, shelf_id: ShelfId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        if let Some(record) = BookShelfModel::filter_by_id(shelf_id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-            && record.user_id == user_id.0
-        {
-            record.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        Ok(())
-    }
-
-    async fn delete_by_book(&self, book_id: BookId) -> DomainResult<()> {
-        self.delete_by_books(&[book_id]).await
-    }
-
-    async fn delete_by_books(&self, book_ids: &[BookId]) -> DomainResult<()> {
+    async fn delete_books_batch(&self, book_ids: &[BookId]) -> DomainResult<()> {
         if book_ids.is_empty() {
             return Ok(());
         }
         let mut db = self.db.clone();
-        let raw_ids: Vec<Uuid> = book_ids.iter().map(|b| b.0).collect();
+        let mut raw_ids: Vec<Uuid> = book_ids.iter().map(|b| b.0).collect();
+        raw_ids.sort_unstable();
+        raw_ids.dedup();
         let remove_set: HashSet<Uuid> = raw_ids.iter().copied().collect();
 
         if raw_ids.len() == 1 {
@@ -377,11 +236,7 @@ impl BookReadingRepository for ToastyBookReadingRepository {
                 .map_err(db_err)?;
         }
 
-        // Single pass over shelves for the entire batch of removed books.
         for mut shelf in BookShelfModel::all().exec(&mut db).await.map_err(db_err)? {
-            if shelf.book_ids.0.is_empty() {
-                continue;
-            }
             if shelf.book_ids.0.iter().any(|id| remove_set.contains(id)) {
                 let filtered: Vec<Uuid> = shelf
                     .book_ids
@@ -401,83 +256,219 @@ impl BookReadingRepository for ToastyBookReadingRepository {
         }
         Ok(())
     }
+}
 
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
+#[async_trait]
+impl BookReadingRepository for ToastyBookReadingRepository {
+    async fn query_progress(
+        &self,
+        user_id: UserId,
+        scope: ProgressScope,
+    ) -> DomainResult<Vec<ReadingProgress>> {
         let mut db = self.db.clone();
-        BookReadingProgressModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        BookBookmarkModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        BookFavoriteModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        BookShelfModel::filter_by_user_id(user_id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn delete_by_user_and_book(&self, user_id: UserId, book_id: BookId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        for row in BookReadingProgressModel::filter_by_book_id(book_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            if row.user_id == user_id.0 {
-                row.delete().exec(&mut db).await.map_err(db_err)?;
-            }
-        }
-        for row in BookBookmarkModel::filter_by_book_id(book_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            if row.user_id == user_id.0 {
-                row.delete().exec(&mut db).await.map_err(db_err)?;
-            }
-        }
-        for row in BookFavoriteModel::filter_by_book_id(book_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            if row.user_id == user_id.0 {
-                row.delete().exec(&mut db).await.map_err(db_err)?;
-            }
-        }
-        for mut shelf in BookShelfModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            if shelf.book_ids.0.contains(&book_id.0) {
-                let filtered: Vec<Uuid> = shelf
-                    .book_ids
-                    .0
-                    .iter()
-                    .copied()
-                    .filter(|id| *id != book_id.0)
-                    .collect();
-                shelf
-                    .update()
-                    .book_ids(toasty::Json(filtered))
-                    .updated_at(Timestamp::now())
+        match scope {
+            ProgressScope::Book(book_id) => {
+                let key = Self::pair_key(user_id, book_id);
+                let row = BookReadingProgressModel::filter_by_progress_key(&key)
+                    .first()
                     .exec(&mut db)
                     .await
                     .map_err(db_err)?;
+                Ok(row.map(Self::progress_to_domain).into_iter().collect())
+            }
+            ProgressScope::Recent(limit) => {
+                let mut rows = BookReadingProgressModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                rows.sort_by_key(|a| std::cmp::Reverse(a.last_read_at));
+                Ok(rows
+                    .into_iter()
+                    .take(limit as usize)
+                    .map(Self::progress_to_domain)
+                    .collect())
             }
         }
-        Ok(())
+    }
+
+    async fn list_bookmarks(
+        &self,
+        user_id: UserId,
+        book_id: Option<BookId>,
+    ) -> DomainResult<Vec<Bookmark>> {
+        let mut db = self.db.clone();
+        let mut builder = BookBookmarkModel::filter_by_user_id(user_id.0);
+        if let Some(bid) = book_id {
+            builder = builder.filter(BookBookmarkModel::fields().book_id().eq(bid.0));
+        }
+        let mut rows = builder.exec(&mut db).await.map_err(db_err)?;
+        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
+        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
+    }
+
+    async fn list_favorite_book_ids(&self, user_id: UserId) -> DomainResult<Vec<BookId>> {
+        let mut db = self.db.clone();
+        let mut rows = BookFavoriteModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
+        Ok(rows.into_iter().map(|r| BookId(r.book_id)).collect())
+    }
+
+    async fn query_shelves(
+        &self,
+        user_id: UserId,
+        shelf_id: Option<ShelfId>,
+    ) -> DomainResult<Vec<Shelf>> {
+        let mut db = self.db.clone();
+        match shelf_id {
+            Some(sid) => {
+                let row = BookShelfModel::filter_by_id(sid.0)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                Ok(row
+                    .filter(|r| r.user_id == user_id.0)
+                    .map(Self::shelf_to_domain)
+                    .into_iter()
+                    .collect())
+            }
+            None => {
+                let mut rows = BookShelfModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                rows.sort_by_key(|a| a.created_at);
+                Ok(rows.into_iter().map(Self::shelf_to_domain).collect())
+            }
+        }
+    }
+
+    async fn save(&self, mutation: ReadingMutation<'_>) -> DomainResult<()> {
+        match mutation {
+            ReadingMutation::Progress(p) => self.save_progress(p).await,
+            ReadingMutation::Bookmark(b) => self.save_bookmark(b).await,
+            ReadingMutation::Shelf(s) => self.save_shelf(s).await,
+            ReadingMutation::Favorite {
+                user_id,
+                book_id,
+                favorite,
+            } => self.set_favorite(user_id, book_id, favorite).await,
+        }
+    }
+
+    async fn delete_scope(&self, scope: ReadingDeleteScope) -> DomainResult<()> {
+        match scope {
+            ReadingDeleteScope::Bookmark {
+                user_id,
+                bookmark_id,
+            } => {
+                let mut db = self.db.clone();
+                if let Some(record) = BookBookmarkModel::filter_by_id(bookmark_id.0)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                    && record.user_id == user_id.0
+                {
+                    record.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+                Ok(())
+            }
+            ReadingDeleteScope::Shelf { user_id, shelf_id } => {
+                let mut db = self.db.clone();
+                if let Some(record) = BookShelfModel::filter_by_id(shelf_id.0)
+                    .first()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                    && record.user_id == user_id.0
+                {
+                    record.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+                Ok(())
+            }
+            ReadingDeleteScope::Book(book_id) => self.delete_books_batch(&[book_id]).await,
+            ReadingDeleteScope::Books(book_ids) => self.delete_books_batch(&book_ids).await,
+            ReadingDeleteScope::User(user_id) => {
+                let mut db = self.db.clone();
+                BookReadingProgressModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                BookBookmarkModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                BookFavoriteModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                BookShelfModel::filter_by_user_id(user_id.0)
+                    .delete()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                Ok(())
+            }
+            ReadingDeleteScope::UserBook { user_id, book_id } => {
+                let mut db = self.db.clone();
+                for row in BookReadingProgressModel::filter_by_book_id(book_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if row.user_id == user_id.0 {
+                        row.delete().exec(&mut db).await.map_err(db_err)?;
+                    }
+                }
+                for row in BookBookmarkModel::filter_by_book_id(book_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if row.user_id == user_id.0 {
+                        row.delete().exec(&mut db).await.map_err(db_err)?;
+                    }
+                }
+                for row in BookFavoriteModel::filter_by_book_id(book_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if row.user_id == user_id.0 {
+                        row.delete().exec(&mut db).await.map_err(db_err)?;
+                    }
+                }
+                for mut shelf in BookShelfModel::filter_by_user_id(user_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if shelf.book_ids.0.contains(&book_id.0) {
+                        let filtered: Vec<Uuid> = shelf
+                            .book_ids
+                            .0
+                            .iter()
+                            .copied()
+                            .filter(|&id| id != book_id.0)
+                            .collect();
+                        shelf
+                            .update()
+                            .book_ids(toasty::Json(filtered))
+                            .updated_at(Timestamp::now())
+                            .exec(&mut db)
+                            .await
+                            .map_err(db_err)?;
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 }

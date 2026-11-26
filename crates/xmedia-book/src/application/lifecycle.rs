@@ -13,8 +13,10 @@ use xmedia_core::domain::user::UserId;
 use crate::application::catalog::BookCatalogService;
 use crate::application::online::BookOnlineService;
 use crate::application::ports::{BookParserPort, BookScannerPort, BookStoragePort};
-use crate::domain::book::{Book, BookId, BookSource};
-use crate::domain::repository::{BookReadingRepository, BookRepository};
+use crate::domain::book::{Book, BookId, BookMetadataUpdate, BookSource, MountedSync};
+use crate::domain::repository::{
+    BookCollectionQuery, BookDeleteScope, BookReadingRepository, BookRepository, ReadingDeleteScope,
+};
 
 pub struct BookDomainLifecycle {
     libraries: Arc<dyn LibraryRepository>,
@@ -78,7 +80,10 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
         };
 
         let entries = self.scanner.scan_entries(&root_path).await?;
-        let existing_books = self.books.list_by_library(library.id).await?;
+        let existing_books = self
+            .books
+            .query(BookCollectionQuery::Library(library.id))
+            .await?;
 
         let entry_paths: HashSet<String> =
             entries.iter().map(|e| e.relative_path.clone()).collect();
@@ -120,11 +125,12 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                     // Nothing changed on disk or sidecars
                 } else if stats_unchanged && was_missing {
                     // Missing file reappeared unchanged; preserve manual DB metadata
-                    existing.mark_present(
-                        entry.file_size,
-                        existing.file_hash.clone(),
-                        Some(entry.file_mtime),
-                    );
+                    let file_hash = existing.file_hash.clone();
+                    existing.sync_mounted(MountedSync::Present {
+                        file_size: entry.file_size,
+                        file_hash,
+                        new_mtime: Some(entry.file_mtime),
+                    });
                     self.books.save(&existing).await?;
                     updated += 1;
                 } else {
@@ -158,7 +164,8 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                                     {
                                         existing.set_cover(Some(cover_key));
                                     }
-                                    let _ = existing.update_metadata(parsed.metadata);
+                                    let _ = existing
+                                        .apply_metadata(BookMetadataUpdate::Full(parsed.metadata));
                                 }
                                 Ok(Err(err)) => {
                                     tracing::warn!(
@@ -178,11 +185,11 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                                 }
                             }
 
-                            existing.mark_present(
-                                entry.file_size,
-                                loaded.file_hash,
-                                Some(entry.file_mtime),
-                            );
+                            existing.sync_mounted(MountedSync::Present {
+                                file_size: entry.file_size,
+                                file_hash: loaded.file_hash,
+                                new_mtime: Some(entry.file_mtime),
+                            });
                             self.books.save(&existing).await?;
                             updated += 1;
                         }
@@ -255,24 +262,28 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                             if let Some(old_rel) = matched_old_key
                                 && let Some(mut migrated) = existing_by_path.remove(&old_rel)
                             {
-                                migrated
-                                    .relocate_mounted_file(entry.relative_path, entry.file_mtime);
+                                migrated.sync_mounted(MountedSync::Relocate {
+                                    relative_path: entry.relative_path,
+                                    file_mtime: entry.file_mtime,
+                                });
                                 if let Some(cover) = &parsed.cover
                                     && let Ok(cover_key) =
                                         self.storage.save_cover(migrated.id, cover).await
                                 {
                                     migrated.set_cover(Some(cover_key));
                                 }
-                                let _ = migrated.update_metadata(parsed.metadata);
-                                migrated.mark_present(
-                                    entry.file_size,
-                                    loaded.file_hash,
-                                    Some(entry.file_mtime),
-                                );
+                                let _ = migrated
+                                    .apply_metadata(BookMetadataUpdate::Full(parsed.metadata));
+                                migrated.sync_mounted(MountedSync::Present {
+                                    file_size: entry.file_size,
+                                    file_hash: loaded.file_hash,
+                                    new_mtime: Some(entry.file_mtime),
+                                });
                                 self.books.save(&migrated).await?;
                                 updated += 1;
                             } else {
                                 let mut book = Book::new(
+                                    BookId::new(),
                                     library_id,
                                     entry.format,
                                     BookSource::MountedFile {
@@ -317,7 +328,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                 BookSource::ManagedUpload { .. } | BookSource::OnlineTracked { .. } => "",
             }) && !stale_book.is_missing
             {
-                stale_book.mark_missing();
+                stale_book.sync_mounted(MountedSync::Missing);
                 self.books.save(&stale_book).await?;
                 missing += 1;
             }
@@ -332,7 +343,10 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
     }
 
     async fn count_library_items(&self, library_id: LibraryId) -> DomainResult<u64> {
-        let books = self.books.list_by_library(library_id).await?;
+        let books = self
+            .books
+            .query(BookCollectionQuery::Library(library_id))
+            .await?;
         Ok(books
             .into_iter()
             .filter(|b| !b.is_missing && !b.source.is_online_tracked())
@@ -340,11 +354,18 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
     }
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
-        let books = self.books.list_by_library(library_id).await?;
+        let books = self
+            .books
+            .query(BookCollectionQuery::Library(library_id))
+            .await?;
         let mut book_ids = Vec::with_capacity(books.len());
         for book in &books {
-            self.bindings
-                .delete_item_bindings(MediaKind::Book, book.id.0)
+            let _ = self
+                .bindings
+                .purge(xmedia_core::domain::repository::BindingDeleteScope::Item {
+                    media_kind: MediaKind::Book,
+                    item_id: book.id.0,
+                })
                 .await?;
             if let Some(storage_key) = book.source.storage_key() {
                 let _ = self.storage.delete_managed_book(storage_key).await;
@@ -355,21 +376,39 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
             self.online.cleanup_book_state(book.id);
             book_ids.push(book.id);
         }
-        self.readings.delete_by_books(&book_ids).await?;
-        self.books.delete_by_library(library_id).await
+        self.readings
+            .delete_scope(ReadingDeleteScope::Books(book_ids))
+            .await?;
+        self.books
+            .delete_scope(BookDeleteScope::Library(library_id))
+            .await
     }
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {
-        self.readings.delete_by_user(user_id).await?;
-        self.online_items.delete_by_user(user_id).await?;
+        self.readings
+            .delete_scope(ReadingDeleteScope::User(user_id))
+            .await?;
+        self.online_items
+            .delete_scope(xmedia_core::domain::repository::OnlineItemDeleteScope::User(user_id))
+            .await?;
         let unbound_ids = self
             .bindings
-            .delete_user_bindings_for_media(user_id, MediaKind::Book)
+            .purge(
+                xmedia_core::domain::repository::BindingDeleteScope::UserMedia {
+                    user_id,
+                    media_kind: MediaKind::Book,
+                },
+            )
             .await?;
         for raw_id in unbound_ids {
             self.bindings
                 .gc_if_orphaned(MediaKind::Book, raw_id, || async {
-                    if let Some(book) = self.books.find_by_id(BookId(raw_id)).await?
+                    if let Some(book) = self
+                        .books
+                        .query(BookCollectionQuery::Id(BookId(raw_id)))
+                        .await?
+                        .into_iter()
+                        .next()
                         && book.source.is_online_tracked()
                     {
                         let orphan_id = book.id;

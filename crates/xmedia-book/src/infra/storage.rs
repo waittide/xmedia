@@ -91,7 +91,7 @@ impl BookStoragePort for LocalBookStorage {
         format: BookFormat,
         data: Bytes,
     ) -> DomainResult<StoredManagedBook> {
-        let file_name = format!("{}.{}", book_id.0, format.as_str());
+        let file_name = format!("{}.{format}", book_id.0);
         let full_path = self.uploads_dir.join(&file_name);
         let tmp_name = format!(".{}.{}.tmp", file_name, uuid::Uuid::new_v4().simple());
         let tmp_path = self.uploads_dir.join(tmp_name);
@@ -257,7 +257,7 @@ impl BookScannerPort for LocalBookScanner {
                 let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                let Some(format) = BookFormat::from_extension(ext) else {
+                let Ok(format) = ext.parse::<BookFormat>() else {
                     continue;
                 };
                 let Ok(meta) = entry.metadata() else {

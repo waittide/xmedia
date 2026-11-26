@@ -17,12 +17,11 @@ use xmedia_formats::book::{
 use xmedia_formats::comic::comicinfo::{
     ComicInfoMeta, parse_comic_info_xml, render_comic_info_xml_preserving,
 };
-use xmedia_formats::comic::filename::{
-    ComicChapterKind, natural_cmp, parse_comic_chapter_filename,
-};
+use xmedia_formats::comic::filename::{ComicChapterKind, parse_comic_chapter_filename};
 use xmedia_formats::comic::{
-    ComicFormatExt, ComicReadingDirection, is_comic_image_dir, probe_comic_pages,
+    ComicFormatExt, ComicReadingDirection, inspect_comic_path, scan_comic_image_dir,
 };
+use xmedia_formats::common::natural_cmp;
 
 fn make_png(width: u32, height: u32) -> Vec<u8> {
     let img = image::RgbImage::from_pixel(width, height, image::Rgb([12, 34, 56]));
@@ -378,11 +377,11 @@ fn comic_info_non_destructive_roundtrip_and_image_dir_probing() {
     assert_eq!(natural_cmp("ch_1.5.jpg", "ch_2.jpg"), Ordering::Less);
     assert_eq!(natural_cmp("ch_2.jpg", "ch_10.jpg"), Ordering::Less);
     assert_eq!(
-        ComicFormatExt::from_extension("cbr"),
+        ComicFormatExt::from_path(std::path::Path::new("ch1.cbr")),
         Some(ComicFormatExt::Cbr)
     );
     assert_eq!(
-        ComicFormatExt::from_extension("cb7"),
+        ComicFormatExt::from_path(std::path::Path::new("ch1.cb7")),
         Some(ComicFormatExt::Cb7)
     );
     let parsed_fn = parse_comic_chapter_filename("[Group] Frieren - Vol.03 Ch.24.5.cb7", 1);
@@ -398,8 +397,8 @@ fn comic_info_non_destructive_roundtrip_and_image_dir_probing() {
     let png = make_png(2, 3);
     std::fs::write(ch_dir.join("001.png"), &png).unwrap();
     std::fs::write(ch_dir.join("002.png"), &png).unwrap();
-    assert!(is_comic_image_dir(&ch_dir));
-    let pages = probe_comic_pages(&ch_dir).unwrap();
+    assert!(scan_comic_image_dir(&ch_dir).is_some());
+    let pages = inspect_comic_path(&ch_dir).unwrap().pages;
     assert_eq!(pages.len(), 2);
     assert_eq!(pages[0].width, Some(2));
     assert_eq!(pages[0].height, Some(3));

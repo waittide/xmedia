@@ -10,7 +10,7 @@ use reqwest::header::{COOKIE, HeaderMap, HeaderName, HeaderValue, SET_COOKIE, US
 
 use super::ssrf::{
     SsrfSafeResolver, has_ssrf_io_error_in_chain, ssrf_blocking_redirect_policy,
-    ssrf_redirect_policy, validate_target_url, validate_target_url_static,
+    validate_target_url, validate_target_url_static,
 };
 use super::url_cookie::{
     HttpClientConfig, HttpFetchResult, merge_cookie_string, normalize_cookie_key, parse_legado_url,
@@ -280,14 +280,16 @@ pub fn get_or_build_async_client(
         }
     }
 
+    let has_proxy = key.proxy_url.is_some();
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(key.timeout_secs))
         .connect_timeout(Duration::from_secs(key.timeout_secs.min(10)))
         .user_agent(DEFAULT_WEBVIEW_UA)
         .pool_max_idle_per_host(16)
         .pool_idle_timeout(Duration::from_secs(90))
-        .redirect(ssrf_redirect_policy(
+        .redirect(ssrf_blocking_redirect_policy(
             key.allow_private_ips,
+            has_proxy,
             MAX_REDIRECT_HOPS,
         ));
     if let Some(ref proxy) = key.proxy_url {

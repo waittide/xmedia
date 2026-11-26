@@ -65,8 +65,8 @@ pub mod infra;
 
 #[cfg(feature = "server")]
 pub use infra::persistence::{
-    CoreSchemaMigrationReport, ensure_core_schema, ensure_core_schema_with_report,
-    ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
+    CoreSchemaMigrationReport, ensure_core_schema, ensure_sqlite_parent_dir,
+    is_core_schema_initialized, register_core_models,
 };
 
 #[cfg(test)]

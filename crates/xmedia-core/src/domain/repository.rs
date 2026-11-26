@@ -9,66 +9,71 @@ use crate::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
 use crate::domain::online_item::OnlineLibraryItem;
 use crate::domain::user::{User, UserId, UserPreferences};
 
+#[derive(Debug, Clone, Copy)]
+pub enum UserLookup<'a> {
+    Id(UserId),
+    Username(&'a str),
+    ApiKey(&'a str),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UserMutation<'a> {
+    Preferences(&'a UserPreferences),
+    Credentials {
+        password_hash: &'a str,
+        subsonic_secret_enc: &'a str,
+    },
+    ApiKey(&'a str),
+}
+
 #[async_trait]
 pub trait UserRepository: Send + Sync {
     async fn count(&self) -> DomainResult<u64>;
-    async fn has_any_user(&self) -> DomainResult<bool> {
-        Ok(self.count().await? > 0)
-    }
-    async fn find_by_id(&self, id: UserId) -> DomainResult<Option<User>>;
-    async fn find_by_username(&self, username: &str) -> DomainResult<Option<User>>;
-    async fn find_by_api_key(&self, api_key: &str) -> DomainResult<Option<User>>;
+    async fn find(&self, key: UserLookup<'_>) -> DomainResult<Option<User>>;
     async fn list_all(&self) -> DomainResult<Vec<User>>;
     async fn save(&self, user: &User) -> DomainResult<()>;
-    async fn update_preferences(
+    async fn update(
         &self,
         id: UserId,
-        preferences: &UserPreferences,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn update_credentials(
-        &self,
-        id: UserId,
-        password_hash: &str,
-        subsonic_secret_enc: &str,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn update_api_key(
-        &self,
-        id: UserId,
-        api_key: &str,
+        patch: UserMutation<'_>,
         updated_at: Timestamp,
     ) -> DomainResult<bool>;
     async fn delete(&self, id: UserId) -> DomainResult<()>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum LibraryMutation<'a> {
+    Name(&'a str),
+    ScanState {
+        status: &'a ScanStatus,
+        last_scanned_at: Option<Timestamp>,
+    },
 }
 
 #[async_trait]
 pub trait LibraryRepository: Send + Sync {
     async fn find_by_id(&self, id: LibraryId) -> DomainResult<Option<Library>>;
     async fn find_managed_by_media(&self, media_kind: MediaKind) -> DomainResult<Option<Library>>;
-    async fn list_all(&self) -> DomainResult<Vec<Library>>;
-    async fn list_by_media(&self, media_kind: MediaKind) -> DomainResult<Vec<Library>>;
+    async fn list(&self, media_kind: Option<MediaKind>) -> DomainResult<Vec<Library>>;
     async fn save(&self, library: &Library) -> DomainResult<()>;
-    async fn update_name(
+    async fn update(
         &self,
         id: LibraryId,
-        name: &str,
-        updated_at: Timestamp,
-    ) -> DomainResult<bool>;
-    async fn update_scan_state(
-        &self,
-        id: LibraryId,
-        scan_status: &ScanStatus,
-        last_scanned_at: Option<Timestamp>,
+        patch: LibraryMutation<'_>,
         updated_at: Timestamp,
     ) -> DomainResult<bool>;
     async fn delete(&self, id: LibraryId) -> DomainResult<()>;
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum OnlineItemDeleteScope {
+    Id(Uuid),
+    User(UserId),
+}
+
 /// Persists per-user favorites / progress of online (non-library) items.
 #[async_trait]
 pub trait OnlineLibraryItemRepository: Send + Sync {
-    /// Lists all items of one media kind for a user (unordered).
     async fn list_by_user(
         &self,
         user_id: UserId,
@@ -76,8 +81,37 @@ pub trait OnlineLibraryItemRepository: Send + Sync {
     ) -> DomainResult<Vec<OnlineLibraryItem>>;
     async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<OnlineLibraryItem>>;
     async fn save(&self, item: &OnlineLibraryItem) -> DomainResult<()>;
-    async fn delete(&self, id: Uuid) -> DomainResult<()>;
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
+    async fn delete_scope(&self, scope: OnlineItemDeleteScope) -> DomainResult<()>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BindingCountQuery {
+    UserItems {
+        user_id: UserId,
+        media_kind: MediaKind,
+    },
+    ItemUsers {
+        media_kind: MediaKind,
+        item_id: Uuid,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BindingDeleteScope {
+    One {
+        user_id: UserId,
+        media_kind: MediaKind,
+        item_id: Uuid,
+    },
+    Item {
+        media_kind: MediaKind,
+        item_id: Uuid,
+    },
+    UserMedia {
+        user_id: UserId,
+        media_kind: MediaKind,
+    },
+    User(UserId),
 }
 
 /// Persists per-user visibility bindings onto the global deduplicated media pool.
@@ -96,34 +130,15 @@ pub trait UserMediaBindingRepository: Send + Sync {
         item_id: Uuid,
     ) -> DomainResult<bool>;
 
-    async fn count_bindings_for_item(
-        &self,
-        media_kind: MediaKind,
-        item_id: Uuid,
-    ) -> DomainResult<u64>;
+    async fn count(&self, query: BindingCountQuery) -> DomainResult<u64>;
 
-    async fn insert_if_absent(
+    async fn insert_batch(
         &self,
         user_id: UserId,
         media_kind: MediaKind,
-        item_id: Uuid,
+        item_ids: &[Uuid],
         created_at: Timestamp,
-    ) -> DomainResult<bool>;
+    ) -> DomainResult<usize>;
 
-    async fn delete_binding(
-        &self,
-        user_id: UserId,
-        media_kind: MediaKind,
-        item_id: Uuid,
-    ) -> DomainResult<bool>;
-
-    async fn delete_by_item(&self, media_kind: MediaKind, item_id: Uuid) -> DomainResult<()>;
-
-    async fn delete_by_user_and_media(
-        &self,
-        user_id: UserId,
-        media_kind: MediaKind,
-    ) -> DomainResult<Vec<Uuid>>;
-
-    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
+    async fn delete_scope(&self, scope: BindingDeleteScope) -> DomainResult<Vec<Uuid>>;
 }

@@ -5,38 +5,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-/// Fractional-aware natural string comparator (`1 < 1.5 < 2 < 10`, case-insensitive).
-pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let mut ia = a.chars().peekable();
-    let mut ib = b.chars().peekable();
-
-    loop {
-        match (ia.peek(), ib.peek()) {
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(&ca), Some(&cb)) => {
-                if ca.is_ascii_digit() && cb.is_ascii_digit() {
-                    let na = take_number_tokens(&mut ia);
-                    let nb = take_number_tokens(&mut ib);
-                    match cmp_number_tokens(&na, &nb) {
-                        Ordering::Equal => continue,
-                        non_eq => return non_eq,
-                    }
-                } else {
-                    let la = ca.to_lowercase().next().unwrap_or(ca);
-                    let lb = cb.to_lowercase().next().unwrap_or(cb);
-                    ia.next();
-                    ib.next();
-                    match la.cmp(&lb) {
-                        Ordering::Equal => continue,
-                        non_eq => return non_eq,
-                    }
-                }
-            }
-        }
-    }
-}
+use crate::common::natural_cmp;
 
 /// Natural comparator for comic page filenames that prioritizes explicit `000_cover.*` / `cover.*` first.
 pub fn natural_page_entry_cmp(a: &str, b: &str) -> Ordering {
@@ -49,62 +18,6 @@ pub fn natural_page_entry_cmp(a: &str, b: &str) -> Ordering {
         }
     };
     prio(a).cmp(&prio(b)).then_with(|| natural_cmp(a, b))
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct NumberToken {
-    int_part: u128,
-    frac_part: String,
-    raw_len: usize,
-}
-
-fn take_number_tokens<I>(iter: &mut std::iter::Peekable<I>) -> NumberToken
-where
-    I: Iterator<Item = char> + Clone,
-{
-    let mut raw_int = String::new();
-    while let Some(&c) = iter.peek() {
-        if c.is_ascii_digit() {
-            raw_int.push(c);
-            iter.next();
-        } else {
-            break;
-        }
-    }
-
-    let mut frac_part = String::new();
-    let mut clone = iter.clone();
-    if clone.next() == Some('.') && clone.peek().is_some_and(|c| c.is_ascii_digit()) {
-        iter.next();
-        while let Some(&c) = iter.peek() {
-            if c.is_ascii_digit() {
-                frac_part.push(c);
-                iter.next();
-            } else {
-                break;
-            }
-        }
-    }
-
-    let int_part = raw_int.parse::<u128>().unwrap_or(u128::MAX);
-    NumberToken {
-        int_part,
-        frac_part,
-        raw_len: raw_int.len(),
-    }
-}
-
-fn cmp_number_tokens(a: &NumberToken, b: &NumberToken) -> Ordering {
-    match a.int_part.cmp(&b.int_part) {
-        Ordering::Equal => {}
-        non_eq => return non_eq,
-    }
-    let fa = a.frac_part.trim_end_matches('0');
-    let fb = b.frac_part.trim_end_matches('0');
-    match fa.cmp(fb) {
-        Ordering::Equal => a.raw_len.cmp(&b.raw_len),
-        non_eq => non_eq,
-    }
 }
 
 fn natural_title_sort_key(title: &str) -> String {
@@ -176,7 +89,7 @@ pub struct ParsedComicChapterName {
     pub clean_title: String,
 }
 
-pub fn strip_comic_archive_ext(name: &str) -> &str {
+fn strip_comic_archive_ext(name: &str) -> &str {
     for ext in [
         ".cbz", ".zip", ".epub", ".cbr", ".cb7", ".CBZ", ".ZIP", ".EPUB", ".CBR", ".CB7",
     ] {

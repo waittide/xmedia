@@ -5,10 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_formats::comic::filename::{
-    find_series_cover_path, natural_cmp, parse_comic_chapter_filename,
-};
+use xmedia_formats::comic::filename::{find_series_cover_path, parse_comic_chapter_filename};
 use xmedia_formats::comic::{ComicFormatExt, scan_comic_image_dir};
+use xmedia_formats::common::natural_cmp;
 
 use crate::application::ports::{
     ArchiveReaderPort, ComicScannerPort, ExistingChapterDigest, ScannedChapterEntry,

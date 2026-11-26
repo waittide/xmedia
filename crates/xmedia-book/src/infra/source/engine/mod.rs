@@ -4,9 +4,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub(super) use actions::apply_content_replace_regex;
-pub use actions::clean_chapter_html_to_text;
-
 use super::session::{ReusableSourceContext, ReusableWorkerSession};
 use crate::domain::online::{
     BookJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail, SearchBookResult,
@@ -281,12 +278,7 @@ impl BookSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<SearchBookResult>>, SourceCallError> {
-        let rule_search = source.rule_search.as_ref().ok_or_else(|| {
-            SourceCallError::new(
-                format!("书源「{}」未配置 ruleSearch", source.book_source_name),
-                ExecutionDiagnostics::default(),
-            )
-        })?;
+        let rule_search = source.require_search_rule()?;
 
         let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
@@ -398,19 +390,11 @@ impl BookSourceEngine {
             session.check_active()?;
             let mut info_input = RuleValue::from_raw(fetched.body);
 
-            let Some(rule_info) = source.rule_book_info.as_ref() else {
-                return Ok(OnlineBookDetail {
-                    name: fallback_hint.map(|h| h.name.clone()).unwrap_or_default(),
-                    author: fallback_hint.map(|h| h.author.clone()).unwrap_or_default(),
-                    book_url: book_url.to_string(),
-                    toc_url: fetched.final_url,
-                    cover_url: fallback_hint.and_then(|h| h.cover_url.clone()),
-                    intro: fallback_hint.and_then(|h| h.intro.clone()),
-                    kind: None,
-                    last_chapter: None,
-                    word_count: None,
-                });
-            };
+            let rule_info =
+                match source.book_info_or_fallback(book_url, &fetched.final_url, fallback_hint) {
+                    Ok(rule) => rule,
+                    Err(fallback_detail) => return Ok(*fallback_detail),
+                };
 
             if let Some(ref init_rule) = rule_info.init
                 && !init_rule.trim().is_empty()

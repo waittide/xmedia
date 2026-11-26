@@ -90,7 +90,7 @@ fn extract_client_ip_honors_connect_info_and_loopback_forwarded_for_only() {
     use axum::extract::ConnectInfo;
     use axum::http::Request;
 
-    use crate::http::auth::extract_client_ip_from_headers_and_peer;
+    use crate::http::auth::client_ip_from_headers;
 
     // 1. Direct non-loopback peer ignores spoofed X-Forwarded-For unless trust_proxy is enabled
     let mut req = Request::builder()
@@ -122,19 +122,30 @@ fn extract_client_ip_honors_connect_info_and_loopback_forwarded_for_only() {
         Some("198.51.100.7".parse::<IpAddr>().unwrap())
     );
 
+    // 2b. Spoofed leftmost X-Forwarded-For IP is ignored in favor of rightmost non-loopback proxy-appended IP
+    let mut spoof_req = Request::builder()
+        .uri("/api/v1/auth/login")
+        .header("x-forwarded-for", "1.2.3.4, 198.51.100.42")
+        .body(Body::empty())
+        .unwrap();
+    spoof_req.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:41000".parse::<SocketAddr>().unwrap(),
+    ));
+    let (spoof_parts, _) = spoof_req.into_parts();
+    assert_eq!(
+        extract_client_ip(&spoof_parts),
+        Some("198.51.100.42".parse::<IpAddr>().unwrap())
+    );
+
     // 3. IPv4-mapped IPv6 peer canonicalizes to IPv4
     let mut headers = HeaderMap::new();
     headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.99"));
     assert_eq!(
-        extract_client_ip_from_headers_and_peer(
-            &headers,
-            Some("::ffff:203.0.113.9".parse().unwrap()),
-            false,
-        ),
+        client_ip_from_headers(&headers, Some("::ffff:203.0.113.9".parse().unwrap()), false,),
         Some("203.0.113.9".parse().unwrap())
     );
     assert_eq!(
-        extract_client_ip_from_headers_and_peer(&headers, Some("10.0.0.2".parse().unwrap()), true,),
+        client_ip_from_headers(&headers, Some("10.0.0.2".parse().unwrap()), true),
         Some("198.51.100.99".parse().unwrap())
     );
 }
@@ -286,4 +297,41 @@ async fn csrf_check_guards_cookie_mutations_while_preserving_bearer_api_key_basi
         .unwrap()
         .into_parts();
     assert!(authenticate_opds_parts(&basic_parts, &auth).await.is_ok());
+
+    // Loopback HTTPS reverse proxy sets Secure cookie and validates HTTPS Origin
+    let mut https_proxy_req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/preferences")
+        .header(HOST, "media.example.com")
+        .header("x-forwarded-proto", "https")
+        .header(ORIGIN, "https://media.example.com")
+        .header(COOKIE, format!("{AUTH_COOKIE_NAME}={tok}"))
+        .body(Body::empty())
+        .unwrap();
+    https_proxy_req
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(
+            "127.0.0.1:50000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+    let (https_parts, _) = https_proxy_req.into_parts();
+    let secure_cookie = crate::http::session_cookie(
+        tok,
+        3600,
+        &https_parts.headers,
+        crate::http::extract_peer_ip(&https_parts),
+    );
+    assert!(secure_cookie.to_str().unwrap().contains("; Secure"));
+    assert!(authenticate_web_parts(&https_parts, &auth).await.is_ok());
+}
+
+#[test]
+fn redact_uri_for_log_masks_sensitive_query_params() {
+    let uri: axum::http::Uri =
+        "/rest/stream.view?u=alice&p=enc:736563726574&t=deadbeef&s=1234&f=json&token=jwt123"
+            .parse()
+            .unwrap();
+    assert_eq!(
+        crate::http::redact_uri_for_log(&uri),
+        "/rest/stream.view?u=alice&p=[REDACTED]&t=[REDACTED]&s=[REDACTED]&f=json&token=[REDACTED]"
+    );
 }

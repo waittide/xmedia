@@ -40,7 +40,7 @@ pub struct UiPreferences {
 }
 
 impl UiPreferences {
-    pub fn normalize(&mut self) {
+    pub(super) fn normalize(&mut self) {
         self.seed_color = self.seed_color.as_deref().and_then(sanitize_seed_color);
         self.app_icon = self.app_icon.as_deref().and_then(sanitize_app_icon);
         self.ui_font = self.ui_font.as_deref().and_then(sanitize_font_spec);
@@ -119,7 +119,7 @@ fn sanitize_css_font_chars(raw: &str) -> String {
 
 /// Sanitizes an optional UI font spec, stripping dangerous CSS/control characters, capping at 128
 /// characters, and normalizing empty or `"system-ui"` (case-insensitive) to `None`.
-pub fn sanitize_font_spec(raw: &str) -> Option<String> {
+fn sanitize_font_spec(raw: &str) -> Option<String> {
     let cleaned = sanitize_css_font_chars(raw);
     if cleaned.is_empty() || cleaned.eq_ignore_ascii_case(DEFAULT_FONT_FAMILY) {
         None
@@ -180,7 +180,7 @@ pub struct BookReaderPreferences {
 }
 
 impl BookReaderPreferences {
-    pub fn normalize(&mut self) {
+    pub(super) fn normalize(&mut self) {
         let cleaned_font = sanitize_css_font_chars(&self.font_family);
         self.font_family = if cleaned_font.is_empty() {
             DEFAULT_FONT_FAMILY.to_string()
@@ -248,6 +248,56 @@ fn default_webtoon_width() -> u16 {
     DEFAULT_WEBTOON_WIDTH
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComicSeriesReaderOverride {
+    pub reader_mode: ComicReaderMode,
+    pub fit_mode: ComicFitMode,
+    pub offset_cover_page: bool,
+    pub webtoon_width: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedComicReaderPref {
+    pub reader_mode: ComicReaderMode,
+    pub fit_mode: ComicFitMode,
+    pub offset_cover_page: bool,
+    pub dim_images_in_dark: bool,
+    pub preload_pages: u8,
+    pub webtoon_width: u16,
+}
+
+fn resolve_comic_reader_pref(
+    prefs: &ComicReaderPreferences,
+    is_webtoon_series: bool,
+    series_override: Option<ComicSeriesReaderOverride>,
+) -> ResolvedComicReaderPref {
+    if let Some(sp) = series_override {
+        ResolvedComicReaderPref {
+            reader_mode: sp.reader_mode,
+            fit_mode: sp.fit_mode,
+            offset_cover_page: sp.offset_cover_page,
+            dim_images_in_dark: prefs.dim_images_in_dark,
+            preload_pages: prefs.preload_pages,
+            webtoon_width: sp.webtoon_width,
+        }
+    } else {
+        let reader_mode =
+            if is_webtoon_series && prefs.default_reader_mode == ComicReaderMode::RtlDouble {
+                ComicReaderMode::Webtoon
+            } else {
+                prefs.default_reader_mode
+            };
+        ResolvedComicReaderPref {
+            reader_mode,
+            fit_mode: prefs.default_fit_mode,
+            offset_cover_page: prefs.offset_cover_page,
+            dim_images_in_dark: prefs.dim_images_in_dark,
+            preload_pages: prefs.preload_pages,
+            webtoon_width: prefs.webtoon_width,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComicReaderPreferences {
     #[serde(default)]
@@ -265,7 +315,7 @@ pub struct ComicReaderPreferences {
 }
 
 impl ComicReaderPreferences {
-    pub fn normalize(&mut self) {
+    pub(super) fn normalize(&mut self) {
         self.preload_pages = self.preload_pages.min(MAX_PRELOAD_PAGES);
         self.webtoon_width = self
             .webtoon_width
@@ -339,7 +389,7 @@ pub struct MusicPlaybackPreferences {
 pub type MusicPlayerPreferences = MusicPlaybackPreferences;
 
 impl MusicPlaybackPreferences {
-    pub fn normalize(&mut self) {
+    pub(super) fn normalize(&mut self) {
         self.volume = clamp_finite(self.volume, 0.0, 1.0, DEFAULT_VOLUME);
     }
 }
@@ -389,7 +439,7 @@ pub struct VideoPlaybackPreferences {
 pub type VideoPlayerPreferences = VideoPlaybackPreferences;
 
 impl VideoPlaybackPreferences {
-    pub fn normalize(&mut self) {
+    pub(super) fn normalize(&mut self) {
         normalize_opt_string(&mut self.preferred_audio_lang, 32);
         normalize_opt_string(&mut self.preferred_subtitle_lang, 32);
         self.playback_rate = clamp_finite(
@@ -416,26 +466,26 @@ impl Default for VideoPlaybackPreferences {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UserPreferences {
     #[serde(default)]
-    pub theme_mode: ThemeMode,
+    theme_mode: ThemeMode,
     /// Single MD3 seed color (`#rrggbb`); `None` means the client default seed.
     #[serde(default)]
-    pub seed_color: Option<String>,
+    seed_color: Option<String>,
     /// Optional icon variant id (`porcelain` | `obsidian` | `monolith`); `None` means default (`cobalt`).
     #[serde(default)]
-    pub app_icon: Option<String>,
+    app_icon: Option<String>,
     /// Optional custom UI font spec (`font:<uuid>` or local family name); `None` means `system-ui`.
     #[serde(default)]
-    pub ui_font: Option<String>,
+    ui_font: Option<String>,
     #[serde(default)]
-    pub locale: Locale,
+    locale: Locale,
     #[serde(default)]
-    pub book: BookReaderPreferences,
+    book: BookReaderPreferences,
     #[serde(default)]
-    pub comic: ComicReaderPreferences,
+    comic: ComicReaderPreferences,
     #[serde(default)]
-    pub music: MusicPlaybackPreferences,
+    music: MusicPlaybackPreferences,
     #[serde(default)]
-    pub video: VideoPlaybackPreferences,
+    video: VideoPlaybackPreferences,
 }
 
 impl UserPreferences {
@@ -449,6 +499,14 @@ impl UserPreferences {
         }
     }
 
+    pub fn resolve_comic_reader(
+        &self,
+        is_webtoon_series: bool,
+        series_override: Option<ComicSeriesReaderOverride>,
+    ) -> ResolvedComicReaderPref {
+        resolve_comic_reader_pref(&self.comic, is_webtoon_series, series_override)
+    }
+
     pub fn apply_ui(&mut self, mut ui: UiPreferences) {
         ui.normalize();
         self.theme_mode = ui.theme_mode;
@@ -459,7 +517,7 @@ impl UserPreferences {
     }
 
     /// Clamps and sanitizes all preference values into safe bounds.
-    pub fn normalize(&mut self) {
+    fn normalize(&mut self) {
         let mut ui = self.ui();
         ui.normalize();
         self.theme_mode = ui.theme_mode;

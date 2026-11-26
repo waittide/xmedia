@@ -15,12 +15,11 @@ use uuid::Uuid;
 
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
+pub use crate::domain::online_item::OnlineItemView;
 use crate::domain::online_item::{
-    MAX_INTRO_CHARS, MAX_ITEM_KEY_CHARS, MAX_SHORT_TEXT_CHARS, MAX_SOURCE_ID_CHARS,
-    OnlineItemProgress, OnlineItemSourceKind, OnlineLibraryItem, normalize_opt_text,
-    validate_cover_url, validate_extra, validate_key, validate_title,
+    OnlineItemFields, OnlineItemFilter, OnlineItemProgress, OnlineItemSourceKind, OnlineLibraryItem,
 };
-use crate::domain::repository::OnlineLibraryItemRepository;
+use crate::domain::repository::{OnlineItemDeleteScope, OnlineLibraryItemRepository};
 use crate::domain::user::UserId;
 
 pub const DEFAULT_LIST_LIMIT: u32 = 50;
@@ -28,14 +27,12 @@ pub const MAX_LIST_LIMIT: u32 = 200;
 pub const MAX_LOOKUP_ITEMS: usize = 200;
 pub const MAX_ITEMS_PER_USER: usize = 10_000;
 
-/// Display metadata of a server-managed online source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnlineSourceInfo {
     pub name: String,
     pub enabled: bool,
 }
 
-/// Read-only view onto a domain's rule-source registry.
 #[async_trait]
 pub trait OnlineSourceDirectory: Send + Sync {
     async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>>;
@@ -51,7 +48,6 @@ pub enum OnlineItemAvailability {
     Ok,
     SourceDisabled,
     SourceMissing,
-    /// Remote (client-side) sources cannot be verified by the server.
     Unverified,
 }
 
@@ -83,15 +79,6 @@ pub struct OnlineItemDto {
 pub struct OnlineItemListDto {
     pub items: Vec<OnlineItemDto>,
     pub total: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnlineItemView {
-    #[default]
-    All,
-    Continue,
-    Favorites,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -153,11 +140,10 @@ pub struct PatchOnlineItemInput {
     pub extra: Option<serde_json::Value>,
 }
 
-struct ItemKey {
-    source_kind: OnlineItemSourceKind,
-    source_id: String,
-    source_uuid: Option<Uuid>,
-    item_key: String,
+#[derive(Debug, Clone)]
+pub enum OnlineItemMutation {
+    Metadata(PatchOnlineItemInput),
+    Progress(Option<OnlineItemProgress>),
 }
 
 pub struct OnlineLibraryService {
@@ -198,30 +184,6 @@ impl OnlineLibraryService {
         self.media_kind
     }
 
-    fn parse_key(
-        source_kind: OnlineItemSourceKind,
-        source_id: &str,
-        item_key: &str,
-    ) -> DomainResult<ItemKey> {
-        let source_id = validate_key(source_id, "source_id", MAX_SOURCE_ID_CHARS)?;
-        let item_key = validate_key(item_key, "item_key", MAX_ITEM_KEY_CHARS)?;
-        let (source_id, source_uuid) = match source_kind {
-            OnlineItemSourceKind::Online => {
-                let id = Uuid::parse_str(&source_id).map_err(|_| {
-                    DomainError::Validation("source_id must be a UUID for online sources".into())
-                })?;
-                (id.to_string(), Some(id))
-            }
-            OnlineItemSourceKind::Remote => (source_id, None),
-        };
-        Ok(ItemKey {
-            source_kind,
-            source_id,
-            source_uuid,
-            item_key,
-        })
-    }
-
     fn availability(
         item: &OnlineLibraryItem,
         sources: &HashMap<Uuid, OnlineSourceInfo>,
@@ -241,7 +203,7 @@ impl OnlineLibraryService {
 
     fn to_dto(item: OnlineLibraryItem, sources: &HashMap<Uuid, OnlineSourceInfo>) -> OnlineItemDto {
         let (source_name, availability) = Self::availability(&item, sources);
-        let progress_ratio = item.progress.as_ref().and_then(OnlineItemProgress::ratio);
+        let progress_ratio = item.progress_ratio();
         OnlineItemDto {
             id: item.id,
             media_kind: item.media_kind,
@@ -283,48 +245,15 @@ impl OnlineLibraryService {
         user_id: UserId,
         query: OnlineItemQuery,
     ) -> DomainResult<OnlineItemListDto> {
-        let mut items = self.repo.list_by_user(user_id, self.media_kind).await?;
-        let needle = query
-            .q
-            .as_deref()
-            .map(|q| q.trim().to_lowercase())
-            .filter(|q| !q.is_empty());
-        let source_id = query
-            .source_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                Uuid::parse_str(s)
-                    .map(|u| u.to_string())
-                    .unwrap_or_else(|_| s.to_string())
-            });
-        items.retain(|item| {
-            let view_ok = match query.view {
-                OnlineItemView::All => true,
-                OnlineItemView::Continue => item.is_in_progress(),
-                OnlineItemView::Favorites => item.favorite,
-            };
-            view_ok
-                && query.source_kind.is_none_or(|k| item.source_kind == k)
-                && source_id.as_deref().is_none_or(|s| item.source_id == s)
-                && needle.as_deref().is_none_or(|n| {
-                    item.title.to_lowercase().contains(n)
-                        || item
-                            .subtitle
-                            .as_deref()
-                            .is_some_and(|s| s.to_lowercase().contains(n))
-                })
-        });
-        match query.view {
-            OnlineItemView::All => items.sort_by_key(|i| std::cmp::Reverse(i.updated_at)),
-            OnlineItemView::Continue => {
-                items.sort_by_key(|i| std::cmp::Reverse(i.progress_at.unwrap_or(i.updated_at)))
-            }
-            OnlineItemView::Favorites => {
-                items.sort_by_key(|i| std::cmp::Reverse(i.favorited_at.unwrap_or(i.updated_at)))
-            }
-        }
+        let items = OnlineLibraryItem::filter_and_sort(
+            self.repo.list_by_user(user_id, self.media_kind).await?,
+            &OnlineItemFilter {
+                view: query.view,
+                source_kind: query.source_kind,
+                source_id: query.source_id,
+                query: query.q,
+            },
+        );
 
         let total = items.len();
         let limit = query
@@ -357,12 +286,12 @@ impl OnlineLibraryService {
                 "lookup accepts at most {MAX_LOOKUP_ITEMS} items"
             )));
         }
-        let keys: Vec<ItemKey> = input
+        let raw_refs: Vec<(OnlineItemSourceKind, &str, &str)> = input
             .items
             .iter()
-            .filter_map(|r| Self::parse_key(r.source_kind, &r.source_id, &r.item_key).ok())
+            .map(|r| (r.source_kind, r.source_id.as_str(), r.item_key.as_str()))
             .collect();
-        if keys.is_empty() {
+        if raw_refs.is_empty() {
             return Ok(OnlineItemListDto {
                 items: Vec::new(),
                 total: 0,
@@ -370,12 +299,8 @@ impl OnlineLibraryService {
         }
         let all = self.repo.list_by_user(user_id, self.media_kind).await?;
         let sources = self.sources.list_sources().await?;
-        let items: Vec<OnlineItemDto> = all
+        let items: Vec<OnlineItemDto> = OnlineLibraryItem::lookup_matching(all, &raw_refs)
             .into_iter()
-            .filter(|item| {
-                keys.iter()
-                    .any(|k| item.matches_key(k.source_kind, &k.source_id, &k.item_key))
-            })
             .map(|item| Self::to_dto(item, &sources))
             .collect();
         let total = items.len();
@@ -387,168 +312,80 @@ impl OnlineLibraryService {
         user_id: UserId,
         input: UpsertOnlineItemInput,
     ) -> DomainResult<OnlineItemDto> {
-        let key = Self::parse_key(input.source_kind, &input.source_id, &input.item_key)?;
-        let title = validate_title(&input.title)?;
-        let subtitle = input
-            .subtitle
-            .map(|s| normalize_opt_text(Some(s), MAX_SHORT_TEXT_CHARS));
-        let cover_url = input
-            .cover_url
-            .map(|c| validate_cover_url(Some(c)))
-            .transpose()?;
-        let intro = input
-            .intro
-            .map(|s| normalize_opt_text(Some(s), MAX_INTRO_CHARS));
-        let kind = input
-            .kind
-            .map(|s| normalize_opt_text(Some(s), MAX_SHORT_TEXT_CHARS));
-        let extra = input.extra.map(|e| validate_extra(Some(e))).transpose()?;
-        let progress = input
-            .progress
-            .map(OnlineItemProgress::normalized)
-            .transpose()?;
+        let fields = OnlineItemFields {
+            title: Some(input.title),
+            subtitle: input.subtitle,
+            cover_url: input.cover_url,
+            intro: input.intro,
+            kind: input.kind,
+            extra: input.extra,
+            favorite: input.favorite,
+            progress: input.progress,
+        };
 
         let user_lock = self.user_upsert_lock(user_id);
         let guard = user_lock.lock().await;
         let existing = self.repo.list_by_user(user_id, self.media_kind).await?;
-        let count = existing.len();
-        let found = existing
-            .into_iter()
-            .find(|i| i.matches_key(key.source_kind, &key.source_id, &key.item_key));
-        let now = Timestamp::now();
-
-        let item = match found {
-            Some(mut item) => {
-                item.title = title;
-                if let Some(subtitle) = subtitle {
-                    item.subtitle = subtitle;
-                }
-                if let Some(cover_url) = cover_url {
-                    item.cover_url = cover_url;
-                }
-                if let Some(intro) = intro {
-                    item.intro = intro;
-                }
-                if let Some(kind) = kind {
-                    item.kind = kind;
-                }
-                if let Some(extra) = extra {
-                    item.extra = extra;
-                }
-                if let Some(favorite) = input.favorite {
-                    item.set_favorite(favorite, now);
-                }
-                if progress.is_some() {
-                    item.set_progress(progress, now);
-                }
-                item.updated_at = now;
-                item
-            }
-            None => {
-                if count >= MAX_ITEMS_PER_USER {
-                    return Err(DomainError::Conflict(format!(
-                        "online item limit reached ({MAX_ITEMS_PER_USER})"
-                    )));
-                }
-                if let Some(source_uuid) = key.source_uuid
-                    && self.sources.find_source(source_uuid).await?.is_none()
-                {
-                    return Err(DomainError::NotFound("online source not found".into()));
-                }
-                let mut item = OnlineLibraryItem {
-                    id: Uuid::now_v7(),
-                    user_id,
-                    media_kind: self.media_kind,
-                    source_kind: key.source_kind,
-                    source_id: key.source_id,
-                    item_key: key.item_key,
-                    title,
-                    subtitle: subtitle.flatten(),
-                    cover_url: cover_url.flatten(),
-                    intro: intro.flatten(),
-                    kind: kind.flatten(),
-                    extra: extra.unwrap_or_else(|| serde_json::json!({})),
-                    favorite: false,
-                    favorited_at: None,
-                    progress: None,
-                    progress_at: None,
-                    created_at: now,
-                    updated_at: now,
-                };
-                if let Some(favorite) = input.favorite {
-                    item.set_favorite(favorite, now);
-                }
-                if progress.is_some() {
-                    item.set_progress(progress, now);
-                }
-                item
-            }
-        };
+        let (item, verify_source_uuid) = OnlineLibraryItem::upsert_in(
+            existing,
+            MAX_ITEMS_PER_USER,
+            user_id,
+            self.media_kind,
+            input.source_kind,
+            &input.source_id,
+            &input.item_key,
+            fields,
+            Timestamp::now(),
+        )?;
+        if let Some(src_id) = verify_source_uuid
+            && self.sources.find_source(src_id).await?.is_none()
+        {
+            return Err(DomainError::NotFound("online source not found".into()));
+        }
         self.repo.save(&item).await?;
         drop(guard);
         self.single_dto(item).await
     }
 
-    pub async fn patch(
+    pub async fn update(
         &self,
         user_id: UserId,
         id: Uuid,
-        input: PatchOnlineItemInput,
+        mutation: OnlineItemMutation,
     ) -> DomainResult<OnlineItemDto> {
         let mut item = self.load_owned(user_id, id).await?;
-        let now = Timestamp::now();
-        if let Some(title) = input.title {
-            item.title = validate_title(&title)?;
-        }
-        if let Some(subtitle) = input.subtitle {
-            item.subtitle = normalize_opt_text(Some(subtitle), MAX_SHORT_TEXT_CHARS);
-        }
-        if let Some(cover_url) = input.cover_url {
-            item.cover_url = validate_cover_url(Some(cover_url))?;
-        }
-        if let Some(intro) = input.intro {
-            item.intro = normalize_opt_text(Some(intro), MAX_INTRO_CHARS);
-        }
-        if let Some(kind) = input.kind {
-            item.kind = normalize_opt_text(Some(kind), MAX_SHORT_TEXT_CHARS);
-        }
-        if let Some(extra) = input.extra {
-            item.extra = validate_extra(Some(extra))?;
-        }
-        if let Some(favorite) = input.favorite {
-            item.set_favorite(favorite, now);
-        }
-        item.updated_at = now;
-        self.repo.save(&item).await?;
-        self.single_dto(item).await
-    }
-
-    pub async fn update_progress(
-        &self,
-        user_id: UserId,
-        id: Uuid,
-        progress: OnlineItemProgress,
-    ) -> DomainResult<OnlineItemDto> {
-        let progress = progress.normalized()?;
-        let mut item = self.load_owned(user_id, id).await?;
-        let now = Timestamp::now();
-        item.set_progress(Some(progress), now);
-        item.updated_at = now;
-        self.repo.save(&item).await?;
-        self.single_dto(item).await
-    }
-
-    pub async fn clear_progress(&self, user_id: UserId, id: Uuid) -> DomainResult<OnlineItemDto> {
-        let mut item = self.load_owned(user_id, id).await?;
-        let now = Timestamp::now();
-        item.set_progress(None, now);
-        item.updated_at = now;
+        apply_online_mutation(&mut item, mutation, Timestamp::now())?;
         self.repo.save(&item).await?;
         self.single_dto(item).await
     }
 
     pub async fn delete(&self, user_id: UserId, id: Uuid) -> DomainResult<()> {
         let item = self.load_owned(user_id, id).await?;
-        self.repo.delete(item.id).await
+        self.repo
+            .delete_scope(OnlineItemDeleteScope::Id(item.id))
+            .await
+    }
+}
+
+fn apply_online_mutation(
+    item: &mut OnlineLibraryItem,
+    mutation: OnlineItemMutation,
+    now: Timestamp,
+) -> DomainResult<()> {
+    match mutation {
+        OnlineItemMutation::Metadata(input) => item.apply_fields(
+            OnlineItemFields {
+                title: input.title,
+                subtitle: input.subtitle,
+                cover_url: input.cover_url,
+                intro: input.intro,
+                kind: input.kind,
+                extra: input.extra,
+                favorite: input.favorite,
+                progress: None,
+            },
+            now,
+        ),
+        OnlineItemMutation::Progress(progress) => item.apply_progress(progress, now),
     }
 }

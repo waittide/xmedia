@@ -2,14 +2,16 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use xmedia_source::http::{resolve_relative_url, split_legado_url_and_raw_options};
+use xmedia_source::http::{
+    resolve_relative_url, resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
+};
 use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
 
 use super::ComicSourceEngine;
 use super::url_template::{
     has_non_page_mustache, parse_explore_categories_in_session, resolve_literal_http_url,
-    resolve_relative_url_preserving_options, substitute_static_explore_page,
+    substitute_static_explore_page,
 };
 use crate::domain::online::{
     ComicSearchResult, ComicSearchRule, ComicSourceSpec, ExecutionDiagnostics, ExploreCategoryItem,
@@ -203,12 +205,7 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<ComicSearchResult>>, SourceCallError> {
-        let rule_search = source.rule_search.as_ref().ok_or_else(|| {
-            SourceCallError::new(
-                format!("漫画源「{}」未配置 ruleSearch", source.source_name),
-                ExecutionDiagnostics::default(),
-            )
-        })?;
+        let (rule_search, _) = source.list_rules(false)?;
         let raw_tpl = source
             .search_url
             .as_deref()
@@ -229,13 +226,7 @@ impl ComicSourceEngine {
             session.set_search_vars(keyword, page)?;
             let search_url =
                 self.eval_url_template(source, &mut session, raw_tpl, keyword, page, "searchUrl")?;
-            self.eval_comic_list(
-                &mut session,
-                &search_url,
-                Some(rule_search),
-                None,
-                "ruleSearch",
-            )
+            self.eval_comic_list(&mut session, &search_url, rule_search, None, "ruleSearch")
         })();
 
         match res {
@@ -288,15 +279,7 @@ impl ComicSourceEngine {
                 ExecutionDiagnostics::default(),
             ));
         }
-        if source.rule_explore.is_none() && source.rule_search.is_none() {
-            return Err(SourceCallError::new(
-                format!(
-                    "漫画源「{}」未配置 ruleExplore 或 ruleSearch",
-                    source.source_name
-                ),
-                ExecutionDiagnostics::default(),
-            ));
-        }
+        let (rule_explore, rule_search_fallback) = source.list_rules(true)?;
         let tpl = explore_url.trim();
         if tpl.is_empty() {
             return Err(SourceCallError::new(
@@ -338,8 +321,8 @@ impl ComicSourceEngine {
             self.eval_comic_list(
                 &mut session,
                 &resolved_url,
-                source.rule_explore.as_ref(),
-                source.rule_search.as_ref(),
+                rule_explore,
+                rule_search_fallback,
                 "ruleExplore",
             )
         })();

@@ -340,12 +340,19 @@ pub fn substitute_legado_url_template_vars(
 /// Resolves a relative URL against `base_url` while preserving any trailing `,{"method":...}`
 /// Legado options block intact (preventing `Url::join` from percent-encoding option JSON quotes).
 pub fn resolve_relative_url_preserving_options(raw_or_rel: &str, base_url: &str) -> String {
-    let (url_part, opt_part) = split_legado_url_and_raw_options(raw_or_rel);
-    let resolved = resolve_relative_url(url_part, base_url);
+    let trimmed = raw_or_rel.trim();
+    let (url_part, opt_part) = split_legado_url_and_raw_options(trimmed);
     if let Some(opts) = opt_part {
+        let resolved = if url_part.trim().is_empty()
+            && serde_json::from_str::<LegadoUrlOptions>(opts).is_ok()
+        {
+            base_url.trim().to_string()
+        } else {
+            resolve_relative_url(url_part, base_url)
+        };
         format!("{resolved},{opts}")
     } else {
-        resolved
+        resolve_relative_url(url_part, base_url)
     }
 }
 

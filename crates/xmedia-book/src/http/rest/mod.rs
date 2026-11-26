@@ -17,7 +17,7 @@ use xmedia_core::application::bindings::{
 };
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 use xmedia_core::http::{
     ApiError, ApiResult, WebAuth, into_range_http_response, parse_http_range_spec,
     sanitize_download_filename, stream_multipart_field_to_temp_file,
@@ -133,7 +133,7 @@ async fn search_books(
 ) -> ApiResult<Json<PagedResult<BookSummaryDto>>> {
     let parsed_formats: Vec<BookFormat> = split_multi_param(q.formats)
         .into_iter()
-        .filter_map(|f| BookFormat::from_extension(&f))
+        .filter_map(|f| f.parse().ok())
         .collect();
 
     let parsed_lib_ids: Vec<LibraryId> = split_multi_param(q.library_ids)
@@ -175,7 +175,7 @@ async fn search_pool_books(
 ) -> ApiResult<Json<PagedResult<PoolBookSummaryDto>>> {
     let parsed_formats: Vec<BookFormat> = split_multi_param(q.formats)
         .into_iter()
-        .filter_map(|f| BookFormat::from_extension(&f))
+        .filter_map(|f| f.parse().ok())
         .collect();
     let parsed_lib_ids: Vec<LibraryId> = split_multi_param(q.library_ids)
         .into_iter()
@@ -252,7 +252,7 @@ async fn upload_books(
     WebAuth(actor): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadBooksResponse>)> {
-    require_admin(&actor)?;
+    actor.ensure_admin()?;
     let mut uploaded = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -268,7 +268,7 @@ async fn upload_books(
             .extension()
             .and_then(|s| s.to_str())
             .ok_or_else(|| ApiError(DomainError::Validation("missing file extension".into())))?;
-        let _ = BookFormat::parse(ext)?;
+        let _ = ext.parse::<BookFormat>()?;
         let remaining_cap = MAX_BOOK_UPLOAD_BYTES.saturating_sub(total_bytes);
         let temp =
             stream_multipart_field_to_temp_file(&mut field, remaining_cap, Some(ext)).await?;
@@ -408,7 +408,7 @@ async fn replace_book_cover(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<BookSummaryDto>> {
-    require_admin(&actor)?;
+    actor.ensure_admin()?;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -462,7 +462,7 @@ pub(crate) async fn serve_book_file_http(
         .catalog
         .open_book_file_stream(actor, book_id, spec)
         .await?;
-    let filename = sanitize_download_filename(&book.metadata.title, book.format.as_str());
+    let filename = sanitize_download_filename(&book.metadata.title, book.format.as_ref());
     Ok(into_range_http_response(
         range_stream,
         spec.is_partial(),

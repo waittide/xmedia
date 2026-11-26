@@ -1,14 +1,11 @@
 use async_trait::async_trait;
 use toasty::Db;
-use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::id::SeriesId;
-use crate::domain::repository::SeriesRepository;
-use crate::domain::series::{
-    OnlineTrackedSeriesMeta, ReadingDirection, Series, SeriesSource, SeriesStatus,
-};
+use crate::domain::repository::{SeriesQuery, SeriesRepository};
+use crate::domain::series::{OnlineTrackedSeriesMeta, Series, SeriesSource};
 
 use super::super::models::ComicSeriesModel;
 use super::db_err;
@@ -28,9 +25,16 @@ impl ToastySeriesRepository {
             let meta = m
                 .online_meta
                 .map(|j| j.0)
-                .unwrap_or_else(|| OnlineTrackedSeriesMeta {
-                    source_id: m.online_source_id.unwrap_or_else(Uuid::nil),
-                    comic_url: m.online_comic_url.unwrap_or_default(),
+                .or_else(|| {
+                    Some(OnlineTrackedSeriesMeta {
+                        source_id: m.online_source_id?,
+                        comic_url: m.online_comic_url?,
+                        toc_url: String::new(),
+                    })
+                })
+                .unwrap_or(OnlineTrackedSeriesMeta {
+                    source_id: uuid::Uuid::nil(),
+                    comic_url: String::new(),
                     toc_url: String::new(),
                 });
             SeriesSource::OnlineTracked(meta)
@@ -50,8 +54,8 @@ impl ToastySeriesRepository {
             writers: m.writers.0,
             pencillers: m.pencillers.0,
             publisher: m.publisher,
-            status: SeriesStatus::parse(&m.status),
-            reading_direction: ReadingDirection::parse(&m.reading_direction),
+            status: m.status.parse().unwrap_or_default(),
+            reading_direction: m.reading_direction.parse().unwrap_or_default(),
             age_rating: m.age_rating,
             genres: m.genres.0,
             tags: m.tags.0,
@@ -70,83 +74,60 @@ impl ToastySeriesRepository {
 
 #[async_trait]
 impl SeriesRepository for ToastySeriesRepository {
-    async fn find_by_id(&self, id: SeriesId) -> DomainResult<Option<Series>> {
+    async fn query(&self, scope: SeriesQuery) -> DomainResult<Vec<Series>> {
         let mut db = self.db.clone();
-        let row = ComicSeriesModel::filter_by_id(id.0)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.map(Self::to_domain))
-    }
-
-    async fn find_by_library_and_dir(
-        &self,
-        library_id: LibraryId,
-        source_dir: &str,
-    ) -> DomainResult<Option<Series>> {
-        let mut db = self.db.clone();
-        let row = ComicSeriesModel::filter_by_library_id(library_id.0)
-            .filter(ComicSeriesModel::fields().source_kind().eq("local"))
-            .filter(
-                ComicSeriesModel::fields()
-                    .source_dir()
-                    .eq(source_dir.to_string()),
-            )
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.map(Self::to_domain))
-    }
-
-    async fn find_online_tracked(
-        &self,
-        source_id: Uuid,
-        comic_url: &str,
-    ) -> DomainResult<Option<Series>> {
-        let mut db = self.db.clone();
-        let row = ComicSeriesModel::filter_by_online_source_id(source_id)
-            .filter(
-                ComicSeriesModel::fields()
-                    .online_comic_url()
-                    .eq(comic_url.to_string()),
-            )
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(row.map(Self::to_domain))
-    }
-
-    async fn find_series_by_cover_key(&self, cover_key: &str) -> DomainResult<Vec<Series>> {
-        let clean = cover_key.trim();
-        if clean.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut db = self.db.clone();
-        let rows = ComicSeriesModel::filter_by_cover_path(clean.to_string())
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::to_domain).collect())
-    }
-
-    async fn list_all(&self) -> DomainResult<Vec<Series>> {
-        let mut db = self.db.clone();
-        let rows = ComicSeriesModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::to_domain).collect())
-    }
-
-    async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Series>> {
-        let mut db = self.db.clone();
-        let rows = ComicSeriesModel::filter_by_library_id(library_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+        let rows = match scope {
+            SeriesQuery::Id(id) => ComicSeriesModel::filter_by_id(id.0)
+                .first()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                .into_iter()
+                .collect(),
+            SeriesQuery::LocalDir {
+                library_id,
+                source_dir,
+            } => ComicSeriesModel::filter_by_library_id(library_id.0)
+                .filter(ComicSeriesModel::fields().source_kind().eq("local"))
+                .filter(ComicSeriesModel::fields().source_dir().eq(source_dir))
+                .first()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                .into_iter()
+                .collect(),
+            SeriesQuery::OnlineTracked {
+                source_id,
+                comic_url,
+            } => ComicSeriesModel::filter_by_online_source_id(source_id)
+                .filter(ComicSeriesModel::fields().online_comic_url().eq(comic_url))
+                .first()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                .into_iter()
+                .collect(),
+            SeriesQuery::CoverKey(cover_key) => {
+                let clean = cover_key.trim();
+                if clean.is_empty() {
+                    return Ok(Vec::new());
+                }
+                ComicSeriesModel::filter_by_cover_path(clean.to_string())
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            }
+            SeriesQuery::Library(library_id) => {
+                ComicSeriesModel::filter_by_library_id(library_id.0)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            }
+            SeriesQuery::All => ComicSeriesModel::all()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?,
+        };
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
@@ -185,8 +166,8 @@ impl SeriesRepository for ToastySeriesRepository {
                 .writers(toasty::Json(s.writers.clone()))
                 .pencillers(toasty::Json(s.pencillers.clone()))
                 .publisher(s.publisher.clone())
-                .status(s.status.as_str().to_string())
-                .reading_direction(s.reading_direction.as_str().to_string())
+                .status(s.status.to_string())
+                .reading_direction(s.reading_direction.to_string())
                 .age_rating(s.age_rating.clone())
                 .genres(toasty::Json(s.genres.clone()))
                 .tags(toasty::Json(s.tags.clone()))
@@ -216,8 +197,8 @@ impl SeriesRepository for ToastySeriesRepository {
                 writers: toasty::Json(s.writers.clone()),
                 pencillers: toasty::Json(s.pencillers.clone()),
                 publisher: s.publisher.clone(),
-                status: s.status.as_str().to_string(),
-                reading_direction: s.reading_direction.as_str().to_string(),
+                status: s.status.to_string(),
+                reading_direction: s.reading_direction.to_string(),
                 age_rating: s.age_rating.clone(),
                 genres: toasty::Json(s.genres.clone()),
                 tags: toasty::Json(s.tags.clone()),

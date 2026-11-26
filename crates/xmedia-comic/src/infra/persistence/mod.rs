@@ -5,25 +5,31 @@ mod source_repository;
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
 use tracing::info;
-use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::infra::persistence::push_model_set;
+use xmedia_core::domain::error::DomainResult;
+use xmedia_core::infra::persistence::{ensure_sql_index, push_model_set};
 
 use models::{
     ComicBookmarkModel, ComicChapterModel, ComicChapterProgressModel, ComicFavoriteSeriesModel,
     ComicSeriesModel, ComicSeriesReaderPrefModel, ComicShelfModel, ComicSourceRecordModel,
 };
 
-async fn ensure_comic_indexes(db: &mut Db) -> DomainResult<()> {
-    for ddl in [
-        "CREATE INDEX IF NOT EXISTS idx_comic_series_cover_path ON comic_series (cover_path)",
-        "CREATE INDEX IF NOT EXISTS idx_comic_chapters_cover_path ON comic_chapters (cover_path)",
-        "CREATE INDEX IF NOT EXISTS idx_comic_series_online_lookup ON comic_series (online_source_id, online_comic_url)",
-        "CREATE INDEX IF NOT EXISTS idx_comic_chapters_online_lookup ON comic_chapters (series_id, online_chapter_url)",
+pub async fn ensure_comic_indexes(db: &mut Db) -> DomainResult<()> {
+    for (idx, spec) in [
+        ("idx_comic_series_cover_path", "comic_series (cover_path)"),
+        (
+            "idx_comic_chapters_cover_path",
+            "comic_chapters (cover_path)",
+        ),
+        (
+            "idx_comic_series_online_lookup",
+            "comic_series (online_source_id, online_comic_url)",
+        ),
+        (
+            "idx_comic_chapters_online_lookup",
+            "comic_chapters (series_id, online_chapter_url)",
+        ),
     ] {
-        toasty::sql::statement(ddl)
-            .exec(db)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to ensure comic index: {e}")))?;
+        ensure_sql_index(db, idx, spec).await?;
     }
     Ok(())
 }
@@ -116,7 +122,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::domain::repository::{ChapterRepository, SeriesRepository};
+    use crate::domain::repository::{
+        ChapterQuery, ChapterRepository, SeriesQuery, SeriesRepository,
+    };
     use crate::infra::persistence::repositories::{
         ToastyChapterRepository, ToastySeriesRepository,
     };
@@ -179,21 +187,21 @@ mod tests {
         let s_repo = ToastySeriesRepository::new(db.clone());
         let c_repo = ToastyChapterRepository::new(db);
         let found = s_repo
-            .find_series_by_cover_key("cov_abc.webp")
+            .query(SeriesQuery::CoverKey("cov_abc.webp".into()))
             .await
             .unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id.0, sid);
         assert!(
             s_repo
-                .find_series_by_cover_key("other.webp")
+                .query(SeriesQuery::CoverKey("other.webp".into()))
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert!(
             c_repo
-                .find_chapters_by_cover_key("cov_abc.webp")
+                .query(ChapterQuery::CoverKey("cov_abc.webp".into()))
                 .await
                 .unwrap()
                 .is_empty()

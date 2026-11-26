@@ -276,8 +276,9 @@ pub(super) fn run_test_stages(
                 state = out.state;
                 merge_diagnostics(&mut all_diag, &out.diagnostics);
                 let detail = out.data;
-                let ok = !detail.title.is_empty()
-                    || (mode == ComicSourceTestMode::Full && parsed.rule_detail.is_none());
+                let has_detail = parsed.supports_stage(ComicSourceTestMode::Detail);
+                let ok =
+                    !detail.title.is_empty() || (mode == ComicSourceTestMode::Full && !has_detail);
                 let summary = if ok {
                     if detail.title.is_empty() {
                         "未配置 ruleDetail，直接进入目录解析".into()
@@ -289,13 +290,13 @@ pub(super) fn run_test_stages(
                         };
                         format!("《{}》{}", detail.title, author_part)
                     }
-                } else if parsed.rule_detail.is_none() {
+                } else if !has_detail {
                     "漫画源未配置 ruleDetail".into()
                 } else {
                     "详情页未解析出漫画标题".into()
                 };
                 let err = (!ok).then(|| {
-                    if parsed.rule_detail.is_none() {
+                    if !has_detail {
                         "漫画源未配置 ruleDetail / ruleBookInfo".into()
                     } else {
                         "ruleDetail 未能提取有效漫画标题".into()
@@ -343,7 +344,7 @@ pub(super) fn run_test_stages(
             toc_url: d.toc_url.clone(),
             cover_url: d.cover_url.clone(),
             intro: d.intro.clone(),
-            reading_direction: d.reading_direction.map(|dir| dir.as_str().to_string()),
+            reading_direction: d.reading_direction.map(|dir| dir.as_ref().to_string()),
             dur_chapter_index: next_chapter_idx,
             dur_chapter_title: next_chapter_title.clone(),
             custom_variable: String::new(),

@@ -198,14 +198,9 @@ async fn fetch_validated_image_bytes_enforces_ssrf_size_cap_and_header_sanitizat
         proxy_url: None,
     };
     assert!(
-        fetch_validated_image_bytes_with_config(
-            &format!("http://{addr}/ok.png"),
-            None,
-            1024,
-            &ssrf_cfg,
-        )
-        .await
-        .is_err()
+        fetch_image(&format!("http://{addr}/ok.png"), None, 1024, &ssrf_cfg)
+            .await
+            .is_err()
     );
 
     let ok_cfg = HttpClientConfig {
@@ -221,7 +216,7 @@ async fn fetch_validated_image_bytes_enforces_ssrf_size_cap_and_header_sanitizat
         ("Host".to_string(), "spoofed.example.com".to_string()),
         ("Connection".to_string(), "close".to_string()),
     ]);
-    let (bytes, mime) = fetch_validated_image_bytes_with_config(
+    let (bytes, mime) = fetch_image(
         &format!("http://{addr}/ok.png"),
         Some(&custom_headers),
         1024,
@@ -243,46 +238,19 @@ async fn fetch_validated_image_bytes_enforces_ssrf_size_cap_and_header_sanitizat
         );
     }
 
-    assert!(
-        fetch_validated_image_bytes_with_config(
-            &format!("http://{addr}/big-header.png"),
-            None,
-            64,
-            &ok_cfg,
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        fetch_validated_image_bytes_with_config(
-            &format!("http://{addr}/big-stream.png"),
-            None,
-            64,
-            &ok_cfg,
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        fetch_validated_image_bytes_with_config(
-            &format!("http://{addr}/missing.png"),
-            None,
-            1024,
-            &ok_cfg,
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        fetch_validated_image_bytes_with_config(
-            &format!("http://{addr}/evil.svg"),
-            None,
-            1024,
-            &ok_cfg,
-        )
-        .await
-        .is_err()
-    );
+    for path in [
+        "/big-header.png",
+        "/big-stream.png",
+        "/missing.png",
+        "/evil.svg",
+    ] {
+        let cap = if path.starts_with("/big-") { 64 } else { 1024 };
+        assert!(
+            fetch_image(&format!("http://{addr}{path}"), None, cap, &ok_cfg)
+                .await
+                .is_err()
+        );
+    }
 
     server.abort();
 }
@@ -395,27 +363,17 @@ async fn fetch_validated_image_bytes_retries_transient_503_and_never_retries_ssr
         allow_private_ips: true,
         proxy_url: None,
     };
-    let (bytes, mime) = fetch_validated_image_bytes_with_config(
-        &format!("http://{addr}/flaky.png"),
-        None,
-        1024,
-        &ok_cfg,
-    )
-    .await
-    .unwrap();
+    let (bytes, mime) = fetch_image(&format!("http://{addr}/flaky.png"), None, 1024, &ok_cfg)
+        .await
+        .unwrap();
     assert_eq!(mime, "image/png");
     assert_eq!(bytes, PNG_BYTES);
     assert_eq!(flaky_hits.load(Ordering::SeqCst), 2);
 
     assert!(
-        fetch_validated_image_bytes_with_config(
-            &format!("http://{addr}/forbidden.png"),
-            None,
-            1024,
-            &ok_cfg,
-        )
-        .await
-        .is_err()
+        fetch_image(&format!("http://{addr}/forbidden.png"), None, 1024, &ok_cfg)
+            .await
+            .is_err()
     );
     assert_eq!(hits_403.load(Ordering::SeqCst), 1);
 
@@ -425,8 +383,9 @@ async fn fetch_validated_image_bytes_retries_transient_503_and_never_retries_ssr
         .build()
         .unwrap();
     assert!(
-        fetch_validated_image_bytes(
+        image::fetch_client_image(
             &redir_client,
+            None,
             &format!("http://{addr}/redir"),
             None,
             1024,
@@ -487,7 +446,7 @@ async fn fetch_validated_image_bytes_for_source_strips_cross_origin_auth_headers
         ),
     ]);
 
-    fetch_validated_image_bytes_with_config_for_source(
+    fetch_source_image(
         Some("https://comic.example.com"),
         &format!("http://{addr}/cover.png"),
         Some(&custom_headers),

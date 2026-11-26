@@ -11,14 +11,14 @@ mod server_tests {
 
     use crate::application::auth::AuthService;
     use crate::application::dto::{
-        ChangePasswordInput, CreateLibraryInput, CreateUserInput, SetupAdminInput,
-        SubsonicCredentials, UpdateUserInput,
+        AuthCredential, ChangePasswordInput, CreateLibraryInput, CreateUserInput, SetupAdminInput,
+        SubsonicCredentials, UpdateUserInput, UserDto,
     };
     use crate::application::library::LibraryService;
     use crate::application::ports::MediaDomainLifecycle;
     use crate::domain::error::{DomainError, DomainResult};
     use crate::domain::library::{Library, LibraryId, MediaKind};
-    use crate::domain::repository::LibraryRepository;
+    use crate::domain::repository::{BindingDeleteScope, LibraryRepository};
     use crate::domain::user::{UserId, UserRole};
     use crate::infra::events::BroadcastEventHub;
     use crate::infra::persistence::repositories::{ToastyLibraryRepository, ToastyUserRepository};
@@ -77,13 +77,19 @@ mod server_tests {
             .unwrap();
         assert!(!auth.setup_status().await.unwrap().needs_setup);
 
-        let jwt_user = auth.authenticate_jwt(&session.token).await.unwrap();
+        let jwt_user = auth
+            .authenticate(AuthCredential::Jwt(&session.token), None)
+            .await
+            .unwrap();
         assert_eq!(jwt_user.username, "admin");
 
         // Local admin session issuance works without password and survives password changes
         let local_session = auth.issue_local_admin_session(Some("admin")).await.unwrap();
         assert_eq!(local_session.user.username, "admin");
-        let verified_local = auth.authenticate_jwt(&local_session.token).await.unwrap();
+        let verified_local = auth
+            .authenticate(AuthCredential::Jwt(&local_session.token), None)
+            .await
+            .unwrap();
         assert_eq!(verified_local.id, jwt_user.id);
 
         let fallback_session = auth
@@ -93,7 +99,13 @@ mod server_tests {
         assert_eq!(fallback_session.user.id, jwt_user.id);
 
         let basic_user = auth
-            .verify_basic_credentials("admin", "password123")
+            .authenticate(
+                AuthCredential::Basic {
+                    username: "admin",
+                    password: "password123",
+                },
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(basic_user.id, jwt_user.id);
@@ -104,11 +116,14 @@ mod server_tests {
         md5.update(salt.as_bytes());
         let token_hex = hex::encode(md5.finalize());
         let sub_user = auth
-            .authenticate_subsonic(SubsonicCredentials::TokenSalt {
-                username: "admin".into(),
-                token: token_hex,
-                salt: salt.into(),
-            })
+            .authenticate(
+                AuthCredential::Subsonic(SubsonicCredentials::TokenSalt {
+                    username: "admin".into(),
+                    token: token_hex,
+                    salt: salt.into(),
+                }),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(sub_user.id, jwt_user.id);
@@ -154,12 +169,8 @@ mod server_tests {
         let events = Arc::new(BroadcastEventHub::default());
 
         let auth = AuthService::new(users, security, tokens, lifecycles.clone());
-        let lib_svc = LibraryService::with_data_dir(
-            libraries_repo.clone(),
-            events,
-            lifecycles,
-            Some(data_dir.clone()),
-        );
+        let lib_svc = LibraryService::new(libraries_repo.clone(), events, lifecycles)
+            .with_mount_policy(Some(data_dir.clone()), None);
         lib_svc.register_lifecycle(Arc::new(DummyLifecycle(MediaKind::Book)));
 
         assert_eq!(auth.token_ttl_seconds(), 1800);
@@ -180,7 +191,10 @@ mod server_tests {
         let success_count = usize::from(r1.is_ok()) + usize::from(r2.is_ok());
         assert_eq!(success_count, 1);
         let admin_session = r1.or(r2).unwrap();
-        let admin = auth.authenticate_jwt(&admin_session.token).await.unwrap();
+        let admin = auth
+            .authenticate(AuthCredential::Jwt(&admin_session.token), None)
+            .await
+            .unwrap();
 
         // Create member, verify list_users redacts api_key while get_me returns own api_key,
         // change password reissues token, and disabling yields Forbidden across ALL auth entry points
@@ -200,12 +214,15 @@ mod server_tests {
         let listed_users = auth.list_users(&admin).await.unwrap();
         assert_eq!(listed_users.len(), 2);
         assert!(listed_users.iter().all(|u| u.api_key.is_empty()));
-        let admin_me = auth.get_me(&admin).await.unwrap();
+        let admin_me = UserDto::from(admin.clone());
         assert!(!admin_me.api_key.is_empty());
 
-        let member_session = auth.login("member1", "password123").await.unwrap();
+        let member_session = auth.login("member1", "password123", None).await.unwrap();
         assert!(!member_session.user.api_key.is_empty());
-        let member_actor = auth.authenticate_jwt(&member_session.token).await.unwrap();
+        let member_actor = auth
+            .authenticate(AuthCredential::Jwt(&member_session.token), None)
+            .await
+            .unwrap();
         let rotated_session = auth
             .change_own_password(
                 &member_actor,
@@ -218,10 +235,15 @@ mod server_tests {
             .unwrap();
         // Old JWT issued before password change must be immediately invalidated
         assert!(matches!(
-            auth.authenticate_jwt(&member_session.token).await,
+            auth.authenticate(AuthCredential::Jwt(&member_session.token), None)
+                .await,
             Err(DomainError::Unauthorized(_))
         ));
-        assert!(auth.authenticate_jwt(&rotated_session.token).await.is_ok());
+        assert!(
+            auth.authenticate(AuthCredential::Jwt(&rotated_session.token), None)
+                .await
+                .is_ok()
+        );
 
         let updated_member = auth
             .update_user(
@@ -240,27 +262,34 @@ mod server_tests {
 
         // Wrong credentials on a disabled account must NOT disclose disabled status
         assert!(matches!(
-            auth.login("member1", "wrongpassword").await,
+            auth.login("member1", "wrongpassword", None).await,
             Err(DomainError::Unauthorized(_))
         ));
 
         // Disabled account with valid credentials must consistently return 403 Forbidden
         assert!(matches!(
-            auth.login("member1", "newpassword123").await,
+            auth.login("member1", "newpassword123", None).await,
             Err(DomainError::Forbidden(_))
         ));
         assert!(matches!(
-            auth.authenticate_jwt(&rotated_session.token).await,
-            Err(DomainError::Forbidden(_))
-        ));
-        assert!(matches!(
-            auth.authenticate_api_key(&rotated_session.user.api_key)
+            auth.authenticate(AuthCredential::Jwt(&rotated_session.token), None)
                 .await,
             Err(DomainError::Forbidden(_))
         ));
         assert!(matches!(
-            auth.verify_basic_credentials("member1", "newpassword123")
+            auth.authenticate(AuthCredential::ApiKey(&rotated_session.user.api_key), None)
                 .await,
+            Err(DomainError::Forbidden(_))
+        ));
+        assert!(matches!(
+            auth.authenticate(
+                AuthCredential::Basic {
+                    username: "member1",
+                    password: "newpassword123",
+                },
+                None,
+            )
+            .await,
             Err(DomainError::Forbidden(_))
         ));
         let salt = "salt42";
@@ -269,11 +298,14 @@ mod server_tests {
         md5.update(salt.as_bytes());
         let sub_token = hex::encode(md5.finalize());
         assert!(matches!(
-            auth.authenticate_subsonic(SubsonicCredentials::TokenSalt {
-                username: "member1".into(),
-                token: sub_token,
-                salt: salt.into(),
-            })
+            auth.authenticate(
+                AuthCredential::Subsonic(SubsonicCredentials::TokenSalt {
+                    username: "member1".into(),
+                    token: sub_token,
+                    salt: salt.into(),
+                }),
+                None,
+            )
             .await,
             Err(DomainError::Forbidden(_))
         ));
@@ -329,7 +361,10 @@ mod server_tests {
             .await
             .unwrap()
             .unwrap();
-        stale.mark_scanning(42, Some(100));
+        stale.set_scan_status(crate::domain::library::ScanStatus::Scanning {
+            scanned: 42,
+            total: Some(100),
+        });
         libraries_repo.save(&stale).await.unwrap();
         lib_svc.recover_interrupted_scans().await.unwrap();
         let recovered = libraries_repo
@@ -345,7 +380,7 @@ mod server_tests {
         let denied_dir = dir.path().join("denied_dir");
         std::fs::create_dir_all(&allowed_sub).unwrap();
         std::fs::create_dir_all(&denied_dir).unwrap();
-        let restricted_lib_svc = lib_svc.with_allowed_mount_prefixes([allowed_root]);
+        let restricted_lib_svc = lib_svc.with_mount_policy(None, Some(vec![allowed_root]));
         assert!(matches!(
             restricted_lib_svc
                 .create_local_mount(
@@ -451,16 +486,13 @@ mod server_tests {
                 .unwrap()
         );
         assert!(!svc.is_bound(user_a, MediaKind::Book, item_1).await.unwrap());
-        assert_eq!(
-            svc.count_bindings_for_item(MediaKind::Comic, item_1)
-                .await
-                .unwrap(),
-            2
-        );
-
-        let (removed, remaining) = svc.unbind(user_a, MediaKind::Comic, item_1).await.unwrap();
+        let (removed, remaining, gc_a) = svc
+            .unbind_with_gc(user_a, MediaKind::Comic, item_1, || async { Ok(true) })
+            .await
+            .unwrap();
         assert!(removed);
         assert_eq!(remaining, 1);
+        assert!(!gc_a);
         assert!(
             !svc.is_bound(user_a, MediaKind::Comic, item_1)
                 .await
@@ -472,12 +504,19 @@ mod server_tests {
                 .unwrap()
         );
 
-        let (removed_b, remaining_b) = svc.unbind(user_b, MediaKind::Comic, item_1).await.unwrap();
+        let (removed_b, remaining_b, gc_b) = svc
+            .unbind_with_gc(user_b, MediaKind::Comic, item_1, || async { Ok(true) })
+            .await
+            .unwrap();
         assert!(removed_b);
         assert_eq!(remaining_b, 0);
+        assert!(gc_b);
 
         let purged = svc
-            .delete_user_bindings_for_media(user_a, MediaKind::Comic)
+            .purge(BindingDeleteScope::UserMedia {
+                user_id: user_a,
+                media_kind: MediaKind::Comic,
+            })
             .await
             .unwrap();
         assert_eq!(purged, vec![item_2]);

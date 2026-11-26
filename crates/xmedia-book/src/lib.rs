@@ -24,8 +24,9 @@ use xmedia_core::infra::persistence::repositories::{
 use application::BookServices;
 use application::catalog::BookCatalogService;
 use application::lifecycle::BookDomainLifecycle;
-use application::online::{BookOnlineService, BookOnlineSourceDirectory};
+use application::online::BookOnlineService;
 use application::reading::BookReadingService;
+use domain::online::LegadoBookSource;
 use infra::parser::CompositeBookParser;
 use infra::persistence::repositories::{
     ToastyBookReadingRepository, ToastyBookRepository, ToastyBookSourceRepository,
@@ -34,6 +35,7 @@ use infra::source::BookSourceEngine;
 use infra::source::packager::BookFormatPackager;
 use infra::source::tracked_store::TrackedBookStore;
 use infra::storage::{LocalBookScanner, LocalBookStorage};
+use xmedia_source::crud::SourceCrudService;
 
 pub use infra::persistence::{ensure_book_schema, register_book_models};
 
@@ -92,7 +94,7 @@ pub fn init_book_module_with_bindings(
         db.clone(),
         data_dir.join("online_book_cache"),
     ));
-    let sources = Arc::new(BookOnlineSourceDirectory::new(sources_repo));
+    let sources = Arc::new(SourceCrudService::<LegadoBookSource>::new(sources_repo));
     let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db));
     let parser = Arc::new(CompositeBookParser);
     let storage = Arc::new(LocalBookStorage::new(data_dir)?);
@@ -110,7 +112,9 @@ pub fn init_book_module_with_bindings(
     let reading = Arc::new(BookReadingService::new(
         readings.clone(),
         books.clone(),
+        libraries_repo.clone(),
         bindings.clone(),
+        catalog.clone(),
     ));
     let engine = Arc::new(BookSourceEngine::new(
         infra::source::http::HttpClientConfig {

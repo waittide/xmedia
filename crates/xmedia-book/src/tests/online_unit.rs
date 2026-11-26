@@ -72,7 +72,13 @@ async fn setup_test_online_service_with_member() -> (TempDir, User, User, Arc<Bo
         })
         .await
         .unwrap();
-    let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth_svc
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
     let member_dto = auth_svc
         .create_user(
             &admin,
@@ -85,9 +91,9 @@ async fn setup_test_online_service_with_member() -> (TempDir, User, User, Arc<Bo
         )
         .await
         .unwrap();
-    let member = xmedia_core::domain::repository::UserRepository::find_by_id(
+    let member = xmedia_core::domain::repository::UserRepository::find(
         users_repo.as_ref(),
-        member_dto.id,
+        xmedia_core::domain::repository::UserLookup::Id(member_dto.id),
     )
     .await
     .unwrap()

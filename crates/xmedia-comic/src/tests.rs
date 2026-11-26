@@ -109,9 +109,15 @@ async fn comic_etag_pse_and_scan_roundtrip() {
         })
         .await
         .unwrap();
-    let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
-    let state = ComicHttpState::new(auth.clone(), library_svc.clone(), comic_services.clone());
+    let state = ComicHttpState::new(auth.clone(), comic_services.clone());
     let app = Router::new()
         .nest("/api/v1/comic", rest_router(state.clone()))
         .nest("/opds/comic", opds_router(state));
@@ -513,7 +519,13 @@ async fn update_chapter_metadata_preserves_user_reading_progress() {
         })
         .await
         .unwrap();
-    let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let ch1 = comic_services
         .catalog
@@ -661,7 +673,13 @@ async fn opds_v12_and_v20_routes_render_consistent_feeds() {
         })
         .await
         .unwrap();
-    let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+    let admin = auth
+        .authenticate(
+            xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+            None,
+        )
+        .await
+        .unwrap();
 
     let uploaded = comic_services
         .catalog
@@ -677,7 +695,7 @@ async fn opds_v12_and_v20_routes_render_consistent_feeds() {
         .await
         .unwrap();
 
-    let state = ComicHttpState::new(auth.clone(), library_svc.clone(), comic_services.clone());
+    let state = ComicHttpState::new(auth.clone(), comic_services.clone());
     let app = Router::new().nest("/opds/comic", opds_router(state.clone()));
     let basic = BASE64_STANDARD.encode("bob:secretpassword");
 

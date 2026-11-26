@@ -17,7 +17,7 @@ pub struct ReadingLocation {
 }
 
 impl ReadingLocation {
-    pub fn new(
+    fn new(
         progress_percent: f64,
         locator: impl Into<String>,
         chapter_index: Option<u32>,
@@ -55,7 +55,34 @@ pub struct ReadingProgress {
 }
 
 impl ReadingProgress {
-    pub fn new(user_id: UserId, book_id: BookId, location: ReadingLocation) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert(
+        existing: Option<Self>,
+        user_id: UserId,
+        book_id: BookId,
+        progress_percent: f64,
+        locator: impl Into<String>,
+        chapter_index: Option<u32>,
+        page_number: Option<u32>,
+        scroll_ratio: Option<f64>,
+    ) -> DomainResult<Self> {
+        let location = ReadingLocation::new(
+            progress_percent,
+            locator,
+            chapter_index,
+            page_number,
+            scroll_ratio,
+        )?;
+        Ok(match existing {
+            Some(mut prev) => {
+                prev.update_location(location);
+                prev
+            }
+            None => Self::new(user_id, book_id, location),
+        })
+    }
+
+    fn new(user_id: UserId, book_id: BookId, location: ReadingLocation) -> Self {
         Self {
             user_id,
             book_id,
@@ -64,7 +91,7 @@ impl ReadingProgress {
         }
     }
 
-    pub fn update_location(&mut self, location: ReadingLocation) {
+    fn update_location(&mut self, location: ReadingLocation) {
         self.location = location;
         self.last_read_at = Timestamp::now();
     }
@@ -82,7 +109,29 @@ pub struct Bookmark {
 }
 
 impl Bookmark {
-    pub fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        user_id: UserId,
+        book_id: BookId,
+        title: impl Into<String>,
+        note: Option<String>,
+        progress_percent: f64,
+        locator: impl Into<String>,
+        chapter_index: Option<u32>,
+        page_number: Option<u32>,
+        scroll_ratio: Option<f64>,
+    ) -> DomainResult<Self> {
+        let location = ReadingLocation::new(
+            progress_percent,
+            locator,
+            chapter_index,
+            page_number,
+            scroll_ratio,
+        )?;
+        Self::new(user_id, book_id, title, note, location)
+    }
+
+    fn new(
         user_id: UserId,
         book_id: BookId,
         title: impl Into<String>,
@@ -122,15 +171,20 @@ pub struct Shelf {
     pub updated_at: Timestamp,
 }
 
+fn validate_shelf_name(raw: String) -> DomainResult<String> {
+    let trimmed = raw.trim().to_string();
+    let char_len = trimmed.chars().count();
+    if char_len == 0 || char_len > 80 {
+        return Err(DomainError::Validation(
+            "shelf name must be between 1 and 80 characters".into(),
+        ));
+    }
+    Ok(trimmed)
+}
+
 impl Shelf {
     pub fn new(user_id: UserId, name: impl Into<String>, is_favorite: bool) -> DomainResult<Self> {
-        let name = name.into().trim().to_string();
-        let char_len = name.chars().count();
-        if char_len == 0 || char_len > 80 {
-            return Err(DomainError::Validation(
-                "shelf name must be between 1 and 80 characters".into(),
-            ));
-        }
+        let name = validate_shelf_name(name.into())?;
         let now = Timestamp::now();
         Ok(Self {
             id: ShelfId::new(),
@@ -143,31 +197,24 @@ impl Shelf {
         })
     }
 
-    pub fn rename(&mut self, name: impl Into<String>) -> DomainResult<()> {
-        let trimmed = name.into().trim().to_string();
-        let char_len = trimmed.chars().count();
-        if char_len == 0 || char_len > 80 {
-            return Err(DomainError::Validation(
-                "shelf name must be between 1 and 80 characters".into(),
-            ));
-        }
-        self.name = trimmed;
+    pub fn rename(&mut self, name: String) -> DomainResult<()> {
+        self.name = validate_shelf_name(name)?;
         self.updated_at = Timestamp::now();
         Ok(())
     }
 
-    pub fn add_book(&mut self, book_id: BookId) {
-        if !self.book_ids.contains(&book_id) {
-            self.book_ids.push(book_id);
-            self.updated_at = Timestamp::now();
-        }
-    }
-
-    pub fn remove_book(&mut self, book_id: BookId) {
-        let before = self.book_ids.len();
-        self.book_ids.retain(|&id| id != book_id);
-        if self.book_ids.len() != before {
-            self.updated_at = Timestamp::now();
+    pub fn set_contains(&mut self, book_id: BookId, present: bool) {
+        if present {
+            if !self.book_ids.contains(&book_id) {
+                self.book_ids.push(book_id);
+                self.updated_at = Timestamp::now();
+            }
+        } else {
+            let before = self.book_ids.len();
+            self.book_ids.retain(|&id| id != book_id);
+            if self.book_ids.len() != before {
+                self.updated_at = Timestamp::now();
+            }
         }
     }
 

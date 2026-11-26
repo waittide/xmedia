@@ -1,7 +1,9 @@
 use jiff::Timestamp;
 use uuid::Uuid;
 
-use crate::domain::book::{BookFormat, BookMetadata, BookSource};
+use xmedia_core::domain::library::LibraryId;
+
+use crate::domain::book::{Book, BookFormat, BookId, BookMetadata, BookSource};
 use crate::domain::online::SourceRuntimeState;
 use crate::domain::reading::ReadingLocation;
 
@@ -42,7 +44,34 @@ pub(crate) struct BookModel {
 
 impl BookModel {
     pub fn parsed_format(&self) -> BookFormat {
-        BookFormat::parse(&self.format).unwrap_or(BookFormat::Epub)
+        self.format.parse().unwrap_or(BookFormat::Epub)
+    }
+
+    pub fn into_domain(self) -> Book {
+        let format = self.parsed_format();
+        let mut metadata = self.metadata.0;
+        if metadata.series.is_none() {
+            metadata.series = self.series;
+        }
+        if metadata.series_index.is_none() {
+            metadata.series_index = self.series_index;
+        }
+        if metadata.rating.is_none() {
+            metadata.rating = self.rating;
+        }
+        Book {
+            id: BookId(self.id),
+            library_id: LibraryId(self.library_id),
+            format,
+            source: self.source.0,
+            file_size: u64::try_from(self.file_size.max(0)).unwrap_or(0),
+            file_hash: self.file_hash,
+            cover_key: self.cover_key,
+            metadata,
+            is_missing: self.is_missing,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
     }
 }
 

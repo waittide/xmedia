@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::user::{User, require_admin};
+use xmedia_core::domain::user::User;
 
 use crate::application::dto::BookSummaryDto;
 use crate::application::online::dto::{SwitchTrackedSourceInput, TrackedTocResponseDto};
@@ -18,7 +18,7 @@ impl BookOnlineService {
         book_id: BookId,
         mut input: SwitchTrackedSourceInput,
     ) -> DomainResult<TrackedTocResponseDto> {
-        require_admin(actor)?;
+        actor.ensure_admin()?;
         let new_src = self.sources.load_source(input.source_id).await?;
         input.book_url = Self::validate_caller_source_url(&input.book_url, &new_src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
@@ -138,16 +138,16 @@ impl BookOnlineService {
                 .map(|c| c.title.clone())
                 .or(input.last_chapter);
 
-            latest_book.switch_online_tracking(
-                input.source_id,
-                input.book_url,
-                effective_toc_url,
-                new_last.clone(),
+            latest_book.sync_tracked(crate::domain::book::TrackedSync::SwitchSource {
+                new_source_id: input.source_id,
+                new_book_url: input.book_url,
+                new_toc_url: effective_toc_url,
+                new_last_chapter: new_last.clone(),
                 new_cached,
                 new_total,
-                input.intro,
+                new_intro: input.intro,
                 new_cover_key,
-            );
+            });
 
             let (sync_gen, _) = self.bump_sync_gen(book_id, 1);
             self.catalog.save_book_raw(&latest_book).await?;
@@ -283,14 +283,14 @@ impl BookOnlineService {
             let current_gen = self.current_sync_gen(book_id);
             let is_clean = current_gen == start_gen;
 
-            latest_book.commit_synced_tracked_epub(
-                stored.storage_key,
-                stored.file_size,
-                stored.file_hash,
+            latest_book.sync_tracked(crate::domain::book::TrackedSync::CommitEpub {
+                new_storage_key: stored.storage_key,
+                file_size: stored.file_size,
+                file_hash: stored.file_hash,
                 cached_count,
                 total_count,
                 is_clean,
-            );
+            });
             if is_clean
                 && let Some(entry) = self
                     .pending_sync_gens

@@ -5,12 +5,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
+#[cfg(test)]
 use xmedia_core::domain::error::DomainResult;
 pub(super) use xmedia_source::concurrency::{
-    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, get_or_insert_weak_lock,
+    AsyncLockMap, CancelOnDrop, CancelTasksOnDrop, weak_lock,
 };
 
-use crate::domain::online::{ConcurrentRateSpec, PackChapterInput};
+use crate::domain::online::{ConcurrentRateSpec, PackChapterInput, sanitize_novel_stem};
 
 use super::dto::{DownloadJobStatus, OnlineDownloadJobDto};
 use super::{DEFAULT_DOWNLOAD_CONCURRENCY, DEFAULT_DOWNLOAD_MIN_INTERVAL_MS};
@@ -158,6 +159,7 @@ pub(super) struct ChapterFetchOptions {
     pub(super) allow_shared_cache_write: bool,
 }
 
+#[cfg(test)]
 pub(crate) fn validate_safe_cover_image(
     header_ct: Option<&str>,
     bytes: &[u8],
@@ -165,55 +167,6 @@ pub(crate) fn validate_safe_cover_image(
     xmedia_source::proxy::validate_safe_raster_image(header_ct, bytes).map(str::to_string)
 }
 
-fn is_windows_reserved_stem(stem: &str) -> bool {
-    let upper = stem.to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    )
-}
-
 pub(super) fn sanitize_file_stem(name: &str) -> String {
-    let cleaned: String = name
-        .trim()
-        .chars()
-        .map(|c| {
-            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let trimmed = cleaned.trim_matches('.').trim();
-    if trimmed.is_empty() {
-        return "novel".to_string();
-    }
-    let truncated: String = trimmed.chars().take(80).collect();
-    if is_windows_reserved_stem(&truncated) {
-        format!("_{truncated}")
-    } else {
-        truncated
-    }
+    sanitize_novel_stem(name)
 }
