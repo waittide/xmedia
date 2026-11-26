@@ -32,15 +32,13 @@ import { useBookLibraryCatalog } from '@/domains/book/composables/useBookLibrary
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { useCatalogStore } from '@/domains/book/store'
 import { useAuthStore } from '@/stores/auth'
-import { useUploadStore } from '@/stores/uploads'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const authStore = useAuthStore()
 const catalogStore = useCatalogStore()
-const uploadStore = useUploadStore()
 
-const uploadInputRef = ref<HTMLInputElement | null>(null)
+const templateRef = ref<InstanceType<typeof DomainLibraryTemplate> | null>(null)
 const onlineSearchRef = ref<InstanceType<typeof OnlineBookSearchSection> | null>(null)
 
 const {
@@ -156,23 +154,14 @@ function handleLayoutKeydown(event: KeyboardEvent, currentIdx: number): void {
 }
 
 function triggerUpload(): void {
-  if (!authStore.isAdmin) return
-  uploadInputRef.value?.click()
-}
-
-function onUploadFilesChange(ev: Event): void {
-  const input = ev.target
-  if (!(input instanceof HTMLInputElement)) return
-  if (input.files && input.files.length > 0) {
-    uploadStore.enqueueFiles(input.files)
-  }
-  input.value = ''
+  templateRef.value?.triggerUpload()
 }
 </script>
 
 <template>
   <div class="px-4 py-5 sm:px-6 sm:py-6">
     <DomainLibraryTemplate
+      ref="templateRef"
       domain="book"
       :title="t('catalog.title')"
       :count="headerCount"
@@ -213,15 +202,10 @@ function onUploadFilesChange(ev: Event): void {
       @retry="handleRefresh"
       @reset-filters="handleResetFilters"
     >
-      <template v-if="isLocalScope && authStore.isAdmin" #header-trailing>
-        <MdButton variant="tonal" :icon="LuUpload" @click="triggerUpload">
-          {{ t('catalog.uploadBooks') }}
-        </MdButton>
-      </template>
-
       <template v-if="isLocalScope && activeTab === 'all'" #toolbar-chips>
         <MdSegmentedButton
           v-if="!activeCollectionId"
+          class="!h-8 sm:!h-9"
           :model-value="activeView"
           :options="viewModeOptions"
           size="sm"
@@ -500,15 +484,5 @@ function onUploadFilesChange(ev: Event): void {
         />
       </template>
     </DomainLibraryTemplate>
-
-    <input
-      v-if="authStore.isAdmin"
-      ref="uploadInputRef"
-      type="file"
-      multiple
-      accept=".epub,.txt,.pdf,.mobi,.azw3,.fb2"
-      class="hidden"
-      @change="onUploadFilesChange"
-    />
   </div>
 </template>

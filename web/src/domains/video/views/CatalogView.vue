@@ -138,18 +138,6 @@ const {
       @update:filter-sheet-open="filterSheetOpen = $event"
       @reset-filters="handleResetFilters"
     >
-      <template #header-trailing>
-        <MdIconButton
-          variant="standard"
-          size="sm"
-          :icon="LuRefreshCw"
-          :loading="manualRefreshing"
-          :aria-label="t('common.refresh')"
-          :tooltip="t('common.refresh')"
-          @click="handleRefresh"
-        />
-      </template>
-
       <template
         v-if="activeScope === 'local' && activeTab === 'all' && !activeCollectionId"
         #toolbar-chips
@@ -187,8 +175,8 @@ const {
         />
       </template>
 
-      <template v-if="showVideoSort" #toolbar-trailing>
-        <div class="w-40">
+      <template v-if="showVideoSort || activeScope !== 'remote'" #toolbar-trailing>
+        <div v-if="showVideoSort" class="w-40">
           <MdSelect
             :model-value="sortKey"
             :options="sortOptions"
@@ -197,6 +185,16 @@ const {
             @change="handleSortChange"
           />
         </div>
+        <MdIconButton
+          v-if="activeScope !== 'remote'"
+          variant="standard"
+          size="sm"
+          :icon="LuRefreshCw"
+          :loading="manualRefreshing"
+          :aria-label="t('common.refresh')"
+          :tooltip="t('common.refresh')"
+          @click="handleRefresh"
+        />
       </template>
 
       <template v-if="showLocalFilterControls" #filter-sheet>

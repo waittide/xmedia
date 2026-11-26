@@ -155,19 +155,6 @@ const {
       @reset-filters="resetLocalFilters"
       @retry="refreshActiveView"
     >
-      <template #header-trailing>
-        <MdIconButton
-          v-if="!isRemoteBrowseView"
-          variant="standard"
-          size="sm"
-          :icon="LuRefreshCw"
-          :loading="manualRefreshing"
-          :aria-label="globalT('common.refresh')"
-          :tooltip="globalT('common.refresh')"
-          @click="refreshActiveView"
-        />
-      </template>
-
       <template v-if="scope === 'local' && activeTab === 'all'" #toolbar-chips>
         <template v-if="!collectionId">
           <MdChip
@@ -201,10 +188,25 @@ const {
         </MdButton>
       </template>
 
-      <template v-if="isCollectionsView" #toolbar-trailing>
-        <MdButton variant="tonal" :icon="LuPlus" @click="openCreateShelf">
+      <template v-if="isCollectionsView || !isRemoteBrowseView" #toolbar-trailing>
+        <MdButton
+          v-if="isCollectionsView"
+          variant="tonal"
+          :icon="LuPlus"
+          @click="openCreateShelf"
+        >
           {{ t('shelves.newShelf') }}
         </MdButton>
+        <MdIconButton
+          v-if="!isRemoteBrowseView"
+          variant="standard"
+          size="sm"
+          :icon="LuRefreshCw"
+          :loading="manualRefreshing"
+          :aria-label="globalT('common.refresh')"
+          :tooltip="globalT('common.refresh')"
+          @click="refreshActiveView"
+        />
       </template>
 
       <template v-if="activeCollection && scope === 'local'" #subheader>

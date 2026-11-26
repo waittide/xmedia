@@ -95,8 +95,12 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
   <div
     role="radiogroup"
     :aria-label="ariaLabel || undefined"
-    class="max-w-full items-center overflow-hidden rounded-corner-full border border-outline bg-transparent"
-    :class="[fullWidth ? 'flex w-full' : 'inline-flex', disabled ? 'opacity-38' : '']"
+    class="max-w-full items-stretch overflow-hidden rounded-corner-full border border-outline bg-transparent"
+    :class="[
+      fullWidth ? 'flex w-full' : 'inline-flex',
+      size === 'sm' ? 'h-9' : 'h-10',
+      disabled ? 'opacity-38' : '',
+    ]"
   >
     <button
       v-for="(opt, idx) in options"
@@ -108,16 +112,16 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
       :tabindex="modelValue === opt.value ? 0 : -1"
       :disabled="isOptionDisabled(opt)"
       :title="opt.title || opt.label"
-      class="md-state md-touch-target inline-flex cursor-pointer items-center justify-center whitespace-nowrap transition-colors duration-150 ease-standard focus-visible:z-10 disabled:cursor-not-allowed disabled:opacity-38"
+      class="md-state md-touch-target inline-flex h-full cursor-pointer items-center justify-center whitespace-nowrap transition-colors duration-150 ease-standard focus-visible:z-10 disabled:cursor-not-allowed disabled:opacity-38"
       :class="[
         fullWidth ? 'min-w-0 flex-1' : '',
         size === 'sm'
           ? fullWidth
-            ? 'text-label-medium h-9 gap-1 px-2'
-            : 'text-label-medium h-9 gap-1.5 px-3.5'
+            ? 'text-label-medium gap-1 px-2'
+            : 'text-label-medium gap-1.5 px-3.5'
           : fullWidth
-            ? 'text-label-large h-10 gap-1.5 px-3'
-            : 'text-label-large h-10 gap-2 px-4',
+            ? 'text-label-large gap-1.5 px-3'
+            : 'text-label-large gap-2 px-4',
         idx > 0 ? 'border-l border-outline' : '',
         modelValue === opt.value
           ? 'bg-secondary-container text-on-secondary-container'

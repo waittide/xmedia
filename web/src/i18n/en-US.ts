@@ -21,6 +21,7 @@ export default {
     searchComic: 'Search comics, creators, tags…',
     searchMusic: 'Search tracks, albums, artists…',
     searchVideo: 'Search movies, shows, tags…',
+    upload: 'Upload',
     uploadMedia: 'Upload Media',
     filterPlaceholder: 'Quick filter…',
     copied: 'Copied',

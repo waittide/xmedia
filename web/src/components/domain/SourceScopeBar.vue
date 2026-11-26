@@ -119,6 +119,10 @@ const activeOption = computed(
 
 const activeIcon = computed<Component | undefined>(() => activeOption.value.icon)
 
+const longestOptionLabel = computed(() =>
+  options.value.reduce((best, opt) => (opt.label.length > best.length ? opt.label : best), ''),
+)
+
 const resolvedAriaLabel = computed(
   () => props.ariaLabel || t('domainUi.scopeAriaLabel'),
 )
@@ -153,7 +157,12 @@ async function handleSelect(nextScope: SourceScope): Promise<void> {
           @click="toggle"
         >
           <span class="inline-flex items-center gap-1">
-            <span>{{ activeOption.label }}</span>
+            <span
+              :data-sizer="longestOptionLabel"
+              class="inline-grid items-center justify-items-start after:pointer-events-none after:invisible after:col-start-1 after:row-start-1 after:h-0 after:overflow-hidden after:select-none after:content-[attr(data-sizer)]"
+            >
+              <span class="col-start-1 row-start-1">{{ activeOption.label }}</span>
+            </span>
             <LuChevronDown class="h-3.5 w-3.5 shrink-0 opacity-75" aria-hidden="true" />
           </span>
         </MdChip>

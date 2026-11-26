@@ -21,6 +21,7 @@ export default {
     searchComic: '搜索漫画、作者、标签…',
     searchMusic: '搜索歌曲、专辑、艺术家…',
     searchVideo: '搜索影片、剧集、标签…',
+    upload: '上传',
     uploadMedia: '上传媒体',
     filterPlaceholder: '快速筛选…',
     copied: '已复制',

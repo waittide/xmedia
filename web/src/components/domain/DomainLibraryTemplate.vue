@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useSlots, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuSearch, LuSlidersHorizontal, LuX } from 'vue-icons-plus/lu'
+import { LuSearch, LuSlidersHorizontal, LuUpload, LuX } from 'vue-icons-plus/lu'
 import {
   MdButton,
   MdChip,
@@ -14,7 +14,9 @@ import {
   type MdTabItem,
 } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
-import type { SourceScope } from '@/sources'
+import { useSourceFilter, type SourceScope } from '@/sources'
+import { useAuthStore } from '@/stores/auth'
+import { UPLOAD_EXTENSIONS_BY_KIND, useUploadStore } from '@/stores/uploads'
 import type { MediaKind } from '@/types/api'
 import MediaErrorState from './MediaErrorState.vue'
 import {
@@ -36,6 +38,10 @@ const props = withDefaults(
     /** Always visible by default in both local and online scopes (E2E §2.2). */
     showScopeBar?: boolean
     showRemoteScope?: boolean
+    /** Whether the current user can upload files in local scope (defaults to `authStore.isAdmin`). */
+    canUpload?: boolean
+    /** Show the built-in local-scope upload button. Defaults to `true`. */
+    showUpload?: boolean
     /** Single `main input[type="search"]` query value. */
     searchQuery?: string
     searchPlaceholder?: string
@@ -71,6 +77,8 @@ const props = withDefaults(
     syncScopeUrl: undefined,
     showScopeBar: true,
     showRemoteScope: undefined,
+    canUpload: undefined,
+    showUpload: true,
     searchQuery: '',
     searchPlaceholder: '',
     showSearch: true,
@@ -111,10 +119,26 @@ const emit = defineEmits<{
   retry: []
   'update:filterSheetOpen': [open: boolean]
   'reset-filters': []
+  upload: []
 }>()
 
 const slots = useSlots()
 const { t } = useI18n()
+const authStore = useAuthStore()
+const uploadStore = useUploadStore()
+const fallbackSourceFilter = useSourceFilter(() => props.domain, { autoLoad: false })
+const uploadInputRef = ref<HTMLInputElement | null>(null)
+
+const resolvedCanUpload = computed(() => props.canUpload ?? authStore.isAdmin)
+const resolvedScope = computed<SourceScope>(
+  () => props.scope ?? fallbackSourceFilter.filter.value.scope,
+)
+const showLocalUploadBtn = computed(
+  () => props.showUpload && resolvedCanUpload.value && resolvedScope.value === 'local',
+)
+const acceptedUploadExts = computed(() =>
+  UPLOAD_EXTENSIONS_BY_KIND[props.domain].map((ext) => `.${ext}`).join(','),
+)
 
 const resolvedAspect = computed<MediaItemCardAspect>(() =>
   resolveDomainAspect(props.domain, props.skeletonAspect),
@@ -163,7 +187,8 @@ const hasToolbarRow = computed(
     props.showSearch ||
     Boolean(slots['toolbar-chips']) ||
     hasFilterSheet.value ||
-    Boolean(slots['toolbar-trailing']),
+    Boolean(slots['toolbar-trailing']) ||
+    showLocalUploadBtn.value,
 )
 
 const skeletonGridClass = computed(() =>
@@ -208,125 +233,173 @@ function handleSearchClear(): void {
   emit('search-clear')
   emit('search-submit', '')
 }
+
+function triggerUpload(): void {
+  if (!resolvedCanUpload.value) return
+  uploadInputRef.value?.click()
+}
+
+function onUploadFilesChange(ev: Event): void {
+  const input = ev.target
+  if (!(input instanceof HTMLInputElement)) return
+  if (input.files && input.files.length > 0) {
+    uploadStore.enqueueFiles(input.files)
+    emit('upload')
+  }
+  input.value = ''
+}
+
+defineExpose({
+  triggerUpload,
+})
 </script>
 
 <template>
   <div class="mx-auto w-full space-y-2.5 sm:space-y-4" :class="maxWidthClass">
-    <!-- Row 1: Title + >=600px SourceScopeBar (hidden on <600px when header-trailing is empty so mobile stays compact) -->
-    <header
-      class="items-center justify-between gap-2 sm:flex sm:flex-wrap sm:gap-3"
-      :class="$slots['header-trailing'] ? 'flex flex-wrap' : 'hidden sm:flex'"
-    >
-      <div class="flex min-w-0 items-baseline gap-2">
-        <h1 class="text-title-large sm:text-headline-small truncate text-on-surface">
-          {{ resolvedTitle }}
-        </h1>
-        <span
-          v-if="count !== null && count !== undefined"
-          class="text-body-small shrink-0 tabular-nums text-on-surface-variant"
-        >
-          {{ count }}
-        </span>
-      </div>
-
-      <div class="no-scrollbar flex max-w-full items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:gap-2">
-        <div v-if="showScopeBar" class="hidden sm:inline-flex">
-          <SourceScopeBar
-            :model-value="scope"
-            :domain="domain"
-            :sync-url="syncScopeUrl"
-            :show-remote="showRemoteScope"
-            size="sm"
-            @update:model-value="handleScopeUpdate"
-          />
+    <div class="flex flex-col gap-2.5 sm:gap-4">
+      <!-- Row 1 (>=600px): Title + Upload (left of SourceScopeBar) + SourceScopeBar (rightmost, h-10) -->
+      <header
+        class="order-1 items-center justify-between gap-2 sm:flex sm:flex-wrap sm:gap-3"
+        :class="$slots['header-trailing'] ? 'flex flex-wrap' : 'hidden sm:flex'"
+      >
+        <div class="flex min-w-0 items-baseline gap-2">
+          <h1 class="text-title-large sm:text-headline-small truncate text-on-surface">
+            {{ resolvedTitle }}
+          </h1>
+          <span
+            v-if="count !== null && count !== undefined"
+            class="text-body-small shrink-0 tabular-nums text-on-surface-variant"
+          >
+            {{ count }}
+          </span>
         </div>
-        <slot name="header-trailing" />
-      </div>
-    </header>
 
-    <!-- Single Tab Bar on Mobile (<600px) / Content Tabs on Desktop -->
-    <MdTabs
-      v-if="tabs.length > 1"
-      :model-value="activeTab"
-      :tabs="tabs"
-      variant="primary"
-      @update:model-value="emit('update:activeTab', $event)"
-    />
+        <div
+          class="no-scrollbar flex max-w-full items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:gap-2"
+        >
+          <slot name="header-leading" />
+          <MdButton
+            v-if="showLocalUploadBtn"
+            class="hidden sm:inline-flex"
+            variant="tonal"
+            :icon="LuUpload"
+            @click="triggerUpload"
+          >
+            {{ t('common.upload') }}
+          </MdButton>
+          <div v-if="showScopeBar" class="hidden sm:inline-flex">
+            <SourceScopeBar
+              :model-value="scope"
+              :domain="domain"
+              :sync-url="syncScopeUrl"
+              :show-remote="showRemoteScope"
+              size="md"
+              @update:model-value="handleScopeUpdate"
+            />
+          </div>
+          <slot name="header-trailing" />
+        </div>
+      </header>
 
-    <!-- Single Compact Control Bar (mobile search toggle + consolidated scope chip menu + filter chips + trailing) -->
-    <div v-if="hasToolbarRow" class="flex flex-wrap items-center gap-2">
-      <MdIconButton
-        v-if="showSearch && !isMobileSearchExpanded"
-        class="shrink-0 sm:hidden"
-        size="sm"
-        :icon="LuSearch"
-        :aria-label="resolvedSearchPlaceholder"
-        @click="openMobileSearch"
+      <!-- Content Tabs (Row 2 on >=600px; below mobile scope bar on <600px so scope bar never jumps vertically) -->
+      <MdTabs
+        v-if="tabs.length > 1"
+        class="order-3 sm:order-2"
+        :model-value="activeTab"
+        :tabs="tabs"
+        variant="primary"
+        @update:model-value="emit('update:activeTab', $event)"
       />
 
-      <form
-        v-if="showSearch"
-        class="items-center gap-1.5 sm:block sm:min-w-48 sm:max-w-sm sm:flex-1"
-        :class="isMobileSearchExpanded ? 'flex w-full' : 'hidden sm:block'"
-        @submit.prevent="handleSearchSubmit"
-        @keydown.esc="
-          !searchQuery.trim() && isMobileSearchExpanded ? closeMobileSearch() : undefined
-        "
+      <!-- Single Compact Control Bar (Row 1 on <600px / Row 3 on >=600px) -->
+      <div
+        v-if="hasToolbarRow"
+        class="order-2 flex flex-wrap items-start gap-2 sm:order-3 sm:items-center"
       >
-        <div class="min-w-0 flex-1">
-          <MdTextField
-            ref="searchFieldRef"
-            :model-value="searchQuery"
-            type="search"
-            size="sm"
-            clearable
-            :placeholder="resolvedSearchPlaceholder"
-            @update:model-value="emit('update:searchQuery', $event)"
-            @clear="handleSearchClear"
-          />
-        </div>
         <MdIconButton
-          v-if="isMobileSearchExpanded && !searchQuery.trim()"
-          class="sm:hidden"
+          v-if="showSearch && !isMobileSearchExpanded"
+          class="shrink-0 sm:hidden"
           size="sm"
-          :icon="LuX"
-          :aria-label="t('common.close')"
-          @click="closeMobileSearch"
+          :icon="LuSearch"
+          :aria-label="resolvedSearchPlaceholder"
+          @click="openMobileSearch"
         />
-      </form>
 
-      <div
-        v-if="showScopeBar || $slots['toolbar-chips'] || hasFilterSheet"
-        class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 py-0.5 sm:gap-2"
-      >
-        <div v-if="showScopeBar" class="inline-flex shrink-0 sm:hidden">
-          <SourceScopeBar
-            mode="chip-menu"
-            :model-value="scope"
-            :domain="domain"
-            :sync-url="syncScopeUrl"
-            :show-remote="showRemoteScope"
-            @update:model-value="handleScopeUpdate"
+        <form
+          v-if="showSearch"
+          class="items-center gap-1.5 sm:block sm:min-w-48 sm:max-w-sm sm:flex-1"
+          :class="isMobileSearchExpanded ? 'flex w-full' : 'hidden sm:block'"
+          @submit.prevent="handleSearchSubmit"
+          @keydown.esc="
+            !searchQuery.trim() && isMobileSearchExpanded ? closeMobileSearch() : undefined
+          "
+        >
+          <div class="min-w-0 flex-1">
+            <MdTextField
+              ref="searchFieldRef"
+              :model-value="searchQuery"
+              type="search"
+              size="sm"
+              clearable
+              :placeholder="resolvedSearchPlaceholder"
+              @update:model-value="emit('update:searchQuery', $event)"
+              @clear="handleSearchClear"
+            />
+          </div>
+          <MdIconButton
+            v-if="isMobileSearchExpanded && !searchQuery.trim()"
+            class="sm:hidden"
+            size="sm"
+            :icon="LuX"
+            :aria-label="t('common.close')"
+            @click="closeMobileSearch"
           />
-        </div>
-        <MdChip
-          v-if="hasFilterSheet"
-          class="shrink-0"
-          variant="filter"
-          :icon="LuSlidersHorizontal"
-          :label="resolvedFilterLabel"
-          :selected="activeFilterCount > 0"
-          hide-check
-          @click="emit('update:filterSheetOpen', !filterSheetOpen)"
-        />
-        <slot name="toolbar-chips" />
-      </div>
+        </form>
 
-      <div
-        v-if="$slots['toolbar-trailing']"
-        class="flex w-full items-center gap-1.5 sm:ml-auto sm:w-auto sm:shrink-0 sm:justify-end [&>:first-child]:mr-auto sm:[&>:first-child]:mr-0"
-      >
-        <slot name="toolbar-trailing" />
+        <div
+          v-if="showScopeBar || $slots['toolbar-chips'] || hasFilterSheet"
+          class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2"
+        >
+          <div v-if="showScopeBar" class="inline-flex shrink-0 sm:hidden">
+            <SourceScopeBar
+              mode="chip-menu"
+              :model-value="scope"
+              :domain="domain"
+              :sync-url="syncScopeUrl"
+              :show-remote="showRemoteScope"
+              @update:model-value="handleScopeUpdate"
+            />
+          </div>
+          <MdChip
+            v-if="hasFilterSheet"
+            class="shrink-0"
+            variant="filter"
+            :icon="LuSlidersHorizontal"
+            :label="resolvedFilterLabel"
+            :selected="activeFilterCount > 0"
+            hide-check
+            @click="emit('update:filterSheetOpen', !filterSheetOpen)"
+          />
+          <slot name="toolbar-chips" />
+        </div>
+
+        <div
+          v-if="$slots['toolbar-trailing'] || showLocalUploadBtn"
+          class="w-full items-center gap-1.5 sm:ml-auto sm:w-auto sm:shrink-0 sm:justify-end [&>:first-child]:mr-auto sm:[&>:first-child]:mr-0"
+          :class="$slots['toolbar-trailing'] ? 'flex' : 'flex sm:hidden'"
+        >
+          <MdButton
+            v-if="showLocalUploadBtn"
+            class="sm:hidden"
+            size="sm"
+            variant="tonal"
+            :icon="LuUpload"
+            @click="triggerUpload"
+          >
+            {{ t('common.upload') }}
+          </MdButton>
+          <slot name="toolbar-trailing" />
+        </div>
       </div>
     </div>
 
@@ -415,5 +488,15 @@ function handleSearchClear(): void {
         </slot>
       </template>
     </MdSheet>
+
+    <input
+      v-if="resolvedCanUpload"
+      ref="uploadInputRef"
+      type="file"
+      multiple
+      :accept="acceptedUploadExts"
+      class="hidden"
+      @change="onUploadFilesChange"
+    />
   </div>
 </template>
