@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { getActiveAuthHeader } from '@/api/appHost'
 import { MediaErrorState } from '@/components/domain'
 import { MdCircularProgress } from '@/components/ui'
 import { api } from '@/domains/book/api'
@@ -272,6 +273,7 @@ async function loadPdf(): Promise<void> {
   try {
     const task = pdfjsLib.getDocument({
       url: api.fileUrl(props.bookId),
+      httpHeaders: getActiveAuthHeader(),
       withCredentials: true,
     })
     loadingTask = task

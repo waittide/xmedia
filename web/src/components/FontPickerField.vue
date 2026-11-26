@@ -7,6 +7,7 @@ import MdSelect, { type SelectOption } from '@/components/ui/MdSelect.vue'
 import MdTextField from '@/components/ui/MdTextField.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
+  canManageCustomFonts,
   deleteCustomFont,
   ensureCustomFontsLoaded,
   loadingLocalFonts,
@@ -203,6 +204,7 @@ onMounted(() => {
       </div>
 
       <MdButton
+        v-if="canManageCustomFonts"
         variant="tonal"
         :size="compact ? 'sm' : 'md'"
         :icon="LuUpload"
@@ -226,6 +228,7 @@ onMounted(() => {
       </MdButton>
 
       <input
+        v-if="canManageCustomFonts"
         ref="fileInputRef"
         type="file"
         multiple
@@ -281,7 +284,8 @@ onMounted(() => {
         <button
           type="button"
           :aria-pressed="effectiveValue === `font:${font.id}`"
-          class="md-state md-touch-target text-label-medium inline-flex h-full min-w-0 cursor-pointer items-center gap-1.5 rounded-l-corner-sm pr-1.5 pl-2.5"
+          class="md-state md-touch-target text-label-medium inline-flex h-full min-w-0 cursor-pointer items-center gap-1.5 pl-2.5"
+          :class="canManageCustomFonts ? 'rounded-l-corner-sm pr-1.5' : 'rounded-corner-sm pr-2.5'"
           @click="handleSelectChange(`font:${font.id}`)"
         >
           <LuCheck
@@ -298,6 +302,7 @@ onMounted(() => {
         </button>
 
         <button
+          v-if="canManageCustomFonts"
           type="button"
           :disabled="deletingFontId === font.id"
           :data-delete-font-id="font.id"

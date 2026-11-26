@@ -10,8 +10,6 @@ defineProps<{
   surfaceMode: SurfaceMode
   indentParagraphs: boolean
   sourceBuffer: string
-  showLivePreview: boolean
-  previewSrcdoc: string
 }>()
 
 const emit = defineEmits<{

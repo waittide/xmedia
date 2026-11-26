@@ -28,10 +28,21 @@ const deletedListeners = new Set<(fontId: string) => void>()
 export const uploadedFonts = ref<CustomFontDto[]>([])
 export const loadingFonts = ref(false)
 export const uploadingFonts = ref(false)
+export const canManageCustomFonts = ref(true)
 export const localSystemFonts = ref<string[]>([])
 export const loadingLocalFonts = ref(false)
 export const supportsLocalFontAccess =
   typeof window !== 'undefined' && 'queryLocalFonts' in window
+
+export function setCanManageCustomFonts(allowed: boolean): void {
+  canManageCustomFonts.value = allowed
+}
+
+export function resetCustomFontsState(): void {
+  uploadedFonts.value = []
+  loadedOnce = false
+  loadInFlight = null
+}
 
 export function configureCustomFontsApiBase(base: string): void {
   const normalized = base.trim().replace(/\/+$/, '') || '/api/v1/fonts'

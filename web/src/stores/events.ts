@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { ApiRequestError, api } from '@/api/client'
+import { ApiRequestError, api, withAuthToken } from '@/api/client'
 import { invalidateHomeCache } from '@/config/homeCache'
 import { useAuthStore } from '@/stores/auth'
 import type { MediaKind } from '@/types/api'
@@ -221,7 +221,7 @@ export const useEventsStore = defineStore('events', () => {
       return
     }
 
-    const es = new EventSource('/api/v1/events/stream', { withCredentials: true })
+    const es = new EventSource(withAuthToken('/api/v1/events/stream'), { withCredentials: true })
     eventSource = es
     let openedOnce = false
 

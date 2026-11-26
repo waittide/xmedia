@@ -482,8 +482,6 @@ onBeforeUnmount(() => {
             :surface-mode="surfaceMode"
             :indent-paragraphs="indentParagraphs"
             :source-buffer="sourceBuffer"
-            :show-live-preview="showLivePreview"
-            :preview-srcdoc="previewSrcdoc"
             @update:active-title="onActiveTitleInput"
             @update:source-buffer="sourceBuffer = $event"
             @wysiwyg-focus="onWysiwygFocus"
@@ -512,7 +510,7 @@ onBeforeUnmount(() => {
           <iframe
             :srcdoc="previewSrcdoc"
             :title="t('tool.bookEditor.modal.livePreviewTitle')"
-            sandbox=""
+            sandbox="allow-same-origin"
             class="min-h-0 w-full flex-1 border-0 bg-surface"
           />
         </aside>

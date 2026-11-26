@@ -9,6 +9,7 @@ import { useEventsStore } from '@/stores/events'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
+import { resetCustomFontsState } from '@/theme/customFonts'
 
 const ONLINE_SESSION_CTX_KEYS = [
   'xmedia_online_reader_ctx',
@@ -30,7 +31,7 @@ function clearScopedBrowserCaches(): void {
     const keysToRemove: string[] = []
     for (let i = 0; i < localStorage.length; i += 1) {
       const k = localStorage.key(i)
-      if (k && k.startsWith('xmedia.epub.locations:')) {
+      if (k && k.startsWith('xmedia.epub.locations')) {
         keysToRemove.push(k)
       }
     }
@@ -47,6 +48,7 @@ export function resetAllSessionState(): void {
   clearOnlineItemStateCache()
   clearSourceFilterCache()
   clearScopedBrowserCaches()
+  resetCustomFontsState()
   useDialogStore().resetState()
   useSnackbarStore().resetState()
   usePreferencesStore().resetState()

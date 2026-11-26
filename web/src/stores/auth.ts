@@ -1,9 +1,10 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiRequestError, api } from '@/api/client'
 import { setHomeCacheUser } from '@/config/homeCache'
 import { resetAllSessionState } from '@/stores/sessionReset'
 import { useThemeStore } from '@/stores/theme'
+import { setCanManageCustomFonts } from '@/theme/customFonts'
 import type { AuthSessionDto, MediaKind, SystemCapabilitiesDto, UserDto } from '@/types/api'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -14,6 +15,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => user.value !== null)
   const isAdmin = computed(() => user.value?.role === 'admin')
+  watch(isAdmin, (allowed) => setCanManageCustomFonts(allowed), { immediate: true })
   const enabledModules = computed<MediaKind[]>(
     () => capabilities.value?.modules ?? ['book', 'comic', 'music', 'video'],
   )

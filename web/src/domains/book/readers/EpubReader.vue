@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ePub, { type Book, type Rendition } from 'epubjs'
 import { LuChevronLeft, LuChevronRight } from 'vue-icons-plus/lu'
+import { getActiveAuthHeader } from '@/api/appHost'
 import { MediaErrorState } from '@/components/domain'
 import { MdCircularProgress, MdIconButton } from '@/components/ui'
 import { api } from '@/domains/book/api'
@@ -474,6 +475,7 @@ async function loadEpub(): Promise<void> {
   try {
     const resp = await fetch(api.fileUrl(props.bookId), {
       credentials: 'include',
+      headers: getActiveAuthHeader(),
       signal: controller.signal,
     })
     if (unmounted || controller.signal.aborted) return
