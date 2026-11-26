@@ -1,5 +1,6 @@
 #[cfg(feature = "server")]
 pub mod auth;
+pub mod fonts;
 #[cfg(feature = "server")]
 pub mod online_items;
 #[cfg(test)]
@@ -8,6 +9,7 @@ pub mod upload;
 
 #[cfg(feature = "server")]
 pub use auth::*;
+pub use fonts::*;
 pub use upload::*;
 
 use axum::Json;

@@ -20,6 +20,18 @@ pub struct FfmpegStatusDto {
     pub ffprobe_available: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomFontDto {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub file_name: String,
+    pub format: xmedia_formats::font::FontFormat,
+    pub css_format: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub created_at: String,
+}
+
 #[cfg(feature = "server")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemCapabilitiesDto {

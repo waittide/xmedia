@@ -3,6 +3,7 @@ pub mod events;
 pub mod ffmpeg;
 #[cfg(feature = "server")]
 pub mod fingerprint;
+pub mod fonts;
 #[cfg(feature = "server")]
 pub mod persistence;
 #[cfg(feature = "server")]

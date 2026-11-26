@@ -32,6 +32,9 @@ pub struct UiPreferences {
     /// Optional icon variant id (`porcelain` | `obsidian` | `monolith`); `None` means default (`cobalt`).
     #[serde(default)]
     pub app_icon: Option<String>,
+    /// Optional custom UI font spec (`font:<uuid>` or local family name); `None` means `system-ui`.
+    #[serde(default)]
+    pub ui_font: Option<String>,
     #[serde(default)]
     pub locale: Locale,
 }
@@ -40,6 +43,7 @@ impl UiPreferences {
     pub fn normalize(&mut self) {
         self.seed_color = self.seed_color.as_deref().and_then(sanitize_seed_color);
         self.app_icon = self.app_icon.as_deref().and_then(sanitize_app_icon);
+        self.ui_font = self.ui_font.as_deref().and_then(sanitize_font_spec);
     }
 }
 
@@ -99,20 +103,36 @@ fn sanitize_app_icon(raw: &str) -> Option<String> {
     }
 }
 
+const MAX_FONT_SPEC_CHARS: usize = 128;
+
+fn sanitize_css_font_chars(raw: &str) -> String {
+    let filtered: String = raw
+        .chars()
+        .filter(|&c| {
+            !c.is_control() && !matches!(c, ';' | '{' | '}' | '<' | '>' | '\\' | '"' | '\'')
+        })
+        .collect();
+    let trimmed = filtered.trim();
+    let capped: String = trimmed.chars().take(MAX_FONT_SPEC_CHARS).collect();
+    capped.trim_end().to_string()
+}
+
+/// Sanitizes an optional UI font spec, stripping dangerous CSS/control characters, capping at 128
+/// characters, and normalizing empty or `"system-ui"` (case-insensitive) to `None`.
+pub fn sanitize_font_spec(raw: &str) -> Option<String> {
+    let cleaned = sanitize_css_font_chars(raw);
+    if cleaned.is_empty() || cleaned.eq_ignore_ascii_case(DEFAULT_FONT_FAMILY) {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 fn clamp_finite(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value.clamp(min, max)
     } else {
         fallback
-    }
-}
-
-fn normalize_non_empty(value: &mut String, fallback: &str, max_chars: usize) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        *value = fallback.to_string();
-    } else {
-        *value = trimmed.chars().take(max_chars).collect();
     }
 }
 
@@ -161,7 +181,12 @@ pub struct BookReaderPreferences {
 
 impl BookReaderPreferences {
     pub fn normalize(&mut self) {
-        normalize_non_empty(&mut self.font_family, DEFAULT_FONT_FAMILY, 128);
+        let cleaned_font = sanitize_css_font_chars(&self.font_family);
+        self.font_family = if cleaned_font.is_empty() {
+            DEFAULT_FONT_FAMILY.to_string()
+        } else {
+            cleaned_font
+        };
         self.font_size = self.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.line_height = clamp_finite(
             self.line_height,
@@ -398,6 +423,9 @@ pub struct UserPreferences {
     /// Optional icon variant id (`porcelain` | `obsidian` | `monolith`); `None` means default (`cobalt`).
     #[serde(default)]
     pub app_icon: Option<String>,
+    /// Optional custom UI font spec (`font:<uuid>` or local family name); `None` means `system-ui`.
+    #[serde(default)]
+    pub ui_font: Option<String>,
     #[serde(default)]
     pub locale: Locale,
     #[serde(default)]
@@ -416,6 +444,7 @@ impl UserPreferences {
             theme_mode: self.theme_mode,
             seed_color: self.seed_color.clone(),
             app_icon: self.app_icon.clone(),
+            ui_font: self.ui_font.clone(),
             locale: self.locale,
         }
     }
@@ -425,6 +454,7 @@ impl UserPreferences {
         self.theme_mode = ui.theme_mode;
         self.seed_color = ui.seed_color;
         self.app_icon = ui.app_icon;
+        self.ui_font = ui.ui_font;
         self.locale = ui.locale;
     }
 
@@ -435,6 +465,7 @@ impl UserPreferences {
         self.theme_mode = ui.theme_mode;
         self.seed_color = ui.seed_color;
         self.app_icon = ui.app_icon;
+        self.ui_font = ui.ui_font;
         self.locale = ui.locale;
         self.book.normalize();
         self.comic.normalize();

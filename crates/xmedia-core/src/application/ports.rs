@@ -47,6 +47,26 @@ pub struct BinaryPayload {
     pub mime_type: String,
 }
 
+pub type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+pub trait FontRepository: Send + Sync {
+    fn list(&self) -> BoxFuture<'_, DomainResult<Vec<crate::application::dto::CustomFontDto>>>;
+
+    fn add<'a>(
+        &'a self,
+        file_name: &'a str,
+        custom_name: Option<&'a str>,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, DomainResult<crate::application::dto::CustomFontDto>>;
+
+    fn delete(&self, id: uuid::Uuid) -> BoxFuture<'_, DomainResult<()>>;
+
+    fn open_file(
+        &self,
+        id: uuid::Uuid,
+    ) -> BoxFuture<'_, DomainResult<(crate::application::dto::CustomFontDto, Vec<u8>)>>;
+}
+
 #[cfg(feature = "server")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthClaims {

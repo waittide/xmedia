@@ -45,11 +45,13 @@ fn seed_color_and_app_icon_are_sanitized_via_ui_preferences() {
         theme_mode: ThemeMode::Dark,
         seed_color: Some(" #6750A4 ".into()),
         app_icon: Some(" Porcelain ".into()),
+        ui_font: Some("  LXGW WenKai  ".into()),
         locale: Locale::EnUs,
     });
     assert_eq!(prefs.theme_mode, ThemeMode::Dark);
     assert_eq!(prefs.seed_color.as_deref(), Some("#6750a4"));
     assert_eq!(prefs.app_icon.as_deref(), Some("porcelain"));
+    assert_eq!(prefs.ui_font.as_deref(), Some("LXGW WenKai"));
     assert_eq!(prefs.locale, Locale::EnUs);
 
     prefs.seed_color = Some("#ABC".into());
@@ -78,5 +80,43 @@ fn seed_color_and_app_icon_are_sanitized_via_ui_preferences() {
             prefs.app_icon, None,
             "{fallback} should normalize to default None"
         );
+    }
+}
+
+#[test]
+fn ui_font_and_book_font_family_strip_dangerous_css_chars_and_normalize_defaults() {
+    assert_eq!(sanitize_font_spec("   "), None);
+    assert_eq!(sanitize_font_spec("system-ui"), None);
+    assert_eq!(sanitize_font_spec("  SYSTEM-UI  "), None);
+    assert_eq!(sanitize_font_spec("\";{}<>\\'\0\r\n\t"), None);
+    assert_eq!(
+        sanitize_font_spec("  \"霞鹜文楷\";{}<>\\'  ").as_deref(),
+        Some("霞鹜文楷")
+    );
+    assert_eq!(
+        sanitize_font_spec("font:0195aabb-ccdd-7000-8000-112233445566").as_deref(),
+        Some("font:0195aabb-ccdd-7000-8000-112233445566")
+    );
+
+    let overlong = "A".repeat(200);
+    let capped = sanitize_font_spec(&overlong).unwrap();
+    assert_eq!(capped.chars().count(), 128);
+
+    let mut prefs = UserPreferences {
+        ui_font: Some("  System-Ui ".into()),
+        ..UserPreferences::default()
+    };
+    prefs.book.font_family = " \";{}<>\\'\r\n ".into();
+    prefs.normalize();
+    assert_eq!(prefs.ui_font, None);
+    assert_eq!(prefs.book.font_family, DEFAULT_FONT_FAMILY);
+
+    prefs.ui_font = Some("Evil\"; } body { display: none".into());
+    prefs.book.font_family = "  'LXGW WenKai'; color: red  ".into();
+    prefs.normalize();
+    assert_eq!(prefs.ui_font.as_deref(), Some("Evil  body  display: none"));
+    assert_eq!(prefs.book.font_family, "LXGW WenKai color: red");
+    for s in [prefs.ui_font.as_deref().unwrap(), &prefs.book.font_family] {
+        assert!(!s.contains([';', '{', '}', '<', '>', '\\', '"', '\'']));
     }
 }
