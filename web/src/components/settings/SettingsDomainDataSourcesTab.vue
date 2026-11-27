@@ -10,13 +10,13 @@ import {
   type Component,
 } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuLoader2, LuLock } from 'vue-icons-plus/lu'
+import { LuLoader2 } from 'vue-icons-plus/lu'
 import OnlineSourceManagerPanel from '@/components/online-sources/OnlineSourceManagerPanel.vue'
 import {
   extractApiError,
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
-import { MdCard, MdChip, MdSwitch } from '@/components/ui'
+import { MdChip, MdSwitch } from '@/components/ui'
 import { useDelayedLoading } from '@/composables/useDelayedLoading'
 import { getDomainPlugin } from '@/sources'
 import { useAppClientStore } from '@/stores/appServers'
@@ -103,7 +103,6 @@ const activeDebugSheet = computed<Component>(() => {
 })
 
 async function refreshDomainSources(targetDomain: MediaKind = props.domain): Promise<void> {
-  if (!authStore.isAdmin) return
   emit('error', '')
   loadingByDomain[targetDomain] = true
   try {
@@ -126,16 +125,14 @@ function scrollToRemoteIfNeeded(): void {
 }
 
 onMounted(() => {
-  if (authStore.isAdmin) {
-    void refreshDomainSources(props.domain)
-  }
+  void refreshDomainSources(props.domain)
   scrollToRemoteIfNeeded()
 })
 
 watch(
   () => props.domain,
   (next) => {
-    if (authStore.isAdmin && !loadedByDomain[next] && !loadingByDomain[next]) {
+    if (!loadedByDomain[next] && !loadingByDomain[next]) {
       void refreshDomainSources(next)
     }
   },
@@ -152,23 +149,8 @@ watch(
 </script>
 
 <template>
-  <!-- Admin-only lock card across ALL domains (T2-F12-01: must include 管理员/admin and list 0 sources) -->
-  <MdCard v-if="!authStore.isAdmin" variant="tonal" padding="lg" class="py-14 text-center">
-    <div
-      class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-corner-lg bg-surface-container-high text-on-surface-variant"
-    >
-      <LuLock class="h-5 w-5" />
-    </div>
-    <p class="text-title-medium text-on-surface">
-      {{ t('settings.dataSourcesAdminOnly') }}
-    </p>
-    <p class="text-body-small mx-auto mt-1.5 max-w-md text-on-surface-variant">
-      {{ t('settings.sourcesAdminOnlyHint') }}
-    </p>
-  </MdCard>
-
   <!-- IMPORTANT: Avoid `.space-y-4` on outer wrapper so E2E `[role="dialog"], form, .space-y-4` never collides -->
-  <div v-else class="flex flex-col gap-6">
+  <div class="flex flex-col gap-6">
     <!-- Single-row domain chips + Progressive disclosure "Advanced" switch -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div

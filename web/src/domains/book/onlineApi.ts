@@ -238,7 +238,7 @@ const bookSourceCrud = createDomainSourceApi<BookSourceSummaryDto>('book')
 
 export const bookSourceAdapter: OnlineSourceManagerAdapter<BookSourceSummaryDto> = {
   domain: 'book',
-  exportFilePrefix: 'xmedia-book-sources',
+  exportFilePrefix: 'xmedia-book-plugins',
   searchRoutePath: '/book/library',
   ...bookSourceCrud,
 }
@@ -263,7 +263,7 @@ export const onlineBookApi = {
             chapter_index: payload?.chapter_index ?? null,
             chapter_title: payload?.chapter_title?.trim() || null,
           }
-    return requestJson(`/book/sources/${encodeURIComponent(id)}/test`, {
+    return requestJson(`/plugins/${encodeURIComponent(id)}/test`, {
       method: 'POST',
       body: JSON.stringify(body),
       signal: options?.signal,

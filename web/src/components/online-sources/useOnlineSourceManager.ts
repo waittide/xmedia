@@ -5,6 +5,7 @@ import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
   extractApiError,
+  hasSourceAuthOrSettings,
   type OnlineSourceManagerAdapter,
   type OnlineSourceSummaryDto,
 } from './types'
@@ -232,7 +233,7 @@ export function useOnlineSourceManager<S extends OnlineSourceSummaryDto>(
     if (!btn) return
     const rect = btn.getBoundingClientRect()
     const menuWidth = 176
-    const hasLogin = src.has_login_url || src.login_ui.length > 0
+    const hasLogin = hasSourceAuthOrSettings(src)
     const estimatedHeight = hasLogin ? 320 : 280
     const left = Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12))
     const fitsBelow = rect.bottom + 6 + estimatedHeight <= window.innerHeight - 12
@@ -419,15 +420,15 @@ export function useOnlineSourceManager<S extends OnlineSourceSummaryDto>(
     if (ids.length === 0 || batchBusy.value) return
     batchBusy.value = true
     try {
-      const arr = await adapterProp.value.exportSourcesBatch(ids)
-      const blob = new Blob([JSON.stringify(arr, null, 2)], {
-        type: 'application/json;charset=utf-8',
+      const exported = await adapterProp.value.exportSourcesBatch(ids)
+      const blob = new Blob([exported.content], {
+        type: exported.mimeType,
       })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       try {
         link.href = url
-        link.download = `${adapterProp.value.exportFilePrefix}-${arr.length}.json`
+        link.download = `${adapterProp.value.exportFilePrefix}-${exported.count}.${exported.extension}`
         document.body.appendChild(link)
         link.click()
       } finally {
@@ -438,7 +439,7 @@ export function useOnlineSourceManager<S extends OnlineSourceSummaryDto>(
       }
       snackbar.show({
         message: t('onlineSources.messages.batchExported', {
-          count: arr.length,
+          count: exported.count,
           domain: domainLabel.value,
         }),
       })

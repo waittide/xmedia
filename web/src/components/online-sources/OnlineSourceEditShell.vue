@@ -13,11 +13,12 @@ import {
 import {
   MdButton,
   MdDialog,
+  MdSwitch,
   MdTabs,
   MdTextField,
   type MdTabItem,
 } from '@/components/ui'
-import type { EditTabItem } from './useOnlineSourceEdit'
+import type { EditTabItem, JsModuleEditState } from './useOnlineSourceEdit'
 
 const props = defineProps<{
   open: boolean
@@ -32,6 +33,7 @@ const props = defineProps<{
   loadError: string | null
   jsonText: string
   jsonValidation: { valid: boolean; error: string | null }
+  jsModule?: JsModuleEditState
 }>()
 
 const emit = defineEmits<{
@@ -75,6 +77,7 @@ function handleJsonInput(val: string): void {
   >
     <div class="mx-auto flex w-full max-w-4xl flex-col gap-4">
       <MdTabs
+        v-if="!jsModule?.active"
         :model-value="activeTab"
         :tabs="mdTabs"
         variant="secondary"
@@ -95,6 +98,79 @@ function handleJsonInput(val: string): void {
         class="text-body-small rounded-corner-lg bg-error-container px-4 py-3 text-on-error-container"
       >
         {{ loadError }}
+      </div>
+
+      <div v-else-if="jsModule?.active" class="flex flex-col gap-4 pt-1">
+        <section class="flex flex-col gap-3.5 rounded-corner-lg bg-surface-container p-4 sm:p-5">
+          <div class="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+            <MdTextField
+              :model-value="jsModule.groupName"
+              size="sm"
+              :label="t('onlineSources.edit.groupLabel')"
+              :placeholder="t('onlineSources.edit.groupPlaceholder')"
+              @update:model-value="jsModule.setGroupName($event)"
+            />
+            <MdTextField
+              :model-value="jsModule.weight"
+              size="sm"
+              type="number"
+              :label="t('onlineSources.edit.weightLabel')"
+              @update:model-value="jsModule.setWeight($event)"
+            />
+          </div>
+          <div class="flex items-center gap-4 pt-1">
+            <MdSwitch
+              :model-value="jsModule.enabled"
+              :label="t('onlineSources.edit.enabledSwitch')"
+              @update:model-value="jsModule.setEnabled($event)"
+            />
+          </div>
+        </section>
+
+        <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <span class="text-title-small text-on-surface">
+                {{ t('onlineSources.edit.jsTitle') }}
+              </span>
+              <span
+                v-if="jsonValidation.valid"
+                class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-success-container px-2.5 py-0.5 text-on-success-container"
+              >
+                <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+                <span>ES Module</span>
+              </span>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <MdButton
+                variant="outlined"
+                :icon="LuCopy"
+                @click="emit('copy-json')"
+              >
+                {{ t('onlineSources.edit.copyJsonBtn') }}
+              </MdButton>
+            </div>
+          </div>
+
+          <p
+            v-if="!jsonValidation.valid && jsonValidation.error"
+            role="alert"
+            class="text-body-small text-error"
+          >
+            {{ jsonValidation.error }}
+          </p>
+
+          <MdTextField
+            :model-value="jsonText"
+            multiline
+            :rows="22"
+            :aria-label="t('onlineSources.edit.jsTitle')"
+            :error="!jsonValidation.valid"
+            class="font-mono"
+            @update:model-value="handleJsonInput"
+          />
+        </section>
       </div>
 
       <div v-else class="flex flex-col gap-4 pt-1">

@@ -1,4 +1,4 @@
-import { computed, ref, watch, type Component, type Ref } from 'vue'
+import { computed, reactive, ref, watch, type Component, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { RuleFieldDef } from './RuleFieldsSection.vue'
@@ -14,6 +14,16 @@ export interface EditTabItem<T extends string = string> {
   label: string
   icon: Component
   activeDot: boolean
+}
+
+export interface JsModuleEditState {
+  active: boolean
+  groupName: string
+  weight: string
+  enabled: boolean
+  setGroupName: (val: string) => void
+  setWeight: (val: string) => void
+  setEnabled: (val: boolean) => void
 }
 
 export function strVal(v: unknown): string {
@@ -167,10 +177,32 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
   const jsonDirty = ref(false)
   const variableText = ref('')
   const initialVariableText = ref('')
+  const jsModule = reactive<JsModuleEditState>({
+    active: false,
+    groupName: '',
+    weight: '0',
+    enabled: true,
+    setGroupName(val: string) {
+      jsModule.groupName = val
+    },
+    setWeight(val: string) {
+      jsModule.weight = val
+    },
+    setEnabled(val: boolean) {
+      jsModule.enabled = val
+    },
+  })
   let loadSeq = 0
   let saveSeq = 0
 
   const jsonValidation = computed<{ valid: boolean; error: string | null }>(() => {
+    if (jsModule.active) {
+      const code = jsonText.value.trim()
+      if (!code) {
+        return { valid: false, error: t('onlineSources.edit.jsEmptyError') }
+      }
+      return { valid: true, error: null }
+    }
     if (activeTab.value !== options.jsonTabId && !jsonDirty.value) {
       const formErr = options.validateForm()
       return formErr ? { valid: false, error: formErr } : { valid: true, error: null }
@@ -195,7 +227,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
   })
 
   function switchTab(next: T): void {
-    if (next === activeTab.value) return
+    if (jsModule.active || next === activeTab.value) return
     if (activeTab.value === options.jsonTabId && jsonDirty.value) {
       try {
         const parsed = JSON.parse(jsonText.value)
@@ -229,6 +261,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
   async function loadSourceRaw(src: S): Promise<void> {
     const seq = ++loadSeq
     const targetId = src.id
+    const isJs = src.format === 'js_module'
     loading.value = true
     loadError.value = null
     activeTab.value = options.initialTab
@@ -237,19 +270,35 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
     jsonDirty.value = false
     variableText.value = ''
     initialVariableText.value = ''
+    jsModule.active = isJs
+    jsModule.groupName = src.group_name
+    jsModule.weight = String(src.weight)
+    jsModule.enabled = src.enabled
     options.clearFormState()
     try {
-      const [obj, varRes] = await Promise.all([
-        options.adapter.fetchSourceJson(targetId),
-        options.adapter.getSourceVariable(targetId),
-      ])
-      if (seq !== loadSeq || !options.open.value || options.source.value?.id !== targetId) return
-      rawBaseObj.value = { ...obj }
-      options.hydrateFormFromObject(obj, src)
-      const fullVar = varRes.variable ?? ''
-      variableText.value = fullVar
-      initialVariableText.value = fullVar
-      jsonText.value = JSON.stringify(options.buildMergedObject(), null, 2)
+      if (isJs) {
+        const [rawCode, varRes] = await Promise.all([
+          options.adapter.fetchSourceRaw(targetId),
+          options.adapter.getSourceVariable(targetId),
+        ])
+        if (seq !== loadSeq || !options.open.value || options.source.value?.id !== targetId) return
+        jsonText.value = rawCode
+        const fullVar = varRes.variable ?? ''
+        variableText.value = fullVar
+        initialVariableText.value = fullVar
+      } else {
+        const [obj, varRes] = await Promise.all([
+          options.adapter.fetchSourceJson(targetId),
+          options.adapter.getSourceVariable(targetId),
+        ])
+        if (seq !== loadSeq || !options.open.value || options.source.value?.id !== targetId) return
+        rawBaseObj.value = { ...obj }
+        options.hydrateFormFromObject(obj, src)
+        const fullVar = varRes.variable ?? ''
+        variableText.value = fullVar
+        initialVariableText.value = fullVar
+        jsonText.value = JSON.stringify(options.buildMergedObject(), null, 2)
+      }
     } catch (err) {
       if (seq !== loadSeq || !options.open.value || options.source.value?.id !== targetId) return
       rawBaseObj.value = {}
@@ -278,6 +327,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
         jsonDirty.value = false
         variableText.value = ''
         initialVariableText.value = ''
+        jsModule.active = false
         options.clearFormState()
       }
     },
@@ -285,6 +335,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
   )
 
   function formatJson(): void {
+    if (jsModule.active) return
     try {
       const parsed = JSON.parse(jsonText.value)
       jsonText.value = JSON.stringify(parsed, null, 2)
@@ -298,12 +349,14 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
 
   async function copyJson(): Promise<void> {
     const txt =
-      activeTab.value === options.jsonTabId
+      jsModule.active || activeTab.value === options.jsonTabId
         ? jsonText.value
         : JSON.stringify(options.buildMergedObject(), null, 2)
     try {
       await navigator.clipboard.writeText(txt)
-      snackbar.show({ message: t('onlineSources.edit.jsonCopied') })
+      snackbar.show({
+        message: t(jsModule.active ? 'onlineSources.edit.jsCopied' : 'onlineSources.edit.jsonCopied'),
+      })
     } catch {
       snackbar.show({ message: t('onlineSources.edit.copyFailed'), tone: 'error' })
     }
@@ -322,29 +375,39 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
     }
 
     const targetId = src.id
-    let finalObj: Record<string, unknown>
-    if (activeTab.value === options.jsonTabId && jsonDirty.value) {
-      try {
-        finalObj = JSON.parse(jsonText.value) as Record<string, unknown>
-        rawBaseObj.value = { ...finalObj }
-        options.hydrateFormFromObject(finalObj)
-      } catch (err) {
-        snackbar.show({ message: extractApiError(err), tone: 'error' })
-        return
+    let patch: UpdateSourcePatch
+    if (jsModule.active) {
+      patch = {
+        enabled: jsModule.enabled,
+        group_name: jsModule.groupName.trim(),
+        weight: numVal(jsModule.weight, 0),
+        raw_json: jsonText.value,
       }
     } else {
-      finalObj = options.buildMergedObject()
-    }
-
-    const seq = ++saveSeq
-    saving.value = true
-    try {
-      const patch: UpdateSourcePatch = {
+      let finalObj: Record<string, unknown>
+      if (activeTab.value === options.jsonTabId && jsonDirty.value) {
+        try {
+          finalObj = JSON.parse(jsonText.value) as Record<string, unknown>
+          rawBaseObj.value = { ...finalObj }
+          options.hydrateFormFromObject(finalObj)
+        } catch (err) {
+          snackbar.show({ message: extractApiError(err), tone: 'error' })
+          return
+        }
+      } else {
+        finalObj = options.buildMergedObject()
+      }
+      patch = {
         enabled: options.getEnabled(),
         group_name: options.getGroupName().trim(),
         weight: options.getWeight(),
         raw_json: JSON.stringify(finalObj),
       }
+    }
+
+    const seq = ++saveSeq
+    saving.value = true
+    try {
       if (variableText.value !== initialVariableText.value) {
         patch.variable = variableText.value
       }
@@ -379,6 +442,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
     jsonDirty,
     variableText,
     initialVariableText,
+    jsModule,
     jsonValidation,
     switchTab,
     formatJson,

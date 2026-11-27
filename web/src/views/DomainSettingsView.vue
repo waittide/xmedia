@@ -106,7 +106,6 @@ const tabs = computed<TabItem[]>(() => {
       id: 'sources',
       label: t('settings.navSources'),
       icon: LuGlobe,
-      adminOnly: true,
     },
     {
       id: 'protocols',

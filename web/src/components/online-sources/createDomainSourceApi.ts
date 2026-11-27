@@ -1,13 +1,16 @@
-import { requestJson, withAuthToken } from '@/api/client'
+import { requestJson, requestText, withAuthToken } from '@/api/client'
 import {
   isSafeDataImageUrl,
   isSafeHttpUrl,
+  type BatchExportPayload,
   type BatchSourcesPayload,
   type BatchSourcesReportDto,
   type ImportSourcesReportDto,
   type LoginActionResponseDto,
   type OnlineDomain,
   type OnlineSourceSummaryDto,
+  type PluginAuthActionPayload,
+  type PluginAuthActionResponseDto,
   type UpdateSourcePatch,
 } from './types'
 
@@ -45,17 +48,23 @@ export interface DomainSourceCrudApi<S extends OnlineSourceSummaryDto = OnlineSo
   importSources: (rawJson: string) => Promise<ImportSourcesReportDto<S>>
   reorderSources: (orderedIds: string[]) => Promise<S[]>
   batchSources: (payload: BatchSourcesPayload) => Promise<BatchSourcesReportDto>
-  exportSourcesBatch: (ids: string[]) => Promise<Record<string, unknown>[]>
+  exportSourcesBatch: (ids: string[]) => Promise<BatchExportPayload>
   updateSource: (id: string, patch: UpdateSourcePatch) => Promise<S>
   deleteSource: (id: string) => Promise<void>
   exportSourceUrl: (id: string) => string
   fetchSourceJson: (id: string) => Promise<Record<string, unknown>>
+  fetchSourceRaw: (id: string) => Promise<string>
   getSourceVariable: (id: string) => Promise<{ variable: string }>
   runLoginAction: (
     id: string,
     loginInfo: Record<string, string>,
     action?: string,
   ) => Promise<LoginActionResponseDto<S>>
+  runPluginAuth: (
+    id: string,
+    payload: PluginAuthActionPayload,
+  ) => Promise<PluginAuthActionResponseDto<S>>
+  updatePluginSettings: (id: string, values: Record<string, unknown>) => Promise<S>
   buildProxyImageUrl: (
     rawUrl: string | null | undefined,
     sourceId?: string | null,
@@ -66,33 +75,55 @@ export interface DomainSourceCrudApi<S extends OnlineSourceSummaryDto = OnlineSo
 export function createDomainSourceApi<S extends OnlineSourceSummaryDto = OnlineSourceSummaryDto>(
   domain: OnlineDomain,
 ): DomainSourceCrudApi<S> {
-  const base = `/${domain}/sources`
+  const base = '/plugins'
+  const domainQuery = `domain=${encodeURIComponent(domain)}`
   return {
-    listSources: (): Promise<S[]> => requestJson(base),
+    listSources: (): Promise<S[]> => requestJson(`${base}?${domainQuery}`),
 
     importSources: (rawJson: string): Promise<ImportSourcesReportDto<S>> =>
-      requestJson(`${base}/import`, {
+      requestJson(`${base}/import?${domainQuery}`, {
         method: 'POST',
-        body: JSON.stringify({ raw_json: rawJson }),
+        body: JSON.stringify({ domain, raw_json: rawJson }),
       }),
 
     reorderSources: (orderedIds: string[]): Promise<S[]> =>
-      requestJson(`${base}/reorder`, {
+      requestJson(`${base}/reorder?${domainQuery}`, {
         method: 'POST',
-        body: JSON.stringify({ ordered_ids: orderedIds }),
+        body: JSON.stringify({ domain, ordered_ids: orderedIds }),
       }),
 
     batchSources: (payload: BatchSourcesPayload): Promise<BatchSourcesReportDto> =>
-      requestJson(`${base}/batch`, {
+      requestJson(`${base}/batch?${domainQuery}`, {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ domain, ...payload }),
       }),
 
-    exportSourcesBatch: (ids: string[]): Promise<Record<string, unknown>[]> =>
-      requestJson(`${base}/export-batch`, {
+    exportSourcesBatch: async (ids: string[]): Promise<BatchExportPayload> => {
+      const raw = await requestText(`${base}/export-batch?${domainQuery}`, {
         method: 'POST',
-        body: JSON.stringify({ ids }),
-      }),
+        body: JSON.stringify({ domain, ids }),
+      })
+      const trimmed = raw.trim()
+      if (trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed) as unknown[]
+          return {
+            content: JSON.stringify(parsed, null, 2),
+            extension: 'json',
+            mimeType: 'application/json;charset=utf-8',
+            count: Array.isArray(parsed) ? parsed.length : ids.length,
+          }
+        } catch {
+          // fall through to raw download
+        }
+      }
+      return {
+        content: raw,
+        extension: 'js',
+        mimeType: 'application/javascript;charset=utf-8',
+        count: ids.length,
+      }
+    },
 
     updateSource: (id: string, patch: UpdateSourcePatch): Promise<S> =>
       requestJson(`${base}/${encodeURIComponent(id)}`, {
@@ -111,6 +142,9 @@ export function createDomainSourceApi<S extends OnlineSourceSummaryDto = OnlineS
     fetchSourceJson: (id: string): Promise<Record<string, unknown>> =>
       requestJson(`${base}/${encodeURIComponent(id)}/export`),
 
+    fetchSourceRaw: (id: string): Promise<string> =>
+      requestText(`${base}/${encodeURIComponent(id)}/export`),
+
     getSourceVariable: (id: string): Promise<{ variable: string }> =>
       requestJson(`${base}/${encodeURIComponent(id)}/variable`),
 
@@ -122,6 +156,21 @@ export function createDomainSourceApi<S extends OnlineSourceSummaryDto = OnlineS
       requestJson(`${base}/${encodeURIComponent(id)}/login-action`, {
         method: 'POST',
         body: JSON.stringify({ login_info: loginInfo, action: action ?? null }),
+      }),
+
+    runPluginAuth: (
+      id: string,
+      payload: PluginAuthActionPayload,
+    ): Promise<PluginAuthActionResponseDto<S>> =>
+      requestJson(`${base}/${encodeURIComponent(id)}/auth`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+
+    updatePluginSettings: (id: string, values: Record<string, unknown>): Promise<S> =>
+      requestJson(`${base}/${encodeURIComponent(id)}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify({ values }),
       }),
 
     buildProxyImageUrl: (

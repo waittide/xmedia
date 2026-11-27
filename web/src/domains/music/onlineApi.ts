@@ -275,7 +275,7 @@ export const onlineMusicApi = {
             title: payload?.title?.trim() || null,
             artist: payload?.artist?.trim() || null,
           }
-    return requestJson(`/music/sources/${encodeURIComponent(id)}/test`, {
+    return requestJson(`/plugins/${encodeURIComponent(id)}/test`, {
       method: 'POST',
       body: JSON.stringify(body),
       signal: options?.signal,
@@ -398,18 +398,7 @@ export const onlineMusicApi = {
 
 export const musicSourceAdapter: OnlineSourceManagerAdapter<MusicSourceSummaryDto> = {
   domain: 'music',
-  exportFilePrefix: 'xmedia-music-sources',
+  exportFilePrefix: 'xmedia-music-plugins',
   searchRoutePath: '/music/library',
-  listSources: onlineMusicApi.listSources,
-  importSources: onlineMusicApi.importSources,
-  reorderSources: onlineMusicApi.reorderSources,
-  batchSources: onlineMusicApi.batchSources,
-  exportSourcesBatch: onlineMusicApi.exportSourcesBatch,
-  updateSource: onlineMusicApi.updateSource,
-  deleteSource: onlineMusicApi.deleteSource,
-  exportSourceUrl: onlineMusicApi.exportSourceUrl,
-  fetchSourceJson: onlineMusicApi.fetchSourceJson,
-  getSourceVariable: onlineMusicApi.getSourceVariable,
-  runLoginAction: onlineMusicApi.runLoginAction,
-  buildProxyImageUrl: onlineMusicApi.buildProxyImageUrl,
+  ...baseCrud,
 }

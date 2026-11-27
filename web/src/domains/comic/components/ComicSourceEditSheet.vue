@@ -80,6 +80,7 @@ const {
   jsonText,
   jsonDirty,
   variableText,
+  jsModule,
   jsonValidation,
   switchTab,
   formatJson,
@@ -240,6 +241,7 @@ const tabItems = computed(() =>
     :load-error="loadError"
     :json-text="jsonText"
     :json-validation="jsonValidation"
+    :js-module="jsModule"
     @close="emit('close')"
     @switch-tab="switchTab"
     @update:json-text="jsonText = $event"

@@ -331,7 +331,7 @@ export const onlineVideoApi = {
             group_name: payload?.group_name?.trim() || null,
             target_url: payload?.target_url?.trim() || null,
           }
-    return requestJson(`/video/sources/${encodeURIComponent(id)}/test`, {
+    return requestJson(`/plugins/${encodeURIComponent(id)}/test`, {
       method: 'POST',
       body: JSON.stringify(body),
       signal: options?.signal,
@@ -449,18 +449,7 @@ export const onlineVideoApi = {
 
 export const videoSourceAdapter: OnlineSourceManagerAdapter<VideoSourceSummaryDto> = {
   domain: 'video',
-  exportFilePrefix: 'xmedia-video-sources',
+  exportFilePrefix: 'xmedia-video-plugins',
   searchRoutePath: '/video/library',
-  listSources: onlineVideoApi.listSources,
-  importSources: onlineVideoApi.importSources,
-  reorderSources: onlineVideoApi.reorderSources,
-  batchSources: onlineVideoApi.batchSources,
-  exportSourcesBatch: onlineVideoApi.exportSourcesBatch,
-  updateSource: onlineVideoApi.updateSource,
-  deleteSource: onlineVideoApi.deleteSource,
-  exportSourceUrl: onlineVideoApi.exportSourceUrl,
-  fetchSourceJson: onlineVideoApi.fetchSourceJson,
-  getSourceVariable: onlineVideoApi.getSourceVariable,
-  runLoginAction: onlineVideoApi.runLoginAction,
-  buildProxyImageUrl: onlineVideoApi.buildProxyImageUrl,
+  ...baseCrud,
 }

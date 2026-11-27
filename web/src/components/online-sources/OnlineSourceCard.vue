@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { LuGripVertical, LuMoreVertical, LuPencil } from 'vue-icons-plus/lu'
+import { LuGripVertical, LuKeyRound, LuMoreVertical, LuPencil } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdSwitch from '@/components/ui/MdSwitch.vue'
-import type { OnlineSourceSummaryDto } from './types'
+import { hasSourceAuthOrSettings, type OnlineSourceSummaryDto } from './types'
 
 defineProps<{
   domainLabel: string
@@ -21,6 +21,7 @@ defineProps<{
 const emit = defineEmits<{
   'toggle-select': [shiftKey: boolean]
   'toggle-enabled': [enabled: boolean]
+  login: []
   edit: []
   'toggle-menu': [ev: MouseEvent]
   'drag-start': [ev: DragEvent]
@@ -117,6 +118,12 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
             {{ source.name }}
           </span>
           <span
+            v-if="source.format === 'js_module'"
+            class="text-label-small shrink-0 rounded-corner-full bg-primary-container px-2 py-0.5 font-mono text-on-primary-container"
+          >
+            {{ source.version ? `JS v${source.version}` : 'JS' }}
+          </span>
+          <span
             v-if="source.group_name"
             class="text-label-small max-w-full shrink-0 truncate rounded-corner-full bg-surface-container-highest px-2 py-0.5 text-on-surface-variant"
           >
@@ -184,6 +191,17 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
         "
         @update:model-value="(val) => emit('toggle-enabled', val)"
       />
+
+      <button
+        v-if="hasSourceAuthOrSettings(source)"
+        type="button"
+        class="md-icon-btn md-icon-btn-sm md-state"
+        :title="t('onlineSources.menu.login')"
+        :aria-label="`${source.name} · ${t('onlineSources.menu.login')}`"
+        @click="emit('login')"
+      >
+        <LuKeyRound class="h-4 w-4" aria-hidden="true" />
+      </button>
 
       <button
         type="button"

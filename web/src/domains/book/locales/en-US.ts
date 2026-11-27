@@ -75,7 +75,7 @@ export default {
   catalog: {
     title: 'Book Resources',
     scopeLocal: 'Local Library',
-    scopeOnline: 'Online Sources',
+    scopeOnline: 'Online Plugins',
     tabAll: 'All',
     tabContinue: 'Continue',
     tabFavorites: 'Favorites',

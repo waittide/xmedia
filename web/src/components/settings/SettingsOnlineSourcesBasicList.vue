@@ -5,13 +5,16 @@ import {
   LuAlertCircle,
   LuCheckCircle2,
   LuGlobe,
+  LuKeyRound,
   LuLink2,
   LuPlus,
   LuTrash2,
   LuUpload,
 } from 'vue-icons-plus/lu'
+import OnlineSourceLoginModal from '@/components/online-sources/OnlineSourceLoginModal.vue'
 import {
   extractApiError,
+  hasSourceAuthOrSettings,
   type OnlineSourceManagerAdapter,
   type OnlineSourceSummaryDto,
 } from '@/components/online-sources/types'
@@ -50,6 +53,14 @@ const dialogError = ref('')
 const urlFetchBlocked = ref(false)
 const busyIds = ref<Set<string>>(new Set())
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const loginModalSource = ref<OnlineSourceSummaryDto | null>(null)
+
+function handleSourceUpdated(updated: OnlineSourceSummaryDto): void {
+  if (loginModalSource.value?.id === updated.id) {
+    loginModalSource.value = updated
+  }
+  emit('refresh')
+}
 
 const domainLabel = computed(() => t(`onlineSources.domainLabel.${props.adapter.domain}`))
 const enabledCount = computed(() => props.sources.filter((s) => s.enabled).length)
@@ -235,11 +246,6 @@ async function handleImportFromUrl(): Promise<void> {
     if (!trimmed) {
       throw new Error(t('onlineSources.edit.jsonEmptyError'))
     }
-    try {
-      JSON.parse(trimmed)
-    } catch {
-      throw new Error(t('onlineSources.edit.jsonSyntaxError'))
-    }
     const report = await props.adapter.importSources(trimmed)
     snackbar.show({
       message: t('onlineSources.messages.importSuccess', {
@@ -317,6 +323,12 @@ function switchToAdvanced(): void {
               {{ src.name }}
             </span>
             <span
+              v-if="src.format === 'js_module'"
+              class="text-label-small shrink-0 rounded-corner-full bg-primary-container px-2 py-0.5 font-mono text-on-primary-container"
+            >
+              {{ src.version ? `JS v${src.version}` : 'JS' }}
+            </span>
+            <span
               class="text-label-small inline-flex shrink-0 items-center gap-1.5 rounded-corner-full px-2 py-0.5"
               :class="healthInfo(src).pillClass"
               :title="src.last_test_msg || healthInfo(src).label"
@@ -331,6 +343,15 @@ function switchToAdvanced(): void {
         </div>
 
         <div class="flex shrink-0 items-center gap-1.5">
+          <MdIconButton
+            v-if="hasSourceAuthOrSettings(src)"
+            size="sm"
+            :icon="LuKeyRound"
+            :disabled="isBusy(src.id)"
+            :tooltip="t('onlineSources.menu.login')"
+            :aria-label="t('onlineSources.menu.login')"
+            @click="loginModalSource = src"
+          />
           <MdSwitch
             :model-value="src.enabled"
             :disabled="isBusy(src.id)"
@@ -355,11 +376,25 @@ function switchToAdvanced(): void {
     </ul>
   </MdCard>
 
+  <OnlineSourceLoginModal
+    :open="loginModalSource !== null"
+    :domain-label="domainLabel"
+    :source="loginModalSource"
+    :get-source-variable="adapter.getSourceVariable"
+    :run-login-action="adapter.runLoginAction"
+    :run-plugin-auth="adapter.runPluginAuth"
+    :update-plugin-settings="adapter.updatePluginSettings"
+    :update-source="adapter.updateSource"
+    :build-proxy-image-url="adapter.buildProxyImageUrl"
+    @close="loginModalSource = null"
+    @updated="handleSourceUpdated"
+  />
+
   <!-- Hidden File Input -->
   <input
     ref="fileInputRef"
     type="file"
-    accept=".json,application/json"
+    accept=".json,.js,.mjs,application/json,text/javascript"
     class="hidden"
     @change="handleFileSelected"
   />

@@ -10,7 +10,7 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import { MdMenu, MdMenuItem } from '@/components/ui'
-import type { OnlineSourceSummaryDto } from './types'
+import { hasSourceAuthOrSettings, type OnlineSourceSummaryDto } from './types'
 
 defineProps<{
   source: S | null
@@ -52,7 +52,7 @@ const { t } = useI18n()
       />
 
       <MdMenuItem
-        v-if="source.has_login_url || source.login_ui.length > 0"
+        v-if="hasSourceAuthOrSettings(source)"
         :icon="LuKeyRound"
         :label="t('onlineSources.menu.login')"
         @select="emit('login', source)"
@@ -72,9 +72,13 @@ const { t } = useI18n()
 
       <MdMenuItem
         :icon="LuDownload"
-        :label="t('onlineSources.menu.export')"
+        :label="
+          source.format === 'js_module'
+            ? t('onlineSources.menu.exportJs')
+            : t('onlineSources.menu.export')
+        "
         :href="exportUrl"
-        :download="`${source.name}.json`"
+        :download="`${source.name}.${source.format === 'js_module' ? 'js' : 'json'}`"
       />
 
       <div class="my-1.5 border-t border-on-surface/8" />

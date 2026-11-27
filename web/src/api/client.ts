@@ -89,11 +89,11 @@ export class ApiRequestError extends Error {
   }
 }
 
-export async function requestJson<T>(
+async function sendApiRequest(
   path: string,
   init: RequestInit = {},
   suppressAuthRedirect = false,
-): Promise<T> {
+): Promise<Response> {
   const headers = new Headers(init.headers)
   const activeAuth = getActiveAuthHeader()
   if (activeAuth.Authorization && !headers.has('Authorization')) {
@@ -143,6 +143,26 @@ export async function requestJson<T>(
 
     throw new ApiRequestError(res.status, code, localizeApiErrorMessage(message))
   }
+
+  return res
+}
+
+export async function requestText(
+  path: string,
+  init: RequestInit = {},
+  suppressAuthRedirect = false,
+): Promise<string> {
+  const res = await sendApiRequest(path, init, suppressAuthRedirect)
+  if (res.status === 204) return ''
+  return res.text()
+}
+
+export async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+  suppressAuthRedirect = false,
+): Promise<T> {
+  const res = await sendApiRequest(path, init, suppressAuthRedirect)
 
   if (res.status === 204) {
     return undefined as T

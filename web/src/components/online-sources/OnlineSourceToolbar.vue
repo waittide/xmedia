@@ -125,7 +125,7 @@ function triggerFileImport(): void {
         <input
           ref="fileInputRef"
           type="file"
-          accept=".json,application/json"
+          accept=".json,.js,.mjs,application/json,text/javascript"
           :aria-label="t('onlineSources.toolbar.importJsonFileOption')"
           class="hidden"
           @change="emit('file-selected', $event)"

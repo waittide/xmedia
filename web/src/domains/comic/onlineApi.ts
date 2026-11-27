@@ -261,7 +261,7 @@ export const onlineComicApi = {
             chapter_index: payload?.chapter_index ?? null,
             chapter_title: payload?.chapter_title?.trim() || null,
           }
-    return requestJson(`/comic/sources/${encodeURIComponent(id)}/test`, {
+    return requestJson(`/plugins/${encodeURIComponent(id)}/test`, {
       method: 'POST',
       body: JSON.stringify(body),
       signal: options?.signal,
@@ -379,18 +379,7 @@ export const onlineComicApi = {
 
 export const comicSourceAdapter: OnlineSourceManagerAdapter<ComicSourceSummaryDto> = {
   domain: 'comic',
-  exportFilePrefix: 'xmedia-comic-sources',
+  exportFilePrefix: 'xmedia-comic-plugins',
   searchRoutePath: '/comic/library',
-  listSources: onlineComicApi.listSources,
-  importSources: onlineComicApi.importSources,
-  reorderSources: onlineComicApi.reorderSources,
-  batchSources: onlineComicApi.batchSources,
-  exportSourcesBatch: onlineComicApi.exportSourcesBatch,
-  updateSource: onlineComicApi.updateSource,
-  deleteSource: onlineComicApi.deleteSource,
-  exportSourceUrl: onlineComicApi.exportSourceUrl,
-  fetchSourceJson: onlineComicApi.fetchSourceJson,
-  getSourceVariable: onlineComicApi.getSourceVariable,
-  runLoginAction: onlineComicApi.runLoginAction,
-  buildProxyImageUrl: onlineComicApi.buildProxyImageUrl,
+  ...baseCrud,
 }
