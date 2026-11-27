@@ -122,7 +122,7 @@ defineExpose({ focusSearch })
 
 <template>
   <header
-    class="flex h-16 shrink-0 items-center justify-between gap-3 bg-surface px-3 transition-colors duration-150 select-none sm:px-4 md:bg-surface-container"
+    class="flex h-[calc(4rem+var(--safe-area-top))] shrink-0 items-center justify-between gap-3 bg-surface pt-[var(--safe-area-top)] pl-[calc(var(--safe-area-left)+0.75rem)] pr-[calc(var(--safe-area-right)+0.75rem)] transition-colors duration-150 select-none sm:pl-[calc(var(--safe-area-left)+1rem)] sm:pr-[calc(var(--safe-area-right)+1rem)] md:bg-surface-container"
   >
     <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Button -->
     <div class="flex shrink-0 items-center gap-2">

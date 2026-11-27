@@ -2,6 +2,7 @@ pub mod app_icon;
 pub(crate) mod atomic_fs;
 pub mod gateway;
 pub mod local_engine;
+pub mod mobile_ui;
 pub mod opds_client;
 pub mod remote_common;
 pub mod remote_sources;
@@ -115,6 +116,7 @@ pub fn run() {
                     icon_applier,
                 ))?;
             let gateway_url = gateway.url.clone();
+            let mobile_ui = gateway.mobile_ui().clone();
             #[cfg(desktop)]
             let initial_icon = gateway.current_app_icon();
             tracing::info!(url = %gateway_url, "started Tauri standalone local loopback gateway");
@@ -122,8 +124,9 @@ pub fn run() {
             app.manage(GatewayLifecycleState(Mutex::new(Some(gateway))));
 
             let external_url: tauri::Url = gateway_url.parse()?;
-            if let Some(window) = app.get_webview_window("main") {
+            let main_window = if let Some(window) = app.get_webview_window("main") {
                 window.navigate(external_url)?;
+                window
             } else {
                 #[allow(unused_mut)]
                 let mut builder = tauri::WebviewWindowBuilder::new(
@@ -140,8 +143,10 @@ pub fn run() {
                         .resizable(true)
                         .center();
                 }
-                builder.build()?;
-            }
+                builder.build()?
+            };
+
+            mobile_ui.attach_window(&main_window);
 
             #[cfg(desktop)]
             if initial_icon != app_icon::AppIconVariant::default() {

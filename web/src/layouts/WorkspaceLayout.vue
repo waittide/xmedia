@@ -328,7 +328,7 @@ onBeforeUnmount(() => {
 
     <!-- Top Region: Minimal MD3 Top App Bar + Domain Sub-Navigation -->
     <div
-      class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-colors duration-150 ease-standard select-none sm:col-start-2"
+      class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-colors duration-150 ease-standard select-none sm:col-start-2 sm:pl-0"
       :class="isContentScrolled ? 'bg-surface-container' : 'bg-surface'"
     >
       <header class="flex h-14 items-center justify-between gap-3 px-4 sm:h-16 md:px-6">

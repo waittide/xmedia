@@ -101,7 +101,7 @@ const resolvedWidthClass = computed(() => {
             <!-- MD3 Full-Screen Dialog Top App Bar (tonal surface container without decorative border) -->
             <div
               v-if="fullscreen && !hideHeader"
-              class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 bg-surface-container px-4 py-2"
+              class="flex min-h-[calc(3.5rem+var(--safe-area-top))] shrink-0 items-center justify-between gap-3 bg-surface-container pt-[calc(var(--safe-area-top)+0.5rem)] pb-2 pl-[calc(var(--safe-area-left)+1rem)] pr-[calc(var(--safe-area-right)+1rem)]"
             >
               <div class="flex min-w-0 items-center gap-2">
                 <MdIconButton
@@ -206,7 +206,7 @@ const resolvedWidthClass = computed(() => {
                 noBodyPadding
                   ? 'flex flex-col overflow-hidden'
                   : fullscreen
-                    ? 'safe-px safe-pb overflow-y-auto px-6 py-5'
+                    ? 'overflow-y-auto pt-5 pb-[calc(var(--safe-area-bottom)+1.25rem)] pl-[calc(var(--safe-area-left)+1.5rem)] pr-[calc(var(--safe-area-right)+1.5rem)]'
                     : 'overflow-y-auto px-6 py-2'
               "
             >
@@ -216,11 +216,11 @@ const resolvedWidthClass = computed(() => {
             <!-- MD3 Dialog Action Bar -->
             <div
               v-if="$slots.footer"
-              class="flex flex-wrap items-center gap-2 px-6"
+              class="flex flex-wrap items-center gap-2"
               :class="[
                 fullscreen
-                  ? 'safe-px safe-pb bg-surface-container py-4'
-                  : 'pt-3 pb-5',
+                  ? 'bg-surface-container pt-4 pb-[calc(var(--safe-area-bottom)+1rem)] pl-[calc(var(--safe-area-left)+1.5rem)] pr-[calc(var(--safe-area-right)+1.5rem)]'
+                  : 'px-6 pt-3 pb-5',
                 footerAlign === 'end' ? 'justify-end' : 'justify-between',
               ]"
             >

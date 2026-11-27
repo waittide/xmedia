@@ -176,7 +176,7 @@ function navigateAndClose(path: string): void {
         />
 
         <header
-          class="safe-pt safe-px relative z-10 flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-8 sm:py-4"
+          class="relative z-10 flex shrink-0 items-center justify-between gap-3 pt-[calc(var(--safe-area-top)+0.75rem)] pb-3 pl-[calc(var(--safe-area-left)+1rem)] pr-[calc(var(--safe-area-right)+1rem)] sm:pt-[calc(var(--safe-area-top)+1rem)] sm:pb-4 sm:pl-[calc(var(--safe-area-left)+2rem)] sm:pr-[calc(var(--safe-area-right)+2rem)]"
         >
           <div class="flex min-w-0 items-center gap-2">
             <MdButton
@@ -284,7 +284,7 @@ function navigateAndClose(path: string): void {
         </div>
 
         <div
-          class="safe-px safe-pb relative z-10 mx-auto grid min-h-0 w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-hidden px-6 pb-6 sm:px-10 md:grid-cols-12 md:gap-10 md:pb-8"
+          class="relative z-10 mx-auto grid min-h-0 w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-hidden pb-[calc(var(--safe-area-bottom)+1.5rem)] pl-[calc(var(--safe-area-left)+1.5rem)] pr-[calc(var(--safe-area-right)+1.5rem)] sm:pl-[calc(var(--safe-area-left)+2.5rem)] sm:pr-[calc(var(--safe-area-right)+2.5rem)] md:grid-cols-12 md:gap-10 md:pb-[calc(var(--safe-area-bottom)+2rem)]"
         >
           <div
             class="min-h-0 flex-col items-center justify-center overflow-y-auto py-4 md:col-span-5 md:flex"

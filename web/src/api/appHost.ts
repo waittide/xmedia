@@ -4,11 +4,52 @@ import type { AuthSessionDto, MediaKind } from '@/types/api'
 export type RemoteProtocol = 'opds' | 'subsonic'
 export type SubsonicAlbumListType = 'newest' | 'random' | 'alphabeticalByName'
 
+export interface SafeAreaInsetsDto {
+  top: number
+  right: number
+  bottom: number
+  left: number
+}
+
 export interface StandaloneHealthResponse {
   mode: 'standalone'
   version: string
   remote_source_count: number
   enabled_modules: MediaKind[]
+  safe_area?: SafeAreaInsetsDto | null
+}
+
+export interface StandaloneAppearanceResponse {
+  dark: boolean
+  safe_area?: SafeAreaInsetsDto | null
+}
+
+const HOST_SAFE_AREA_STORAGE_KEY = 'xmedia.host_safe_area'
+
+function sanitizeInsetPx(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value * 100) / 100
+    : 0
+}
+
+export function applyHostSafeAreaInsets(raw?: Partial<SafeAreaInsetsDto> | null): void {
+  if (!raw || typeof raw !== 'object' || typeof document === 'undefined') return
+  const normalized: SafeAreaInsetsDto = {
+    top: sanitizeInsetPx(raw.top),
+    right: sanitizeInsetPx(raw.right),
+    bottom: sanitizeInsetPx(raw.bottom),
+    left: sanitizeInsetPx(raw.left),
+  }
+  const style = document.documentElement.style
+  style.setProperty('--host-safe-area-top', `${normalized.top}px`)
+  style.setProperty('--host-safe-area-right', `${normalized.right}px`)
+  style.setProperty('--host-safe-area-bottom', `${normalized.bottom}px`)
+  style.setProperty('--host-safe-area-left', `${normalized.left}px`)
+  try {
+    sessionStorage.setItem(HOST_SAFE_AREA_STORAGE_KEY, JSON.stringify(normalized))
+  } catch {
+    // ignore storage errors
+  }
 }
 
 export interface RemoteSourceSummaryDto {
@@ -294,6 +335,9 @@ export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
     if (!data || typeof data !== 'object' || data.mode !== 'standalone') {
       return null
     }
+    if (data.safe_area) {
+      applyHostSafeAreaInsets(data.safe_area)
+    }
     return {
       mode: 'standalone',
       version: typeof data.version === 'string' ? data.version : '',
@@ -302,6 +346,7 @@ export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
       enabled_modules: Array.isArray(data.enabled_modules)
         ? data.enabled_modules
         : ['book', 'comic', 'music', 'video'],
+      safe_area: data.safe_area ?? null,
     }
   } catch {
     return null
@@ -310,6 +355,17 @@ export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
 
 export const appHostApi = {
   probe: probeAppHost,
+
+  syncAppearance: async (dark: boolean): Promise<StandaloneAppearanceResponse> => {
+    const res = await requestAppJson<StandaloneAppearanceResponse>('/appearance', {
+      method: 'PUT',
+      body: JSON.stringify({ dark }),
+    })
+    if (res?.safe_area) {
+      applyHostSafeAreaInsets(res.safe_area)
+    }
+    return res
+  },
 
   setAppIcon: (icon: string) =>
     requestAppJson<{ icon: string }>('/icon', {

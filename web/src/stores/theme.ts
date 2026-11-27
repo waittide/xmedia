@@ -259,6 +259,40 @@ export const useThemeStore = defineStore('theme', () => {
     { immediate: true },
   )
 
+  let lastSyncedStandaloneDark: boolean | null = null
+  watch(
+    [isDark, () => appClientStore.isStandaloneApp],
+    ([dark, isStandalone]) => {
+      if (isStandalone && dark !== lastSyncedStandaloneDark) {
+        lastSyncedStandaloneDark = dark
+        void appHostApi.syncAppearance(dark).catch(() => {
+          // Non-fatal on desktop/browser hosts without mobile window insets.
+        })
+      }
+    },
+    { immediate: true },
+  )
+
+  if (typeof window !== 'undefined') {
+    let insetRefreshTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleHostInsetRefresh = (): void => {
+      if (!appClientStore.isStandaloneApp) return
+      if (insetRefreshTimer) clearTimeout(insetRefreshTimer)
+      insetRefreshTimer = setTimeout(() => {
+        insetRefreshTimer = null
+        if (!appClientStore.isStandaloneApp) return
+        void appHostApi.syncAppearance(isDark.value).catch(() => {})
+      }, 120)
+    }
+    window.addEventListener('resize', scheduleHostInsetRefresh, { passive: true })
+    window.addEventListener('orientationchange', scheduleHostInsetRefresh, { passive: true })
+    onScopeDispose(() => {
+      if (insetRefreshTimer) clearTimeout(insetRefreshTimer)
+      window.removeEventListener('resize', scheduleHostInsetRefresh)
+      window.removeEventListener('orientationchange', scheduleHostInsetRefresh)
+    })
+  }
+
   setAppLocale(locale.value)
 
   return {

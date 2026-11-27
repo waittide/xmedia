@@ -20,13 +20,15 @@ use tokio::task::JoinHandle;
 
 use crate::app_icon::{AppIconStore, AppIconVariant, IconApplier};
 use crate::local_engine::LocalEngine;
+use crate::mobile_ui::MobileUiBridge;
 use crate::opds_client::OpdsClient;
 use crate::remote_sources::{RemoteSourceStore, SharedRemoteSourceStore};
 use crate::subsonic_client::SubsonicClient;
 
 pub use dto::{
-    AppHealthResponse, AppIconResponse, MutatedRemoteSourceResponse, RemoteSourcesListResponse,
-    SubsonicAlbumsResponse, TestRemoteSourceRequest, TestRemoteSourceResponse,
+    AppAppearanceResponse, AppHealthResponse, AppIconResponse, MutatedRemoteSourceResponse,
+    RemoteSourcesListResponse, SubsonicAlbumsResponse, TestRemoteSourceRequest,
+    TestRemoteSourceResponse,
 };
 
 pub const APP_HEADER_NAME: &str = "x-xmedia-app";
@@ -40,6 +42,7 @@ pub struct StandaloneGatewayState {
     pub sources: SharedRemoteSourceStore,
     pub sources_write_lock: Arc<Mutex<()>>,
     pub app_icon: AppIconStore,
+    pub mobile_ui: MobileUiBridge,
     pub opds: OpdsClient,
     pub subsonic: SubsonicClient,
     pub expected_port: u16,
@@ -50,6 +53,22 @@ impl StandaloneGatewayState {
         local_engine: LocalEngine,
         sources: SharedRemoteSourceStore,
         app_icon: AppIconStore,
+        expected_port: u16,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_mobile_ui(
+            local_engine,
+            sources,
+            app_icon,
+            MobileUiBridge::new(),
+            expected_port,
+        )
+    }
+
+    pub fn new_with_mobile_ui(
+        local_engine: LocalEngine,
+        sources: SharedRemoteSourceStore,
+        app_icon: AppIconStore,
+        mobile_ui: MobileUiBridge,
         expected_port: u16,
     ) -> anyhow::Result<Self> {
         let secure = security::build_remote_http_client(false)?;
@@ -72,6 +91,7 @@ impl StandaloneGatewayState {
             sources,
             sources_write_lock: Arc::new(Mutex::new(())),
             app_icon,
+            mobile_ui,
             opds,
             subsonic,
             expected_port,
@@ -106,6 +126,7 @@ pub struct RunningGateway {
     pub url: String,
     pub local_engine: LocalEngine,
     app_icon: AppIconStore,
+    mobile_ui: MobileUiBridge,
     shutdown_tx: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<()>>,
 }
@@ -113,6 +134,10 @@ pub struct RunningGateway {
 impl RunningGateway {
     pub fn current_app_icon(&self) -> AppIconVariant {
         self.app_icon.current()
+    }
+
+    pub fn mobile_ui(&self) -> &MobileUiBridge {
+        &self.mobile_ui
     }
 
     pub async fn shutdown(mut self) {
@@ -144,6 +169,10 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
         .route("/_app", any(dto::app_not_found))
         .route("/_app/", any(dto::app_not_found))
         .route("/_app/health", get(handlers_sources::app_health))
+        .route(
+            "/_app/appearance",
+            put(handlers_sources::set_app_appearance),
+        )
         .route(
             "/_app/icon",
             get(handlers_sources::get_app_icon).put(handlers_sources::set_app_icon),
@@ -236,13 +265,19 @@ pub async fn start_gateway_with_icon_applier(
         local_engine.secret_encryption_key(),
     )?;
     let app_icon = AppIconStore::open(app_icon_path, icon_applier);
+    let mobile_ui = MobileUiBridge::new();
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;
     let url = format_gateway_url(addr);
 
-    let state =
-        StandaloneGatewayState::new(local_engine.clone(), sources, app_icon.clone(), addr.port())?;
+    let state = StandaloneGatewayState::new_with_mobile_ui(
+        local_engine.clone(),
+        sources,
+        app_icon.clone(),
+        mobile_ui.clone(),
+        addr.port(),
+    )?;
     let router = build_gateway_router(state, xmedia_router);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -260,6 +295,7 @@ pub async fn start_gateway_with_icon_applier(
         url,
         local_engine,
         app_icon,
+        mobile_ui,
         shutdown_tx: Some(shutdown_tx),
         handle: Some(handle),
     })

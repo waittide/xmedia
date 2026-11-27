@@ -29,7 +29,7 @@ const themeStore = useThemeStore()
 <template>
   <nav
     :aria-label="t('nav.navigation')"
-    class="safe-py safe-pl hidden w-20 shrink-0 flex-col items-center bg-surface-container py-3 select-none sm:flex"
+    class="hidden w-20 shrink-0 flex-col items-center bg-surface-container pt-[calc(var(--safe-area-top)+0.75rem)] pb-[calc(var(--safe-area-bottom)+0.75rem)] pl-[var(--safe-area-left)] select-none sm:flex"
   >
     <div class="flex w-full flex-col items-center gap-3">
       <!-- Brand mark -->

@@ -8489,6 +8489,7 @@ dependencies = [
  "form_urlencoded",
  "futures-util",
  "hex",
+ "jni 0.21.1",
  "md-5",
  "quick-xml",
  "reqwest 0.12.28",

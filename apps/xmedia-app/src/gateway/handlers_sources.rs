@@ -6,9 +6,9 @@ use axum::response::{IntoResponse, Response};
 use url::Url;
 
 use super::dto::{
-    AppHealthResponse, AppIconResponse, MutatedRemoteSourceResponse, RemoteSourcesListResponse,
-    SetAppIconRequest, TestRemoteSourceRequest, TestRemoteSourceResponse, app_error,
-    mark_source_ok, store_error_response, with_app_headers,
+    AppAppearanceResponse, AppHealthResponse, AppIconResponse, MutatedRemoteSourceResponse,
+    RemoteSourcesListResponse, SetAppAppearanceRequest, SetAppIconRequest, TestRemoteSourceRequest,
+    TestRemoteSourceResponse, app_error, mark_source_ok, store_error_response, with_app_headers,
 };
 use super::{APP_HEADER_NAME, APP_HEADER_VALUE, StandaloneGatewayState};
 use crate::app_icon::AppIconVariant;
@@ -17,6 +17,13 @@ use crate::remote_sources::{
     RemoteSourceSummaryDto, SourceStoreError, UpdateRemoteSourceInput, is_same_origin,
     normalize_remote_url,
 };
+
+fn has_valid_standalone_header(headers: &HeaderMap) -> bool {
+    headers
+        .get(APP_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case(APP_HEADER_VALUE))
+}
 
 pub(super) async fn app_health(State(state): State<StandaloneGatewayState>) -> Response {
     let remote_source_count = match state.sources.read() {
@@ -29,12 +36,44 @@ pub(super) async fn app_health(State(state): State<StandaloneGatewayState>) -> R
             );
         }
     };
+    let safe_area = state
+        .mobile_ui
+        .query_safe_area()
+        .await
+        .filter(|insets| insets.is_non_zero());
     with_app_headers(
         Json(AppHealthResponse {
             mode: "standalone".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             remote_source_count,
             enabled_modules: state.local_engine.enabled_modules.clone(),
+            safe_area,
+        })
+        .into_response(),
+    )
+}
+
+pub(super) async fn set_app_appearance(
+    State(state): State<StandaloneGatewayState>,
+    headers: HeaderMap,
+    Json(input): Json<SetAppAppearanceRequest>,
+) -> Response {
+    if !has_valid_standalone_header(&headers) {
+        return app_error(
+            StatusCode::FORBIDDEN,
+            "missing_app_header",
+            "Appearance sync requires the X-XMedia-App: standalone header",
+        );
+    }
+    let safe_area = state
+        .mobile_ui
+        .sync_appearance(input.dark)
+        .await
+        .filter(|insets| insets.is_non_zero());
+    with_app_headers(
+        Json(AppAppearanceResponse {
+            dark: input.dark,
+            safe_area,
         })
         .into_response(),
     )
@@ -86,11 +125,7 @@ pub(super) async fn app_auto_session(
     State(state): State<StandaloneGatewayState>,
     headers: HeaderMap,
 ) -> Response {
-    let valid_app_header = headers
-        .get(APP_HEADER_NAME)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case(APP_HEADER_VALUE));
-    if !valid_app_header {
+    if !has_valid_standalone_header(&headers) {
         return app_error(
             StatusCode::FORBIDDEN,
             "missing_app_header",

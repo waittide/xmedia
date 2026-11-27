@@ -39,7 +39,7 @@ const { t } = useI18n()
 
 <template>
   <header
-    class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 bg-surface-container-low px-4 py-1.5 select-none"
+    class="flex min-h-[calc(3.5rem+var(--safe-area-top))] shrink-0 items-center justify-between gap-3 bg-surface-container-low pt-[calc(var(--safe-area-top)+0.375rem)] pb-1.5 pl-[calc(var(--safe-area-left)+1rem)] pr-[calc(var(--safe-area-right)+1rem)] select-none"
   >
     <div class="flex min-w-0 items-center gap-3">
       <div

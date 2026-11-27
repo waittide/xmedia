@@ -102,7 +102,7 @@ onBeforeUnmount(() => {
   <!-- Connection Error / Retry State -->
   <div
     v-else-if="bootError || !status"
-    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-surface-container p-4 text-on-surface"
+    class="flex min-h-dvh w-screen items-center justify-center bg-surface-container pt-[calc(var(--safe-area-top)+1rem)] pb-[calc(var(--safe-area-bottom)+1rem)] pl-[calc(var(--safe-area-left)+1rem)] pr-[calc(var(--safe-area-right)+1rem)] text-on-surface"
   >
     <MdCard variant="elevated" padding="lg" class="w-full max-w-sm space-y-4 rounded-corner-xl">
       <div class="flex items-center gap-3">
@@ -138,7 +138,7 @@ onBeforeUnmount(() => {
   <!-- Password Gate when `--password` / `XMEDIA_TOOL_PASSWORD` is configured -->
   <div
     v-else-if="status?.requires_password && !status.authenticated"
-    class="safe-px safe-py flex min-h-dvh w-screen items-center justify-center bg-surface-container p-4 text-on-surface"
+    class="flex min-h-dvh w-screen items-center justify-center bg-surface-container pt-[calc(var(--safe-area-top)+1rem)] pb-[calc(var(--safe-area-bottom)+1rem)] pl-[calc(var(--safe-area-left)+1rem)] pr-[calc(var(--safe-area-right)+1rem)] text-on-surface"
   >
     <MdCard variant="elevated" padding="lg" class="w-full max-w-sm rounded-corner-xl">
       <form class="space-y-4" @submit.prevent="handleUnlock">

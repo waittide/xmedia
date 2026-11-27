@@ -40,6 +40,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 xmedia = { path = "../../crates/xmedia" }
 xmedia-core = { path = "../../crates/xmedia-core" }
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["multipart"] }
 tempfile = "3"

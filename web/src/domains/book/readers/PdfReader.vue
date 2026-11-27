@@ -337,7 +337,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="scrollAreaEl"
-    class="safe-pt safe-pb flex h-full w-full justify-center overflow-auto bg-surface-container px-3 pt-16 pb-20 sm:px-6"
+    class="flex h-full w-full justify-center overflow-auto bg-surface-container pt-[calc(var(--safe-area-top)+4rem)] pb-[calc(var(--safe-area-bottom)+5rem)] pl-[calc(var(--safe-area-left)+0.75rem)] pr-[calc(var(--safe-area-right)+0.75rem)] sm:pl-[calc(var(--safe-area-left)+1.5rem)] sm:pr-[calc(var(--safe-area-right)+1.5rem)]"
     @touchstart.passive="handleTouchStart"
     @touchend.passive="handleTouchEnd"
   >

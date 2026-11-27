@@ -95,7 +95,7 @@ defineExpose({
             class="flex h-dvh w-full max-w-xl flex-col overflow-hidden rounded-corner-none bg-surface-container-high text-on-surface shadow-elevation-3 outline-none sm:h-auto sm:max-h-[75dvh] sm:rounded-corner-xl"
           >
             <!-- MD3 Search View Input Header -->
-            <div class="safe-pt shrink-0 border-b border-outline-variant">
+            <div class="safe-pt safe-px shrink-0 border-b border-outline-variant sm:px-0 sm:pt-0">
               <div class="flex h-14 items-center gap-2 px-2 sm:px-3">
                 <MdIconButton
                   size="sm"
@@ -134,7 +134,9 @@ defineExpose({
             </div>
 
             <!-- Scrollable Body: History, Results, and Online Quick Actions -->
-            <div class="safe-pb flex-1 overflow-y-auto px-3 py-3 sm:pb-3">
+            <div
+              class="flex-1 overflow-y-auto pt-3 pb-[calc(var(--safe-area-bottom)+0.75rem)] pl-[calc(var(--safe-area-left)+0.75rem)] pr-[calc(var(--safe-area-right)+0.75rem)] sm:px-3 sm:pb-3"
+            >
               <slot>
                 <div v-if="!hasNonEmptyQuery && $slots.history">
                   <slot name="history" />

@@ -82,7 +82,7 @@ defineExpose({
             tabindex="-1"
             :aria-labelledby="title ? titleId : undefined"
             :aria-describedby="subtitle ? subtitleId : undefined"
-            class="safe-pb flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-corner-xl bg-surface-container-low text-on-surface shadow-elevation-1 outline-none sm:h-full sm:max-h-none sm:max-w-[calc(100vw-3rem)] sm:rounded-t-corner-none sm:rounded-l-corner-lg sm:pb-0"
+            class="safe-pb flex max-h-[min(85dvh,calc(100dvh-var(--safe-area-top)-0.75rem))] w-full flex-col overflow-hidden rounded-t-corner-xl bg-surface-container-low text-on-surface shadow-elevation-1 outline-none sm:h-full sm:max-h-none sm:max-w-[calc(100vw-3rem)] sm:rounded-t-corner-none sm:rounded-l-corner-lg sm:pr-[var(--safe-area-right)] sm:pb-[var(--safe-area-bottom)]"
             :class="[sizeClass, darkScheme ? 'md-scheme-dark' : '']"
           >
             <!-- Compact (<600px) bottom sheet drag handle -->
@@ -91,7 +91,9 @@ defineExpose({
             </div>
 
             <!-- Sheet Header -->
-            <div class="flex items-start justify-between gap-3 px-6 pt-3 pb-4 sm:pt-6">
+            <div
+              class="flex items-start justify-between gap-3 px-6 pt-3 pb-4 sm:pt-[calc(var(--safe-area-top)+1.5rem)]"
+            >
               <div class="min-w-0">
                 <h3 :id="titleId" class="text-title-large text-on-surface">
                   {{ title }}

@@ -50,7 +50,9 @@ async function onSubmit(): Promise<void> {
       </div>
     </header>
 
-    <main class="safe-px flex flex-1 items-center justify-center p-4">
+    <main
+      class="flex flex-1 items-center justify-center py-4 pl-[calc(var(--safe-area-left)+1rem)] pr-[calc(var(--safe-area-right)+1rem)]"
+    >
       <MdCard
         variant="elevated"
         padding="lg"

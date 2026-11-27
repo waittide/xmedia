@@ -258,6 +258,26 @@ async fn e2e_standalone_local_engine_opds_and_subsonic_roundtrip() {
     assert_eq!(health.remote_source_count, 0);
     assert_eq!(health.enabled_modules.len(), 4);
 
+    // Appearance endpoint requires X-XMedia-App header and returns synced dark state
+    let appearance_missing_hdr = client
+        .put(format!("{}/_app/appearance", gateway.url))
+        .json(&json!({ "dark": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(appearance_missing_hdr.status(), StatusCode::FORBIDDEN);
+
+    let appearance_ok = client
+        .put(format!("{}/_app/appearance", gateway.url))
+        .header(APP_HEADER_NAME, APP_HEADER_VALUE)
+        .json(&json!({ "dark": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(appearance_ok.status(), StatusCode::OK);
+    let appearance_json: Value = appearance_ok.json().await.unwrap();
+    assert_eq!(appearance_json["dark"], json!(true));
+
     // 2. Zero-login auto-session works via POST (and rejects GET)
     let get_rejected = client
         .get(format!("{}/_app/auto-session", gateway.url))
