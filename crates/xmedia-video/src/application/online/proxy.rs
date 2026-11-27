@@ -17,7 +17,7 @@ impl VideoOnlineService {
     ) -> DomainResult<(Vec<u8>, &'static str)> {
         let headers = match source_id {
             Some(sid) => {
-                self.resolve_source_media_headers(actor, sid, raw_url)
+                self.resolve_source_media_headers_with_cookies(actor, sid, raw_url)
                     .await?
             }
             None => HashMap::new(),

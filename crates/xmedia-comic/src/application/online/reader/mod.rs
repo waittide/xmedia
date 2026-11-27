@@ -10,7 +10,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 use xmedia_source::crud::merge_diagnostics;
 use xmedia_source::http::HttpClientConfig;
-use xmedia_source::proxy::{DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_image};
+use xmedia_source::proxy::{DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, fetch_source_image};
 
 use crate::domain::online::{ComicSearchResult, ComicSourceSpec};
 
@@ -343,12 +343,24 @@ impl ComicOnlineService {
         source_id: Option<Uuid>,
         raw_url: &str,
     ) -> DomainResult<(Vec<u8>, String)> {
+        let mut source_url: Option<String> = None;
         let custom_headers = if let Some(sid) = source_id {
             let rec = self.source_crud.load_source_for_actor(actor, sid).await?;
             let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
                 .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
             let mut headers = parsed.image_headers(Some(raw_url));
             headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+            if parsed.enabled_cookie_jar
+                && !headers.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
+                && xmedia_source::proxy::has_origin_affinity(&parsed.source_url, raw_url)
+            {
+                let ck =
+                    xmedia_source::http::lookup_cookie_in_jar(&rec.runtime_state.cookies, raw_url);
+                if !ck.is_empty() {
+                    headers.insert("Cookie".to_string(), ck);
+                }
+            }
+            source_url = Some(parsed.source_url);
             Some(headers)
         } else {
             None
@@ -359,7 +371,8 @@ impl ComicOnlineService {
             allow_private_ips: self.allow_private_ips,
             proxy_url: None,
         };
-        let (bytes, mime) = fetch_image(
+        let (bytes, mime) = fetch_source_image(
+            source_url.as_deref(),
             raw_url,
             custom_headers.as_ref(),
             COMIC_IMAGE_PROXY_MAX_BYTES,
