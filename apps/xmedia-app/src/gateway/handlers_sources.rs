@@ -15,6 +15,7 @@ use super::dto::{
 };
 use super::{APP_HEADER_NAME, APP_HEADER_VALUE, StandaloneGatewayState};
 use crate::app_icon::AppIconVariant;
+use crate::mobile_ui::SystemFontSource;
 use crate::remote_sources::{
     CreateRemoteSourceInput, PendingSourceMutation, RemoteProtocol, RemoteSourceStore,
     RemoteSourceSummaryDto, SourceStoreError, UpdateRemoteSourceInput, is_same_origin,
@@ -97,19 +98,27 @@ pub(super) async fn get_app_system_font(
             "Host system font slot not available",
         );
     };
-    let bytes = match tokio::fs::read(&entry.path).await {
-        Ok(b) => b,
-        Err(_) => {
-            return app_error(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "Host system font file could not be read",
-            );
+    let (body, content_len) = match entry.source {
+        SystemFontSource::File(path) => match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                let len = bytes.len();
+                (Body::from(bytes), len)
+            }
+            Err(_) => {
+                return app_error(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    "Host system font file could not be read",
+                );
+            }
+        },
+        SystemFontSource::Memory(bytes) => {
+            let len = bytes.len();
+            (Body::from(bytes.to_vec()), len)
         }
     };
 
-    let content_len = bytes.len();
-    let mut res = (StatusCode::OK, Body::from(bytes)).into_response();
+    let mut res = (StatusCode::OK, body).into_response();
     let headers = res.headers_mut();
     headers.insert(
         HeaderName::from_static(APP_HEADER_NAME),

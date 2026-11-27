@@ -35,8 +35,14 @@ pub struct SystemFontFaceDto {
 }
 
 #[derive(Debug, Clone)]
+pub enum SystemFontSource {
+    File(PathBuf),
+    Memory(Arc<[u8]>),
+}
+
+#[derive(Debug, Clone)]
 pub struct SystemFontEntry {
-    pub path: PathBuf,
+    pub source: SystemFontSource,
     pub mime_type: &'static str,
     pub dto: SystemFontFaceDto,
 }
@@ -316,13 +322,76 @@ fn sync_android_system_bars_and_insets(
 }
 
 #[cfg(target_os = "android")]
-fn shape_typeface_font_paths(
+enum ShapedAndroidFont {
+    File(PathBuf, SfntHeaderInspection),
+    Memory(Arc<[u8]>, SfntHeaderInspection),
+}
+
+#[cfg(target_os = "android")]
+impl ShapedAndroidFont {
+    fn info(&self) -> SfntHeaderInspection {
+        match self {
+            Self::File(_, info) | Self::Memory(_, info) => *info,
+        }
+    }
+
+    fn into_source(self) -> SystemFontSource {
+        match self {
+            Self::File(path, _) => SystemFontSource::File(path),
+            Self::Memory(bytes, _) => SystemFontSource::Memory(bytes),
+        }
+    }
+
+    fn clone_source(&self) -> SystemFontSource {
+        match self {
+            Self::File(path, _) => SystemFontSource::File(path.clone()),
+            Self::Memory(bytes, _) => SystemFontSource::Memory(Arc::clone(bytes)),
+        }
+    }
+
+    fn same_underlying(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::File(a, _), Self::File(b, _)) => a == b,
+            (Self::Memory(a, _), Self::Memory(b, _)) => {
+                a.len() == b.len() && a.get(..64) == b.get(..64)
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn read_font_direct_buffer(
     env: &mut jni::JNIEnv<'_>,
-    typeface_field: &str,
-) -> Vec<(PathBuf, i32)> {
+    font: &jni::objects::JObject<'_>,
+) -> Option<(Arc<[u8]>, SfntHeaderInspection)> {
+    use jni::objects::JByteBuffer;
+
+    let buf_obj = env
+        .call_method(font, "getBuffer", "()Ljava/nio/ByteBuffer;", &[])
+        .and_then(|v| v.l())
+        .ok()?;
+    if buf_obj.is_null() {
+        return None;
+    }
+    let jbuf = JByteBuffer::from(buf_obj);
+    let ptr = env.get_direct_buffer_address(&jbuf).ok()?;
+    let cap = env.get_direct_buffer_capacity(&jbuf).ok()?;
+    if ptr.is_null() || !(16..=MAX_SYSTEM_FONT_BYTES as usize).contains(&cap) {
+        return None;
+    }
+    // SAFETY: `Font.getBuffer()` returns a read-only direct ByteBuffer backed by Android's
+    // mmap'd Minikin font asset valid for the lifetime of `font` in this frame.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, cap) };
+    let info = inspect_font_header_bytes(&bytes[..cap.min(2048)])?;
+    Some((Arc::from(bytes), info))
+}
+
+#[cfg(target_os = "android")]
+fn shape_typeface_fonts(env: &mut jni::JNIEnv<'_>, typeface_field: &str) -> Vec<ShapedAndroidFont> {
     use jni::objects::{JString, JValue};
 
-    let mut resolved = Vec::new();
+    let mut resolved: Vec<ShapedAndroidFont> = Vec::new();
     let step = (|| -> jni::errors::Result<()> {
         let typeface = env
             .get_static_field(
@@ -383,27 +452,54 @@ fn shape_typeface_font_paths(
                 .and_then(|v| v.i())
                 .unwrap_or(0);
             clear_jni_exception(env);
+            if ttc_index > 0 {
+                continue;
+            }
 
             let file_obj = env
-                .call_method(&font, "getFile", "()Ljava/io/File;", &[])?
-                .l()?;
-            if file_obj.is_null() {
-                continue;
+                .call_method(&font, "getFile", "()Ljava/io/File;", &[])
+                .and_then(|v| v.l())
+                .unwrap_or_default();
+            clear_jni_exception(env);
+
+            let mut candidate: Option<ShapedAndroidFont> = None;
+            if !file_obj.is_null()
+                && let Ok(path_obj) = env
+                    .call_method(&file_obj, "getAbsolutePath", "()Ljava/lang/String;", &[])
+                    .and_then(|v| v.l())
+                && !path_obj.is_null()
+            {
+                let jstr = JString::from(path_obj);
+                if let Ok(raw) = env.get_string(&jstr) {
+                    let raw_path = raw.to_string_lossy().into_owned();
+                    if !raw_path.is_empty() {
+                        let pb = PathBuf::from(raw_path);
+                        if should_skip_stock_cjk_collection(&pb, ttc_index) {
+                            continue;
+                        }
+                        if let Some(info) = inspect_system_font_file(&pb) {
+                            candidate = Some(ShapedAndroidFont::File(pb, info));
+                        }
+                    }
+                }
             }
-            let path_obj = env
-                .call_method(&file_obj, "getAbsolutePath", "()Ljava/lang/String;", &[])?
-                .l()?;
-            if path_obj.is_null() {
-                continue;
+            clear_jni_exception(env);
+
+            if candidate.is_none() {
+                candidate = read_font_direct_buffer(env, &font)
+                    .map(|(bytes, info)| ShapedAndroidFont::Memory(bytes, info));
+                clear_jni_exception(env);
             }
-            let jstr = JString::from(path_obj);
-            let raw_path = env.get_string(&jstr)?.to_string_lossy().into_owned();
-            if raw_path.is_empty() {
-                continue;
-            }
-            let pb = PathBuf::from(raw_path);
-            if !resolved.iter().any(|(existing, _)| existing == &pb) {
-                resolved.push((pb, ttc_index));
+
+            if let Some(found) = candidate
+                && !resolved
+                    .iter()
+                    .any(|existing| existing.same_underlying(&found))
+            {
+                resolved.push(found);
+                if resolved.len() >= 3 {
+                    break;
+                }
             }
         }
         Ok(())
@@ -420,55 +516,38 @@ fn detect_android_default_fonts(env: &mut jni::JNIEnv<'_>, sdk_int: i32) -> Vec<
     let mut entries: Vec<SystemFontEntry> = Vec::new();
 
     if sdk_int >= 31 {
-        let regular_candidates = shape_typeface_font_paths(env, "DEFAULT");
-        let bold_candidates = shape_typeface_font_paths(env, "DEFAULT_BOLD");
+        let regular_kept = shape_typeface_fonts(env, "DEFAULT");
+        let bold_kept = shape_typeface_fonts(env, "DEFAULT_BOLD");
 
-        let mut regular_kept: Vec<(PathBuf, SfntHeaderInspection)> = Vec::new();
-        for (path, ttc_idx) in regular_candidates {
-            if should_skip_stock_cjk_collection(&path, ttc_idx) {
-                continue;
-            }
-            if let Some(info) = inspect_system_font_file(&path) {
-                regular_kept.push((path, info));
-                if regular_kept.len() >= 3 {
-                    break;
-                }
-            }
-        }
-
-        let bold_kept: Vec<(PathBuf, SfntHeaderInspection)> = bold_candidates
-            .into_iter()
-            .filter(|(p, ttc_idx)| !should_skip_stock_cjk_collection(p, *ttc_idx))
-            .filter_map(|(p, _)| inspect_system_font_file(&p).map(|info| (p, info)))
-            .take(3)
-            .collect();
-
-        for (family_index, (reg_path, reg_info)) in regular_kept.into_iter().enumerate() {
+        for (family_index, reg_font) in regular_kept.into_iter().enumerate() {
+            let reg_info = reg_font.info();
             let distinct_bold = if !reg_info.variable {
                 bold_kept
                     .get(family_index)
-                    .filter(|(bp, _)| bp != &reg_path)
+                    .filter(|bf| !bf.same_underlying(&reg_font))
             } else {
                 None
             };
+            let has_distinct_bold = distinct_bold.is_some();
 
             let slot = entries.len();
             entries.push(SystemFontEntry {
-                path: reg_path,
+                source: reg_font.into_source(),
                 mime_type: reg_info.mime_type,
                 dto: SystemFontFaceDto {
                     slot,
                     family_index,
                     css_format: reg_info.css_format.to_string(),
                     variable: reg_info.variable,
-                    weight: distinct_bold.map(|_| 400),
+                    weight: has_distinct_bold.then_some(400),
                 },
             });
 
-            if let Some((bold_path, bold_info)) = distinct_bold {
+            if let Some(bold_font) = distinct_bold {
+                let bold_info = bold_font.info();
                 let bold_slot = entries.len();
                 entries.push(SystemFontEntry {
-                    path: bold_path.clone(),
+                    source: bold_font.clone_source(),
                     mime_type: bold_info.mime_type,
                     dto: SystemFontFaceDto {
                         slot: bold_slot,
@@ -494,7 +573,7 @@ fn detect_android_default_fonts(env: &mut jni::JNIEnv<'_>, sdk_int: i32) -> Vec<
             if let Some(info) = inspect_system_font_file(&path) {
                 let slot = entries.len();
                 entries.push(SystemFontEntry {
-                    path,
+                    source: SystemFontSource::File(path),
                     mime_type: info.mime_type,
                     dto: SystemFontFaceDto {
                         slot,
