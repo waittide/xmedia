@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
@@ -9,12 +9,85 @@ use encoding_rs::Encoding;
 use jiff::Timestamp;
 use md5::{Digest, Md5};
 use rquickjs::{Ctx, Exception, Function};
+use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
-use crate::model::BrowserRedirectHint;
+use crate::http::{HttpFetchResult, LegadoHttpClient};
+use crate::model::{BrowserRedirectHint, ExecutionDiagnostics};
+use crate::proxy::DEFAULT_IMAGE_PROXY_MAX_BYTES;
 use crate::rule::{RuleValue, eval_non_js_list, eval_non_js_single};
 
 use super::convert::{insert_bounded_map, map_total_bytes, push_diag_log};
 use super::{SharedBridgeState, now_mono_ms};
+
+struct JsHttpCallCtx {
+    http: LegadoHttpClient,
+    base_ref: Arc<Mutex<String>>,
+    diag: Arc<Mutex<ExecutionDiagnostics>>,
+    op_dl: Arc<AtomicU64>,
+    eval_dl: Arc<AtomicU64>,
+    cancel: Arc<AtomicBool>,
+    req_cnt: Arc<AtomicUsize>,
+    max_http_requests: usize,
+}
+
+impl JsHttpCallCtx {
+    fn from_bridge(b: &SharedBridgeState, eval_deadline_ms: &Arc<AtomicU64>) -> Self {
+        Self {
+            http: b.http.clone(),
+            base_ref: b.current_base_url.clone(),
+            diag: b.diagnostics.clone(),
+            op_dl: b.op_deadline_ms.clone(),
+            eval_dl: eval_deadline_ms.clone(),
+            cancel: b.cancel_flag.clone(),
+            req_cnt: b.http_req_count.clone(),
+            max_http_requests: b.sandbox.max_http_requests,
+        }
+    }
+
+    fn execute<'js>(
+        &self,
+        ctx_js: &Ctx<'js>,
+        api_name: &str,
+        raw_url: &str,
+    ) -> rquickjs::Result<Result<HttpFetchResult, String>> {
+        let now = now_mono_ms();
+        let deadline = self
+            .op_dl
+            .load(Ordering::Relaxed)
+            .min(self.eval_dl.load(Ordering::Relaxed));
+        if self.cancel.load(Ordering::Relaxed) || now >= deadline {
+            let msg = format!("{api_name} 已中断：超过操作超时或已取消");
+            push_diag_log(&self.diag, msg.clone());
+            return Err(Exception::throw_message(ctx_js, &msg));
+        }
+        let count = self.req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+        if count > self.max_http_requests {
+            let msg = format!(
+                "{api_name} 请求被拒：超过单次操作 HTTP 请求上限 ({})",
+                self.max_http_requests
+            );
+            push_diag_log(&self.diag, msg.clone());
+            return Err(Exception::throw_message(ctx_js, &msg));
+        }
+        let remaining = Duration::from_millis(deadline.saturating_sub(now));
+        let base = self
+            .base_ref
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Ok(self
+            .http
+            .fetch_with_timeout(raw_url, &base, Some(remaining)))
+    }
+}
+
+fn encode_safe_image_data_url(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > DEFAULT_IMAGE_PROXY_MAX_BYTES {
+        return None;
+    }
+    let mime = sniff_raster_image_mime(bytes)?;
+    Some(format!("data:{mime};base64,{}", BASE64_STD.encode(bytes)))
+}
 
 pub(super) fn install_native_bridges(
     ctx: &Ctx<'_>,
@@ -24,42 +97,16 @@ pub(super) fn install_native_bridges(
     let globals = ctx.globals();
     let cfg = &b.sandbox;
 
-    // 1. HTTP bridges (`__x_ajax`, `__x_connect`)
+    // 1. HTTP bridges (`__x_ajax`, `__x_ajax_b64`, `__x_image_data_url`, `__x_connect`)
     {
-        let http = b.http.clone();
-        let base_ref = b.current_base_url.clone();
-        let diag = b.diagnostics.clone();
-        let op_dl = b.op_deadline_ms.clone();
-        let eval_dl = eval_deadline_ms.clone();
-        let cancel = b.cancel_flag.clone();
-        let req_cnt = b.http_req_count.clone();
-        let max_http_requests = cfg.max_http_requests;
+        let call = JsHttpCallCtx::from_bridge(b, eval_deadline_ms);
         let f = Function::new(
             ctx.clone(),
             move |ctx_js: Ctx<'_>, raw_url: String| -> rquickjs::Result<String> {
-                let now = now_mono_ms();
-                let deadline = op_dl
-                    .load(Ordering::Relaxed)
-                    .min(eval_dl.load(Ordering::Relaxed));
-                if cancel.load(Ordering::Relaxed) || now >= deadline {
-                    let msg = "java.ajax 已中断：超过操作超时或已取消";
-                    push_diag_log(&diag, msg);
-                    return Err(Exception::throw_message(&ctx_js, msg));
-                }
-                let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
-                if count > max_http_requests {
-                    let msg = format!(
-                        "java.ajax 请求被拒：超过单次操作 HTTP 请求上限 ({max_http_requests})"
-                    );
-                    push_diag_log(&diag, msg.clone());
-                    return Err(Exception::throw_message(&ctx_js, &msg));
-                }
-                let remaining = Duration::from_millis(deadline.saturating_sub(now));
-                let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
+                match call.execute(&ctx_js, "java.ajax", &raw_url)? {
                     Ok(res) => Ok(res.body),
                     Err(err) => {
-                        push_diag_log(&diag, format!("java.ajax 失败: {err}"));
+                        push_diag_log(&call.diag, format!("java.ajax 失败: {err}"));
                         Ok(String::new())
                     }
                 }
@@ -70,48 +117,88 @@ pub(super) fn install_native_bridges(
     }
 
     {
-        let http = b.http.clone();
-        let base_ref = b.current_base_url.clone();
-        let diag = b.diagnostics.clone();
-        let op_dl = b.op_deadline_ms.clone();
-        let eval_dl = eval_deadline_ms.clone();
-        let cancel = b.cancel_flag.clone();
-        let req_cnt = b.http_req_count.clone();
-        let max_http_requests = cfg.max_http_requests;
+        let call = JsHttpCallCtx::from_bridge(b, eval_deadline_ms);
         let f = Function::new(
             ctx.clone(),
             move |ctx_js: Ctx<'_>, raw_url: String| -> rquickjs::Result<String> {
-                let now = now_mono_ms();
-                let deadline = op_dl
-                    .load(Ordering::Relaxed)
-                    .min(eval_dl.load(Ordering::Relaxed));
-                if cancel.load(Ordering::Relaxed) || now >= deadline {
-                    let err = "java.connect 已中断：超过操作超时或已取消";
-                    push_diag_log(&diag, err);
-                    return Err(Exception::throw_message(&ctx_js, err));
-                }
-                let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
-                if count > max_http_requests {
-                    let err = format!(
-                        "java.connect 请求被拒：超过单次操作 HTTP 请求上限 ({max_http_requests})"
-                    );
-                    push_diag_log(&diag, err.clone());
-                    return Err(Exception::throw_message(&ctx_js, &err));
-                }
-                let remaining = Duration::from_millis(deadline.saturating_sub(now));
-                let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
-                    Ok(res) => Ok(serde_json::json!({
-                        "body": res.body,
-                        "code": res.status,
-                        "url": res.final_url,
-                        "headers": res.headers,
-                    })
-                    .to_string()),
+                match call.execute(&ctx_js, "java.ajaxBase64", &raw_url)? {
+                    Ok(res) if res.raw_bytes.len() <= DEFAULT_IMAGE_PROXY_MAX_BYTES => {
+                        Ok(BASE64_STD.encode(&res.raw_bytes))
+                    }
+                    Ok(_) => {
+                        push_diag_log(&call.diag, "java.ajaxBase64 失败: 响应体积超过 8 MiB 上限");
+                        Ok(String::new())
+                    }
                     Err(err) => {
-                        push_diag_log(&diag, format!("java.connect 失败: {err}"));
+                        push_diag_log(&call.diag, format!("java.ajaxBase64 失败: {err}"));
+                        Ok(String::new())
+                    }
+                }
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals.set("__x_ajax_b64", f).map_err(|e| e.to_string())?;
+    }
+
+    {
+        let call = JsHttpCallCtx::from_bridge(b, eval_deadline_ms);
+        let f = Function::new(
+            ctx.clone(),
+            move |ctx_js: Ctx<'_>, raw_url: String| -> rquickjs::Result<String> {
+                match call.execute(&ctx_js, "java.imageDataUrl", &raw_url)? {
+                    Ok(res) => {
+                        if let Some(data_url) = encode_safe_image_data_url(&res.raw_bytes) {
+                            Ok(data_url)
+                        } else {
+                            push_diag_log(
+                                &call.diag,
+                                "java.imageDataUrl 失败: 响应不是受支持的光栅图片或超过体积上限",
+                            );
+                            Ok(String::new())
+                        }
+                    }
+                    Err(err) => {
+                        push_diag_log(&call.diag, format!("java.imageDataUrl 失败: {err}"));
+                        Ok(String::new())
+                    }
+                }
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_image_data_url", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let call = JsHttpCallCtx::from_bridge(b, eval_deadline_ms);
+        let f = Function::new(
+            ctx.clone(),
+            move |ctx_js: Ctx<'_>, raw_url: String| -> rquickjs::Result<String> {
+                match call.execute(&ctx_js, "java.connect", &raw_url)? {
+                    Ok(res) => {
+                        let data_url = encode_safe_image_data_url(&res.raw_bytes);
+                        let body_b64 = if res.raw_bytes.len() <= DEFAULT_IMAGE_PROXY_MAX_BYTES {
+                            BASE64_STD.encode(&res.raw_bytes)
+                        } else {
+                            String::new()
+                        };
+                        Ok(serde_json::json!({
+                            "body": res.body,
+                            "bodyBase64": body_b64,
+                            "dataUrl": data_url.unwrap_or_default(),
+                            "code": res.status,
+                            "url": res.final_url,
+                            "headers": res.headers,
+                        })
+                        .to_string())
+                    }
+                    Err(err) => {
+                        push_diag_log(&call.diag, format!("java.connect 失败: {err}"));
                         Ok(serde_json::json!({
                             "body": "",
+                            "bodyBase64": "",
+                            "dataUrl": "",
                             "code": 0,
                             "url": raw_url,
                             "headers": {},

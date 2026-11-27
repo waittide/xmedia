@@ -439,6 +439,51 @@ fn bridge_java_cookie_cache_source_methods() {
 }
 
 #[test]
+fn js_image_data_url_and_connect_base64_preserve_binary_raster_bytes() {
+    let meta = sample_metadata();
+    let (http, _) = make_test_http(true);
+    let mut ctx = JsExecutionContext::new(
+        &meta,
+        http,
+        Arc::new(Mutex::new(SourceRuntimeState::default())),
+        Arc::new(Mutex::new(ExecutionDiagnostics::default())),
+        JsSandboxConfig::default(),
+    )
+    .unwrap();
+
+    // Minimal valid 1x1 PNG via data: pseudo-URL (exercises raw_bytes -> sniff_raster_image_mime -> base64)
+    let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let script = format!(
+        r#"
+        var src = 'data:image/png;base64,{png_b64}';
+        var d1 = java.imageDataUrl(src);
+        var b1 = java.ajaxBase64(src);
+        var c = java.connect(src);
+        var bad = java.imageDataUrl('data:text/plain;base64,aGVsbG8=');
+        JSON.stringify({{
+            d1: d1,
+            b1: b1,
+            cd: c.dataUrl(),
+            cb: c.bodyBase64(),
+            bad: bad
+        }});
+        "#
+    );
+
+    let out = ctx
+        .eval_rule_js(&script, &RuleValue::Text(String::new()), "")
+        .unwrap()
+        .as_text();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let expected_data_url = format!("data:image/png;base64,{png_b64}");
+    assert_eq!(parsed["d1"].as_str(), Some(expected_data_url.as_str()));
+    assert_eq!(parsed["b1"].as_str(), Some(png_b64));
+    assert_eq!(parsed["cd"].as_str(), Some(expected_data_url.as_str()));
+    assert_eq!(parsed["cb"].as_str(), Some(png_b64));
+    assert_eq!(parsed["bad"].as_str(), Some(""));
+}
+
+#[test]
 fn mustache_template_propagates_sandbox_errors_and_allows_css_fallback() {
     let meta = sample_metadata();
     let (http, cookies) = make_test_http(true);

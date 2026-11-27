@@ -101,7 +101,7 @@ impl BookOnlineService {
         let cover_payload = if let Some(ref cover_url) = input.cover_url
             && !cover_url.trim().is_empty()
         {
-            self.fetch_cover_proxy(cover_url)
+            self.fetch_cover_proxy_with_source(Some(actor), cover_url, Some(input.source_id))
                 .await
                 .ok()
                 .map(|(bytes, mime_type)| CoverPayload::new(Bytes::from(bytes), mime_type))

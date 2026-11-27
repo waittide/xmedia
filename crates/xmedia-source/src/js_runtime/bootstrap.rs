@@ -94,10 +94,18 @@ pub(super) fn install_bootstrap_globals(
             ajax: function(url) {{
                 return __x_ajax(String(url || ''));
             }},
+            ajaxBase64: function(url) {{
+                return __x_ajax_b64(String(url || ''));
+            }},
+            imageDataUrl: function(url) {{
+                return __x_image_data_url(String(url || ''));
+            }},
             connect: function(url) {{
                 var resp = JSON.parse(__x_connect(String(url || '')));
                 return {{
                     body: function() {{ return resp.body || ''; }},
+                    bodyBase64: function() {{ return resp.bodyBase64 || ''; }},
+                    dataUrl: function() {{ return resp.dataUrl || ''; }},
                     code: function() {{ return resp.code || 0; }},
                     url: function() {{ return resp.url || ''; }},
                     headers: function() {{ return resp.headers || {{}}; }}

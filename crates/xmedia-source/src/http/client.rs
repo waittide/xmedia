@@ -367,39 +367,8 @@ impl LegadoHttpClient {
     }
 
     pub fn get_cookie_header(&self, url_or_domain: &str) -> String {
-        let key = normalize_cookie_key(url_or_domain);
-        if key.is_empty() {
-            return String::new();
-        }
         let guard = self.cookies.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(v) = guard.get(&key) {
-            return v.clone();
-        }
-        // Only allow parent-domain cookies to match subdomains (never child -> parent),
-        // picking the most specific (longest) matching suffix deterministically.
-        let mut best: Option<(&str, &str)> = None;
-        for (stored_host, val) in guard.iter() {
-            let clean_stored = stored_host.trim_start_matches('.');
-            if clean_stored.is_empty() {
-                continue;
-            }
-            if key.len() > clean_stored.len()
-                && key.ends_with(clean_stored)
-                && key.as_bytes()[key.len() - clean_stored.len() - 1] == b'.'
-            {
-                let replace = match best {
-                    None => true,
-                    Some((prev_host, _)) => {
-                        clean_stored.len() > prev_host.len()
-                            || (clean_stored.len() == prev_host.len() && clean_stored < prev_host)
-                    }
-                };
-                if replace {
-                    best = Some((clean_stored, val.as_str()));
-                }
-            }
-        }
-        best.map(|(_, v)| v.to_string()).unwrap_or_default()
+        lookup_cookie_in_jar(&guard, url_or_domain)
     }
 
     pub fn set_cookie(&self, url_or_domain: &str, cookie_val: &str) -> bool {
@@ -706,9 +675,45 @@ impl LegadoHttpClient {
             final_url,
             status,
             body,
+            raw_bytes,
             headers: resp_headers,
         })
     }
+}
+
+pub fn lookup_cookie_in_jar(cookies: &HashMap<String, String>, url_or_domain: &str) -> String {
+    let key = normalize_cookie_key(url_or_domain);
+    if key.is_empty() {
+        return String::new();
+    }
+    if let Some(v) = cookies.get(&key) {
+        return v.clone();
+    }
+    // Only allow parent-domain cookies to match subdomains (never child -> parent),
+    // picking the most specific (longest) matching suffix deterministically.
+    let mut best: Option<(&str, &str)> = None;
+    for (stored_host, val) in cookies.iter() {
+        let clean_stored = stored_host.trim_start_matches('.');
+        if clean_stored.is_empty() {
+            continue;
+        }
+        if key.len() > clean_stored.len()
+            && key.ends_with(clean_stored)
+            && key.as_bytes()[key.len() - clean_stored.len() - 1] == b'.'
+        {
+            let replace = match best {
+                None => true,
+                Some((prev_host, _)) => {
+                    clean_stored.len() > prev_host.len()
+                        || (clean_stored.len() == prev_host.len() && clean_stored < prev_host)
+                }
+            };
+            if replace {
+                best = Some((clean_stored, val.as_str()));
+            }
+        }
+    }
+    best.map(|(_, v)| v.to_string()).unwrap_or_default()
 }
 
 fn is_transient_blocking_send_error(err: &reqwest::Error) -> bool {

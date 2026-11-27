@@ -560,14 +560,43 @@ impl BookOnlineService {
     }
 
     pub async fn fetch_cover_proxy(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
+        self.fetch_cover_proxy_with_source(None, raw_url, None)
+            .await
+    }
+
+    pub async fn fetch_cover_proxy_with_source(
+        &self,
+        actor: Option<&User>,
+        raw_url: &str,
+        source_id: Option<Uuid>,
+    ) -> DomainResult<(Vec<u8>, String)> {
+        let trimmed = raw_url.trim();
+        let mut source_url: Option<String> = None;
+        let mut headers: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        if let Some(sid) = source_id {
+            let rec = match actor {
+                Some(u) => self.sources.load_source_for_actor(u, sid).await?,
+                None => self.sources.load_source(sid).await?,
+            };
+            if let Ok(spec) = serde_json::from_str::<LegadoBookSource>(&rec.raw_json) {
+                headers =
+                    spec.build_image_headers_with_cookies(&rec.runtime_state.cookies, trimmed);
+                source_url = Some(spec.book_source_url);
+            }
+        }
+
         let cfg = HttpClientConfig {
             timeout_secs: xmedia_source::proxy::DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
             allow_private_ips: self.allow_private_ips,
             proxy_url: None,
         };
-        let (bytes, mime) = xmedia_source::proxy::fetch_image(
-            raw_url,
-            None,
+        let header_opt = (!headers.is_empty()).then_some(&headers);
+        let (bytes, mime) = xmedia_source::proxy::fetch_source_image(
+            source_url.as_deref(),
+            trimmed,
+            header_opt,
             xmedia_source::proxy::DEFAULT_IMAGE_PROXY_MAX_BYTES,
             &cfg,
         )

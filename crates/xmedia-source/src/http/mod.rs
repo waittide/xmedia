@@ -15,7 +15,7 @@ pub const MAX_COOKIE_TOTAL_BYTES: usize = 256 * 1024;
 
 pub use client::{
     LegadoHttpClient, build_sanitized_headers, decode_response_bytes, get_or_build_async_client,
-    get_or_build_blocking_client, is_forbidden_custom_header,
+    get_or_build_blocking_client, is_forbidden_custom_header, lookup_cookie_in_jar,
 };
 pub use proxy::{
     filter_header_map_for_target_origin, filter_headers_for_target_origin, has_origin_affinity,

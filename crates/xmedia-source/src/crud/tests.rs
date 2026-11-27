@@ -70,6 +70,7 @@ impl SourceSpecAdapter for SampleSpec {
                 name: "pinCode".into(),
                 item_type: "password".into(),
                 action: None,
+                url: None,
                 style: None,
             }],
         }
@@ -262,12 +263,28 @@ fn masking_and_build_source_summary_for_admin_and_member() {
             name: "用户名".into(),
             item_type: "text".into(),
             action: None,
+            url: None,
             style: None,
         },
         LoginUiItem {
             name: "pinCode".into(),
             item_type: "PASSWORD".into(),
             action: None,
+            url: None,
+            style: None,
+        },
+        LoginUiItem {
+            name: "qrcode_key".into(),
+            item_type: "qrcode".into(),
+            action: None,
+            url: None,
+            style: None,
+        },
+        LoginUiItem {
+            name: "captcha_token".into(),
+            item_type: "image".into(),
+            action: Some("refreshCaptcha()".into()),
+            url: Some("https://example.com/captcha.png".into()),
             style: None,
         },
     ];
@@ -276,6 +293,8 @@ fn masking_and_build_source_summary_for_admin_and_member() {
     assert!(is_sensitive_login_field("apiToken", &login_ui));
     assert!(is_sensitive_login_field("登录密码", &login_ui));
     assert!(!is_sensitive_login_field("用户名", &login_ui));
+    assert!(!is_sensitive_login_field("qrcode_key", &login_ui));
+    assert!(!is_sensitive_login_field("captcha_token", &login_ui));
 
     let mut rt = SourceRuntimeState {
         variable: "你".repeat(260),

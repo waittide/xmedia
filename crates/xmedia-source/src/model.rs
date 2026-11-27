@@ -118,6 +118,8 @@ pub struct LoginUiItem {
     pub item_type: String,
     #[serde(default)]
     pub action: Option<String>,
+    #[serde(default, alias = "src", skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     #[serde(default)]
     pub style: Option<LoginUiStyle>,
 }

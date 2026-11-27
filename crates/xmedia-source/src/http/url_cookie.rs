@@ -32,6 +32,7 @@ pub struct HttpFetchResult {
     pub final_url: String,
     pub status: u16,
     pub body: String,
+    pub raw_bytes: Vec<u8>,
     pub headers: HashMap<String, String>,
 }
 
@@ -155,6 +156,7 @@ pub fn try_resolve_data_url(parsed: &ParsedLegadoUrl) -> Option<Result<HttpFetch
         final_url: parsed.url.clone(),
         status: 200,
         body,
+        raw_bytes,
         headers: HashMap::new(),
     }))
 }

@@ -534,7 +534,9 @@ impl BookOnlineService {
                 && let Some(ref cover_url) = input.cover_url
                 && !cover_url.trim().is_empty()
             {
-                self.fetch_cover_proxy(cover_url).await.ok()
+                self.fetch_cover_proxy_with_source(Some(&actor), cover_url, Some(input.source_id))
+                    .await
+                    .ok()
             } else {
                 None
             };

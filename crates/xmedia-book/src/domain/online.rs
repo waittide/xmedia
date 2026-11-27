@@ -224,6 +224,47 @@ impl LegadoBookSource {
         parse_concurrent_rate(self.concurrent_rate.as_deref())
     }
 
+    /// Builds sanitized image headers for `target_url`, stripping cross-origin credentials
+    /// and attaching same-site cookie-jar entries when `enabled_cookie_jar` is true.
+    pub fn build_image_headers_with_cookies(
+        &self,
+        cookies: &std::collections::HashMap<String, String>,
+        target_url: &str,
+    ) -> std::collections::HashMap<String, String> {
+        let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Some(raw) = self
+            .header
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            && let Ok(serde_json::Value::Object(map)) = serde_json::from_str(raw)
+        {
+            for (k, v) in map {
+                if k.eq_ignore_ascii_case("range") {
+                    continue;
+                }
+                let val_str = match v {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                out.retain(|existing, _| !existing.eq_ignore_ascii_case(&k));
+                out.insert(k, val_str);
+            }
+        }
+        xmedia_source::proxy::strip_cross_origin_headers(
+            &mut out,
+            &self.book_source_url,
+            target_url,
+        );
+        if !out.keys().any(|k| k.eq_ignore_ascii_case("cookie")) && self.enabled_cookie_jar {
+            let ck = xmedia_source::http::lookup_cookie_in_jar(cookies, target_url);
+            if !ck.is_empty() {
+                out.insert("Cookie".to_string(), ck);
+            }
+        }
+        out
+    }
+
     /// Returns `true` when this Legado book source uses `data:` pseudo-URLs (e.g.
     /// `data:;base64,...,{"type":"gydetail"}`) to pass structured state between stages.
     pub fn supports_data_pseudo_urls(&self) -> bool {

@@ -106,11 +106,16 @@ pub struct ParsedSourceSummaryMeta {
 }
 
 pub fn is_sensitive_login_field(key: &str, login_ui: &[LoginUiItem]) -> bool {
-    if login_ui
-        .iter()
-        .any(|item| item.name == key && item.item_type.eq_ignore_ascii_case("password"))
-    {
-        return true;
+    if let Some(item) = login_ui.iter().find(|item| item.name == key) {
+        if item.item_type.eq_ignore_ascii_case("password") {
+            return true;
+        }
+        if item.item_type.eq_ignore_ascii_case("image")
+            || item.item_type.eq_ignore_ascii_case("img")
+            || item.item_type.eq_ignore_ascii_case("qrcode")
+        {
+            return false;
+        }
     }
     let lower = key.to_ascii_lowercase();
     lower.contains("password")

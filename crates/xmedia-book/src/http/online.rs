@@ -110,6 +110,8 @@ struct OnlineContentRequest {
 #[derive(Debug, Deserialize)]
 struct CoverProxyQuery {
     url: String,
+    #[serde(default)]
+    source_id: Option<Uuid>,
 }
 
 async fn run_login_action(
@@ -197,10 +199,14 @@ async fn online_content(
 
 async fn online_cover_proxy(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Query(q): Query<CoverProxyQuery>,
 ) -> Result<Response, ApiError> {
-    let (bytes, mime) = state.services.online.fetch_cover_proxy(&q.url).await?;
+    let (bytes, mime) = state
+        .services
+        .online
+        .fetch_cover_proxy_with_source(Some(&user), &q.url, q.source_id)
+        .await?;
     let mut resp = Response::new(Body::from(bytes));
     if let Ok(hv) = HeaderValue::from_str(&mime) {
         resp.headers_mut().insert(CONTENT_TYPE, hv);

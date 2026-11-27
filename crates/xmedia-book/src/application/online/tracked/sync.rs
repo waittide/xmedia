@@ -97,7 +97,10 @@ impl BookOnlineService {
         let new_cover_key = if let Some(ref cover_url) = input.cover_url
             && !cover_url.trim().is_empty()
         {
-            if let Ok((bytes, mime_type)) = self.fetch_cover_proxy(cover_url).await {
+            if let Ok((bytes, mime_type)) = self
+                .fetch_cover_proxy_with_source(Some(actor), cover_url, Some(input.source_id))
+                .await
+            {
                 self.catalog
                     .save_cover_raw(book_id, &CoverPayload::new(Bytes::from(bytes), mime_type))
                     .await
