@@ -383,9 +383,15 @@ const tooltipTransformClass = computed(() => {
 
 async function scrollToLatest(): Promise<void> {
   await nextTick()
-  const el = scrollWrapRef.value
-  if (el && el.scrollWidth > el.clientWidth) {
-    el.scrollLeft = el.scrollWidth
+  const syncScrollEnd = () => {
+    const el = scrollWrapRef.value
+    if (el && el.scrollWidth > el.clientWidth) {
+      el.scrollLeft = el.scrollWidth
+    }
+  }
+  syncScrollEnd()
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(syncScrollEnd)
   }
 }
 
@@ -507,8 +513,8 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
           </div>
         </div>
 
-        <!-- Calendar Columns -->
-        <div class="flex flex-1 flex-col">
+        <!-- Calendar Columns (pr-2 pb-1 reserves room so rightmost selection ring is never clipped) -->
+        <div class="flex flex-1 shrink-0 flex-col pr-2 pb-1">
           <!-- Month Header Row -->
           <div class="mb-1.5 flex h-4.5 gap-[4px] select-none" aria-hidden="true">
             <div
@@ -518,7 +524,8 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
             >
               <span
                 v-if="monthHeaderMap.has(colIdx)"
-                class="text-label-small absolute top-0 left-0 whitespace-nowrap text-on-surface-variant"
+                class="text-label-small absolute top-0 whitespace-nowrap text-on-surface-variant"
+                :class="colIdx >= calendarMatrix.weeks.length - 2 ? 'right-0' : 'left-0'"
               >
                 {{ monthHeaderMap.get(colIdx) }}
               </span>

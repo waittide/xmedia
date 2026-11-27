@@ -3974,6 +3974,25 @@ function buildTier1Cases() {
             { timeoutMs: 8000, label: 'Switched to /comic and closed mobile drawer' },
           );
 
+          // 6. Verify mobile /book/history heatmap rightmost selected cell has >= 4px right clearance for its selection ring.
+          await cdp.goto(`${ctx.baseUrl}/book/history`);
+          await cdp.waitForSelector('main [role="grid"] button[aria-selected="true"]', {
+            visible: true,
+            timeoutMs: 10000,
+          });
+          await cdp.waitForFn(
+            `(() => {
+              const cell = document.querySelector('main [role="grid"] button[aria-selected="true"]');
+              const scroller = cell?.closest('.overflow-x-auto');
+              if (!cell || !scroller) return false;
+              return scroller.getBoundingClientRect().right - cell.getBoundingClientRect().right >= 4;
+            })()`,
+            {
+              timeoutMs: 5000,
+              label: 'Heatmap rightmost selected cell scrolled into view with unclipped ring clearance',
+            },
+          );
+
           cdp.assertNoErrors('T1-F19-07');
         } finally {
           if (cdp) await cdp.close();
