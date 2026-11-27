@@ -1,7 +1,10 @@
 use axum::Json;
+use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::header::SET_COOKIE;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
+};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use url::Url;
 
@@ -41,6 +44,7 @@ pub(super) async fn app_health(State(state): State<StandaloneGatewayState>) -> R
         .query_safe_area()
         .await
         .filter(|insets| insets.is_non_zero());
+    let system_fonts = state.mobile_ui.system_font_dtos();
     with_app_headers(
         Json(AppHealthResponse {
             mode: "standalone".to_string(),
@@ -48,6 +52,7 @@ pub(super) async fn app_health(State(state): State<StandaloneGatewayState>) -> R
             remote_source_count,
             enabled_modules: state.local_engine.enabled_modules.clone(),
             safe_area,
+            system_fonts,
         })
         .into_response(),
     )
@@ -70,13 +75,58 @@ pub(super) async fn set_app_appearance(
         .sync_appearance(input.dark)
         .await
         .filter(|insets| insets.is_non_zero());
+    let system_fonts = state.mobile_ui.system_font_dtos();
     with_app_headers(
         Json(AppAppearanceResponse {
             dark: input.dark,
             safe_area,
+            system_fonts,
         })
         .into_response(),
     )
+}
+
+pub(super) async fn get_app_system_font(
+    State(state): State<StandaloneGatewayState>,
+    AxumPath(slot): AxumPath<usize>,
+) -> Response {
+    let Some(entry) = state.mobile_ui.get_system_font(slot) else {
+        return app_error(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Host system font slot not available",
+        );
+    };
+    let bytes = match tokio::fs::read(&entry.path).await {
+        Ok(b) => b,
+        Err(_) => {
+            return app_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "Host system font file could not be read",
+            );
+        }
+    };
+
+    let content_len = bytes.len();
+    let mut res = (StatusCode::OK, Body::from(bytes)).into_response();
+    let headers = res.headers_mut();
+    headers.insert(
+        HeaderName::from_static(APP_HEADER_NAME),
+        HeaderValue::from_static(APP_HEADER_VALUE),
+    );
+    if let Ok(ct) = HeaderValue::from_str(entry.mime_type) {
+        headers.insert(CONTENT_TYPE, ct);
+    }
+    if let Ok(cl) = HeaderValue::from_str(&content_len.to_string()) {
+        headers.insert(CONTENT_LENGTH, cl);
+    }
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=300"),
+    );
+    res
 }
 
 pub(super) async fn get_app_icon(State(state): State<StandaloneGatewayState>) -> Response {

@@ -383,6 +383,7 @@ export default {
     uiFontHint: '设置全局界面字体，支持上传字体文件或调用本机已安装字体',
     fonts: {
       presetInherit: '跟随界面',
+      presetSystem: '跟随系统',
       presetSans: '无衬线',
       presetSerif: '衬线',
       presetMono: '等宽',

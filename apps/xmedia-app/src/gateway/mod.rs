@@ -174,6 +174,10 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
             put(handlers_sources::set_app_appearance),
         )
         .route(
+            "/_app/system-font/{slot}",
+            get(handlers_sources::get_app_system_font),
+        )
+        .route(
             "/_app/icon",
             get(handlers_sources::get_app_icon).put(handlers_sources::set_app_icon),
         )

@@ -10,9 +10,11 @@ import {
 } from '@/theme/appIcons'
 import {
   ensureCustomFontsLoaded,
+  hostSystemFonts,
   normalizeStoredUiFont,
   onCustomFontDeleted,
   resolveFontStack,
+  resolveSystemFontStack,
   uploadedFonts,
 } from '@/theme/customFonts'
 import {
@@ -132,6 +134,8 @@ export const useThemeStore = defineStore('theme', () => {
     const normalized = normalizeStoredUiFont(uiFont.value)
     if (normalized) {
       document.documentElement.style.setProperty('--font-sans', resolveFontStack(normalized))
+    } else if (hostSystemFonts.value.length > 0) {
+      document.documentElement.style.setProperty('--font-sans', resolveSystemFontStack())
     } else {
       document.documentElement.style.removeProperty('--font-sans')
     }
@@ -237,7 +241,7 @@ export const useThemeStore = defineStore('theme', () => {
   )
 
   watch(
-    [uiFont, uploadedFonts],
+    [uiFont, uploadedFonts, hostSystemFonts],
     () => {
       applyDocumentUiFont()
     },

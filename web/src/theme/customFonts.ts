@@ -8,8 +8,18 @@ import {
 import { localizeApiErrorMessage } from '@/i18n/apiErrors'
 import type { CustomFontDto } from '@/types/api'
 
+export interface HostSystemFontFaceDto {
+  slot: number
+  family_index: number
+  css_format: string
+  variable: boolean
+  weight?: number | null
+}
+
+export const DEFAULT_SYSTEM_FONT_STACK = 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif'
+
 export const DEFAULT_SANS_FONT_STACK =
-  'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif'
+  '"Inter", "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif'
 
 export const DEFAULT_SERIF_FONT_STACK =
   '"Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", Georgia, serif'
@@ -17,7 +27,7 @@ export const DEFAULT_SERIF_FONT_STACK =
 export const DEFAULT_MONO_FONT_STACK =
   '"JetBrains Mono", "Sarasa Mono SC", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
 
-const CUSTOM_FONT_FALLBACK_TAIL = '"Noto Sans SC", "PingFang SC", system-ui, sans-serif'
+const CUSTOM_FONT_FALLBACK_TAIL = 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif'
 const CUSTOM_FONTS_STYLE_ID = 'xmedia-custom-fonts'
 const TOKEN_STORAGE_KEY = 'xmedia.token'
 
@@ -27,6 +37,7 @@ let loadInFlight: Promise<CustomFontDto[]> | null = null
 const deletedListeners = new Set<(fontId: string) => void>()
 
 export const uploadedFonts = ref<CustomFontDto[]>([])
+export const hostSystemFonts = ref<HostSystemFontFaceDto[]>([])
 export const loadingFonts = ref(false)
 export const uploadingFonts = ref(false)
 export const canManageCustomFonts = ref(true)
@@ -84,12 +95,54 @@ function sanitizeFontId(rawId: string): string {
   return rawId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 96)
 }
 
+export function setHostSystemFonts(faces?: readonly HostSystemFontFaceDto[] | null): void {
+  if (!Array.isArray(faces) || faces.length === 0) return
+  const normalized: HostSystemFontFaceDto[] = []
+  for (const item of faces) {
+    if (!item || typeof item !== 'object') continue
+    if (typeof item.slot !== 'number' || !Number.isInteger(item.slot) || item.slot < 0) continue
+    const familyIndex =
+      typeof item.family_index === 'number' &&
+      Number.isInteger(item.family_index) &&
+      item.family_index >= 0
+        ? item.family_index
+        : 0
+    normalized.push({
+      slot: item.slot,
+      family_index: familyIndex,
+      css_format: sanitizeFontFamilyName(item.css_format || '') || 'truetype',
+      variable: Boolean(item.variable),
+      weight:
+        typeof item.weight === 'number' && Number.isFinite(item.weight) ? item.weight : null,
+    })
+  }
+  if (normalized.length > 0) {
+    hostSystemFonts.value = normalized
+  }
+}
+
+export function resolveSystemFontStack(): string {
+  const hostFaces = hostSystemFonts.value
+  if (hostFaces.length === 0) return DEFAULT_SYSTEM_FONT_STACK
+  const seenFamilies = new Set<number>()
+  const families: string[] = []
+  for (const face of hostFaces) {
+    if (seenFamilies.has(face.family_index)) continue
+    seenFamilies.add(face.family_index)
+    families.push(`"xmedia-host-ui-${face.family_index}"`)
+  }
+  return families.length > 0
+    ? `${families.join(', ')}, ${DEFAULT_SYSTEM_FONT_STACK}`
+    : DEFAULT_SYSTEM_FONT_STACK
+}
+
 export function resolveFontStack(
   spec: string | null | undefined,
   uiFontSpec?: string | null,
 ): string {
-  // Touch uploadedFonts so Vue computed callers re-evaluate when custom fonts hydrate.
+  // Touch reactive font refs so Vue computed callers re-evaluate when custom/host fonts hydrate.
   const currentUploaded = uploadedFonts.value
+  void hostSystemFonts.value.length
 
   const trimmed = spec ? spec.trim() : ''
   if (trimmed === 'inherit') {
@@ -97,26 +150,32 @@ export function resolveFontStack(
     return resolveFontStack(nextUi, null)
   }
 
-  if (!trimmed || trimmed.toLowerCase() === 'system-ui') {
+  const lower = trimmed.toLowerCase()
+  if (!trimmed || lower === 'system-ui') {
+    return resolveSystemFontStack()
+  }
+  if (lower === 'sans' || lower === 'sans-serif') {
     return DEFAULT_SANS_FONT_STACK
   }
-  if (trimmed === 'serif') {
+  if (lower === 'serif') {
     return DEFAULT_SERIF_FONT_STACK
   }
-  if (trimmed === 'mono') {
+  if (lower === 'mono' || lower === 'monospace') {
     return DEFAULT_MONO_FONT_STACK
   }
+
+  const fallbackTail = resolveSystemFontStack()
 
   if (trimmed.startsWith('font:')) {
     const requestedId = sanitizeFontFamilyName(trimmed.slice(5))
     const matched = currentUploaded.find((f) => f.id === requestedId)
     const safeId = sanitizeFontId(matched ? matched.id : requestedId)
-    if (!safeId) return DEFAULT_SANS_FONT_STACK
-    return `"xmedia-font-${safeId}", ${CUSTOM_FONT_FALLBACK_TAIL}`
+    if (!safeId) return fallbackTail
+    return `"xmedia-font-${safeId}", ${fallbackTail}`
   }
 
   const sanitized = sanitizeFontFamilyName(trimmed)
-  if (!sanitized) return DEFAULT_SANS_FONT_STACK
+  if (!sanitized) return fallbackTail
   return `"${sanitized}", ${CUSTOM_FONT_FALLBACK_TAIL}`
 }
 
@@ -169,10 +228,30 @@ export function buildCustomFontFileUrl(fontId: string): string {
   return href
 }
 
+function buildHostSystemFontUrl(slot: number): string {
+  const baseOrigin =
+    typeof window !== 'undefined' && window.location.origin && window.location.origin !== 'null'
+      ? window.location.origin
+      : 'http://localhost'
+  return new URL(`/_app/system-font/${encodeURIComponent(String(slot))}`, baseOrigin).href
+}
+
 export function buildUploadedFontFaceCss(
   fonts: readonly CustomFontDto[] = uploadedFonts.value,
 ): string {
   const rules: string[] = []
+  for (const face of hostSystemFonts.value) {
+    const safeUrl = buildHostSystemFontUrl(face.slot).replace(/["\\]/g, '')
+    const cssFormat = sanitizeFontFamilyName(face.css_format || '') || 'truetype'
+    const weightRule = face.variable
+      ? '\n  font-weight: 100 900;'
+      : face.weight
+        ? `\n  font-weight: ${face.weight};`
+        : ''
+    rules.push(
+      `@font-face {\n  font-family: "xmedia-host-ui-${face.family_index}";\n  src: url("${safeUrl}") format("${cssFormat}");${weightRule}\n  font-display: swap;\n}`,
+    )
+  }
   for (const font of fonts) {
     const safeId = sanitizeFontId(font.id)
     if (!safeId) continue
@@ -204,7 +283,7 @@ export function syncDocumentCustomFontStyles(): void {
 }
 
 watch(
-  uploadedFonts,
+  [uploadedFonts, hostSystemFonts],
   () => {
     syncDocumentCustomFontStyles()
   },

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use xmedia_core::domain::library::MediaKind;
 
 use super::{APP_HEADER_NAME, APP_HEADER_VALUE, StandaloneGatewayState};
-use crate::mobile_ui::SafeAreaInsetsDto;
+use crate::mobile_ui::{SafeAreaInsetsDto, SystemFontFaceDto};
 use crate::remote_common::RemoteClientError;
 use crate::remote_sources::{
     RemoteProtocol, RemoteSource, RemoteSourceSummaryDto, SourceStoreError,
@@ -32,6 +32,8 @@ pub struct AppHealthResponse {
     pub enabled_modules: Vec<MediaKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_area: Option<SafeAreaInsetsDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_fonts: Vec<SystemFontFaceDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,6 +41,8 @@ pub struct AppAppearanceResponse {
     pub dark: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_area: Option<SafeAreaInsetsDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_fonts: Vec<SystemFontFaceDto>,
 }
 
 #[derive(Debug, Deserialize)]

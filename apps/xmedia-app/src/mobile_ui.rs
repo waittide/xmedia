@@ -1,3 +1,5 @@
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 #[cfg(target_os = "android")]
 use std::time::Duration;
@@ -5,6 +7,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
 use tokio::sync::oneshot;
+
+const MAX_SYSTEM_FONT_BYTES: u64 = 48 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct SafeAreaInsetsDto {
@@ -18,6 +22,102 @@ impl SafeAreaInsetsDto {
     pub fn is_non_zero(self) -> bool {
         self.top > 0.0 || self.right > 0.0 || self.bottom > 0.0 || self.left > 0.0
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemFontFaceDto {
+    pub slot: usize,
+    pub family_index: usize,
+    pub css_format: String,
+    pub variable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u16>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemFontEntry {
+    pub path: PathBuf,
+    pub mime_type: &'static str,
+    pub dto: SystemFontFaceDto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SfntHeaderInspection {
+    pub mime_type: &'static str,
+    pub css_format: &'static str,
+    pub variable: bool,
+}
+
+pub fn inspect_font_header_bytes(buf: &[u8]) -> Option<SfntHeaderInspection> {
+    if buf.len() < 12 {
+        return None;
+    }
+    let magic = &buf[0..4];
+    let (mime_type, css_format, sfnt_offset) = match magic {
+        [0x00, 0x01, 0x00, 0x00] | b"true" | b"typ1" => ("font/ttf", "truetype", Some(0usize)),
+        b"OTTO" => ("font/otf", "opentype", Some(0usize)),
+        b"ttcf" => {
+            if buf.len() < 16 {
+                return None;
+            }
+            let count = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize;
+            let first_offset = if count > 0 {
+                u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]) as usize
+            } else {
+                0
+            };
+            ("font/collection", "truetype", Some(first_offset))
+        }
+        b"wOFF" => ("font/woff", "woff", None),
+        b"wOF2" => ("font/woff2", "woff2", None),
+        _ => return None,
+    };
+
+    let mut variable = false;
+    if let Some(base) = sfnt_offset
+        && base.saturating_add(12) <= buf.len()
+    {
+        let num_tables = u16::from_be_bytes([buf[base + 4], buf[base + 5]]) as usize;
+        for i in 0..num_tables.min(128) {
+            let rec = base.saturating_add(12).saturating_add(i.saturating_mul(16));
+            if rec.saturating_add(4) > buf.len() {
+                break;
+            }
+            if &buf[rec..rec + 4] == b"fvar" {
+                variable = true;
+                break;
+            }
+        }
+    }
+
+    Some(SfntHeaderInspection {
+        mime_type,
+        css_format,
+        variable,
+    })
+}
+
+pub fn inspect_system_font_file(path: &Path) -> Option<SfntHeaderInspection> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || !(16..=MAX_SYSTEM_FONT_BYTES).contains(&meta.len()) {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0u8; 2048];
+    let n = file.read(&mut header).ok()?;
+    inspect_font_header_bytes(&header[..n])
+}
+
+pub fn should_skip_stock_cjk_collection(path: &Path, ttc_index: i32) -> bool {
+    if ttc_index > 0 {
+        return true;
+    }
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".ttc")
+        && (lower.starts_with("notosanscjk") || lower.starts_with("notoserifcjk"))
 }
 
 pub fn physical_insets_to_css_px(
@@ -59,11 +159,14 @@ pub fn build_host_safe_area_js(insets: SafeAreaInsetsDto) -> String {
 }
 
 #[cfg(target_os = "android")]
-type AndroidSyncFn = Arc<dyn Fn(Option<bool>, oneshot::Sender<SafeAreaInsetsDto>) + Send + Sync>;
+type AndroidSyncFn = Arc<
+    dyn Fn(Option<bool>, oneshot::Sender<(SafeAreaInsetsDto, Vec<SystemFontEntry>)>) + Send + Sync,
+>;
 
 #[derive(Default)]
 struct MobileUiBridgeInner {
     cached_insets: RwLock<Option<SafeAreaInsetsDto>>,
+    system_fonts: RwLock<Vec<SystemFontEntry>>,
     last_dark: RwLock<Option<bool>>,
     #[cfg(target_os = "android")]
     android_sync: RwLock<Option<AndroidSyncFn>>,
@@ -81,6 +184,22 @@ impl MobileUiBridge {
 
     pub fn cached_safe_area(&self) -> Option<SafeAreaInsetsDto> {
         self.inner.cached_insets.read().ok().and_then(|g| *g)
+    }
+
+    pub fn system_font_dtos(&self) -> Vec<SystemFontFaceDto> {
+        self.inner
+            .system_fonts
+            .read()
+            .map(|g| g.iter().map(|e| e.dto.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn get_system_font(&self, slot: usize) -> Option<SystemFontEntry> {
+        self.inner
+            .system_fonts
+            .read()
+            .ok()
+            .and_then(|g| g.get(slot).cloned())
     }
 
     pub async fn query_safe_area(&self) -> Option<SafeAreaInsetsDto> {
@@ -105,9 +224,14 @@ impl MobileUiBridge {
         let (tx, rx) = oneshot::channel();
         sync_fn(dark, tx);
         match tokio::time::timeout(Duration::from_millis(600), rx).await {
-            Ok(Ok(insets)) => {
+            Ok(Ok((insets, fonts))) => {
                 if let Ok(mut guard) = self.inner.cached_insets.write() {
                     *guard = Some(insets);
+                }
+                if !fonts.is_empty()
+                    && let Ok(mut fguard) = self.inner.system_fonts.write()
+                {
+                    *fguard = fonts;
                 }
                 Some(insets)
             }
@@ -128,17 +252,30 @@ impl MobileUiBridge {
             let initial_dark = inner.last_dark.read().ok().and_then(|g| *g);
             let init_inner = Arc::clone(&inner);
             jni_handle.exec(move |env, activity, webview| {
-                let insets =
-                    sync_android_system_bars_and_insets(env, activity, webview, initial_dark);
+                let (insets, fonts) =
+                    sync_android_system_bars_and_insets(env, activity, webview, initial_dark, true);
                 if let Ok(mut guard) = init_inner.cached_insets.write() {
                     *guard = Some(insets);
                 }
+                if !fonts.is_empty()
+                    && let Ok(mut fguard) = init_inner.system_fonts.write()
+                {
+                    *fguard = fonts;
+                }
             });
 
+            let sync_inner = Arc::clone(&inner);
             let sync_fn: AndroidSyncFn = Arc::new(move |dark, reply_tx| {
+                let need_fonts = sync_inner
+                    .system_fonts
+                    .read()
+                    .map(|g| g.is_empty())
+                    .unwrap_or(true);
                 jni_handle.exec(move |env, activity, webview| {
-                    let insets = sync_android_system_bars_and_insets(env, activity, webview, dark);
-                    let _ = reply_tx.send(insets);
+                    let res = sync_android_system_bars_and_insets(
+                        env, activity, webview, dark, need_fonts,
+                    );
+                    let _ = reply_tx.send(res);
                 });
             });
             if let Ok(mut guard) = inner.android_sync.write() {
@@ -164,17 +301,214 @@ fn sync_android_system_bars_and_insets(
     activity: &jni::objects::JObject<'_>,
     webview: &jni::objects::JObject<'_>,
     dark: Option<bool>,
-) -> SafeAreaInsetsDto {
-    match try_sync_android_system_bars_and_insets(env, activity, webview, dark) {
-        Ok(insets) => {
+    probe_fonts: bool,
+) -> (SafeAreaInsetsDto, Vec<SystemFontEntry>) {
+    match try_sync_android_system_bars_and_insets(env, activity, webview, dark, probe_fonts) {
+        Ok(res) => {
             clear_jni_exception(env);
-            insets
+            res
         }
         Err(_) => {
             clear_jni_exception(env);
-            SafeAreaInsetsDto::default()
+            (SafeAreaInsetsDto::default(), Vec::new())
         }
     }
+}
+
+#[cfg(target_os = "android")]
+fn shape_typeface_font_paths(
+    env: &mut jni::JNIEnv<'_>,
+    typeface_field: &str,
+) -> Vec<(PathBuf, i32)> {
+    use jni::objects::{JString, JValue};
+
+    let mut resolved = Vec::new();
+    let step = (|| -> jni::errors::Result<()> {
+        let typeface = env
+            .get_static_field(
+                "android/graphics/Typeface",
+                typeface_field,
+                "Landroid/graphics/Typeface;",
+            )?
+            .l()?;
+        if typeface.is_null() {
+            return Ok(());
+        }
+        let paint = env.new_object("android/graphics/Paint", "()V", &[])?;
+        let _ = env.call_method(
+            &paint,
+            "setTypeface",
+            "(Landroid/graphics/Typeface;)Landroid/graphics/Typeface;",
+            &[(&typeface).into()],
+        )?;
+
+        let sample = env.new_string("Ag中")?;
+        let glyphs = env
+            .call_static_method(
+                "android/graphics/text/TextRunShaper",
+                "shapeTextRun",
+                "(Ljava/lang/CharSequence;IIIIFFZLandroid/graphics/Paint;)Landroid/graphics/text/PositionedGlyphs;",
+                &[
+                    (&sample).into(),
+                    JValue::Int(0),
+                    JValue::Int(3),
+                    JValue::Int(0),
+                    JValue::Int(3),
+                    JValue::Float(0.0),
+                    JValue::Float(0.0),
+                    JValue::Bool(0),
+                    (&paint).into(),
+                ],
+            )?
+            .l()?;
+        if glyphs.is_null() {
+            return Ok(());
+        }
+
+        let count = env.call_method(&glyphs, "glyphCount", "()I", &[])?.i()?;
+        for idx in 0..count.clamp(0, 8) {
+            let font = env
+                .call_method(
+                    &glyphs,
+                    "getFont",
+                    "(I)Landroid/graphics/fonts/Font;",
+                    &[JValue::Int(idx)],
+                )?
+                .l()?;
+            if font.is_null() {
+                continue;
+            }
+            let ttc_index = env
+                .call_method(&font, "getTtcIndex", "()I", &[])
+                .and_then(|v| v.i())
+                .unwrap_or(0);
+            clear_jni_exception(env);
+
+            let file_obj = env
+                .call_method(&font, "getFile", "()Ljava/io/File;", &[])?
+                .l()?;
+            if file_obj.is_null() {
+                continue;
+            }
+            let path_obj = env
+                .call_method(&file_obj, "getAbsolutePath", "()Ljava/lang/String;", &[])?
+                .l()?;
+            if path_obj.is_null() {
+                continue;
+            }
+            let jstr = JString::from(path_obj);
+            let raw_path = env.get_string(&jstr)?.to_string_lossy().into_owned();
+            if raw_path.is_empty() {
+                continue;
+            }
+            let pb = PathBuf::from(raw_path);
+            if !resolved.iter().any(|(existing, _)| existing == &pb) {
+                resolved.push((pb, ttc_index));
+            }
+        }
+        Ok(())
+    })();
+
+    if step.is_err() {
+        clear_jni_exception(env);
+    }
+    resolved
+}
+
+#[cfg(target_os = "android")]
+fn detect_android_default_fonts(env: &mut jni::JNIEnv<'_>, sdk_int: i32) -> Vec<SystemFontEntry> {
+    let mut entries: Vec<SystemFontEntry> = Vec::new();
+
+    if sdk_int >= 31 {
+        let regular_candidates = shape_typeface_font_paths(env, "DEFAULT");
+        let bold_candidates = shape_typeface_font_paths(env, "DEFAULT_BOLD");
+
+        let mut regular_kept: Vec<(PathBuf, SfntHeaderInspection)> = Vec::new();
+        for (path, ttc_idx) in regular_candidates {
+            if should_skip_stock_cjk_collection(&path, ttc_idx) {
+                continue;
+            }
+            if let Some(info) = inspect_system_font_file(&path) {
+                regular_kept.push((path, info));
+                if regular_kept.len() >= 3 {
+                    break;
+                }
+            }
+        }
+
+        let bold_kept: Vec<(PathBuf, SfntHeaderInspection)> = bold_candidates
+            .into_iter()
+            .filter(|(p, ttc_idx)| !should_skip_stock_cjk_collection(p, *ttc_idx))
+            .filter_map(|(p, _)| inspect_system_font_file(&p).map(|info| (p, info)))
+            .take(3)
+            .collect();
+
+        for (family_index, (reg_path, reg_info)) in regular_kept.into_iter().enumerate() {
+            let distinct_bold = if !reg_info.variable {
+                bold_kept
+                    .get(family_index)
+                    .filter(|(bp, _)| bp != &reg_path)
+            } else {
+                None
+            };
+
+            let slot = entries.len();
+            entries.push(SystemFontEntry {
+                path: reg_path,
+                mime_type: reg_info.mime_type,
+                dto: SystemFontFaceDto {
+                    slot,
+                    family_index,
+                    css_format: reg_info.css_format.to_string(),
+                    variable: reg_info.variable,
+                    weight: distinct_bold.map(|_| 400),
+                },
+            });
+
+            if let Some((bold_path, bold_info)) = distinct_bold {
+                let bold_slot = entries.len();
+                entries.push(SystemFontEntry {
+                    path: bold_path.clone(),
+                    mime_type: bold_info.mime_type,
+                    dto: SystemFontFaceDto {
+                        slot: bold_slot,
+                        family_index,
+                        css_format: bold_info.css_format.to_string(),
+                        variable: bold_info.variable,
+                        weight: Some(700),
+                    },
+                });
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        for (family_index, candidate) in [
+            "/data/system/theme/fonts/Roboto-Regular.ttf",
+            "/data/system/theme/fonts/DroidSansFallback.ttf",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = PathBuf::from(candidate);
+            if let Some(info) = inspect_system_font_file(&path) {
+                let slot = entries.len();
+                entries.push(SystemFontEntry {
+                    path,
+                    mime_type: info.mime_type,
+                    dto: SystemFontFaceDto {
+                        slot,
+                        family_index,
+                        css_format: info.css_format.to_string(),
+                        variable: info.variable,
+                        weight: None,
+                    },
+                });
+            }
+        }
+    }
+
+    entries
 }
 
 #[cfg(target_os = "android")]
@@ -183,11 +517,12 @@ fn try_sync_android_system_bars_and_insets(
     activity: &jni::objects::JObject<'_>,
     webview: &jni::objects::JObject<'_>,
     dark: Option<bool>,
-) -> jni::errors::Result<SafeAreaInsetsDto> {
+    probe_fonts: bool,
+) -> jni::errors::Result<(SafeAreaInsetsDto, Vec<SystemFontEntry>)> {
     use jni::objects::{JObject, JValue};
 
     if activity.is_null() {
-        return Ok(SafeAreaInsetsDto::default());
+        return Ok((SafeAreaInsetsDto::default(), Vec::new()));
     }
 
     let sdk_int = env
@@ -388,7 +723,13 @@ fn try_sync_android_system_bars_and_insets(
         }
     }
 
-    Ok(dto)
+    let fonts = if probe_fonts {
+        detect_android_default_fonts(env, sdk_int)
+    } else {
+        Vec::new()
+    };
+
+    Ok((dto, fonts))
 }
 
 #[cfg(test)]
@@ -418,5 +759,29 @@ mod tests {
         });
         assert!(script.contains("'--host-safe-area-top','28.50px'"));
         assert!(script.contains("'--host-safe-area-bottom','15.25px'"));
+    }
+
+    #[test]
+    fn detects_sfnt_variable_table_and_skips_stock_cjk_collections() {
+        let mut ttf = vec![0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+        ttf.extend_from_slice(b"fvar");
+        ttf.extend_from_slice(&[0u8; 12]);
+        let info = inspect_font_header_bytes(&ttf).expect("valid ttf header");
+        assert_eq!(info.mime_type, "font/ttf");
+        assert_eq!(info.css_format, "truetype");
+        assert!(info.variable);
+
+        assert!(should_skip_stock_cjk_collection(
+            Path::new("/system/fonts/NotoSansCJK-Regular.ttc"),
+            0
+        ));
+        assert!(should_skip_stock_cjk_collection(
+            Path::new("/system/fonts/CustomCollection.ttc"),
+            2
+        ));
+        assert!(!should_skip_stock_cjk_collection(
+            Path::new("/system/fonts/MapleMono-NF-CN-Regular.ttf"),
+            0
+        ));
     }
 }

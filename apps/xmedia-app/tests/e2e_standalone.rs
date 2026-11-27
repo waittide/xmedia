@@ -278,6 +278,13 @@ async fn e2e_standalone_local_engine_opds_and_subsonic_roundtrip() {
     let appearance_json: Value = appearance_ok.json().await.unwrap();
     assert_eq!(appearance_json["dark"], json!(true));
 
+    let missing_sys_font = client
+        .get(format!("{}/_app/system-font/0", gateway.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing_sys_font.status(), StatusCode::NOT_FOUND);
+
     // 2. Zero-login auto-session works via POST (and rejects GET)
     let get_rejected = client
         .get(format!("{}/_app/auto-session", gateway.url))

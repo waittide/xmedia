@@ -396,8 +396,10 @@ fn default_system_font_dirs() -> Vec<PathBuf> {
 
     #[cfg(target_os = "android")]
     {
+        dirs.push(PathBuf::from("/data/system/theme/fonts"));
         dirs.push(PathBuf::from("/system/fonts"));
         dirs.push(PathBuf::from("/product/fonts"));
+        dirs.push(PathBuf::from("/system_ext/fonts"));
     }
 
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]

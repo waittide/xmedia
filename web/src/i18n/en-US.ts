@@ -383,6 +383,7 @@ export default {
     uiFontHint: 'Global interface typeface — upload font files or use installed local fonts',
     fonts: {
       presetInherit: 'Match UI',
+      presetSystem: 'System Default',
       presetSans: 'Sans-serif',
       presetSerif: 'Serif',
       presetMono: 'Monospace',

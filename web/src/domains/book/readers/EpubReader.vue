@@ -13,6 +13,7 @@ import { usePreferencesStore } from '@/stores/preferences'
 import {
   buildUploadedFontFaceCss,
   ensureCustomFontsLoaded,
+  hostSystemFonts,
   uploadedFonts,
 } from '@/theme/customFonts'
 
@@ -618,6 +619,7 @@ watch(
     appearance.paragraphIndentEm.value,
     appearance.paragraphSpacingPx.value,
     uploadedFonts.value,
+    hostSystemFonts.value,
   ],
   () => {
     applyRenditionTheme()

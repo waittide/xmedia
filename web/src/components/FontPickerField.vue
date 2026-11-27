@@ -59,7 +59,8 @@ const selectOptions = computed<SelectOption[]>(() => {
   }
 
   opts.push(
-    { value: 'system-ui', label: t('theme.fonts.presetSans') },
+    { value: 'system-ui', label: t('theme.fonts.presetSystem') },
+    { value: 'sans', label: t('theme.fonts.presetSans') },
     { value: 'serif', label: t('theme.fonts.presetSerif') },
     { value: 'mono', label: t('theme.fonts.presetMono') },
   )
@@ -76,6 +77,7 @@ const selectOptions = computed<SelectOption[]>(() => {
   const isBuiltin =
     current === 'inherit' ||
     current === 'system-ui' ||
+    current === 'sans' ||
     current === 'serif' ||
     current === 'mono'
 

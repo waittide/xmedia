@@ -16,10 +16,8 @@
   --breakpoint-lg: 1200px;
   --breakpoint-xl: 1600px;
 
-  /* Platform system UI fonts only (no unloaded web fonts). */
-  --font-sans:
-    system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
-    "Helvetica Neue", Arial, sans-serif;
+  /* Respect OS / Android host default UI font without forcing Roboto or Noto Sans ahead of it. */
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 
   --color-*: initial;
   --color-black: #000000;

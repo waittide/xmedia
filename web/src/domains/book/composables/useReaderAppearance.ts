@@ -1,7 +1,7 @@
 import { computed } from 'vue'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useThemeStore } from '@/stores/theme'
-import { uploadedFonts } from '@/theme/customFonts'
+import { hostSystemFonts, uploadedFonts } from '@/theme/customFonts'
 import { normalizeHex } from '@/theme/md3'
 import { resolveFontStack } from '@/utils/format'
 
@@ -81,6 +81,7 @@ export function useReaderAppearance() {
 
   const fontStack = computed<string>(() => {
     void uploadedFonts.value.length
+    void hostSystemFonts.value.length
     return resolveFontStack(preferencesStore.reader.font_family, themeStore.uiFont)
   })
 

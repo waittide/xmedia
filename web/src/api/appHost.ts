@@ -1,4 +1,5 @@
 import { localizeApiErrorMessage } from '@/i18n/apiErrors'
+import { setHostSystemFonts, type HostSystemFontFaceDto } from '@/theme/customFonts'
 import type { AuthSessionDto, MediaKind } from '@/types/api'
 
 export type RemoteProtocol = 'opds' | 'subsonic'
@@ -17,11 +18,13 @@ export interface StandaloneHealthResponse {
   remote_source_count: number
   enabled_modules: MediaKind[]
   safe_area?: SafeAreaInsetsDto | null
+  system_fonts?: HostSystemFontFaceDto[]
 }
 
 export interface StandaloneAppearanceResponse {
   dark: boolean
   safe_area?: SafeAreaInsetsDto | null
+  system_fonts?: HostSystemFontFaceDto[]
 }
 
 const HOST_SAFE_AREA_STORAGE_KEY = 'xmedia.host_safe_area'
@@ -338,6 +341,9 @@ export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
     if (data.safe_area) {
       applyHostSafeAreaInsets(data.safe_area)
     }
+    if (Array.isArray(data.system_fonts) && data.system_fonts.length > 0) {
+      setHostSystemFonts(data.system_fonts)
+    }
     return {
       mode: 'standalone',
       version: typeof data.version === 'string' ? data.version : '',
@@ -347,6 +353,7 @@ export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
         ? data.enabled_modules
         : ['book', 'comic', 'music', 'video'],
       safe_area: data.safe_area ?? null,
+      system_fonts: Array.isArray(data.system_fonts) ? data.system_fonts : [],
     }
   } catch {
     return null
@@ -363,6 +370,9 @@ export const appHostApi = {
     })
     if (res?.safe_area) {
       applyHostSafeAreaInsets(res.safe_area)
+    }
+    if (Array.isArray(res?.system_fonts) && res.system_fonts.length > 0) {
+      setHostSystemFonts(res.system_fonts)
     }
     return res
   },
