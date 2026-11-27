@@ -68,7 +68,7 @@ function selectDomain(kind: MediaKind): void {
           >
             <!-- MD3 Modal Navigation Drawer Header -->
             <div
-              class="flex items-center pb-2"
+              class="flex items-center pb-3"
               :class="
                 themeStore.showSidebarLabels
                   ? 'justify-between gap-3 px-4'
@@ -99,17 +99,9 @@ function selectDomain(kind: MediaKind): void {
               />
             </div>
 
-            <!-- Section Label (visible when sidebar labels enabled) -->
-            <p
-              v-if="themeStore.showSidebarLabels"
-              class="text-title-small px-7 py-2 text-on-surface-variant"
-            >
-              {{ t('nav.currentDomain') }}
-            </p>
-
             <!-- MD3 Navigation Drawer Destination Pills (56dp standard height) -->
             <nav
-              :aria-label="t('nav.currentDomain')"
+              :aria-label="t('nav.navigation')"
               class="flex-1 overflow-y-auto px-3 py-1"
               :class="themeStore.showSidebarLabels ? 'space-y-1' : 'flex w-full flex-col items-center gap-2'"
             >

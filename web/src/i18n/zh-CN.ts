@@ -69,7 +69,6 @@ export default {
   },
   nav: {
     navigation: '导航栏',
-    currentDomain: '当前领域',
     home: '首页',
     library: '资源',
     history: '历史',

@@ -3949,7 +3949,12 @@ function buildTier1Cases() {
             const kinds = [...el.querySelectorAll('[data-drawer-domain-switch]')].map((b) =>
               b.getAttribute('data-drawer-domain-switch'),
             );
-            return { left: Math.round(r.left), width: Math.round(r.width), kinds };
+            return {
+              left: Math.round(r.left),
+              width: Math.round(r.width),
+              kinds,
+              text: el.innerText || '',
+            };
           })()`);
           assert.equal(drawerFacts.left, 0, 'Left MD3 domain drawer must anchor to left edge (0px)');
           assert.ok(
@@ -3957,6 +3962,11 @@ function buildTier1Cases() {
             `Expected modal drawer width within MD3 bounds, got ${drawerFacts.width}px`,
           );
           assert.deepEqual(drawerFacts.kinds, ['book', 'comic', 'music', 'video']);
+          assert.doesNotMatch(
+            drawerFacts.text,
+            /当前领域|Active Domain/i,
+            'Mobile domain drawer must not show redundant 当前领域 section heading',
+          );
 
           await cdp.click('[data-drawer-domain-switch="comic"]');
           await cdp.waitForFn(
