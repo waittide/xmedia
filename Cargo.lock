@@ -6193,6 +6193,7 @@ dependencies = [
  "walkdir",
  "xmedia-core",
  "xmedia-formats",
+ "xmedia-source",
  "zip",
 ]
 

@@ -140,10 +140,9 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
     ) -> DomainResult<Vec<SourceRecord>> {
         actor.ensure_active()?;
         let mut sources = self.repo.list_by_user(actor.id.0).await?;
+        sources.retain(|s| s.enabled);
         if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
             sources.retain(|s| filter_ids.contains(&s.id));
-        } else {
-            sources.retain(|s| s.enabled);
         }
         if sources.is_empty() {
             return Err(DomainError::Validation(format!(
@@ -216,7 +215,14 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         actor: &User,
         id: Uuid,
     ) -> DomainResult<SourceRecord> {
-        self.load_owned_source(actor, id).await
+        let rec = self.load_owned_source(actor, id).await?;
+        if !rec.enabled {
+            return Err(DomainError::Validation(format!(
+                "该{}已被停用",
+                Spec::ENTITY_LABEL
+            )));
+        }
+        Ok(rec)
     }
 
     pub async fn get_source(&self, actor: &User, id: Uuid) -> DomainResult<SourceSummaryDto> {

@@ -68,8 +68,7 @@ function mapSourceHealth(src: OnlineSourceSummaryDto): SourceHealth {
 }
 
 /**
- * Fetches member-readable online sources from `GET /api/v1/{domain}/sources`.
- * Never calls admin-only endpoints (satisfies E2E T2-F13-04).
+ * Fetches current user's isolated online plugins from `GET /api/v1/plugins?domain={domain}`.
  */
 async function fetchDomainOnlineSources(
   domain: MediaKind,
@@ -83,7 +82,9 @@ async function fetchDomainOnlineSources(
     return existing
   }
 
-  const req = requestJson<OnlineSourceSummaryDto[]>(`/${domain}/sources`)
+  const req = requestJson<OnlineSourceSummaryDto[]>(
+    `/plugins?domain=${encodeURIComponent(domain)}`,
+  )
     .then((list) => {
       domainSourceCache[domain] = { loaded: true, sources: list }
       return list

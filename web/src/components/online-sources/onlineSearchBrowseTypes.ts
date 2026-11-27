@@ -47,7 +47,7 @@ export interface OnlineSearchBrowseAdapter<
   S extends OnlineSourceSummaryDto = OnlineSourceSummaryDto,
 > {
   domain: OnlineDomain
-  /** Member-readable source list endpoint (`GET /{domain}/sources`, never admin-only). */
+  /** Per-user plugin list endpoint (`GET /plugins?domain={domain}`). */
   listSources: () => Promise<S[]>
   /** Aggregated or source-scoped online search. */
   search: (params: {
