@@ -70,6 +70,7 @@ export interface UserPreferences {
   app_icon?: string | null
   ui_font?: string | null
   locale: LocaleCode
+  active_domain?: MediaKind | null
   book: ReaderPreferences
   comic: ComicReaderPreferences
   music: PlaybackPreferences

@@ -3,6 +3,8 @@ mod tests;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::library::MediaKind;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
@@ -37,6 +39,9 @@ pub struct UiPreferences {
     pub ui_font: Option<String>,
     #[serde(default)]
     pub locale: Locale,
+    /// Last selected media domain remembered across sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_domain: Option<MediaKind>,
 }
 
 impl UiPreferences {
@@ -545,6 +550,8 @@ pub struct UserPreferences {
     ui_font: Option<String>,
     #[serde(default)]
     locale: Locale,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_domain: Option<MediaKind>,
     #[serde(default)]
     book: BookReaderPreferences,
     #[serde(default)]
@@ -563,6 +570,7 @@ impl UserPreferences {
             app_icon: self.app_icon.clone(),
             ui_font: self.ui_font.clone(),
             locale: self.locale,
+            active_domain: self.active_domain,
         }
     }
 
@@ -581,6 +589,7 @@ impl UserPreferences {
         self.app_icon = ui.app_icon;
         self.ui_font = ui.ui_font;
         self.locale = ui.locale;
+        self.active_domain = ui.active_domain;
     }
 
     /// Clamps and sanitizes all preference values into safe bounds.
@@ -592,6 +601,7 @@ impl UserPreferences {
         self.app_icon = ui.app_icon;
         self.ui_font = ui.ui_font;
         self.locale = ui.locale;
+        self.active_domain = ui.active_domain;
         self.book.normalize();
         self.comic.normalize();
         self.music.normalize();

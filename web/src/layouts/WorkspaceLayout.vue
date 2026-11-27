@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
-import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   LuCheck,
-  LuChevronDown,
   LuHistory,
   LuHome,
   LuLibrary,
@@ -19,7 +18,7 @@ import {
 } from 'vue-icons-plus/lu'
 import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
-import { MdBadge, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
+import { MdBadge, MdDomainIcons, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
 import { useMediaFocus } from '@/composables/useMediaFocus'
 import { useShowMusicBar } from '@/composables/useShowMusicBar'
 import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
@@ -37,16 +36,8 @@ import { useUploadStore } from '@/stores/uploads'
 import type { ThemeMode } from '@/theme/md3'
 import type { MediaKind } from '@/types/api'
 import { extractFilesFromDataTransfer } from '@/utils/fileDrop'
-import NavigationBar from './NavigationBar.vue'
+import NavigationBar, { type MobileDomainSubTab } from './NavigationBar.vue'
 import NavigationRail, { type DomainNavTab } from './NavigationRail.vue'
-
-interface SecondaryTab {
-  key: 'home' | 'library' | 'history' | 'settings'
-  label: string
-  icon: Component
-  active: boolean
-  to: RouteLocationRaw
-}
 
 const { t } = useI18n()
 const route = useRoute()
@@ -67,8 +58,13 @@ const searchOpen = ref(false)
 const dragDepth = ref(0)
 const mainScrollRef = ref<HTMLElement | null>(null)
 const isContentScrolled = ref(false)
-const mobileSecondaryCollapsed = ref(false)
-let lastMainScrollTop = 0
+
+const compactViewportMedia =
+  typeof window !== 'undefined' ? window.matchMedia('(max-width: 599.98px)') : null
+const isCompactViewport = ref(compactViewportMedia ? compactViewportMedia.matches : false)
+function onCompactViewportChange(ev: MediaQueryListEvent): void {
+  isCompactViewport.value = ev.matches
+}
 
 watch(
   () => [authStore.isAuthenticated, authStore.user?.id] as const,
@@ -83,8 +79,6 @@ watch(
 watch(
   () => [route.path, domainStore.activeDomain] as const,
   () => {
-    lastMainScrollTop = 0
-    mobileSecondaryCollapsed.value = false
     if (mainScrollRef.value) {
       mainScrollRef.value.scrollTop = 0
       isContentScrolled.value = false
@@ -95,32 +89,10 @@ watch(
 function onMainScroll(ev: Event): void {
   const el = ev.target as HTMLElement | null
   if (!el) return
-  const top = Math.max(0, el.scrollTop)
-  isContentScrolled.value = top > 4
-
-  const delta = top - lastMainScrollTop
-  const scrollableRange = el.scrollHeight - el.clientHeight
-  if (top <= 16 || scrollableRange <= 72) {
-    mobileSecondaryCollapsed.value = false
-  } else if (delta > 10 && top > 48) {
-    mobileSecondaryCollapsed.value = true
-  } else if (delta < -8) {
-    mobileSecondaryCollapsed.value = false
-  }
-  lastMainScrollTop = top
+  isContentScrolled.value = Math.max(0, el.scrollTop) > 4
 }
 
 const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
-
-/**
- * On `/<domain>/library` mobile (<600px), `DomainLibraryTemplate` owns the single
- * horizontal tab bar (`All | Continue | Favorites | Collections`). Hiding the shell
- * horizontal tab bar on `<600px` for library list pages prevents double stacked tab bars,
- * while a compact section menu in the mobile Top App Bar preserves 1-tap sub-navigation.
- */
-const isMobileLibrarySubroute = computed(
-  () => !isSettingsRoute.value && route.path === `/${domainStore.activeDomain}/library`,
-)
 
 const domainTabs = computed<DomainNavTab[]>(() => {
   const all: DomainNavTab[] = [
@@ -132,14 +104,15 @@ const domainTabs = computed<DomainNavTab[]>(() => {
   return all.filter((item) => authStore.hasModule(item.kind))
 })
 
-const secondaryTabs = computed<SecondaryTab[]>(() => {
-  if (isSettingsRoute.value) return []
+const domainSubTabs = computed<MobileDomainSubTab[]>(() => {
   const d = domainStore.activeDomain
+  const inDomain = !isSettingsRoute.value
 
-  const isHome = route.path === `/${d}`
-  const isHistory = route.path === `/${d}/history`
-  const isDomainSettings = route.path.startsWith(`/${d}/settings`)
+  const isHome = inDomain && route.path === `/${d}`
+  const isHistory = inDomain && route.path === `/${d}/history`
+  const isDomainSettings = inDomain && route.path.startsWith(`/${d}/settings`)
   const isLibrary =
+    inDomain &&
     !isHome &&
     !isHistory &&
     !isDomainSettings &&
@@ -177,10 +150,6 @@ const secondaryTabs = computed<SecondaryTab[]>(() => {
   ]
 })
 
-const activeSecondaryTab = computed<SecondaryTab | null>(
-  () => secondaryTabs.value.find((tab) => tab.active) ?? secondaryTabs.value[0] ?? null,
-)
-
 const topBarTitle = computed(() =>
   isSettingsRoute.value ? t('settings.title') : t(`app.domains.${domainStore.activeDomain}`),
 )
@@ -199,10 +168,16 @@ async function switchDomain(kind: MediaKind): Promise<void> {
   const target = alreadyInDomain ? `/${kind}` : domainStore.getLastRoute(kind)
   await ensureDomainLocale(kind)
   domainStore.setActiveDomain(kind)
+  themeStore.rememberActiveDomain(kind)
   await router.push(target)
 }
 
-function navigateTab(tab: SecondaryTab): void {
+function selectDomainFromUserMenu(kind: MediaKind, closeMenu: () => void): void {
+  closeMenu()
+  void switchDomain(kind)
+}
+
+function navigateTab(tab: MobileDomainSubTab): void {
   void router.push(tab.to)
 }
 
@@ -282,10 +257,12 @@ function handleGlobalKeydown(ev: KeyboardEvent): void {
 
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
+  compactViewportMedia?.addEventListener('change', onCompactViewportChange)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
+  compactViewportMedia?.removeEventListener('change', onCompactViewportChange)
 })
 </script>
 
@@ -293,7 +270,7 @@ onBeforeUnmount(() => {
   <div
     data-workspace-shell
     :data-has-player="showMusicBar ? '1' : '0'"
-    class="relative grid h-screen w-screen grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] overflow-hidden bg-surface text-on-surface supports-[height:100dvh]:h-dvh sm:grid-cols-[80px_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)_auto]"
+    class="relative grid h-screen w-screen grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] overflow-hidden bg-surface text-on-surface supports-[height:100dvh]:h-dvh sm:grid-cols-[auto_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)_auto]"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent
     @dragleave.prevent="onDragLeave"
@@ -326,52 +303,23 @@ onBeforeUnmount(() => {
       @switch-domain="switchDomain"
     />
 
-    <!-- Top Region: Minimal MD3 Top App Bar + Domain Sub-Navigation -->
+    <!-- Top Region: Minimal MD3 Top App Bar + Desktop Domain Sub-Navigation -->
     <div
       class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-colors duration-150 ease-standard select-none sm:col-start-2 sm:pl-0"
       :class="isContentScrolled ? 'bg-surface-container' : 'bg-surface'"
     >
       <header class="flex h-14 items-center justify-between gap-3 px-4 sm:h-16 md:px-6">
-        <div class="flex min-w-0 items-center gap-2">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <span
+            v-if="!isSettingsRoute"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-corner-sm bg-secondary-container text-on-secondary-container sm:hidden"
+            aria-hidden="true"
+          >
+            <MdDomainIcons :kind="domainStore.activeDomain" active class="h-4 w-4" />
+          </span>
           <h1 class="text-title-large shrink-0 truncate text-on-surface">
             {{ topBarTitle }}
           </h1>
-
-          <!-- Mobile (<600px) Sub-Navigation Switcher when shell tab bar is collapsed/suppressed -->
-          <div
-            v-if="activeSecondaryTab && (isMobileLibrarySubroute || mobileSecondaryCollapsed)"
-            class="sm:hidden"
-          >
-            <MdMenu
-              placement="bottom-start"
-              :min-width="180"
-              :aria-label="t('nav.navigation')"
-            >
-              <template #trigger="{ toggle, triggerAttrs }">
-                <button
-                  type="button"
-                  v-bind="triggerAttrs"
-                  class="md-state md-touch-target text-label-large inline-flex h-8 cursor-pointer items-center gap-1 rounded-corner-full bg-secondary-container px-3 text-on-secondary-container"
-                  @click="toggle"
-                >
-                  <span class="truncate">{{ activeSecondaryTab.label }}</span>
-                  <LuChevronDown class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                </button>
-              </template>
-
-              <MdMenuItem
-                v-for="tab in secondaryTabs"
-                :key="`menu-${tab.key}`"
-                :icon="tab.icon"
-                :label="tab.label"
-                :to="tab.to"
-              >
-                <template v-if="tab.active" #trailing>
-                  <LuCheck class="h-4 w-4 text-primary" aria-hidden="true" />
-                </template>
-              </MdMenuItem>
-            </MdMenu>
-          </div>
         </div>
 
         <!-- Desktop Single Search Entry (opens unified SearchView) -->
@@ -392,7 +340,7 @@ onBeforeUnmount(() => {
           </span>
         </button>
 
-        <!-- Right Actions (<=2): Mobile Search Icon + Account Menu -->
+        <!-- Right Actions (<=2): Mobile Search Icon + Account Panel -->
         <div class="flex shrink-0 items-center gap-1">
           <MdIconButton
             class="sm:hidden"
@@ -433,126 +381,148 @@ onBeforeUnmount(() => {
               </button>
             </template>
 
-            <div class="px-2.5 pt-1.5 pb-2">
-              <p class="text-title-small truncate text-on-surface">
-                {{ authStore.user?.display_name || authStore.user?.username }}
-              </p>
-              <p class="text-body-small truncate text-on-surface-variant">
-                @{{ authStore.user?.username }} ·
-                {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
-              </p>
-            </div>
-
-            <!-- Compact 3-state Theme Mode Switcher -->
-            <div class="px-2 pb-2">
-              <div
-                role="radiogroup"
-                :aria-label="t('theme.modeTitle')"
-                class="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)] gap-1 rounded-corner-full bg-surface-container-high p-1"
-              >
-                <button
-                  v-for="opt in themeModeOptions"
-                  :key="opt.value"
-                  type="button"
-                  role="radio"
-                  :aria-checked="themeStore.themeMode === opt.value"
-                  :title="opt.label"
-                  class="md-state text-label-small flex cursor-pointer items-center justify-center gap-1 rounded-corner-full px-1.5 py-1.5 whitespace-nowrap"
-                  :class="
-                    themeStore.themeMode === opt.value
-                      ? 'bg-secondary-container text-on-secondary-container'
-                      : 'text-on-surface-variant hover:text-on-surface'
-                  "
-                  @click="themeStore.setThemeMode(opt.value)"
-                >
-                  <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span>{{ opt.label }}</span>
-                </button>
+            <template #default="{ close }">
+              <div class="px-2.5 pt-1.5 pb-2">
+                <p class="text-title-small truncate text-on-surface">
+                  {{ authStore.user?.display_name || authStore.user?.username }}
+                </p>
+                <p class="text-body-small truncate text-on-surface-variant">
+                  @{{ authStore.user?.username }} ·
+                  {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
+                </p>
               </div>
-            </div>
 
-            <hr class="mx-1.5 my-1.5 border-outline-variant" />
+              <!-- Active Media Domain Switcher (persisted across sessions) -->
+              <div v-if="domainTabs.length > 1" class="px-2 pb-2">
+                <p class="text-label-small mb-1.5 px-1 text-on-surface-variant">
+                  {{ t('nav.currentDomain') }}
+                </p>
+                <div
+                  role="radiogroup"
+                  :aria-label="t('nav.currentDomain')"
+                  class="grid grid-cols-2 gap-1.5"
+                >
+                  <button
+                    v-for="tab in domainTabs"
+                    :key="`user-domain-${tab.kind}`"
+                    type="button"
+                    role="radio"
+                    :data-user-domain-switch="tab.kind"
+                    :aria-checked="domainStore.activeDomain === tab.kind"
+                    class="md-state text-label-large flex min-h-9 cursor-pointer items-center justify-between gap-2 rounded-corner-md px-2.5 py-1.5 transition-colors duration-150 ease-standard"
+                    :class="
+                      domainStore.activeDomain === tab.kind
+                        ? 'bg-secondary-container text-on-secondary-container'
+                        : 'bg-surface-container-high text-on-surface-variant hover:text-on-surface'
+                    "
+                    @click="selectDomainFromUserMenu(tab.kind, close)"
+                  >
+                    <span class="flex min-w-0 items-center gap-2">
+                      <MdDomainIcons
+                        :kind="tab.kind"
+                        :active="domainStore.activeDomain === tab.kind"
+                        class="h-4 w-4 shrink-0"
+                      />
+                      <span class="truncate">{{ tab.label }}</span>
+                    </span>
+                    <LuCheck
+                      v-if="domainStore.activeDomain === tab.kind"
+                      class="h-3.5 w-3.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </div>
+              </div>
 
-            <MdMenuItem
-              :icon="LuListChecks"
-              :label="t('transfers.openTasks')"
-              :trailing-text="globalActiveTaskCount > 0 ? String(globalActiveTaskCount) : ''"
-              @select="openTasksDrawer"
-            />
+              <!-- Compact 3-state Theme Mode Switcher -->
+              <div class="px-2 pb-2">
+                <div
+                  role="radiogroup"
+                  :aria-label="t('theme.modeTitle')"
+                  class="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)] gap-1 rounded-corner-full bg-surface-container-high p-1"
+                >
+                  <button
+                    v-for="opt in themeModeOptions"
+                    :key="opt.value"
+                    type="button"
+                    role="radio"
+                    :aria-checked="themeStore.themeMode === opt.value"
+                    :title="opt.label"
+                    class="md-state text-label-small flex cursor-pointer items-center justify-center gap-1 rounded-corner-full px-1.5 py-1.5 whitespace-nowrap"
+                    :class="
+                      themeStore.themeMode === opt.value
+                        ? 'bg-secondary-container text-on-secondary-container'
+                        : 'text-on-surface-variant hover:text-on-surface'
+                    "
+                    @click="themeStore.setThemeMode(opt.value)"
+                  >
+                    <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>{{ opt.label }}</span>
+                  </button>
+                </div>
+              </div>
 
-            <MdMenuItem
-              :icon="LuSettings"
-              :label="t('nav.settings')"
-              to="/settings"
-            />
+              <hr class="mx-1.5 my-1.5 border-outline-variant" />
 
-            <MdMenuItem
-              v-if="!appClientStore.isStandaloneApp"
-              :icon="LuLogOut"
-              :label="t('auth.signOut')"
-              destructive
-              @select="handleSignOut"
-            />
+              <MdMenuItem
+                :icon="LuListChecks"
+                :label="t('transfers.openTasks')"
+                :trailing-text="globalActiveTaskCount > 0 ? String(globalActiveTaskCount) : ''"
+                @select="openTasksDrawer"
+              />
+
+              <MdMenuItem
+                :icon="LuSettings"
+                :label="t('nav.settings')"
+                to="/settings"
+              />
+
+              <MdMenuItem
+                v-if="!appClientStore.isStandaloneApp"
+                :icon="LuLogOut"
+                :label="t('auth.signOut')"
+                destructive
+                @select="handleSignOut"
+              />
+            </template>
           </MdMenu>
         </div>
       </header>
 
-      <!-- Domain Sub-Navigation:
-           - >=600px (sm:): Authentic MD3 64dp (h-16) stacked Primary Tabs (24dp icon + label + 3dp rounded-top content indicator)
-           - <600px: Single 48dp (h-12) Secondary Tab bar on non-library pages; hidden on /:domain/library so mobile never stacks two horizontal tab bars -->
+      <!-- Desktop (>=600px) Domain Sub-Navigation (mobile uses bottom NavigationBar) -->
       <div
-        v-if="secondaryTabs.length > 0"
-        class="transition-[grid-template-rows,opacity] duration-200 ease-standard sm:block sm:opacity-100"
-        :class="[
-          isMobileLibrarySubroute ? 'hidden sm:block' : 'grid',
-          mobileSecondaryCollapsed
-            ? 'pointer-events-none grid-rows-[0fr] opacity-0 sm:pointer-events-auto'
-            : 'grid-rows-[1fr] opacity-100',
-        ]"
+        v-if="!isSettingsRoute && domainSubTabs.length > 0"
+        class="hidden sm:block"
       >
-        <div class="min-h-0 overflow-hidden sm:overflow-visible">
-          <nav
-            :aria-label="t('nav.navigation')"
-            class="no-scrollbar flex items-end gap-1 overflow-x-auto border-b border-outline-variant px-4 md:px-6"
+        <nav
+          :aria-label="t('nav.navigation')"
+          class="no-scrollbar flex items-end gap-1 overflow-x-auto border-b border-outline-variant px-4 md:px-6"
+        >
+          <button
+            v-for="tab in domainSubTabs"
+            :key="tab.key"
+            type="button"
+            :data-nav="!isCompactViewport ? tab.key : undefined"
+            :aria-current="tab.active ? 'page' : undefined"
+            class="md-state text-title-small relative inline-flex h-16 shrink-0 cursor-pointer items-center justify-center px-5 whitespace-nowrap transition-colors duration-150 ease-standard"
+            :class="
+              tab.active
+                ? 'text-primary'
+                : 'text-on-surface-variant hover:text-on-surface'
+            "
+            @click="navigateTab(tab)"
           >
-            <button
-              v-for="tab in secondaryTabs"
-              :key="tab.key"
-              type="button"
-              :data-nav="tab.key"
-              :aria-current="tab.active ? 'page' : undefined"
-              class="md-state text-title-small relative inline-flex h-12 shrink-0 cursor-pointer items-center justify-center px-3.5 whitespace-nowrap transition-colors duration-150 ease-standard sm:h-16 sm:px-5"
-              :class="
-                tab.active
-                  ? 'text-on-surface sm:text-primary'
-                  : 'text-on-surface-variant hover:text-on-surface'
-              "
-              @click="navigateTab(tab)"
-            >
-              <!-- >=600px: 64dp Stacked Primary Tab (24dp icon above label + content-width 3dp rounded-top indicator) -->
-              <span class="relative hidden h-full flex-col items-center justify-center gap-1 sm:inline-flex">
-                <component :is="tab.icon" class="h-6 w-6 shrink-0" aria-hidden="true" />
-                <span>{{ tab.label }}</span>
-                <span
-                  v-if="tab.active"
-                  aria-hidden="true"
-                  class="pointer-events-none absolute right-0 bottom-0 left-0 mx-auto h-[3px] min-w-6 rounded-t-[3px] bg-primary"
-                />
-              </span>
-
-              <!-- <600px: 48dp Inline Secondary Tab (18dp icon + label + full-tab 2dp indicator) -->
-              <span class="inline-flex h-full items-center gap-2 sm:hidden">
-                <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
-                <span>{{ tab.label }}</span>
-              </span>
+            <span class="relative inline-flex h-full flex-col items-center justify-center gap-1">
+              <component :is="tab.icon" class="h-6 w-6 shrink-0" aria-hidden="true" />
+              <span>{{ tab.label }}</span>
               <span
                 v-if="tab.active"
                 aria-hidden="true"
-                class="pointer-events-none absolute right-0 bottom-0 left-0 h-[2px] bg-primary sm:hidden"
+                class="pointer-events-none absolute right-0 bottom-0 left-0 mx-auto h-[3px] min-w-6 rounded-t-[3px] bg-primary"
               />
-            </button>
-          </nav>
-        </div>
+            </span>
+          </button>
+        </nav>
       </div>
     </div>
 
@@ -577,13 +547,12 @@ onBeforeUnmount(() => {
       <PlayerBar />
     </div>
 
-    <!-- Compact (<600px): MD3 Bottom Navigation Bar -->
+    <!-- Compact (<600px): MD3 Bottom Navigation Bar (Domain Sub-Tabs) -->
     <NavigationBar
       class="col-start-1 row-start-4"
-      :domain-tabs="domainTabs"
-      :active-domain="domainStore.activeDomain"
-      :is-settings-route="isSettingsRoute"
-      @switch-domain="switchDomain"
+      :tabs="domainSubTabs"
+      :bind-data-nav="isCompactViewport"
+      @navigate="navigateTab"
     />
 
     <!-- Player Side Sheets & Fullscreen Lyrics Overlay -->

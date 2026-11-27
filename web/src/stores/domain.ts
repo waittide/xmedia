@@ -1,18 +1,31 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { isMediaKind } from '@/sources/routes'
+import { readStoredPreferencesRaw } from '@/theme/preferencesStorage'
 import type { MediaKind } from '@/types/api'
 
 const DOMAIN_KEY = 'xmedia.active_domain'
 
-export const useDomainStore = defineStore('domain', () => {
-  let saved: string | null = null
+function readInitialSavedDomain(): MediaKind {
   try {
-    saved = localStorage.getItem(DOMAIN_KEY)
+    const saved = localStorage.getItem(DOMAIN_KEY)
+    if (isMediaKind(saved)) return saved
   } catch {
-    saved = null
+    // ignore storage errors
   }
-  const activeDomain = ref<MediaKind>(isMediaKind(saved) ? saved : 'book')
+  const prefs = readStoredPreferencesRaw()
+  if (isMediaKind(prefs.active_domain)) return prefs.active_domain
+  return 'book'
+}
+
+function hasExplicitDomainInWindowPath(): boolean {
+  if (typeof window === 'undefined') return false
+  const seg = window.location.pathname.split('/').filter(Boolean)[0]
+  return isMediaKind(seg)
+}
+
+export const useDomainStore = defineStore('domain', () => {
+  const activeDomain = ref<MediaKind>(readInitialSavedDomain())
 
   function setActiveDomain(next: MediaKind): void {
     activeDomain.value = next
@@ -21,6 +34,12 @@ export const useDomainStore = defineStore('domain', () => {
     } catch {
       // ignore storage errors
     }
+  }
+
+  function hydratePreferredDomain(preferred?: MediaKind | null): void {
+    if (!isMediaKind(preferred)) return
+    if (hasExplicitDomainInWindowPath()) return
+    setActiveDomain(preferred)
   }
 
   /**
@@ -40,17 +59,14 @@ export const useDomainStore = defineStore('domain', () => {
   }
 
   function resetRoutes(): void {
-    activeDomain.value = 'book'
-    try {
-      localStorage.removeItem(DOMAIN_KEY)
-    } catch {
-      // ignore storage errors
-    }
+    // Retain locally remembered domain unless overwritten by incoming user preferences on login.
+    activeDomain.value = readInitialSavedDomain()
   }
 
   return {
     activeDomain,
     setActiveDomain,
+    hydratePreferredDomain,
     getLastRoute,
     syncFromPath,
     resetRoutes,

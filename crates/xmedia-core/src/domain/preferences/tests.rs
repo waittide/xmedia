@@ -65,12 +65,14 @@ fn seed_color_and_app_icon_are_sanitized_via_ui_preferences() {
         app_icon: Some(" Porcelain ".into()),
         ui_font: Some("  LXGW WenKai  ".into()),
         locale: Locale::EnUs,
+        active_domain: Some(MediaKind::Music),
     });
     assert_eq!(prefs.theme_mode, ThemeMode::Dark);
     assert_eq!(prefs.seed_color.as_deref(), Some("#6750a4"));
     assert_eq!(prefs.app_icon.as_deref(), Some("porcelain"));
     assert_eq!(prefs.ui_font.as_deref(), Some("LXGW WenKai"));
     assert_eq!(prefs.locale, Locale::EnUs);
+    assert_eq!(prefs.active_domain, Some(MediaKind::Music));
 
     prefs.seed_color = Some("#ABC".into());
     prefs.normalize();

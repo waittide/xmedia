@@ -1,6 +1,7 @@
 import { onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api, postKeepaliveJson } from '@/api/client'
+import { isMediaKind } from '@/sources/routes'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { resolveStoredAppIcon } from '@/theme/appIcons'
@@ -92,6 +93,7 @@ function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
     app_icon: resolveStoredAppIcon(parsed.app_icon),
     ui_font: normalizeStoredUiFont(parsed.ui_font),
     locale: (parsed.locale ?? (localStorage.getItem('xmedia.locale') as LocaleCode | null)) || 'zh-CN',
+    active_domain: isMediaKind(parsed.active_domain) ? parsed.active_domain : null,
   }
 }
 

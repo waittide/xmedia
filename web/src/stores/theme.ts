@@ -28,14 +28,16 @@ import {
   type ThemeMode,
 } from '@/theme/md3'
 import { i18n, setAppLocale } from '@/i18n'
+import { isMediaKind } from '@/sources/routes'
 import { useAppClientStore } from '@/stores/appServers'
+import { useDomainStore } from '@/stores/domain'
 import {
   PREFS_STORAGE_KEY,
   readStoredPreferencesRaw,
   writeStoredVisualPreferences,
   type VisualPreferencesSnapshot,
 } from '@/theme/preferencesStorage'
-import type { LocaleCode, UserPreferences } from '@/types/api'
+import type { LocaleCode, MediaKind, UserPreferences } from '@/types/api'
 
 export interface ThemeCloudSyncBridge {
   onVisualChange: () => void
@@ -56,6 +58,7 @@ function loadInitialVisualPrefs(): VisualPreferencesSnapshot {
     app_icon: resolveStoredAppIcon(parsed.app_icon),
     ui_font: normalizeStoredUiFont(parsed.ui_font),
     locale: parsed.locale ?? ((i18n.global.locale.value as LocaleCode) || 'zh-CN'),
+    active_domain: isMediaKind(parsed.active_domain) ? parsed.active_domain : null,
   }
 }
 
@@ -68,6 +71,7 @@ export const useThemeStore = defineStore('theme', () => {
   const appIcon = ref<AppIconId | null>(resolveStoredAppIcon(initial.app_icon))
   const uiFont = ref<string | null>(normalizeStoredUiFont(initial.ui_font))
   const locale = ref<LocaleCode>(initial.locale)
+  const activeDomainPref = ref<MediaKind | null>(initial.active_domain ?? null)
 
   function getVisualSnapshot(): VisualPreferencesSnapshot {
     return {
@@ -76,6 +80,7 @@ export const useThemeStore = defineStore('theme', () => {
       app_icon: appIcon.value,
       ui_font: uiFont.value,
       locale: locale.value,
+      active_domain: activeDomainPref.value,
     }
   }
 
@@ -147,6 +152,10 @@ export const useThemeStore = defineStore('theme', () => {
     appIcon.value = resolveStoredAppIcon(prefs.app_icon)
     uiFont.value = normalizeStoredUiFont(prefs.ui_font)
     locale.value = prefs.locale
+    activeDomainPref.value = isMediaKind(prefs.active_domain) ? prefs.active_domain : null
+    if (activeDomainPref.value) {
+      useDomainStore().hydratePreferredDomain(activeDomainPref.value)
+    }
 
     applyThemeIfChanged()
     applyDocumentUiFont()
@@ -154,6 +163,12 @@ export const useThemeStore = defineStore('theme', () => {
     writeStoredVisualPreferences(getVisualSnapshot())
     cloudSyncBridge?.onHydrateUser(prefs)
     void ensureCustomFontsLoaded(true)
+  }
+
+  function rememberActiveDomain(next: MediaKind): void {
+    if (activeDomainPref.value === next) return
+    activeDomainPref.value = next
+    persistAndNotifyVisualChange()
   }
 
   function setThemeMode(mode: ThemeMode): void {
@@ -320,5 +335,7 @@ export const useThemeStore = defineStore('theme', () => {
     setUiFont,
     resetUiFont,
     setLocale,
+    activeDomainPref,
+    rememberActiveDomain,
   }
 })

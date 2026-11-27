@@ -69,6 +69,7 @@ export default {
   },
   nav: {
     navigation: 'Navigation',
+    currentDomain: 'Active Domain',
     home: 'Home',
     library: 'Resources',
     history: 'History',
