@@ -3,12 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
-  LuCheck,
   LuHistory,
   LuHome,
   LuLibrary,
   LuListChecks,
   LuLogOut,
+  LuMenu,
   LuMonitor,
   LuMoon,
   LuSearch,
@@ -18,7 +18,7 @@ import {
 } from 'vue-icons-plus/lu'
 import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
-import { MdBadge, MdDomainIcons, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
+import { MdBadge, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
 import { useMediaFocus } from '@/composables/useMediaFocus'
 import { useShowMusicBar } from '@/composables/useShowMusicBar'
 import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
@@ -37,6 +37,7 @@ import type { ThemeMode } from '@/theme/md3'
 import type { MediaKind } from '@/types/api'
 import { extractFilesFromDataTransfer } from '@/utils/fileDrop'
 import NavigationBar, { type MobileDomainSubTab } from './NavigationBar.vue'
+import NavigationDrawer from './NavigationDrawer.vue'
 import NavigationRail, { type DomainNavTab } from './NavigationRail.vue'
 
 const { t } = useI18n()
@@ -53,6 +54,7 @@ const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
 
 const showMusicBar = useShowMusicBar()
+const mobileDrawerOpen = ref(false)
 const tasksDrawerOpen = ref(false)
 const searchOpen = ref(false)
 const dragDepth = ref(0)
@@ -64,6 +66,9 @@ const compactViewportMedia =
 const isCompactViewport = ref(compactViewportMedia ? compactViewportMedia.matches : false)
 function onCompactViewportChange(ev: MediaQueryListEvent): void {
   isCompactViewport.value = ev.matches
+  if (!ev.matches) {
+    mobileDrawerOpen.value = false
+  }
 }
 
 watch(
@@ -170,11 +175,6 @@ async function switchDomain(kind: MediaKind): Promise<void> {
   domainStore.setActiveDomain(kind)
   themeStore.rememberActiveDomain(kind)
   await router.push(target)
-}
-
-function selectDomainFromUserMenu(kind: MediaKind, closeMenu: () => void): void {
-  closeMenu()
-  void switchDomain(kind)
 }
 
 function navigateTab(tab: MobileDomainSubTab): void {
@@ -309,14 +309,15 @@ onBeforeUnmount(() => {
       :class="isContentScrolled ? 'bg-surface-container' : 'bg-surface'"
     >
       <header class="flex h-14 items-center justify-between gap-3 px-4 sm:h-16 md:px-6">
-        <div class="flex min-w-0 items-center gap-2.5">
-          <span
-            v-if="!isSettingsRoute"
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-corner-sm bg-secondary-container text-on-secondary-container sm:hidden"
-            aria-hidden="true"
-          >
-            <MdDomainIcons :kind="domainStore.activeDomain" active class="h-4 w-4" />
-          </span>
+        <div class="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
+          <MdIconButton
+            v-if="domainTabs.length > 0"
+            data-mobile-drawer-trigger
+            class="-ml-2 sm:hidden"
+            :icon="LuMenu"
+            :aria-label="t('nav.expandSidebar')"
+            @click="mobileDrawerOpen = true"
+          />
           <h1 class="text-title-large shrink-0 truncate text-on-surface">
             {{ topBarTitle }}
           </h1>
@@ -381,7 +382,7 @@ onBeforeUnmount(() => {
               </button>
             </template>
 
-            <template #default="{ close }">
+            <template #default>
               <div class="px-2.5 pt-1.5 pb-2">
                 <p class="text-title-small truncate text-on-surface">
                   {{ authStore.user?.display_name || authStore.user?.username }}
@@ -390,48 +391,6 @@ onBeforeUnmount(() => {
                   @{{ authStore.user?.username }} ·
                   {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
                 </p>
-              </div>
-
-              <!-- Active Media Domain Switcher (persisted across sessions) -->
-              <div v-if="domainTabs.length > 1" class="px-2 pb-2">
-                <p class="text-label-small mb-1.5 px-1 text-on-surface-variant">
-                  {{ t('nav.currentDomain') }}
-                </p>
-                <div
-                  role="radiogroup"
-                  :aria-label="t('nav.currentDomain')"
-                  class="grid grid-cols-2 gap-1.5"
-                >
-                  <button
-                    v-for="tab in domainTabs"
-                    :key="`user-domain-${tab.kind}`"
-                    type="button"
-                    role="radio"
-                    :data-user-domain-switch="tab.kind"
-                    :aria-checked="domainStore.activeDomain === tab.kind"
-                    class="md-state text-label-large flex min-h-9 cursor-pointer items-center justify-between gap-2 rounded-corner-md px-2.5 py-1.5 transition-colors duration-150 ease-standard"
-                    :class="
-                      domainStore.activeDomain === tab.kind
-                        ? 'bg-secondary-container text-on-secondary-container'
-                        : 'bg-surface-container-high text-on-surface-variant hover:text-on-surface'
-                    "
-                    @click="selectDomainFromUserMenu(tab.kind, close)"
-                  >
-                    <span class="flex min-w-0 items-center gap-2">
-                      <MdDomainIcons
-                        :kind="tab.kind"
-                        :active="domainStore.activeDomain === tab.kind"
-                        class="h-4 w-4 shrink-0"
-                      />
-                      <span class="truncate">{{ tab.label }}</span>
-                    </span>
-                    <LuCheck
-                      v-if="domainStore.activeDomain === tab.kind"
-                      class="h-3.5 w-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                  </button>
-                </div>
               </div>
 
               <!-- Compact 3-state Theme Mode Switcher -->
@@ -563,6 +522,16 @@ onBeforeUnmount(() => {
       <QueueDrawer />
       <LyricsOverlay />
     </template>
+
+    <!-- Compact (<600px): MD3 Modal Navigation Drawer (Domain Switcher) -->
+    <NavigationDrawer
+      :open="mobileDrawerOpen"
+      :domain-tabs="domainTabs"
+      :active-domain="domainStore.activeDomain"
+      :is-settings-route="isSettingsRoute"
+      @close="mobileDrawerOpen = false"
+      @switch-domain="switchDomain"
+    />
 
     <!-- Global Background Tasks Sheet -->
     <BackgroundTasksDrawer
