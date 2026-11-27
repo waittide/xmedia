@@ -98,7 +98,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
     padding="none"
     class="scroll-mt-20 overflow-hidden"
   >
-    <div class="px-6 pt-5 pb-2">
+    <div class="px-4 pt-4 pb-2 sm:px-6 sm:pt-5">
       <div class="flex items-center gap-2">
         <LuRadio class="h-4 w-4 text-primary" />
         <h2 class="text-title-medium text-on-surface">
@@ -114,7 +114,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
       <li
         v-for="ep in protocolEndpoints"
         :key="ep.key"
-        class="flex flex-col justify-between gap-2.5 px-6 py-3.5 sm:flex-row sm:items-center"
+        class="flex flex-col justify-between gap-2.5 px-4 py-3.5 sm:flex-row sm:items-center sm:px-6"
       >
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
@@ -142,7 +142,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
 
     <div
       v-if="includeDomain('book') || includeDomain('comic')"
-      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-6 py-3"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-4 py-3 sm:px-6"
     >
       <span class="text-label-medium text-on-surface">
         {{ t('settings.opdsAuthModes') }}:
@@ -154,7 +154,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
 
     <div
       v-if="includeDomain('music')"
-      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-6 py-3"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-4 py-3 sm:px-6"
     >
       <span class="text-label-medium text-on-surface">
         {{ t('settings.subsonicAuthModes') }}:
@@ -166,7 +166,7 @@ const protocolEndpoints = computed<ProtocolEndpointRow[]>(() => {
 
     <div
       v-if="includeDomain('video')"
-      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-6 py-3"
+      class="text-body-small flex flex-wrap items-center gap-x-2 gap-y-1 bg-surface-container px-4 py-3 sm:px-6"
     >
       <span class="text-label-medium text-on-surface">
         {{ t('settings.jellyfinAuthModes') }}:

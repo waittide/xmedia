@@ -42,7 +42,7 @@ function onHexInputChange(raw: string): void {
 
 <template>
   <!-- Language -->
-  <section class="rounded-corner-lg bg-surface-container-low p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-4 sm:p-6">
     <h2 class="text-title-small text-on-surface">
       {{ t('theme.languageTitle') }}
     </h2>
@@ -78,26 +78,25 @@ function onHexInputChange(raw: string): void {
   </section>
 
   <!-- Theme Mode -->
-  <section class="rounded-corner-lg bg-surface-container-low p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-4 sm:p-6">
     <h2 class="text-title-small text-on-surface">
       {{ t('theme.modeTitle') }}
     </h2>
 
-    <div class="mt-4">
-      <div class="no-scrollbar -m-1 overflow-x-auto p-1">
-        <MdSegmentedButton
-          :model-value="themeStore.themeMode"
-          :options="themeModeOptions"
-          @update:model-value="themeStore.setThemeMode($event)"
-        />
-      </div>
+    <div class="mt-4 max-w-md">
+      <MdSegmentedButton
+        full-width
+        :model-value="themeStore.themeMode"
+        :options="themeModeOptions"
+        @update:model-value="themeStore.setThemeMode($event)"
+      />
     </div>
   </section>
 
   <!-- Sidebar & Navigation Bar Labels -->
   <section
     data-appearance-nav-labels
-    class="rounded-corner-lg bg-surface-container-low p-6"
+    class="rounded-corner-lg bg-surface-container-low p-4 sm:p-6"
   >
     <div>
       <h2 class="text-title-small text-on-surface">
@@ -130,7 +129,7 @@ function onHexInputChange(raw: string): void {
   <!-- UI Font -->
   <section
     data-appearance-ui-font
-    class="rounded-corner-lg bg-surface-container-low p-6"
+    class="rounded-corner-lg bg-surface-container-low p-4 sm:p-6"
   >
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
@@ -163,7 +162,7 @@ function onHexInputChange(raw: string): void {
   </section>
 
   <!-- Dynamic Seed Color -->
-  <section class="rounded-corner-lg bg-surface-container-low p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-4 sm:p-6">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 class="text-title-small text-on-surface">
         {{ t('theme.seedColorTitle') }}
@@ -204,27 +203,29 @@ function onHexInputChange(raw: string): void {
       </button>
     </div>
 
-    <div class="mt-5 flex flex-wrap items-center gap-3 rounded-corner-md bg-surface-container px-4 py-3">
+    <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-corner-md bg-surface-container px-3.5 py-2.5 sm:px-4 sm:py-3">
       <span class="text-label-medium text-on-surface-variant">
         {{ t('theme.customSeedLabel') }}
       </span>
-      <AppColorPicker
-        :model-value="themeStore.effectiveSeedColor"
-        @update:model-value="themeStore.setSeedColor($event)"
-      />
-      <input
-        type="text"
-        :value="themeStore.effectiveSeedColor"
-        :aria-label="t('theme.hexInputLabel')"
-        maxlength="7"
-        class="md-input sm:text-body-small h-9 w-28 font-mono"
-        @change="onHexInputChange(($event.target as HTMLInputElement).value)"
-      />
+      <div class="flex items-center gap-2.5">
+        <AppColorPicker
+          :model-value="themeStore.effectiveSeedColor"
+          @update:model-value="themeStore.setSeedColor($event)"
+        />
+        <input
+          type="text"
+          :value="themeStore.effectiveSeedColor"
+          :aria-label="t('theme.hexInputLabel')"
+          maxlength="7"
+          class="md-input sm:text-body-small h-9 w-28 font-mono"
+          @change="onHexInputChange(($event.target as HTMLInputElement).value)"
+        />
+      </div>
     </div>
   </section>
 
   <!-- App Icon -->
-  <section class="rounded-corner-lg bg-surface-container-low p-6">
+  <section class="rounded-corner-lg bg-surface-container-low p-4 sm:p-6">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
         <h2 class="text-title-small text-on-surface">

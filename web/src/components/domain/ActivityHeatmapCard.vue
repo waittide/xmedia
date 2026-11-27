@@ -438,7 +438,7 @@ const LEGEND_LEVELS: readonly (0 | 1 | 2 | 3 | 4)[] = [0, 1, 2, 3, 4]
 
 <template>
   <section
-    class="relative rounded-corner-xl bg-surface-container-low p-5 sm:p-6"
+    class="relative rounded-corner-xl bg-surface-container-low p-4 sm:p-6"
     :aria-label="t('history.heatmapTitle')"
   >
     <!-- Card Header -->

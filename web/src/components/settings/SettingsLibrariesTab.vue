@@ -385,7 +385,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         </p>
       </div>
 
-      <div class="flex shrink-0 items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <RefreshButton :action="refreshAdminLibraries" />
         <MdButton
           v-if="hasLocalMountInView"
@@ -422,7 +422,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         <li
           v-for="lib in filteredLibraries"
           :key="lib.id"
-          class="flex flex-col justify-between gap-3 px-5 py-4 transition-colors hover:bg-surface-container sm:flex-row sm:items-center"
+          class="flex flex-col justify-between gap-3 px-4 py-3.5 transition-colors hover:bg-surface-container sm:flex-row sm:items-center sm:px-5 sm:py-4"
         >
           <div class="min-w-0 flex-1 space-y-1">
             <div class="flex flex-wrap items-center gap-2">

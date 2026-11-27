@@ -309,7 +309,7 @@ const scanStatusSummary = computed(() => {
   <div class="safe-pb flex min-h-screen flex-col bg-surface text-on-surface">
     <!-- Top Brand Bar -->
     <header class="safe-pt safe-px">
-      <div class="flex items-center justify-between px-6 py-4">
+      <div class="flex items-center justify-between px-4 py-3.5 sm:px-6 sm:py-4">
         <div class="flex items-center gap-2.5">
           <div
             class="flex h-10 w-10 items-center justify-center rounded-corner-lg bg-primary text-on-primary shadow-elevation-1"

@@ -143,8 +143,8 @@ async function handleRotateApiKey(): Promise<void> {
       </p>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2.5">
-      <div class="min-w-[14rem] flex-1">
+    <div class="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+      <div class="min-w-0 flex-1">
         <MdTextField
           :model-value="authStore.user?.api_key || ''"
           :type="showApiKey ? 'text' : 'password'"
@@ -165,23 +165,25 @@ async function handleRotateApiKey(): Promise<void> {
         </MdTextField>
       </div>
 
-      <MdButton
-        variant="tonal"
-        :icon="copiedKey === 'apiKey' ? LuCheck : LuCopy"
-        @click="copyText('apiKey', authStore.user?.api_key || '')"
-      >
-        {{ copiedKey === 'apiKey' ? t('common.copied') : t('common.copy') }}
-      </MdButton>
+      <div class="flex flex-wrap items-center gap-2">
+        <MdButton
+          variant="tonal"
+          :icon="copiedKey === 'apiKey' ? LuCheck : LuCopy"
+          @click="copyText('apiKey', authStore.user?.api_key || '')"
+        >
+          {{ copiedKey === 'apiKey' ? t('common.copied') : t('common.copy') }}
+        </MdButton>
 
-      <MdButton
-        variant="outlined"
-        tone="error"
-        :icon="LuRotateCw"
-        :loading="rotatingKey"
-        @click="handleRotateApiKey"
-      >
-        {{ t('settings.rotateApiKeyBtn') }}
-      </MdButton>
+        <MdButton
+          variant="outlined"
+          tone="error"
+          :icon="LuRotateCw"
+          :loading="rotatingKey"
+          @click="handleRotateApiKey"
+        >
+          {{ t('settings.rotateApiKeyBtn') }}
+        </MdButton>
+      </div>
     </div>
   </MdCard>
 

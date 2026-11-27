@@ -282,18 +282,18 @@ watch(activityFlushRevision, () => {
 </script>
 
 <template>
-  <div class="px-4 py-5 sm:px-6 sm:py-6">
-    <div class="mx-auto w-full max-w-7xl space-y-6">
+  <div class="px-4 py-4 sm:px-6 sm:py-6">
+    <div class="mx-auto w-full max-w-7xl space-y-4 sm:space-y-6">
       <!-- Page Header + Period Filter Chips -->
-      <header class="flex flex-wrap items-center justify-between gap-4">
+      <header class="flex flex-wrap items-center justify-between gap-3 sm:gap-4">
         <div class="flex min-w-0 items-center gap-3">
           <div
-            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container sm:h-11 sm:w-11"
           >
             <component :is="domainIcon" class="h-5 w-5" aria-hidden="true" />
           </div>
           <div class="min-w-0">
-            <h1 class="text-headline-small truncate text-on-surface">
+            <h1 class="text-title-large sm:text-headline-small truncate text-on-surface">
               {{ pageTitle }}
             </h1>
             <p class="text-body-small truncate text-on-surface-variant">
@@ -311,11 +311,11 @@ watch(activityFlushRevision, () => {
           </div>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
           <div
             role="group"
             :aria-label="t('history.periodSelector')"
-            class="flex flex-wrap items-center gap-1.5"
+            class="no-scrollbar flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto py-0.5 sm:flex-initial"
           >
             <MdChip
               variant="filter"
@@ -342,6 +342,7 @@ watch(activityFlushRevision, () => {
             :loading="manualRefreshing"
             :aria-label="t('common.refresh')"
             :tooltip="t('common.refresh')"
+            class="shrink-0"
             @click="handleManualRefresh"
           />
         </div>
@@ -356,9 +357,9 @@ watch(activityFlushRevision, () => {
       />
 
       <!-- Delayed Initial Skeleton -->
-      <div v-else-if="loading && !heatmap" class="space-y-6" aria-busy="true">
+      <div v-else-if="loading && !heatmap" class="space-y-4 sm:space-y-6" aria-busy="true">
         <template v-if="showSkeleton">
-          <div class="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
+          <div class="grid grid-cols-2 gap-2.5 sm:gap-3.5 lg:grid-cols-4">
             <MdSkeleton v-for="i in 4" :key="`kpi-sk-${i}`" variant="rect" height="6.75rem" class="rounded-corner-xl" />
           </div>
           <MdSkeleton variant="rect" height="14.5rem" class="rounded-corner-xl" />
@@ -373,15 +374,15 @@ watch(activityFlushRevision, () => {
       <template v-else-if="heatmap">
         <!-- 4-Card MD3 Expressive Bento Metric Strip -->
         <section
-          class="grid grid-cols-2 gap-3.5 lg:grid-cols-4"
+          class="grid grid-cols-2 gap-2.5 sm:gap-3.5 lg:grid-cols-4"
           :aria-label="t('history.summaryTitle')"
         >
           <!-- Hero Primary Tonal Card: Total Time -->
           <div
-            class="flex flex-col justify-between gap-3 rounded-corner-xl bg-primary-container/55 p-4 sm:p-5"
+            class="flex flex-col justify-between gap-2.5 rounded-corner-xl bg-primary-container/55 p-3.5 sm:gap-3 sm:p-5"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="text-label-large text-on-primary-container/85">
+              <span class="text-label-large truncate text-on-primary-container/85">
                 {{
                   selectedYear === null
                     ? t('history.kpiTotalRolling')
@@ -389,13 +390,13 @@ watch(activityFlushRevision, () => {
                 }}
               </span>
               <span
-                class="flex h-8 w-8 items-center justify-center rounded-corner-md bg-primary text-on-primary"
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-corner-md bg-primary text-on-primary"
               >
                 <LuClock class="h-4 w-4" aria-hidden="true" />
               </span>
             </div>
-            <div>
-              <p class="text-headline-small sm:text-headline-medium font-medium tabular-nums text-on-primary-container">
+            <div class="min-w-0">
+              <p class="text-title-large sm:text-headline-medium truncate font-medium tabular-nums text-on-primary-container">
                 {{ formatHeroDuration(effectiveTotalSecs) }}
               </p>
               <p class="text-body-small mt-1 truncate tabular-nums text-on-primary-container/75">
@@ -411,25 +412,25 @@ watch(activityFlushRevision, () => {
 
           <!-- Today Live Card -->
           <div
-            class="flex flex-col justify-between gap-3 rounded-corner-xl bg-surface-container-low p-4 sm:p-5"
+            class="flex flex-col justify-between gap-2.5 rounded-corner-xl bg-surface-container-low p-3.5 sm:gap-3 sm:p-5"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="text-label-large text-on-surface-variant">
+              <span class="text-label-large truncate text-on-surface-variant">
                 {{ t('history.kpiToday') }}
               </span>
               <span
-                class="flex h-8 w-8 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
               >
                 <LuActivity class="h-4 w-4" aria-hidden="true" />
               </span>
             </div>
-            <div>
-              <p class="text-headline-small sm:text-headline-medium font-medium tabular-nums text-on-surface">
+            <div class="min-w-0">
+              <p class="text-title-large sm:text-headline-medium truncate font-medium tabular-nums text-on-surface">
                 {{ formatHeroDuration(effectiveTodaySecs) }}
               </p>
               <p class="text-body-small mt-1 flex items-center gap-1.5 text-on-surface-variant">
                 <span
-                  class="inline-block h-2 w-2 rounded-corner-full bg-primary"
+                  class="inline-block h-2 w-2 shrink-0 rounded-corner-full bg-primary"
                   aria-hidden="true"
                 />
                 <span class="truncate">{{ t('history.liveTrackingLabel') }}</span>
@@ -439,20 +440,20 @@ watch(activityFlushRevision, () => {
 
           <!-- Streak Card -->
           <div
-            class="flex flex-col justify-between gap-3 rounded-corner-xl bg-surface-container-low p-4 sm:p-5"
+            class="flex flex-col justify-between gap-2.5 rounded-corner-xl bg-surface-container-low p-3.5 sm:gap-3 sm:p-5"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="text-label-large text-on-surface-variant">
+              <span class="text-label-large truncate text-on-surface-variant">
                 {{ t('history.kpiStreak') }}
               </span>
               <span
-                class="flex h-8 w-8 items-center justify-center rounded-corner-md bg-tertiary-container text-on-tertiary-container"
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-corner-md bg-tertiary-container text-on-tertiary-container"
               >
                 <LuFlame class="h-4 w-4" aria-hidden="true" />
               </span>
             </div>
-            <div>
-              <p class="text-headline-small sm:text-headline-medium font-medium tabular-nums text-on-surface">
+            <div class="min-w-0">
+              <p class="text-title-large sm:text-headline-medium truncate font-medium tabular-nums text-on-surface">
                 {{ t('history.daysUnit', { count: effectiveCurrentStreak }) }}
               </p>
               <p class="text-body-small mt-1 truncate tabular-nums text-on-surface-variant">
@@ -463,20 +464,20 @@ watch(activityFlushRevision, () => {
 
           <!-- Active Days Card -->
           <div
-            class="flex flex-col justify-between gap-3 rounded-corner-xl bg-surface-container-low p-4 sm:p-5"
+            class="flex flex-col justify-between gap-2.5 rounded-corner-xl bg-surface-container-low p-3.5 sm:gap-3 sm:p-5"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="text-label-large text-on-surface-variant">
+              <span class="text-label-large truncate text-on-surface-variant">
                 {{ t('history.kpiActiveDays') }}
               </span>
               <span
-                class="flex h-8 w-8 items-center justify-center rounded-corner-md bg-surface-container-high text-primary"
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-corner-md bg-surface-container-high text-primary"
               >
                 <LuCalendarCheck2 class="h-4 w-4" aria-hidden="true" />
               </span>
             </div>
-            <div>
-              <p class="text-headline-small sm:text-headline-medium font-medium tabular-nums text-on-surface">
+            <div class="min-w-0">
+              <p class="text-title-large sm:text-headline-medium truncate font-medium tabular-nums text-on-surface">
                 {{ t('history.daysUnit', { count: effectiveActiveDays }) }}
               </p>
               <p class="text-body-small mt-1 truncate tabular-nums text-on-surface-variant">
@@ -504,10 +505,10 @@ watch(activityFlushRevision, () => {
         <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
           <!-- Weekly Rhythm Capsule Bar Chart -->
           <section
-            class="flex flex-col justify-between rounded-corner-xl bg-surface-container-low p-5 lg:col-span-5"
+            class="flex flex-col justify-between rounded-corner-xl bg-surface-container-low p-4 sm:p-5 lg:col-span-5"
             :aria-label="t('history.weeklyRhythmTitle')"
           >
-            <div class="mb-5 flex items-center justify-between gap-3">
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-2.5 sm:mb-5 sm:gap-3">
               <div class="flex items-center gap-2.5">
                 <div
                   class="flex h-9 w-9 shrink-0 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
@@ -583,10 +584,10 @@ watch(activityFlushRevision, () => {
 
           <!-- Recent Domain Activity / Quick Resume -->
           <section
-            class="flex flex-col rounded-corner-xl bg-surface-container-low p-5 lg:col-span-7"
+            class="flex flex-col rounded-corner-xl bg-surface-container-low p-4 sm:p-5 lg:col-span-7"
             :aria-label="t('history.recentItemsTitle')"
           >
-            <div class="mb-4 flex items-center justify-between gap-3">
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-2.5 sm:gap-3">
               <div class="flex items-center gap-2.5">
                 <div
                   class="flex h-9 w-9 shrink-0 items-center justify-center rounded-corner-md bg-tertiary-container text-on-tertiary-container"

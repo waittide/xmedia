@@ -77,10 +77,10 @@ function handleMobileBack(): void {
 </script>
 
 <template>
-  <div class="px-4 py-5 sm:px-6 sm:py-6">
+  <div class="px-4 py-3.5 sm:px-6 sm:py-6">
     <div class="mx-auto w-full max-w-7xl">
-      <!-- Page Header (Desktop always visible; Mobile visible on List view) -->
-      <div class="mb-6" :class="mobileShowDetail ? 'hidden md:block' : 'block'">
+      <!-- Page Header (Desktop always visible; Tablet 600-840px visible on List view; <600px shown in Top App Bar) -->
+      <div class="mb-5 sm:mb-6" :class="mobileShowDetail ? 'hidden md:block' : 'hidden sm:block'">
         <h1 class="text-headline-small text-on-surface">
           {{ t('settings.title') }}
         </h1>
@@ -105,7 +105,7 @@ function handleMobileBack(): void {
       </div>
 
       <!-- MD3 Single-Level 6-Section List-Detail Grid -->
-      <div class="grid grid-cols-1 gap-6 md:grid-cols-[240px_minmax(0,1fr)] md:gap-8">
+      <div class="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-[240px_minmax(0,1fr)] md:gap-8">
         <!-- Left List Pane: Desktop sticky nav / Mobile full-width list card -->
         <nav
           :aria-label="t('settings.navLabel')"
@@ -169,7 +169,7 @@ function handleMobileBack(): void {
 
         <!-- Right Detail Pane (Avoid `.space-y-4` to prevent E2E selector collision with source import form) -->
         <div
-          class="min-w-0 flex-col gap-6"
+          class="min-w-0 flex-col gap-4 sm:gap-6"
           :class="mobileShowDetail ? 'flex' : 'hidden md:flex'"
         >
           <!-- Desktop Active Section Header -->
@@ -192,12 +192,12 @@ function handleMobileBack(): void {
           </div>
 
           <!-- 1. Appearance -->
-          <div v-if="activeSection === 'appearance'" class="flex flex-col gap-5">
+          <div v-if="activeSection === 'appearance'" class="flex flex-col gap-4 sm:gap-5">
             <AppearanceSettingsPanel />
           </div>
 
           <!-- 2. Account & Security -->
-          <div v-else-if="activeSection === 'account'" class="flex flex-col gap-5">
+          <div v-else-if="activeSection === 'account'" class="flex flex-col gap-4 sm:gap-5">
             <SettingsAccountTab @error="errorMsg = $event" />
             <SettingsUsersTab v-if="authStore.isAdmin" @error="errorMsg = $event" />
           </div>

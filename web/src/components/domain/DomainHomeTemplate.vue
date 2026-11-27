@@ -176,11 +176,14 @@ function itemKey(item: MediaItemVM, idx: number): string {
 </script>
 
 <template>
-  <div class="mx-auto w-full space-y-8" :class="maxWidthClass">
-    <!-- Minimal single-line header (zero stat cards) -->
+  <div class="mx-auto w-full space-y-5 sm:space-y-8" :class="maxWidthClass">
+    <!-- Minimal single-line header (zero stat cards; <600px hides duplicate domain title already shown in Top App Bar) -->
     <header class="flex items-center justify-between gap-3">
       <div class="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
-        <h1 class="text-headline-small truncate text-on-surface">
+        <h1
+          class="text-headline-small truncate text-on-surface"
+          :class="resolvedTitle === domainLabel ? 'hidden sm:block' : ''"
+        >
           {{ resolvedTitle }}
         </h1>
         <p v-if="summary" class="text-body-small truncate text-on-surface-variant">
@@ -188,7 +191,7 @@ function itemKey(item: MediaItemVM, idx: number): string {
         </p>
       </div>
 
-      <div class="flex shrink-0 items-center gap-1">
+      <div class="ml-auto flex shrink-0 items-center gap-1">
         <slot name="header-actions" />
         <MdIconButton
           v-if="showRefresh"

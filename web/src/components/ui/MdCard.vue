@@ -53,7 +53,7 @@ const paddingClass = computed(() => {
     case 'md':
       return 'p-4'
     case 'lg':
-      return 'p-6'
+      return 'p-4 sm:p-6'
     case 'none':
     default:
       return ''

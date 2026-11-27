@@ -172,8 +172,8 @@ onMounted(() => {
 <template>
   <div data-font-picker class="flex flex-col" :class="compact ? 'gap-2.5' : 'gap-3'">
     <!-- Unified Select (Presets + Uploaded + Local System Fonts) + Upload Action -->
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="min-w-44 flex-1">
+    <div class="flex items-center gap-2">
+      <div class="min-w-0 flex-1">
         <MdSelect
           :model-value="effectiveValue"
           :options="selectOptions"
@@ -194,6 +194,7 @@ onMounted(() => {
         :size="compact ? 'sm' : 'md'"
         :icon="LuUpload"
         :loading="uploadingFonts"
+        class="shrink-0"
         data-font-upload-btn
         @click="triggerFileUpload"
       >

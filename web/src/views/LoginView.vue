@@ -36,7 +36,7 @@ async function onSubmit(): Promise<void> {
 <template>
   <div class="safe-pb flex min-h-screen flex-col bg-surface text-on-surface">
     <header class="safe-pt safe-px">
-      <div class="flex items-center justify-between px-6 py-4">
+      <div class="flex items-center justify-between px-4 py-3.5 sm:px-6 sm:py-4">
         <div class="flex items-center gap-2.5">
           <img
             :src="themeStore.appIconSrc"

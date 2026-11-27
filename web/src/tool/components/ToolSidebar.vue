@@ -62,7 +62,7 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
     :role="mobileMenuOpen ? 'dialog' : undefined"
     :aria-modal="mobileMenuOpen ? 'true' : undefined"
     :aria-label="t('tool.brand')"
-    class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-surface-container transition-[width,transform] duration-200 ease-standard select-none sm:static"
+    class="fixed top-[calc(4rem+var(--safe-area-top))] bottom-0 left-0 z-40 flex shrink-0 flex-col bg-surface-container pb-[var(--safe-area-bottom)] transition-[width,transform] duration-200 ease-standard select-none sm:static sm:pb-0"
     :class="[
       mobileMenuOpen
         ? 'w-72 translate-x-0 rounded-r-corner-lg bg-surface-container-low shadow-elevation-1 sm:rounded-none sm:bg-surface-container sm:shadow-none'

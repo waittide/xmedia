@@ -203,7 +203,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
 
   <!-- System Users List -->
   <MdCard as="section" variant="tonal" padding="none" class="overflow-hidden">
-    <div class="flex items-center justify-between gap-3 px-5 pt-4 pb-2">
+    <div class="flex items-center justify-between gap-3 px-4 pt-4 pb-2 sm:px-5">
       <div class="flex items-center gap-2">
         <h2 class="text-title-medium text-on-surface">
           {{ t('admin.usersListTitle') }}
@@ -221,7 +221,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
       <li
         v-for="u in users"
         :key="u.id"
-        class="flex flex-col justify-between gap-3 px-5 py-4 lg:flex-row lg:items-center"
+        class="flex flex-col justify-between gap-3 px-4 py-3.5 sm:px-5 sm:py-4 lg:flex-row lg:items-center"
       >
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
@@ -234,7 +234,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
           </div>
         </div>
 
-        <div class="flex flex-wrap items-center gap-3">
+        <div class="flex flex-wrap items-center gap-2.5 sm:gap-3">
           <div class="w-32">
             <MdSelect
               :model-value="u.role"
@@ -253,10 +253,10 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
           />
 
           <form
-            class="flex items-center gap-1.5"
+            class="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-initial"
             @submit.prevent="handleResetUserPassword(u)"
           >
-            <div class="w-36">
+            <div class="min-w-0 flex-1 sm:w-40">
               <MdTextField
                 v-model="resetPwdMap[u.id]"
                 type="password"
@@ -269,6 +269,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
             <MdButton
               type="submit"
               variant="outlined"
+              class="shrink-0"
               :disabled="(resetPwdMap[u.id]?.length ?? 0) < 6"
             >
               {{ t('admin.resetPasswordBtn') }}

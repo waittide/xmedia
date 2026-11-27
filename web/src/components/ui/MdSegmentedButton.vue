@@ -114,14 +114,14 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
       :title="opt.title || opt.label"
       class="md-state md-touch-target inline-flex h-full cursor-pointer items-center justify-center whitespace-nowrap transition-colors duration-150 ease-standard focus-visible:z-10 disabled:cursor-not-allowed disabled:opacity-38"
       :class="[
-        fullWidth ? 'min-w-0 flex-1' : '',
+        fullWidth ? 'min-w-0 flex-1' : 'min-w-0 shrink',
         size === 'sm'
           ? fullWidth
             ? 'text-label-medium gap-1 px-2'
-            : 'text-label-medium gap-1.5 px-3.5'
+            : 'text-label-medium gap-1 px-2.5 sm:gap-1.5 sm:px-3.5'
           : fullWidth
-            ? 'text-label-large gap-1.5 px-3'
-            : 'text-label-large gap-2 px-4',
+            ? 'text-label-large gap-1.5 px-2.5 sm:px-3'
+            : 'text-label-large gap-1.5 px-2.5 sm:gap-2 sm:px-4',
         idx > 0 ? 'border-l border-outline' : '',
         modelValue === opt.value
           ? 'bg-secondary-container text-on-secondary-container'

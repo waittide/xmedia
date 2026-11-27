@@ -169,17 +169,17 @@ watch(
 </script>
 
 <template>
-  <div class="px-4 py-5 sm:px-6 sm:py-6">
-    <div class="mx-auto flex w-full max-w-7xl flex-col gap-6">
+  <div class="px-4 py-4 sm:px-6 sm:py-6">
+    <div class="mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-6">
       <!-- Domain Settings Header -->
-      <div class="flex items-center gap-3.5">
+      <div class="flex items-center gap-3 sm:gap-3.5">
         <div
-          class="flex h-11 w-11 shrink-0 items-center justify-center rounded-corner-lg bg-secondary-container text-on-secondary-container"
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-lg bg-secondary-container text-on-secondary-container sm:h-11 sm:w-11"
         >
           <component :is="DOMAIN_ICONS[domain]" class="h-5 w-5" aria-hidden="true" />
         </div>
         <div class="min-w-0">
-          <h1 class="text-headline-small truncate text-on-surface">
+          <h1 class="text-title-large sm:text-headline-small truncate text-on-surface">
             {{ pageTitle }}
           </h1>
           <p class="text-body-small mt-0.5 text-on-surface-variant">
