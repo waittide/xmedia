@@ -3,13 +3,11 @@ use std::path::{Component, Path, PathBuf};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
-use crate::domain::ports::WorkspaceFsPort;
-use crate::domain::workspace::{ManagedRoot, SandboxPath, sanitize_relative_path};
-use crate::infra::atomic_fs::{
-    atomic_write_bytes, cleanup_empty_parent_dirs, find_companion_sidecars,
-    is_shared_dir_sidecar_name,
-};
-use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
+use crate::application::ports::WorkspaceFsPort;
+use crate::domain::media::MediaMetadataPayload;
+use crate::domain::workspace::{ManagedRoot, SandboxPath, path_to_slash, sanitize_relative_path};
+use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
+use crate::infra::inspectors::{book, comic, music, video};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalWorkspaceFs;
@@ -40,35 +38,181 @@ impl WorkspaceFsPort for LocalWorkspaceFs {
         resolve_target_in_root(root, rel_path)
     }
 
-    fn atomic_write_bytes(&self, target: &Path, bytes: &[u8]) -> DomainResult<()> {
-        atomic_write_bytes(target, bytes)
+    fn find_companion_sidecars(&self, media_file: &Path) -> Vec<(PathBuf, String)> {
+        find_companion_sidecars(media_file)
+    }
+
+    fn collect_relocated_companions(
+        &self,
+        root_path: &Path,
+        media_abs: &Path,
+        rendered_stem: &str,
+        parent_rel: &str,
+        target_parent_rel: &str,
+        meta: &MediaMetadataPayload,
+    ) -> Vec<(String, String)> {
+        let mut companion_moves = Vec::new();
+        for (comp_abs, suffix) in find_companion_sidecars(media_abs) {
+            if let Ok(comp_rel) = comp_abs.strip_prefix(root_path) {
+                let comp_from = path_to_slash(comp_rel);
+                let next_comp_name = format!("{rendered_stem}{suffix}");
+                let comp_to = if target_parent_rel.is_empty() {
+                    next_comp_name
+                } else {
+                    format!("{target_parent_rel}/{next_comp_name}")
+                };
+                companion_moves.push((comp_from, comp_to));
+            }
+        }
+
+        if parent_rel == target_parent_rel || target_parent_rel.is_empty() {
+            return companion_moves;
+        }
+        let Some(old_dir) = media_abs.parent().filter(|d| *d != root_path) else {
+            return companion_moves;
+        };
+
+        let append_dir_files =
+            |moves: &mut Vec<(String, String)>, dir: &Path, dst_rel: &str, names: &[&str]| {
+                for fname in names {
+                    let cand = dir.join(fname);
+                    if cand.is_file()
+                        && let Ok(rel_c) = cand.strip_prefix(root_path)
+                    {
+                        moves.push((path_to_slash(rel_c), format!("{dst_rel}/{fname}")));
+                    }
+                }
+            };
+
+        match meta {
+            MediaMetadataPayload::Book(_) if book::dir_has_single_book(old_dir) => {
+                append_dir_files(
+                    &mut companion_moves,
+                    old_dir,
+                    target_parent_rel,
+                    &[
+                        "metadata.opf",
+                        "cover.jpg",
+                        "cover.jpeg",
+                        "cover.png",
+                        "cover.webp",
+                    ],
+                );
+            }
+            MediaMetadataPayload::Music(_)
+                if old_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|n| !music::is_generic_music_folder(n)) =>
+            {
+                append_dir_files(
+                    &mut companion_moves,
+                    old_dir,
+                    target_parent_rel,
+                    &[
+                        "cover.jpg",
+                        "cover.jpeg",
+                        "cover.png",
+                        "cover.webp",
+                        "folder.jpg",
+                        "folder.jpeg",
+                        "folder.png",
+                        "folder.webp",
+                        "front.jpg",
+                        "front.jpeg",
+                        "front.png",
+                        "front.webp",
+                    ],
+                );
+            }
+            MediaMetadataPayload::Comic(_)
+                if old_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|n| !comic::is_generic_comic_folder(n)) =>
+            {
+                append_dir_files(
+                    &mut companion_moves,
+                    old_dir,
+                    target_parent_rel,
+                    &[
+                        "cover.jpg",
+                        "cover.jpeg",
+                        "cover.png",
+                        "cover.webp",
+                        "folder.jpg",
+                        "folder.jpeg",
+                        "folder.png",
+                        "folder.webp",
+                    ],
+                );
+            }
+            MediaMetadataPayload::Video(v) => {
+                let dir_files: &[&str] = if v.is_episode {
+                    &[
+                        "season.nfo",
+                        "poster.jpg",
+                        "poster.jpeg",
+                        "poster.png",
+                        "poster.webp",
+                        "fanart.jpg",
+                        "fanart.jpeg",
+                        "fanart.png",
+                        "fanart.webp",
+                    ]
+                } else if video::dir_has_single_video(old_dir) {
+                    &[
+                        "movie.nfo",
+                        "poster.jpg",
+                        "poster.jpeg",
+                        "poster.png",
+                        "poster.webp",
+                        "fanart.jpg",
+                        "fanart.jpeg",
+                        "fanart.png",
+                        "fanart.webp",
+                    ]
+                } else {
+                    &[]
+                };
+                append_dir_files(&mut companion_moves, old_dir, target_parent_rel, dir_files);
+
+                if v.is_episode
+                    && let Some(old_show_dir) = old_dir.parent()
+                    && old_show_dir != root_path
+                    && old_show_dir.starts_with(root_path)
+                    && let Some(new_show_parent) = Path::new(target_parent_rel).parent()
+                {
+                    let new_show_rel = path_to_slash(new_show_parent);
+                    if !new_show_rel.is_empty() {
+                        append_dir_files(
+                            &mut companion_moves,
+                            old_show_dir,
+                            &new_show_rel,
+                            &[
+                                "tvshow.nfo",
+                                "poster.jpg",
+                                "poster.jpeg",
+                                "poster.png",
+                                "poster.webp",
+                                "fanart.jpg",
+                                "fanart.jpeg",
+                                "fanart.png",
+                                "fanart.webp",
+                            ],
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        companion_moves
     }
 
     fn cleanup_empty_parent_dirs(&self, start_dir: &Path, stop_at_root: &Path) {
         cleanup_empty_parent_dirs(start_dir, stop_at_root);
     }
-
-    fn find_companion_sidecars(&self, media_file: &Path) -> Vec<(PathBuf, String)> {
-        find_companion_sidecars(media_file)
-    }
-
-    fn is_shared_dir_sidecar_name(&self, file_name: &str) -> bool {
-        is_shared_dir_sidecar_name(file_name)
-    }
-
-    fn write_image_replacing_opposite_ext(
-        &self,
-        dir: &Path,
-        base_name: &str,
-        ext: &str,
-        bytes: &[u8],
-    ) -> DomainResult<()> {
-        write_image_replacing_opposite_ext(dir, base_name, ext, bytes)
-    }
-}
-
-pub fn paths_overlap(a: &Path, b: &Path) -> bool {
-    a == b || a.starts_with(b) || b.starts_with(a)
 }
 
 /// Rejects filesystem roots, critical OS/system directories (`/etc`, `/proc`, `/sys`, `/dev`,

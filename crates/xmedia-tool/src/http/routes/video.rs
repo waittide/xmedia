@@ -5,11 +5,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::http::ApiResult;
 
-use crate::domain::media::MediaFileDetail;
-use crate::domain::ops::{
-    BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
-    ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
+use crate::application::ops::{
+    BatchRemapEpisodesInput, ExtractSubtitleReportDto, ProcessSubtitleInput,
+    ProcessSubtitleReportDto, VideoSubtitleInfoDto,
 };
+use crate::application::workbench::{
+    BatchSyncReportDto, BatchSyncSpec, VideoWorkbenchOp, VideoWorkbenchResult,
+};
+use crate::domain::media::MediaFileDetail;
 use crate::domain::workspace::RootId;
 use crate::http::ToolHttpState;
 use crate::http::routes::FileTargetQuery;
@@ -35,10 +38,16 @@ async fn list_video_subtitles_route(
     State(state): State<ToolHttpState>,
     Query(q): Query<FileTargetQuery>,
 ) -> ApiResult<Json<Vec<VideoSubtitleInfoDto>>> {
-    let items = state
-        .workbench
-        .list_video_subtitles(RootId(q.root_id), &q.path)
-        .await?;
+    let VideoWorkbenchResult::Subtitles(items) = state
+        .tools
+        .run_video(VideoWorkbenchOp::ListSubtitles {
+            root_id: RootId(q.root_id),
+            rel_path: q.path,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(items))
 }
 
@@ -60,11 +69,21 @@ async fn process_video_subtitle_route(
     State(state): State<ToolHttpState>,
     Json(req): Json<ProcessVideoSubtitleRequest>,
 ) -> ApiResult<Json<ProcessVideoSubtitleResponse>> {
-    let (report, detail) = state
-        .workbench
-        .process_video_subtitle(RootId(req.root_id), &req.path, req.input)
-        .await?;
-    Ok(Json(ProcessVideoSubtitleResponse { report, detail }))
+    let VideoWorkbenchResult::ProcessedSubtitle(report, detail) = state
+        .tools
+        .run_video(VideoWorkbenchOp::ProcessSubtitle {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            input: req.input,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(ProcessVideoSubtitleResponse {
+        report,
+        detail: *detail,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -91,17 +110,23 @@ async fn extract_video_subtitle_route(
     State(state): State<ToolHttpState>,
     Json(req): Json<ExtractVideoSubtitleRequest>,
 ) -> ApiResult<Json<ExtractVideoSubtitleResponse>> {
-    let (report, detail) = state
-        .workbench
-        .extract_video_embedded_subtitle(
-            RootId(req.root_id),
-            &req.path,
-            req.stream_index,
-            req.language_tag,
-            req.output_ext,
-        )
-        .await?;
-    Ok(Json(ExtractVideoSubtitleResponse { report, detail }))
+    let VideoWorkbenchResult::ExtractedSubtitle(report, detail) = state
+        .tools
+        .run_video(VideoWorkbenchOp::ExtractSubtitle {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            stream_index: req.stream_index,
+            language_tag: req.language_tag,
+            output_ext: req.output_ext,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(ExtractVideoSubtitleResponse {
+        report,
+        detail: *detail,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -115,10 +140,14 @@ struct BatchRemapEpisodesRequest {
 async fn batch_remap_episodes_route(
     State(state): State<ToolHttpState>,
     Json(req): Json<BatchRemapEpisodesRequest>,
-) -> ApiResult<Json<BatchRemapEpisodesReportDto>> {
+) -> ApiResult<Json<BatchSyncReportDto>> {
     let report = state
-        .workbench
-        .batch_remap_video_episodes(RootId(req.root_id), req.paths, req.input)
+        .metadata
+        .batch_sync(
+            RootId(req.root_id),
+            req.paths,
+            BatchSyncSpec::VideoEpisodes(req.input),
+        )
         .await?;
     Ok(Json(report))
 }

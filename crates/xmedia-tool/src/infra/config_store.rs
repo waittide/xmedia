@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
+use crate::application::ports::ConfigRepositoryPort;
 use crate::domain::config::ToolSettings;
-use crate::domain::ports::ConfigRepositoryPort;
 use crate::infra::atomic_fs::atomic_write_private_bytes;
 use crate::infra::workspace_fs::open_managed_root;
 
@@ -57,10 +57,7 @@ impl JsonFileConfigRepository {
         });
 
         let mut changed = !file_path.exists();
-        if settings.rename_templates.upgrade_legacy_defaults() {
-            changed = true;
-        }
-        if settings.scraper_priorities.upgrade_legacy_defaults() {
+        if settings.upgrade_legacy_defaults() {
             changed = true;
         }
         for raw_dir in cli_roots {

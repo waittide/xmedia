@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
 use crate::domain::workspace::{ManagedRoot, RootId};
@@ -49,7 +50,7 @@ pub struct ProviderConfigOverride {
 }
 
 impl ProviderConfigOverride {
-    pub fn normalized(mut self) -> Self {
+    fn normalized(mut self) -> Self {
         let trim_opt = |opt: Option<String>| {
             opt.and_then(|s| {
                 let t = s.trim();
@@ -66,7 +67,7 @@ impl ProviderConfigOverride {
         self
     }
 
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.enabled.is_none()
             && self.http_proxy.is_none()
             && self.locale.is_none()
@@ -75,7 +76,7 @@ impl ProviderConfigOverride {
     }
 }
 
-pub fn is_adult_provider_id(provider_id: &str) -> bool {
+fn is_adult_provider_id(provider_id: &str) -> bool {
     matches!(provider_id, "nhentai" | "hanime1")
 }
 
@@ -125,7 +126,7 @@ impl Default for RenameTemplates {
 
 impl RenameTemplates {
     /// Upgrades untouched v1 flat default templates to v2 `{var:N}` + Jellyfin folder hierarchy defaults.
-    pub fn upgrade_legacy_defaults(&mut self) -> bool {
+    pub(in crate::domain) fn upgrade_legacy_defaults(&mut self) -> bool {
         let mut changed = false;
         if self.book == "{author} - {title}" {
             self.book =
@@ -240,7 +241,7 @@ impl Default for ScraperPriorities {
 impl ScraperPriorities {
     /// Upgrades untouched legacy book/music priority lists so newly added Chinese webnovel
     /// and Chinese music scrapers take precedence in the configured default order.
-    pub fn upgrade_legacy_defaults(&mut self) -> bool {
+    pub(in crate::domain) fn upgrade_legacy_defaults(&mut self) -> bool {
         let mut changed = false;
         if self.book == ["bangumi", "openlibrary"]
             || self.book
@@ -416,6 +417,37 @@ fn default_locale() -> String {
 }
 
 impl ToolSettings {
+    /// Upgrades legacy untouched template and scraper priority defaults in-place.
+    pub fn upgrade_legacy_defaults(&mut self) -> bool {
+        let tpl = self.rename_templates.upgrade_legacy_defaults();
+        let prio = self.scraper_priorities.upgrade_legacy_defaults();
+        tpl || prio
+    }
+
+    /// Looks up a configured `ManagedRoot` by ID.
+    pub fn find_root(&self, root_id: RootId) -> DomainResult<&ManagedRoot> {
+        self.roots
+            .iter()
+            .find(|r| r.id == root_id)
+            .ok_or_else(|| DomainError::NotFound(format!("root '{root_id}' not found")))
+    }
+
+    /// Normalizes and merges per-provider configuration overrides into `self.provider_configs`.
+    pub fn set_provider_overrides(&mut self, cfgs: BTreeMap<String, ProviderConfigOverride>) {
+        for (provider_id, raw_cfg) in cfgs {
+            let id = provider_id.trim().to_string();
+            if id.is_empty() {
+                continue;
+            }
+            let normalized = raw_cfg.normalized();
+            if normalized.is_empty() {
+                self.provider_configs.remove(&id);
+            } else {
+                self.provider_configs.insert(id, normalized);
+            }
+        }
+    }
+
     /// Returns whether a scraper provider is enabled (explicit per-provider switch takes priority).
     pub fn is_provider_enabled(&self, provider_id: &str) -> bool {
         if let Some(enabled) = self

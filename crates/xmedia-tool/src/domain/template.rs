@@ -24,7 +24,7 @@ static RE_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
 /// - Numeric / leading-digit strings (`"1"`, `"12.5"`) have their leading integer part
 ///   zero-padded to `width` characters (`"01"`, `"012.5"`), never truncating longer numbers (`"105"`).
 /// - Non-numeric strings are truncated to at most `width` Unicode scalar values if `width` is specified.
-pub fn format_token_value(raw: &str, width: Option<usize>) -> String {
+fn format_token_value(raw: &str, width: Option<usize>) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return String::new();

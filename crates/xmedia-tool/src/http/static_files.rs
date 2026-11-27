@@ -126,6 +126,9 @@ pub async fn serve_tool_spa(
         {
             return asset_response(&rel_str, bytes, is_hashed_asset);
         }
+        if rel_str.starts_with("assets/") {
+            return (StatusCode::NOT_FOUND, "Not Found").into_response();
+        }
         if let Some((html_name, bytes)) = read_external_index(ext_dir).await {
             return asset_response(html_name, bytes, false);
         }
@@ -135,6 +138,10 @@ pub async fn serve_tool_spa(
         && let Some(embedded) = EmbeddedToolWebAssets::get(&rel_str)
     {
         return asset_response(&rel_str, embedded.data, is_hashed_asset);
+    }
+
+    if rel_str.starts_with("assets/") {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
 
     for html_name in TOOL_INDEX_CANDIDATES {

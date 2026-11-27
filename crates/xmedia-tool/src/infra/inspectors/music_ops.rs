@@ -15,10 +15,9 @@ use xmedia_formats::music::{
     write_replaygain_in_place,
 };
 
-pub use crate::domain::ops::{
-    BatchMusicAlbumSyncInput, BatchMusicAlbumSyncReportDto, CueSplitReportDto,
-    MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
-    ReplayGainReportDto, ReplayGainTrackResultDto,
+use crate::application::ops::{
+    CueSplitReportDto, MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
+    MusicToolCommand, MusicToolOutput, ReplayGainReportDto, ReplayGainTrackResultDto,
 };
 use crate::domain::zh_text::{ZhConvertDirection, convert_zh_plain};
 use crate::infra::atomic_fs::{atomic_mutate_copy, atomic_write_bytes};
@@ -26,7 +25,26 @@ use crate::infra::inspectors::map_format_err;
 
 #[cfg(test)]
 pub(crate) use cue::parse_cue_sheet;
-pub use cue::split_cue_album;
+use cue::split_cue_album;
+
+pub fn run_music_tool(cmd: MusicToolCommand) -> DomainResult<MusicToolOutput> {
+    match cmd {
+        MusicToolCommand::ProcessLyrics { path, input } => {
+            process_music_lyrics(&path, &input).map(MusicToolOutput::Lyrics)
+        }
+        MusicToolCommand::OptimizeCover {
+            path,
+            max_dimension,
+            jpeg_quality,
+        } => optimize_music_cover(&path, max_dimension, jpeg_quality).map(MusicToolOutput::Cover),
+        MusicToolCommand::ApplyReplayGain { items, ffmpeg_bin } => {
+            apply_replaygain_batch(&items, &ffmpeg_bin).map(MusicToolOutput::ReplayGain)
+        }
+        MusicToolCommand::SplitCue { path, ffmpeg_bin } => {
+            split_cue_album(&path, &ffmpeg_bin).map(MusicToolOutput::CueSplit)
+        }
+    }
+}
 
 static RE_LRC_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]").expect("valid lrc timestamp regex")

@@ -30,7 +30,7 @@ fn clean_locked_fields(raw: Vec<String>) -> Vec<String> {
 }
 
 impl BookFileMeta {
-    pub fn is_field_locked(&self, name: &str) -> bool {
+    fn is_field_locked(&self, name: &str) -> bool {
         self.locked_fields
             .iter()
             .any(|f| f.eq_ignore_ascii_case(name))
@@ -80,7 +80,7 @@ impl BookFileMeta {
         }
     }
 
-    pub fn filter_patch_for_missing(&self, bp: &mut BookMetaPatch, fallback_stem: &str) {
+    fn filter_patch_for_missing(&self, bp: &mut BookMetaPatch, fallback_stem: &str) {
         let has_tag_block = !self.authors.is_empty()
             || self.publisher.is_some()
             || self.isbn.is_some()
@@ -124,7 +124,7 @@ impl BookFileMeta {
         }
     }
 
-    pub fn strip_locked_fields(&self, bp: &mut BookMetaPatch, apply_cover: &mut bool) {
+    fn strip_locked_fields(&self, bp: &mut BookMetaPatch, apply_cover: &mut bool) {
         if self.locked_fields.is_empty() {
             return;
         }
@@ -218,7 +218,7 @@ impl ComicFileMeta {
         }
     }
 
-    pub fn filter_patch_for_missing(&self, cp: &mut ComicMetaPatch) {
+    fn filter_patch_for_missing(&self, cp: &mut ComicMetaPatch) {
         if non_empty_opt(&self.series) {
             cp.series = None;
         }
@@ -300,7 +300,7 @@ impl MusicFileMeta {
         }
     }
 
-    pub fn filter_patch_for_missing(&self, mp: &mut MusicMetaPatch, fallback_stem: &str) {
+    fn filter_patch_for_missing(&self, mp: &mut MusicMetaPatch, fallback_stem: &str) {
         let has_tags = !self.artist.trim().is_empty()
             || !self.album.trim().is_empty()
             || self.track_number.is_some()
@@ -398,7 +398,7 @@ impl VideoFileMeta {
         }
     }
 
-    pub fn filter_patch_for_missing(&self, vp: &mut VideoMetaPatch, fallback_stem: &str) {
+    fn filter_patch_for_missing(&self, vp: &mut VideoMetaPatch, fallback_stem: &str) {
         if self.has_nfo && !self.title.trim().is_empty() && self.title.trim() != fallback_stem {
             vp.title = None;
         }
@@ -449,12 +449,26 @@ impl VideoFileMeta {
         }
     }
 
-    pub fn strip_locked_fields(&self, vp: &mut VideoMetaPatch, apply_cover: &mut bool) {
+    fn strip_locked_fields(&self, vp: &mut VideoMetaPatch, apply_cover: &mut bool) {
         strip_video_locked_fields(vp, &self.locked_fields, apply_cover);
+    }
+
+    pub fn prepare_and_apply_patch(
+        &mut self,
+        mut vp: VideoMetaPatch,
+        only_fill_missing: bool,
+        fallback_stem: &str,
+        apply_cover: &mut bool,
+    ) {
+        if only_fill_missing {
+            self.filter_patch_for_missing(&mut vp, fallback_stem);
+        }
+        self.strip_locked_fields(&mut vp, apply_cover);
+        self.apply_patch(vp);
     }
 }
 
-pub fn strip_video_locked_fields(
+fn strip_video_locked_fields(
     vp: &mut VideoMetaPatch,
     locked_fields: &[String],
     apply_cover: &mut bool,

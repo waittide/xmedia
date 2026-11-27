@@ -1,6 +1,5 @@
 pub mod book;
-pub mod book_content;
-pub mod book_normalize;
+pub mod book_ops;
 pub mod comic;
 pub mod comic_ops;
 pub mod music;
@@ -16,7 +15,7 @@ use xmedia_core::domain::error::DomainError;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_formats::FormatError;
 
-use crate::domain::ports::MediaInspectorPort;
+use crate::application::ports::MediaInspectorPort;
 
 pub(crate) use xmedia_formats::common::append_xml_ref;
 

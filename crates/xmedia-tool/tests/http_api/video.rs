@@ -1,5 +1,8 @@
 use tempfile::TempDir;
 use xmedia_core::domain::library::MediaKind;
+use xmedia_tool::application::ports::ArtworkIo;
+use xmedia_tool::application::scraping::ApplyScrapeInput;
+use xmedia_tool::application::workbench::WorkspaceArtworkOutput;
 use xmedia_tool::domain::media::MediaMetadataPayload;
 use xmedia_tool::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
 use xmedia_tool::{XMediaToolApp, XMediaToolConfig};
@@ -44,17 +47,17 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
     })
     .await
     .unwrap();
-    app.scraping.set_allow_private_artwork_ips(true);
+    app.scrape_apply.set_allow_private_artwork_ips(true);
 
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let movie_detail = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "spirited_away.mp4",
-            MediaKind::Video,
-            ScrapedMetadata {
+            rel_path: "spirited_away.mp4".into(),
+            media_kind: MediaKind::Video,
+            scraped: ScrapedMetadata {
                 provider_id: "tmdb".into(),
                 external_id: "129".into(),
                 target: Some(ScrapeTargetKind::Movie),
@@ -66,11 +69,12 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
                 backdrop_url: Some(format!("http://{addr}/movie_fanart.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            None,
-            false,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: None,
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
 
@@ -97,12 +101,12 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
     assert!(movie_nfo_str.contains("<codec>h264</codec>"));
 
     let ep_detail = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "Frieren.S01E01.1080p.mkv",
-            MediaKind::Video,
-            ScrapedMetadata {
+            rel_path: "Frieren.S01E01.1080p.mkv".into(),
+            media_kind: MediaKind::Video,
+            scraped: ScrapedMetadata {
                 provider_id: "tmdb".into(),
                 external_id: "209867".into(),
                 target: Some(ScrapeTargetKind::TvShow),
@@ -121,11 +125,12 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
                 episode_still_url: Some(format!("http://{addr}/ep1_still.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            None,
-            false,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: None,
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
 
@@ -176,8 +181,8 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
     assert!(ep_nfo_str.contains("第一集剧情简介。"));
 
     let snap = app
-        .workbench
-        .browse_directory(root_id, "", Some(MediaKind::Video), true)
+        .workspace
+        .browse(root_id, "", Some(MediaKind::Video), true, None)
         .await
         .unwrap();
     assert_eq!(snap.files.len(), 2);
@@ -189,12 +194,12 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
     assert_eq!(frieren_folder.media_file_count, 1);
 
     let rescrape_detail = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "葬送的芙莉莲 (2023)/Season 01/葬送的芙莉莲 - S01E01 - 冒险的终点.mkv",
-            MediaKind::Video,
-            ScrapedMetadata {
+            rel_path: "葬送的芙莉莲 (2023)/Season 01/葬送的芙莉莲 - S01E01 - 冒险的终点.mkv".into(),
+            media_kind: MediaKind::Video,
+            scraped: ScrapedMetadata {
                 provider_id: "tmdb".into(),
                 external_id: "209867".into(),
                 target: Some(ScrapeTargetKind::TvShow),
@@ -206,11 +211,12 @@ async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_la
                 cover_url: Some(format!("http://{addr}/show_poster.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            None,
-            false,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: None,
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -255,8 +261,8 @@ async fn video_specials_anime_episode_guess_and_mixed_dir_isolation() {
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let sp_detail = app
-        .workbench
-        .inspect_file(
+        .workspace
+        .inspect(
             root_id,
             "Frieren/Specials/[Sub] Frieren - 02 [1080p].mkv",
             Some(MediaKind::Video),
@@ -272,8 +278,8 @@ async fn video_specials_anime_episode_guess_and_mixed_dir_isolation() {
     }
 
     let alpha = app
-        .workbench
-        .inspect_file(root_id, "Mixed/Alpha.mp4", Some(MediaKind::Video))
+        .workspace
+        .inspect(root_id, "Mixed/Alpha.mp4", Some(MediaKind::Video))
         .await
         .unwrap();
     if let MediaMetadataPayload::Video(v) = alpha.metadata {
@@ -284,28 +290,32 @@ async fn video_specials_anime_episode_guess_and_mixed_dir_isolation() {
     } else {
         panic!("expected video payload");
     }
-    assert!(
-        app.workbench
-            .read_artwork(
+    assert!(matches!(
+        app.workspace
+            .artwork(
                 root_id,
                 "Mixed/Alpha.mp4",
                 Some(MediaKind::Video),
-                Some("fanart")
+                ArtworkIo::Read {
+                    slot: Some("fanart"),
+                },
             )
             .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        app.workbench
-            .read_artwork(
+            .unwrap(),
+        WorkspaceArtworkOutput::Read(Some(_))
+    ));
+    assert!(matches!(
+        app.workspace
+            .artwork(
                 root_id,
                 "Mixed/Alpha.mp4",
                 Some(MediaKind::Video),
-                Some("thumb")
+                ArtworkIo::Read {
+                    slot: Some("thumb"),
+                },
             )
             .await
-            .unwrap()
-            .is_some()
-    );
+            .unwrap(),
+        WorkspaceArtworkOutput::Read(Some(_))
+    ));
 }

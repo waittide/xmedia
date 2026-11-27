@@ -10,10 +10,18 @@ use std::sync::Arc;
 
 use xmedia_core::domain::error::DomainResult;
 
+use crate::application::ops::ScrapeCacheStatsDto;
+use crate::application::ports::{
+    HttpWebhookPort, MediaToolboxPort, ScrapeCachePort, ScraperProviderPort, ScraperTransportPort,
+    WorkspaceFsPort,
+};
 use crate::application::settings::ToolSettingsService;
-use crate::application::workbench::MediaWorkbenchService;
-use crate::domain::ops::ScrapeCacheStatsDto;
-use crate::domain::ports::{ScrapeCachePort, ScraperProviderPort, ScraperTransportPort};
+use crate::application::workbench::{
+    MetadataService, RenameService, RootLockRegistry, WorkspaceBrowserService,
+};
+use crate::domain::scraper::ScrapedMetadata;
+use crate::domain::workspace::RootId;
+use xmedia_core::domain::library::MediaKind;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DryRunScrapeItemDto {
@@ -83,31 +91,100 @@ pub struct AutoScrapeResultDto {
     pub detail: crate::domain::media::MediaFileDetail,
 }
 
-/// Application service orchestrating pluggable `ScraperProviderPort` adapters.
+pub enum CacheManagementResult {
+    Stats(ScrapeCacheStatsDto),
+    Cleared(usize),
+}
+
+/// Application service querying pluggable `ScraperProviderPort` adapters, response cache, and image proxy.
 #[derive(Clone)]
-pub struct ScrapingOrchestratorService {
+pub struct ScraperCatalogService {
     pub(super) settings: ToolSettingsService,
-    pub(super) workbench: MediaWorkbenchService,
     pub(super) providers: Arc<Vec<Arc<dyn ScraperProviderPort>>>,
     pub(super) cache: Arc<dyn ScrapeCachePort>,
     pub(super) transport: Arc<dyn ScraperTransportPort>,
-    pub(super) allow_private_artwork_ips: bool,
 }
 
-impl ScrapingOrchestratorService {
+impl ScraperCatalogService {
     pub fn new(
         settings: ToolSettingsService,
-        workbench: MediaWorkbenchService,
         providers: Vec<Arc<dyn ScraperProviderPort>>,
         cache: Arc<dyn ScrapeCachePort>,
         transport: Arc<dyn ScraperTransportPort>,
     ) -> Self {
         Self {
             settings,
-            workbench,
             providers: Arc::new(providers),
             cache,
             transport,
+        }
+    }
+
+    pub async fn manage_cache(&self, clear: bool) -> DomainResult<CacheManagementResult> {
+        if clear {
+            Ok(CacheManagementResult::Cleared(self.cache.clear()?))
+        } else {
+            let ttl_ms = self.settings.get_raw().await?.scrape_cache_ttl_ms;
+            Ok(CacheManagementResult::Stats(self.cache.stats(ttl_ms)))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ApplyScrapeInput {
+    pub root_id: RootId,
+    pub rel_path: String,
+    pub media_kind: MediaKind,
+    pub scraped: ScrapedMetadata,
+    pub apply_cover: bool,
+    pub write_sidecar_lrc: bool,
+    pub organize_by_template: Option<bool>,
+    pub only_fill_missing: bool,
+    pub write_album_cover: bool,
+}
+
+pub struct ScrapeApplyDeps {
+    pub settings: ToolSettingsService,
+    pub catalog: ScraperCatalogService,
+    pub workspace: WorkspaceBrowserService,
+    pub metadata: MetadataService,
+    pub rename: RenameService,
+    pub fs: Arc<dyn WorkspaceFsPort>,
+    pub toolbox: Arc<dyn MediaToolboxPort>,
+    pub transport: Arc<dyn ScraperTransportPort>,
+    pub webhook: Arc<dyn HttpWebhookPort>,
+    pub root_locks: RootLockRegistry,
+}
+
+/// Application service applying scraped metadata & artwork onto workspace files and Jellyfin archives.
+#[derive(Clone)]
+pub struct ScrapeApplyService {
+    pub(super) settings: ToolSettingsService,
+    pub(super) catalog: ScraperCatalogService,
+    pub(super) workspace: WorkspaceBrowserService,
+    pub(super) metadata: MetadataService,
+    pub(super) rename: RenameService,
+    pub(super) fs: Arc<dyn WorkspaceFsPort>,
+    pub(super) toolbox: Arc<dyn MediaToolboxPort>,
+    pub(super) transport: Arc<dyn ScraperTransportPort>,
+    pub(super) webhook: Arc<dyn HttpWebhookPort>,
+    pub(super) root_locks: RootLockRegistry,
+    pub(super) allow_private_artwork_ips: bool,
+}
+
+impl ScrapeApplyService {
+    pub fn new(deps: ScrapeApplyDeps) -> Self {
+        Self {
+            settings: deps.settings,
+            catalog: deps.catalog,
+            workspace: deps.workspace,
+            metadata: deps.metadata,
+            rename: deps.rename,
+            fs: deps.fs,
+            toolbox: deps.toolbox,
+            transport: deps.transport,
+            webhook: deps.webhook,
+            root_locks: deps.root_locks,
             allow_private_artwork_ips: false,
         }
     }
@@ -115,14 +192,5 @@ impl ScrapingOrchestratorService {
     #[doc(hidden)]
     pub fn set_allow_private_artwork_ips(&mut self, allow: bool) {
         self.allow_private_artwork_ips = allow;
-    }
-
-    pub async fn cache_stats(&self) -> DomainResult<ScrapeCacheStatsDto> {
-        let ttl_ms = self.settings.get_raw().await?.scrape_cache_ttl_ms;
-        Ok(self.cache.stats(ttl_ms))
-    }
-
-    pub fn clear_cache(&self) -> DomainResult<usize> {
-        self.cache.clear()
     }
 }

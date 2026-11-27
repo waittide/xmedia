@@ -7,12 +7,310 @@ use xmedia_formats::decode_text_smart;
 use xmedia_formats::video::SubtitleFormatExt;
 pub use xmedia_formats::video::convert_subtitle_bytes_to_vtt;
 
-pub use crate::domain::ops::{
-    BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
-    ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
+use crate::application::ops::{
+    ExtractSubtitleReportDto, JellyfinArchiveInput, ProcessSubtitleInput, ProcessSubtitleReportDto,
+    VideoSubtitleInfoDto, VideoToolCommand, VideoToolOutput,
 };
 use crate::domain::zh_text::{ZhConvertDirection, convert_zh_plain};
-use crate::infra::atomic_fs::atomic_write_bytes;
+use crate::infra::atomic_fs::{
+    atomic_write_bytes, cleanup_empty_parent_dirs, find_companion_sidecars,
+};
+use crate::infra::inspectors::video::{
+    find_existing_nfo, find_show_nfo_for_episode, is_season_dir, read_base_video_meta,
+    render_season_nfo_xml_preserving, render_tvshow_nfo_xml_preserving,
+    render_video_nfo_xml_preserving, write_image_replacing_opposite_ext,
+};
+
+pub fn run_video_tool(cmd: VideoToolCommand) -> DomainResult<VideoToolOutput> {
+    match cmd {
+        VideoToolCommand::ListSubtitles { path } => {
+            list_video_subtitles(&path).map(VideoToolOutput::Subtitles)
+        }
+        VideoToolCommand::ProcessSubtitle { path, input } => {
+            process_video_subtitle(&path, &input).map(VideoToolOutput::ProcessedSubtitle)
+        }
+        VideoToolCommand::ExtractEmbeddedSubtitle {
+            path,
+            stream_index,
+            language_tag,
+            output_ext,
+            ffmpeg_bin,
+        } => extract_embedded_subtitle(
+            &path,
+            stream_index,
+            language_tag.as_deref(),
+            &output_ext,
+            &ffmpeg_bin,
+        )
+        .map(VideoToolOutput::ExtractedSubtitle),
+        VideoToolCommand::ReadBaseMeta { path } => Ok(VideoToolOutput::BaseMeta(Box::new(
+            read_base_video_meta(&path),
+        ))),
+        VideoToolCommand::WriteSeasonNfo {
+            season_dir,
+            season_num,
+            year,
+            tmdb_id,
+            bangumi_id,
+        } => {
+            let season_nfo_path = season_dir.join("season.nfo");
+            let prev_season = std::fs::read(&season_nfo_path).ok();
+            let nfo = render_season_nfo_xml_preserving(
+                season_num,
+                None,
+                year,
+                None,
+                tmdb_id.as_deref(),
+                bangumi_id.as_deref(),
+                prev_season.as_deref(),
+            );
+            atomic_write_bytes(&season_nfo_path, nfo.as_bytes())?;
+            Ok(VideoToolOutput::Unit)
+        }
+        VideoToolCommand::ArchiveJellyfin(input) => {
+            archive_video_jellyfin(*input)?;
+            Ok(VideoToolOutput::Unit)
+        }
+    }
+}
+
+fn archive_video_jellyfin(input: JellyfinArchiveInput) -> DomainResult<()> {
+    let JellyfinArchiveInput {
+        root_path,
+        src_abs,
+        dst_abs,
+        target_stem,
+        meta,
+        scraped,
+        downloaded_images,
+        skip_poster,
+        skip_fanart,
+        skip_thumb,
+        only_fill_missing,
+    } = input;
+
+    let dst_dir = dst_abs
+        .parent()
+        .ok_or_else(|| DomainError::Validation("invalid target video folder".into()))?
+        .to_path_buf();
+    let show_dir = if meta.is_episode
+        && is_season_dir(&dst_dir)
+        && dst_dir != root_path
+        && let Some(parent) = dst_dir.parent()
+        && parent != root_path
+        && parent.starts_with(&root_path)
+    {
+        parent.to_path_buf()
+    } else {
+        dst_dir.clone()
+    };
+
+    let will_replace_poster = !skip_poster
+        && scraped
+            .cover_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|u| downloaded_images.contains_key(u));
+    let will_replace_fanart = !skip_fanart
+        && scraped
+            .backdrop_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|u| downloaded_images.contains_key(u));
+    let will_replace_thumb = !skip_thumb
+        && scraped
+            .episode_still_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|u| downloaded_images.contains_key(u));
+
+    std::fs::create_dir_all(&dst_dir)
+        .map_err(|e| DomainError::Storage(format!("failed creating Jellyfin dir: {e}")))?;
+    if show_dir != dst_dir {
+        std::fs::create_dir_all(&show_dir)
+            .map_err(|e| DomainError::Storage(format!("failed creating Jellyfin show dir: {e}")))?;
+    }
+
+    let old_parent = src_abs.parent().map(Path::to_path_buf);
+    let existing_video_nfo_bytes = find_existing_nfo(&src_abs, meta.is_episode)
+        .or_else(|| find_existing_nfo(&src_abs, !meta.is_episode))
+        .and_then(|p| std::fs::read(p).ok());
+    let existing_show_nfo_bytes =
+        find_show_nfo_for_episode(&src_abs).and_then(|p| std::fs::read(p).ok());
+    let existing_old_season_nfo_bytes = old_parent
+        .as_ref()
+        .map(|p| p.join("season.nfo"))
+        .filter(|p| p.is_file())
+        .and_then(|p| std::fs::read(p).ok());
+    let companions = find_companion_sidecars(&src_abs);
+
+    if dst_abs != src_abs {
+        std::fs::rename(&src_abs, &dst_abs).map_err(|e| {
+            DomainError::Storage(format!(
+                "failed archiving video into '{}': {e}",
+                dst_abs.display()
+            ))
+        })?;
+    }
+
+    for (comp_abs, suffix) in companions {
+        let lower = suffix.to_ascii_lowercase();
+        let is_sub = lower.ends_with(".srt")
+            || lower.ends_with(".ass")
+            || lower.ends_with(".ssa")
+            || lower.ends_with(".vtt");
+        if is_sub {
+            let sub_dst = dst_dir.join(format!("{target_stem}{suffix}"));
+            if sub_dst != comp_abs && !sub_dst.exists() {
+                let _ = std::fs::rename(&comp_abs, &sub_dst);
+            }
+        } else if dst_abs != src_abs {
+            let image_ext = |p_lower: &str| -> &'static str {
+                if p_lower.ends_with(".png") {
+                    "png"
+                } else if p_lower.ends_with(".webp") {
+                    "webp"
+                } else {
+                    "jpg"
+                }
+            };
+            let mut should_remove_old = true;
+            if lower.contains("-poster.") && !will_replace_poster {
+                let target_poster_dir = if meta.is_episode { &show_dir } else { &dst_dir };
+                let migrated = target_poster_dir.join(format!("poster.{}", image_ext(&lower)));
+                if !migrated.exists() && std::fs::copy(&comp_abs, &migrated).is_err() {
+                    should_remove_old = false;
+                }
+            } else if lower.contains("-fanart.") && !will_replace_fanart {
+                let target_fan_dir = if meta.is_episode { &show_dir } else { &dst_dir };
+                let migrated = target_fan_dir.join(format!("fanart.{}", image_ext(&lower)));
+                if !migrated.exists() && std::fs::copy(&comp_abs, &migrated).is_err() {
+                    should_remove_old = false;
+                }
+            } else if lower.contains("-thumb.") && !will_replace_thumb {
+                let migrated = dst_dir.join(format!("{target_stem}-thumb.{}", image_ext(&lower)));
+                if !migrated.exists() && std::fs::copy(&comp_abs, &migrated).is_err() {
+                    should_remove_old = false;
+                }
+            }
+            if should_remove_old {
+                let _ = std::fs::remove_file(&comp_abs);
+            }
+        }
+    }
+
+    if !meta.is_episode {
+        let movie_nfo = dst_dir.join("movie.nfo");
+        let prev_movie_nfo = std::fs::read(&movie_nfo).ok().or(existing_video_nfo_bytes);
+        let xml = render_video_nfo_xml_preserving(&meta, prev_movie_nfo.as_deref());
+        atomic_write_bytes(&movie_nfo, xml.as_bytes())?;
+
+        let same_stem_nfo = dst_dir.join(format!("{target_stem}.nfo"));
+        if same_stem_nfo.is_file() && same_stem_nfo != movie_nfo {
+            let _ = std::fs::remove_file(same_stem_nfo);
+        }
+
+        if !skip_poster
+            && let Some(u) = scraped.cover_url.as_deref().map(str::trim)
+            && let Some((bytes, img_ext)) = downloaded_images.get(u)
+        {
+            write_image_replacing_opposite_ext(&dst_dir, "poster", img_ext, bytes)?;
+        }
+        if !skip_fanart
+            && let Some(u) = scraped.backdrop_url.as_deref().map(str::trim)
+            && let Some((bytes, img_ext)) = downloaded_images.get(u)
+        {
+            write_image_replacing_opposite_ext(&dst_dir, "fanart", img_ext, bytes)?;
+        }
+    } else {
+        let tvshow_nfo_path = show_dir.join("tvshow.nfo");
+        if !only_fill_missing || !tvshow_nfo_path.is_file() {
+            let prev_tvshow = std::fs::read(&tvshow_nfo_path)
+                .ok()
+                .or(existing_show_nfo_bytes);
+            let show_plot = scraped.show_summary.as_deref().or(meta.summary.as_deref());
+            let tvshow_xml =
+                render_tvshow_nfo_xml_preserving(&meta, show_plot, prev_tvshow.as_deref());
+            atomic_write_bytes(&tvshow_nfo_path, tvshow_xml.as_bytes())?;
+        }
+
+        if !skip_poster
+            && let Some(u) = scraped.cover_url.as_deref().map(str::trim)
+            && let Some((bytes, img_ext)) = downloaded_images.get(u)
+        {
+            write_image_replacing_opposite_ext(&show_dir, "poster", img_ext, bytes)?;
+        }
+        if !skip_fanart
+            && let Some(u) = scraped.backdrop_url.as_deref().map(str::trim)
+            && let Some((bytes, img_ext)) = downloaded_images.get(u)
+        {
+            write_image_replacing_opposite_ext(&show_dir, "fanart", img_ext, bytes)?;
+        }
+
+        let season_num = meta.season_number.unwrap_or(1);
+        let season_nfo_path = dst_dir.join("season.nfo");
+        if !only_fill_missing || !season_nfo_path.is_file() {
+            let prev_season = std::fs::read(&season_nfo_path)
+                .ok()
+                .or(existing_old_season_nfo_bytes);
+            let season_plot = scraped
+                .season_summary
+                .as_deref()
+                .or(scraped.show_summary.as_deref())
+                .or(meta.summary.as_deref());
+            let season_xml = render_season_nfo_xml_preserving(
+                season_num,
+                scraped.season_title.as_deref(),
+                meta.year,
+                season_plot,
+                meta.tmdb_id.as_deref(),
+                meta.bangumi_id.as_deref(),
+                prev_season.as_deref(),
+            );
+            atomic_write_bytes(&season_nfo_path, season_xml.as_bytes())?;
+        }
+
+        if dst_dir != show_dir {
+            let season_poster_u = scraped
+                .season_poster_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .or_else(|| scraped.cover_url.as_deref().map(str::trim));
+            if !skip_poster
+                && let Some(u) = season_poster_u
+                && let Some((bytes, img_ext)) = downloaded_images.get(u)
+            {
+                write_image_replacing_opposite_ext(&dst_dir, "poster", img_ext, bytes)?;
+            }
+            if !skip_fanart
+                && let Some(u) = scraped.backdrop_url.as_deref().map(str::trim)
+                && let Some((bytes, img_ext)) = downloaded_images.get(u)
+            {
+                write_image_replacing_opposite_ext(&dst_dir, "fanart", img_ext, bytes)?;
+            }
+        }
+
+        let ep_nfo = dst_dir.join(format!("{target_stem}.nfo"));
+        let prev_ep_nfo = std::fs::read(&ep_nfo).ok().or(existing_video_nfo_bytes);
+        let ep_xml = render_video_nfo_xml_preserving(&meta, prev_ep_nfo.as_deref());
+        atomic_write_bytes(&ep_nfo, ep_xml.as_bytes())?;
+
+        if !skip_thumb
+            && let Some(u) = scraped.episode_still_url.as_deref().map(str::trim)
+            && let Some((bytes, img_ext)) = downloaded_images.get(u)
+        {
+            let thumb_base = format!("{target_stem}-thumb");
+            write_image_replacing_opposite_ext(&dst_dir, &thumb_base, img_ext, bytes)?;
+        }
+    }
+
+    if let Some(ref prev_dir) = old_parent {
+        cleanup_empty_parent_dirs(prev_dir, &root_path);
+    }
+
+    Ok(())
+}
 
 static RE_SRT_TIMING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(

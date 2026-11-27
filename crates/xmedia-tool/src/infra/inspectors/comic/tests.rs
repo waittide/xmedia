@@ -36,8 +36,8 @@ async fn epub_manga_opf_rendition_detection_and_ocf_mimetype_preservation() {
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
     use super::CbzComicInspector;
+    use crate::application::ports::MediaInspectorPort;
     use crate::domain::media::{ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload};
-    use crate::domain::ports::MediaInspectorPort;
 
     let tmp = tempfile::tempdir().unwrap();
     let epub_path = tmp.path().join("テスト条漫.epub");
@@ -105,8 +105,8 @@ async fn write_metadata_preserves_pages_extended_comicinfo_elements_and_fraction
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
     use super::CbzComicInspector;
+    use crate::application::ports::MediaInspectorPort;
     use crate::domain::media::{ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload};
-    use crate::domain::ports::MediaInspectorPort;
 
     let tmp = tempfile::tempdir().unwrap();
     let cbz_path = tmp.path().join("frieren_v1.5.cbz");
@@ -186,8 +186,8 @@ async fn write_metadata_preserves_pages_extended_comicinfo_elements_and_fraction
 #[tokio::test]
 async fn comic_image_directory_inspect_write_metadata_and_artwork_roundtrip() {
     use super::CbzComicInspector;
+    use crate::application::ports::MediaInspectorPort;
     use crate::domain::media::{ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload};
-    use crate::domain::ports::MediaInspectorPort;
 
     let tmp = tempfile::tempdir().unwrap();
     let series_dir = tmp.path().join("葬送的芙莉莲");
@@ -198,8 +198,8 @@ async fn comic_image_directory_inspect_write_metadata_and_artwork_roundtrip() {
     std::fs::write(ch_dir.join("002.png"), png_bytes).unwrap();
 
     let inspector = CbzComicInspector;
-    assert!(inspector.supports_directory(&ch_dir));
-    assert!(!inspector.supports_directory(&series_dir));
+    assert!(inspector.supports_path(&ch_dir));
+    assert!(!inspector.supports_path(&series_dir));
 
     let payload = inspector.inspect_file(&ch_dir).await.unwrap();
     let MediaMetadataPayload::Comic(meta) = payload else {
@@ -230,11 +230,24 @@ async fn comic_image_directory_inspect_write_metadata_and_artwork_roundtrip() {
     assert_eq!(meta2.title.as_deref(), Some("魂之眠地"));
     assert!(ch_dir.join("ComicInfo.xml").is_file());
 
-    let art = inspector.read_artwork(&ch_dir, None).await.unwrap();
+    let art = inspector
+        .artwork(
+            &ch_dir,
+            crate::application::ports::ArtworkIo::Read { slot: None },
+        )
+        .await
+        .unwrap();
     assert!(art.is_some());
 
     inspector
-        .write_artwork(&ch_dir, png_bytes, "image/png", "cover")
+        .artwork(
+            &ch_dir,
+            crate::application::ports::ArtworkIo::Write {
+                slot: "cover",
+                bytes: png_bytes,
+                mime_type: "image/png",
+            },
+        )
         .await
         .unwrap();
     assert!(ch_dir.join("000_cover.png").is_file());

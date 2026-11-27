@@ -8,9 +8,12 @@ use uuid::Uuid;
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::ApiResult;
 
-use crate::application::scraping::{AutoScrapeOptions, AutoScrapeResultDto, DryRunScrapeItemDto};
+use crate::application::ops::ScrapeCacheStatsDto;
+use crate::application::scraping::{
+    ApplyScrapeInput, AutoScrapeOptions, AutoScrapeResultDto, CacheManagementResult,
+    DryRunScrapeItemDto,
+};
 use crate::domain::media::MediaFileDetail;
-use crate::domain::ops::ScrapeCacheStatsDto;
 use crate::domain::scraper::{
     AggregateScrapeResponse, ProviderStatusDto, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind,
     ScrapedMetadata,
@@ -46,7 +49,7 @@ async fn list_scraper_providers(
     Query(q): Query<ProvidersQuery>,
 ) -> ApiResult<Json<Vec<ProviderStatusDto>>> {
     Ok(Json(
-        state.scraping.list_providers(q.target, q.domain).await?,
+        state.scrapers.list_providers(q.target, q.domain).await?,
     ))
 }
 
@@ -54,14 +57,14 @@ async fn search_scrapers(
     State(state): State<ToolHttpState>,
     Json(query): Json<ScrapeQuery>,
 ) -> ApiResult<Json<Vec<ScrapeCandidate>>> {
-    Ok(Json(state.scraping.search(query).await?))
+    Ok(Json(state.scrapers.search(query).await?))
 }
 
 async fn aggregate_scrapers(
     State(state): State<ToolHttpState>,
     Json(query): Json<ScrapeQuery>,
 ) -> ApiResult<Json<AggregateScrapeResponse>> {
-    Ok(Json(state.scraping.aggregate(query).await?))
+    Ok(Json(state.scrapers.aggregate(query).await?))
 }
 
 #[derive(Deserialize)]
@@ -77,7 +80,7 @@ async fn get_scraper_detail(
     Query(q): Query<ScraperDetailQuery>,
 ) -> ApiResult<Json<ScrapedMetadata>> {
     let detail = state
-        .scraping
+        .scrapers
         .fetch_detail(
             &q.provider_id,
             &q.external_id,
@@ -115,18 +118,18 @@ async fn apply_scraped_metadata(
     Json(req): Json<ApplyScrapedRequest>,
 ) -> ApiResult<Json<MediaFileDetail>> {
     let detail = state
-        .scraping
-        .apply_to_file_ext(
-            RootId(req.root_id),
-            &req.path,
-            req.media_kind,
-            req.metadata,
-            req.apply_cover,
-            req.write_sidecar_lrc,
-            req.organize_by_template,
-            req.only_fill_missing,
-            req.write_album_cover,
-        )
+        .scrape_apply
+        .apply(ApplyScrapeInput {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            media_kind: req.media_kind,
+            scraped: req.metadata,
+            apply_cover: req.apply_cover,
+            write_sidecar_lrc: req.write_sidecar_lrc,
+            organize_by_template: req.organize_by_template,
+            only_fill_missing: req.only_fill_missing,
+            write_album_cover: req.write_album_cover,
+        })
         .await?;
     Ok(Json(detail))
 }
@@ -145,8 +148,8 @@ async fn auto_apply_scraped_metadata(
     Json(req): Json<AutoApplyScrapeRequest>,
 ) -> ApiResult<Json<AutoScrapeResultDto>> {
     let res = state
-        .scraping
-        .auto_scrape_file_with_options(RootId(req.root_id), &req.path, req.media_kind, req.options)
+        .scrape_apply
+        .auto_scrape(RootId(req.root_id), &req.path, req.media_kind, req.options)
         .await?;
     Ok(Json(res))
 }
@@ -163,8 +166,8 @@ async fn dry_run_scrape_files(
     Json(req): Json<DryRunScrapeRequest>,
 ) -> ApiResult<Json<Vec<DryRunScrapeItemDto>>> {
     let items = state
-        .scraping
-        .dry_run_files(RootId(req.root_id), req.paths, req.locale)
+        .scrape_apply
+        .dry_run(RootId(req.root_id), req.paths, req.locale)
         .await?;
     Ok(Json(items))
 }
@@ -172,7 +175,10 @@ async fn dry_run_scrape_files(
 async fn get_scrape_cache_stats(
     State(state): State<ToolHttpState>,
 ) -> ApiResult<Json<ScrapeCacheStatsDto>> {
-    Ok(Json(state.scraping.cache_stats().await?))
+    let CacheManagementResult::Stats(stats) = state.scrapers.manage_cache(false).await? else {
+        unreachable!()
+    };
+    Ok(Json(stats))
 }
 
 #[derive(Serialize)]
@@ -183,7 +189,10 @@ struct ClearScrapeCacheResponse {
 async fn clear_scrape_cache(
     State(state): State<ToolHttpState>,
 ) -> ApiResult<Json<ClearScrapeCacheResponse>> {
-    let removed_count = state.scraping.clear_cache()?;
+    let CacheManagementResult::Cleared(removed_count) = state.scrapers.manage_cache(true).await?
+    else {
+        unreachable!()
+    };
     Ok(Json(ClearScrapeCacheResponse { removed_count }))
 }
 
@@ -196,7 +205,7 @@ async fn proxy_scraper_image(
     State(state): State<ToolHttpState>,
     Query(q): Query<ImageProxyQuery>,
 ) -> ApiResult<Response> {
-    let (bytes, mime) = state.scraping.proxy_scraper_image(&q.url).await?;
+    let (bytes, mime) = state.scrapers.proxy_image(&q.url).await?;
     let mut res = (StatusCode::OK, bytes).into_response();
     apply_sandboxed_asset_headers(res.headers_mut(), &mime, "private, max-age=86400");
     Ok(res)

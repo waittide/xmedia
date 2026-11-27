@@ -7,9 +7,9 @@ use uuid::Uuid;
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::ApiResult;
 
-use crate::application::inbox::{InboxScanReportDto, scan_and_import_inbox};
+use crate::application::inbox::{InboxScanDeps, InboxScanReportDto, scan_and_import_inbox};
+use crate::application::ops::WebhookTestReportDto;
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
-use crate::domain::ops::WebhookTestReportDto;
 use crate::domain::workspace::{ManagedRoot, RootId};
 use crate::http::ToolHttpState;
 
@@ -49,7 +49,7 @@ async fn add_root(
 ) -> ApiResult<(StatusCode, Json<ManagedRoot>)> {
     let root = state
         .settings
-        .add_root_with_options(req.name, req.path, req.default_kind, req.read_only)
+        .add_root(req.name, req.path, req.default_kind, req.read_only)
         .await?;
     Ok((StatusCode::CREATED, Json(root)))
 }
@@ -83,7 +83,10 @@ async fn test_webhook_route(
     State(state): State<ToolHttpState>,
 ) -> ApiResult<Json<WebhookTestReportDto>> {
     let settings = state.settings.get_raw().await?;
-    let report = state.webhook.test_webhook(&settings.xmedia_webhook).await?;
+    let report = state
+        .webhook
+        .dispatch_rescan(&settings.xmedia_webhook, None, false)
+        .await?;
     Ok(Json(report))
 }
 
@@ -99,17 +102,12 @@ async fn trigger_webhook_route(
 ) -> ApiResult<Json<WebhookTestReportDto>> {
     let settings = state.settings.get_raw().await?;
     let root_path = body.and_then(|Json(req)| {
-        req.root_id.and_then(|rid| {
-            settings
-                .roots
-                .iter()
-                .find(|r| r.id == RootId(rid))
-                .map(|r| r.path.clone())
-        })
+        req.root_id
+            .and_then(|rid| settings.find_root(RootId(rid)).ok().map(|r| r.path.clone()))
     });
     let report = state
         .webhook
-        .trigger_rescan(&settings.xmedia_webhook, root_path.as_deref())
+        .dispatch_rescan(&settings.xmedia_webhook, root_path.as_deref(), true)
         .await?;
     Ok(Json(report))
 }
@@ -117,7 +115,16 @@ async fn trigger_webhook_route(
 async fn scan_inbox_route(
     State(state): State<ToolHttpState>,
 ) -> ApiResult<Json<InboxScanReportDto>> {
-    let report =
-        scan_and_import_inbox(&state.settings, &state.workbench, &state.scraping, 3).await?;
+    let report = scan_and_import_inbox(
+        InboxScanDeps {
+            settings: &state.settings,
+            workspace: &state.workspace,
+            scrape_apply: &state.scrape_apply,
+            fs: state.fs.as_ref(),
+            webhook: &state.webhook,
+        },
+        3,
+    )
+    .await?;
     Ok(Json(report))
 }

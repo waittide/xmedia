@@ -1,12 +1,14 @@
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
-use super::ScrapingOrchestratorService;
+use super::{ScrapeApplyService, ScraperCatalogService};
+use crate::application::ports::ArtworkIo;
+use crate::application::workbench::WorkspaceArtworkOutput;
 use crate::domain::media::MediaFileDetail;
 use crate::domain::workspace::RootId;
 
-impl ScrapingOrchestratorService {
-    pub async fn proxy_scraper_image(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
+impl ScraperCatalogService {
+    pub async fn proxy_image(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
         let parsed = reqwest::Url::parse(raw_url.trim())
             .map_err(|_| DomainError::Validation("invalid image URL".into()))?;
         if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.port().is_some() {
@@ -34,14 +36,44 @@ impl ScrapingOrchestratorService {
                 "host '{host}' is not on the scraper image proxy allowlist"
             )));
         }
-        let creds = self.settings.get_credentials().await?;
+        let creds = self.settings.get_raw().await?.credentials;
         self.transport
             .download_artwork(&creds, parsed.as_str(), false)
             .await
     }
+}
 
-    /// Downloads a remote artwork image (e.g. from a scraper candidate) using configured proxy/UA
-    /// and writes it into the target media file via the workbench.
+impl ScrapeApplyService {
+    pub(super) async fn write_file_artwork(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        preferred_kind: Option<MediaKind>,
+        slot: &str,
+        bytes: &[u8],
+        mime_type: &str,
+    ) -> DomainResult<MediaFileDetail> {
+        match self
+            .workspace
+            .artwork(
+                root_id,
+                rel_path,
+                preferred_kind,
+                ArtworkIo::Write {
+                    slot,
+                    bytes,
+                    mime_type,
+                },
+            )
+            .await?
+        {
+            WorkspaceArtworkOutput::Written(detail) => Ok(*detail),
+            WorkspaceArtworkOutput::Read(_) => {
+                Err(DomainError::Storage("unexpected artwork output".into()))
+            }
+        }
+    }
+
     pub async fn apply_remote_artwork(
         &self,
         root_id: RootId,
@@ -50,14 +82,12 @@ impl ScrapingOrchestratorService {
         slot: &str,
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<MediaFileDetail> {
-        let validated = self.transport.validate_public_http_url(raw_url).await?;
-        let creds = self.settings.get_credentials().await?;
+        let creds = self.settings.get_raw().await?.credentials;
         let (bytes, mime) = self
             .transport
-            .download_artwork(&creds, &validated, false)
+            .download_artwork(&creds, raw_url, false)
             .await?;
-        self.workbench
-            .write_artwork(root_id, rel_path, &bytes, &mime, slot, preferred_kind)
+        self.write_file_artwork(root_id, rel_path, preferred_kind, slot, &bytes, &mime)
             .await
     }
 }

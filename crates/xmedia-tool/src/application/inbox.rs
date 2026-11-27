@@ -6,9 +6,10 @@ use serde::Serialize;
 use walkdir::WalkDir;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
-use crate::application::scraping::{AutoScrapeOptions, ScrapingOrchestratorService};
+use crate::application::ports::{HttpWebhookPort, WorkspaceFsPort};
+use crate::application::scraping::{AutoScrapeOptions, ScrapeApplyService};
 use crate::application::settings::ToolSettingsService;
-use crate::application::workbench::MediaWorkbenchService;
+use crate::application::workbench::WorkspaceBrowserService;
 use crate::domain::workspace::path_to_slash;
 
 const INCOMPLETE_DOWNLOAD_SUFFIXES: &[&str] = &[
@@ -35,6 +36,14 @@ pub struct InboxScanReportDto {
     pub skipped_count: usize,
     pub failed_count: usize,
     pub items: Vec<InboxImportedItemDto>,
+}
+
+pub struct InboxScanDeps<'a> {
+    pub settings: &'a ToolSettingsService,
+    pub workspace: &'a WorkspaceBrowserService,
+    pub scrape_apply: &'a ScrapeApplyService,
+    pub fs: &'a dyn WorkspaceFsPort,
+    pub webhook: &'a Arc<dyn HttpWebhookPort>,
 }
 
 fn is_incomplete_download(path: &Path) -> bool {
@@ -85,7 +94,6 @@ fn import_single_file(
         if std::fs::rename(src, dst).is_ok() {
             return Ok("move");
         }
-        // Cross-filesystem fallback: copy then remove source
         std::fs::copy(src, dst)
             .map_err(|e| DomainError::Storage(format!("cross-volume copy failed: {e}")))?;
         let _ = std::fs::remove_file(src);
@@ -100,12 +108,10 @@ fn import_single_file(
 /// Scans the configured Inbox / Watch Folder and imports supported media files into
 /// the target `ManagedRoot` using hardlink (preferred for seeding), move, or copy.
 pub async fn scan_and_import_inbox(
-    settings_svc: &ToolSettingsService,
-    workbench: &MediaWorkbenchService,
-    scraping: &ScrapingOrchestratorService,
+    deps: InboxScanDeps<'_>,
     settle_secs: u64,
 ) -> DomainResult<InboxScanReportDto> {
-    let settings = settings_svc.get_raw().await?;
+    let settings = deps.settings.get_raw().await?;
     let inbox_cfg = &settings.inbox;
     let raw_inbox = inbox_cfg
         .inbox_path
@@ -117,11 +123,12 @@ pub async fn scan_and_import_inbox(
         .target_root_id
         .ok_or_else(|| DomainError::Validation("inbox target_root_id is not configured".into()))?;
 
-    let target_root = settings_svc.find_root(target_root_id).await?;
+    let target_root = settings.find_root(target_root_id)?.clone();
     target_root.ensure_writable()?;
 
     let inbox_dir =
-        settings_svc.validate_inbox_directory(raw_inbox, &settings.roots, Some(target_root_id))?;
+        deps.settings
+            .validate_inbox_directory(raw_inbox, &settings.roots, Some(target_root_id))?;
 
     let mut candidates: Vec<(PathBuf, String)> = Vec::new();
     let mut skipped_count = 0usize;
@@ -139,8 +146,9 @@ pub async fn scan_and_import_inbox(
             skipped_count += 1;
             continue;
         }
-        if workbench
-            .resolve_inspector_for_path(p, target_root.default_kind)
+        if deps
+            .workspace
+            .resolve_inspector(p, target_root.default_kind)
             .is_none()
         {
             skipped_count += 1;
@@ -162,10 +170,7 @@ pub async fn scan_and_import_inbox(
     let mut failed_count = 0usize;
 
     for (src_abs, src_rel) in candidates {
-        let target_abs = match workbench
-            .fs()
-            .resolve_target_in_root(&target_root, &src_rel)
-        {
+        let target_abs = match deps.fs.resolve_target_in_root(&target_root, &src_rel) {
             Ok(p) => p,
             Err(e) => {
                 failed_count += 1;
@@ -197,27 +202,24 @@ pub async fn scan_and_import_inbox(
                 if inbox_cfg.delete_source
                     && let Some(ref p) = src_parent
                 {
-                    workbench.fs().cleanup_empty_parent_dirs(p, &inbox_dir);
+                    deps.fs.cleanup_empty_parent_dirs(p, &inbox_dir);
                 }
 
                 let mut final_rel = src_rel.clone();
                 let mut scraped = false;
                 let mut scrape_err = None;
                 if inbox_cfg.auto_scrape
-                    && let Some(ins) =
-                        workbench.resolve_inspector_for_path(&target_abs, target_root.default_kind)
+                    && let Some(ins) = deps
+                        .workspace
+                        .resolve_inspector(&target_abs, target_root.default_kind)
                 {
                     let opts = AutoScrapeOptions {
                         organize_by_template: inbox_cfg.organize_by_template,
                         ..Default::default()
                     };
-                    match scraping
-                        .auto_scrape_file_with_options(
-                            target_root_id,
-                            &src_rel,
-                            ins.media_kind(),
-                            opts,
-                        )
+                    match deps
+                        .scrape_apply
+                        .auto_scrape(target_root_id, &src_rel, ins.media_kind(), opts)
                         .await
                     {
                         Ok(res) => {
@@ -254,7 +256,7 @@ pub async fn scan_and_import_inbox(
     if imported_count > 0 && settings.xmedia_webhook.notify_on_inbox {
         let webhook_cfg = settings.xmedia_webhook.clone();
         let root_path = target_root.path.clone();
-        let webhook = Arc::clone(workbench.webhook());
+        let webhook = Arc::clone(deps.webhook);
         tokio::spawn(async move {
             webhook.notify_rescan(&webhook_cfg, &root_path).await;
         });

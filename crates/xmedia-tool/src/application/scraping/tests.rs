@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use super::mapping::{
     compute_scrape_confidence, fallback_metadata_from_candidate, filter_scraped_metadata_by_groups,
 };
-use crate::domain::media::VideoMetaPatch;
-use crate::domain::media_patch::strip_video_locked_fields;
+use crate::domain::media::{VideoFileMeta, VideoMetaPatch};
 use crate::domain::scraper::{
     AggregateScrapeResponse, MergedScrapedResult, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind,
     ScrapedMetadata,
@@ -145,7 +144,13 @@ fn fallback_metadata_recognizes_qq_migu_and_17k_provider_ids() {
 
 #[test]
 fn apply_video_locked_fields_strips_locked_metadata_and_cover() {
-    let mut vp = VideoMetaPatch {
+    let mut meta = VideoFileMeta {
+        title: "Keep Title".into(),
+        summary: Some("Keep Plot".into()),
+        locked_fields: vec!["title".into(), "overview".into(), "poster".into()],
+        ..Default::default()
+    };
+    let vp = VideoMetaPatch {
         title: Some("New Title".into()),
         summary: Some("New Plot".into()),
         genres: Some(vec!["Action".into()]),
@@ -153,14 +158,10 @@ fn apply_video_locked_fields_strips_locked_metadata_and_cover() {
         ..Default::default()
     };
     let mut apply_cover = true;
-    strip_video_locked_fields(
-        &mut vp,
-        &["title".into(), "overview".into(), "poster".into()],
-        &mut apply_cover,
-    );
-    assert!(vp.title.is_none());
-    assert!(vp.summary.is_none());
-    assert_eq!(vp.genres, Some(vec!["Action".into()]));
-    assert_eq!(vp.year, Some(2025));
+    meta.prepare_and_apply_patch(vp, false, "", &mut apply_cover);
+    assert_eq!(meta.title, "Keep Title");
+    assert_eq!(meta.summary.as_deref(), Some("Keep Plot"));
+    assert_eq!(meta.genres, vec!["Action".to_string()]);
+    assert_eq!(meta.year, Some(2025));
     assert!(!apply_cover);
 }

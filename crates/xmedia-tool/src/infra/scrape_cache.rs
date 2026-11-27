@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
-use crate::domain::ops::ScrapeCacheStatsDto;
-use crate::domain::ports::ScrapeCachePort;
+use crate::application::ops::ScrapeCacheStatsDto;
+use crate::application::ports::{
+    ScrapeCacheLookup, ScrapeCachePort, ScrapeCacheValue, ScrapeCacheWrite,
+};
 use crate::domain::scraper::{ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata};
 
 const DEFAULT_MAX_MEMORY_ENTRIES: usize = 2048;
@@ -359,56 +361,42 @@ impl ScrapeMetadataCache {
 }
 
 impl ScrapeCachePort for ScrapeMetadataCache {
-    fn get_search(
-        &self,
-        provider_id: &str,
-        query: &ScrapeQuery,
-        locale: &str,
-        ttl_ms: u64,
-    ) -> Option<Vec<ScrapeCandidate>> {
-        Self::get_search(self, provider_id, query, locale, ttl_ms)
+    fn get(&self, key: ScrapeCacheLookup<'_>, ttl_ms: u64) -> Option<ScrapeCacheValue> {
+        match key {
+            ScrapeCacheLookup::Search {
+                provider_id,
+                query,
+                locale,
+            } => self
+                .get_search(provider_id, query, locale, ttl_ms)
+                .map(ScrapeCacheValue::Search),
+            ScrapeCacheLookup::Detail {
+                provider_id,
+                target,
+                external_id,
+                locale,
+            } => self
+                .get_detail(provider_id, target, external_id, locale, ttl_ms)
+                .map(|d| ScrapeCacheValue::Detail(Box::new(d))),
+        }
     }
 
-    fn put_search(
-        &self,
-        provider_id: &str,
-        query: &ScrapeQuery,
-        locale: &str,
-        ttl_ms: u64,
-        items: &[ScrapeCandidate],
-    ) {
-        Self::put_search(self, provider_id, query, locale, ttl_ms, items);
-    }
-
-    fn get_detail(
-        &self,
-        provider_id: &str,
-        target: ScrapeTargetKind,
-        external_id: &str,
-        locale: &str,
-        ttl_ms: u64,
-    ) -> Option<ScrapedMetadata> {
-        Self::get_detail(self, provider_id, target, external_id, locale, ttl_ms)
-    }
-
-    fn put_detail(
-        &self,
-        provider_id: &str,
-        target: ScrapeTargetKind,
-        external_id: &str,
-        locale: &str,
-        ttl_ms: u64,
-        detail: &ScrapedMetadata,
-    ) {
-        Self::put_detail(
-            self,
-            provider_id,
-            target,
-            external_id,
-            locale,
-            ttl_ms,
-            detail,
-        );
+    fn put(&self, entry: ScrapeCacheWrite<'_>, ttl_ms: u64) {
+        match entry {
+            ScrapeCacheWrite::Search {
+                provider_id,
+                query,
+                locale,
+                items,
+            } => self.put_search(provider_id, query, locale, ttl_ms, items),
+            ScrapeCacheWrite::Detail {
+                provider_id,
+                target,
+                external_id,
+                locale,
+                detail,
+            } => self.put_detail(provider_id, target, external_id, locale, ttl_ms, detail),
+        }
     }
 
     fn stats(&self, ttl_ms: u64) -> ScrapeCacheStatsDto {

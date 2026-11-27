@@ -6,12 +6,19 @@ use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
+use crate::application::ports::{ConfigRepositoryPort, WorkspaceFsPort};
 use crate::domain::config::{
     InboxConfig, ProviderConfigOverride, ProviderCredentials, RenameTemplates, ScraperPriorities,
-    ToolSettings,
+    ToolSettings, XmediaWebhookConfig,
 };
-use crate::domain::ports::{ConfigRepositoryPort, WorkspaceFsPort};
-use crate::domain::workspace::{ManagedRoot, RootId};
+use crate::domain::workspace::{ManagedRoot, RootId, paths_overlap};
+
+#[derive(Debug, Clone, Default)]
+pub struct SettingsSandboxPolicy {
+    pub data_dir: Option<PathBuf>,
+    pub cli_roots: Vec<PathBuf>,
+    pub roots_locked: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettingsDto {
@@ -71,38 +78,28 @@ pub struct ToolSettingsService {
 }
 
 impl ToolSettingsService {
-    pub fn new(repo: Arc<dyn ConfigRepositoryPort>, fs: Arc<dyn WorkspaceFsPort>) -> Self {
+    pub fn new(
+        repo: Arc<dyn ConfigRepositoryPort>,
+        fs: Arc<dyn WorkspaceFsPort>,
+        policy: SettingsSandboxPolicy,
+    ) -> Self {
+        let data_dir = policy.data_dir.map(|d| d.canonicalize().unwrap_or(d));
+        let canon_cli: Vec<PathBuf> = policy
+            .cli_roots
+            .iter()
+            .filter_map(|p| p.canonicalize().ok())
+            .collect();
         Self {
             repo,
             fs,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
-            data_dir: None,
-            cli_root_prefixes: Arc::new(Vec::new()),
-            roots_locked: false,
+            data_dir,
+            cli_root_prefixes: Arc::new(canon_cli),
+            roots_locked: policy.roots_locked,
         }
     }
 
-    pub fn fs(&self) -> &Arc<dyn WorkspaceFsPort> {
-        &self.fs
-    }
-
-    pub fn with_sandbox_policy(
-        mut self,
-        data_dir: Option<PathBuf>,
-        cli_roots: &[PathBuf],
-        roots_locked: bool,
-    ) -> Self {
-        self.data_dir = data_dir.map(|d| d.canonicalize().unwrap_or(d));
-        let canon_cli: Vec<PathBuf> = cli_roots
-            .iter()
-            .filter_map(|p| p.canonicalize().ok())
-            .collect();
-        self.cli_root_prefixes = Arc::new(canon_cli);
-        self.roots_locked = roots_locked;
-        self
-    }
-
-    pub fn validate_inbox_directory(
+    pub(in crate::application) fn validate_inbox_directory(
         &self,
         raw_inbox: &str,
         roots: &[ManagedRoot],
@@ -118,15 +115,15 @@ impl ToolSettingsService {
         }
         self.fs.validate_safe_host_directory(&inbox_dir, "inbox")?;
         if let Some(ref data_dir) = self.data_dir
-            && self.fs.paths_overlap(&inbox_dir, data_dir)
+            && paths_overlap(&inbox_dir, data_dir)
         {
             return Err(DomainError::Validation(
                 "inbox directory cannot overlap xmedia-tool data directory".into(),
             ));
         }
         for r in roots {
-            if (target_root_id == Some(r.id) || self.fs.paths_overlap(&inbox_dir, &r.path))
-                && self.fs.paths_overlap(&inbox_dir, &r.path)
+            if (target_root_id == Some(r.id) || paths_overlap(&inbox_dir, &r.path))
+                && paths_overlap(&inbox_dir, &r.path)
             {
                 return Err(DomainError::Validation(
                     "inbox directory cannot be inside or contain a managed root directory".into(),
@@ -140,34 +137,12 @@ impl ToolSettingsService {
         self.repo.load().await
     }
 
-    pub async fn get_credentials(&self) -> DomainResult<ProviderCredentials> {
-        Ok(self.repo.load().await?.credentials)
-    }
-
     pub async fn get_public_settings(&self) -> DomainResult<PublicSettingsDto> {
         let s = self.repo.load().await?;
-        Ok(Self::to_public(s))
-    }
-
-    pub async fn find_root(&self, root_id: RootId) -> DomainResult<ManagedRoot> {
-        let s = self.repo.load().await?;
-        s.roots
-            .into_iter()
-            .find(|r| r.id == root_id)
-            .ok_or_else(|| DomainError::NotFound(format!("root '{root_id}' not found")))
+        Ok(to_public_settings(s))
     }
 
     pub async fn add_root(
-        &self,
-        name: String,
-        path: String,
-        default_kind: Option<MediaKind>,
-    ) -> DomainResult<ManagedRoot> {
-        self.add_root_with_options(name, path, default_kind, false)
-            .await
-    }
-
-    pub async fn add_root_with_options(
         &self,
         name: String,
         path: String,
@@ -179,12 +154,12 @@ impl ToolSettingsService {
                 "managed roots are locked by CLI configuration".into(),
             ));
         }
-        let root = self
-            .fs
-            .open_managed_root(name, std::path::Path::new(path.trim()), default_kind)?
-            .with_read_only(read_only);
+        let mut root =
+            self.fs
+                .open_managed_root(name, std::path::Path::new(path.trim()), default_kind)?;
+        root.read_only = read_only;
         if let Some(ref data_dir) = self.data_dir
-            && self.fs.paths_overlap(&root.path, data_dir)
+            && paths_overlap(&root.path, data_dir)
         {
             return Err(DomainError::Validation(
                 "managed root cannot overlap xmedia-tool data directory".into(),
@@ -250,58 +225,21 @@ impl ToolSettingsService {
 
     pub async fn update_settings(
         &self,
-        input: UpdateSettingsInput,
+        mut input: UpdateSettingsInput,
     ) -> DomainResult<PublicSettingsDto> {
         let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;
-        if let Some(key) = input.tmdb_api_key {
-            let trimmed = key.trim();
-            settings.credentials.tmdb_api_key = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-        if let Some(tok) = input.bangumi_access_token {
-            let trimmed = tok.trim();
-            settings.credentials.bangumi_access_token =
-                (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-        if let Some(cookie) = input.qishui_cookie {
-            let trimmed = cookie.trim();
-            if trimmed.is_empty() {
-                settings.credentials.extra.remove("qishui_cookie");
-            } else {
-                settings
-                    .credentials
-                    .extra
-                    .insert("qishui_cookie".to_string(), trimmed.to_string());
-            }
-        }
-        if let Some(proxy) = input.http_proxy {
-            let trimmed = proxy.trim();
-            settings.credentials.http_proxy = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-        if let Some(enable_adult) = input.enable_adult_scrapers {
-            settings.credentials.enable_adult_scrapers = enable_adult;
-        }
-        if let Some(tpl) = input.rename_templates {
+        apply_credentials_update(&mut settings.credentials, &mut input);
+        if let Some(tpl) = input.rename_templates.take() {
             settings.rename_templates = tpl;
         }
-        if let Some(prio) = input.scraper_priorities {
+        if let Some(prio) = input.scraper_priorities.take() {
             settings.scraper_priorities = prio;
         }
-        if let Some(cfgs) = input.provider_configs {
-            for (provider_id, raw_cfg) in cfgs {
-                let id = provider_id.trim().to_string();
-                if id.is_empty() {
-                    continue;
-                }
-                let normalized = raw_cfg.normalized();
-                if normalized.is_empty() {
-                    settings.provider_configs.remove(&id);
-                } else {
-                    settings.provider_configs.insert(id, normalized);
-                }
-            }
+        if let Some(cfgs) = input.provider_configs.take() {
+            settings.set_provider_overrides(cfgs);
         }
-        if let Some(loc) = input.default_scrape_locale
+        if let Some(loc) = input.default_scrape_locale.take()
             && !loc.trim().is_empty()
         {
             settings.default_scrape_locale = loc.trim().to_string();
@@ -309,83 +247,113 @@ impl ToolSettingsService {
         if let Some(ttl_ms) = input.scrape_cache_ttl_ms {
             settings.scrape_cache_ttl_ms = ttl_ms;
         }
-        if let Some(mut inbox) = input.inbox {
-            let clean_path = inbox
-                .inbox_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
+        if let Some(mut inbox) = input.inbox.take() {
+            let clean_path = trim_non_empty_opt(inbox.inbox_path);
             if let Some(ref raw_inbox) = clean_path {
                 self.validate_inbox_directory(raw_inbox, &settings.roots, inbox.target_root_id)?;
             }
             inbox.inbox_path = clean_path;
             settings.inbox = inbox;
         }
-        if let Some(enabled) = input.xmedia_webhook_enabled {
-            settings.xmedia_webhook.enabled = enabled;
-        }
-        if let Some(base_url) = input.xmedia_webhook_base_url {
-            settings.xmedia_webhook.base_url = base_url.trim().to_string();
-        }
-        if let Some(api_key) = input.xmedia_webhook_api_key {
-            let trimmed = api_key.trim();
-            settings.xmedia_webhook.api_key = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-        if let Some(v) = input.xmedia_webhook_notify_on_rename {
-            settings.xmedia_webhook.notify_on_rename = v;
-        }
-        if let Some(v) = input.xmedia_webhook_notify_on_scrape {
-            settings.xmedia_webhook.notify_on_scrape = v;
-        }
-        if let Some(v) = input.xmedia_webhook_notify_on_inbox {
-            settings.xmedia_webhook.notify_on_inbox = v;
-        }
+        apply_webhook_update(&mut settings.xmedia_webhook, &mut input);
         self.repo.save(&settings).await?;
-        Ok(Self::to_public(settings))
+        Ok(to_public_settings(settings))
     }
+}
 
-    fn to_public(s: ToolSettings) -> PublicSettingsDto {
-        let masked_provider_configs = s
-            .provider_configs
-            .into_iter()
-            .map(|(k, mut cfg)| {
-                cfg.http_proxy = mask_proxy_url(cfg.http_proxy.as_deref());
-                (k, cfg)
-            })
-            .collect();
-        PublicSettingsDto {
-            roots: s.roots,
-            has_tmdb_api_key: s.credentials.has_tmdb_key(),
-            tmdb_api_key_masked: mask_secret(s.credentials.tmdb_api_key.as_deref()),
-            has_bangumi_token: s
-                .credentials
-                .bangumi_access_token
-                .as_deref()
-                .is_some_and(|t| !t.trim().is_empty()),
-            bangumi_token_masked: mask_secret(s.credentials.bangumi_access_token.as_deref()),
-            has_qishui_cookie: s.credentials.get_extra("qishui_cookie").is_some(),
-            qishui_cookie_masked: mask_secret(s.credentials.get_extra("qishui_cookie")),
-            http_proxy: mask_proxy_url(s.credentials.http_proxy.as_deref()),
-            enable_adult_scrapers: s.credentials.enable_adult_scrapers,
-            rename_templates: s.rename_templates,
-            scraper_priorities: s.scraper_priorities,
-            provider_configs: masked_provider_configs,
-            default_scrape_locale: s.default_scrape_locale,
-            scrape_cache_ttl_ms: s.scrape_cache_ttl_ms,
-            inbox: s.inbox,
-            xmedia_webhook_enabled: s.xmedia_webhook.enabled,
-            xmedia_webhook_base_url: s.xmedia_webhook.base_url,
-            has_xmedia_webhook_api_key: s
-                .xmedia_webhook
-                .api_key
-                .as_deref()
-                .is_some_and(|k| !k.trim().is_empty()),
-            xmedia_webhook_api_key_masked: mask_secret(s.xmedia_webhook.api_key.as_deref()),
-            xmedia_webhook_notify_on_rename: s.xmedia_webhook.notify_on_rename,
-            xmedia_webhook_notify_on_scrape: s.xmedia_webhook.notify_on_scrape,
-            xmedia_webhook_notify_on_inbox: s.xmedia_webhook.notify_on_inbox,
+fn trim_non_empty_opt(raw: Option<String>) -> Option<String> {
+    raw.and_then(|s| {
+        let trimmed = s.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn apply_credentials_update(creds: &mut ProviderCredentials, input: &mut UpdateSettingsInput) {
+    if let Some(key) = input.tmdb_api_key.take() {
+        creds.tmdb_api_key = trim_non_empty_opt(Some(key));
+    }
+    if let Some(tok) = input.bangumi_access_token.take() {
+        creds.bangumi_access_token = trim_non_empty_opt(Some(tok));
+    }
+    if let Some(cookie) = input.qishui_cookie.take() {
+        match trim_non_empty_opt(Some(cookie)) {
+            Some(c) => {
+                creds.extra.insert("qishui_cookie".to_string(), c);
+            }
+            None => {
+                creds.extra.remove("qishui_cookie");
+            }
         }
+    }
+    if let Some(proxy) = input.http_proxy.take() {
+        creds.http_proxy = trim_non_empty_opt(Some(proxy));
+    }
+    if let Some(enable_adult) = input.enable_adult_scrapers {
+        creds.enable_adult_scrapers = enable_adult;
+    }
+}
+
+fn apply_webhook_update(webhook: &mut XmediaWebhookConfig, input: &mut UpdateSettingsInput) {
+    if let Some(enabled) = input.xmedia_webhook_enabled {
+        webhook.enabled = enabled;
+    }
+    if let Some(base_url) = input.xmedia_webhook_base_url.take() {
+        webhook.base_url = base_url.trim().to_string();
+    }
+    if let Some(api_key) = input.xmedia_webhook_api_key.take() {
+        webhook.api_key = trim_non_empty_opt(Some(api_key));
+    }
+    if let Some(v) = input.xmedia_webhook_notify_on_rename {
+        webhook.notify_on_rename = v;
+    }
+    if let Some(v) = input.xmedia_webhook_notify_on_scrape {
+        webhook.notify_on_scrape = v;
+    }
+    if let Some(v) = input.xmedia_webhook_notify_on_inbox {
+        webhook.notify_on_inbox = v;
+    }
+}
+
+fn to_public_settings(s: ToolSettings) -> PublicSettingsDto {
+    let masked_provider_configs = s
+        .provider_configs
+        .into_iter()
+        .map(|(k, mut cfg)| {
+            cfg.http_proxy = mask_proxy_url(cfg.http_proxy.as_deref());
+            (k, cfg)
+        })
+        .collect();
+    PublicSettingsDto {
+        roots: s.roots,
+        has_tmdb_api_key: s.credentials.has_tmdb_key(),
+        tmdb_api_key_masked: mask_secret(s.credentials.tmdb_api_key.as_deref()),
+        has_bangumi_token: s
+            .credentials
+            .bangumi_access_token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty()),
+        bangumi_token_masked: mask_secret(s.credentials.bangumi_access_token.as_deref()),
+        has_qishui_cookie: s.credentials.get_extra("qishui_cookie").is_some(),
+        qishui_cookie_masked: mask_secret(s.credentials.get_extra("qishui_cookie")),
+        http_proxy: mask_proxy_url(s.credentials.http_proxy.as_deref()),
+        enable_adult_scrapers: s.credentials.enable_adult_scrapers,
+        rename_templates: s.rename_templates,
+        scraper_priorities: s.scraper_priorities,
+        provider_configs: masked_provider_configs,
+        default_scrape_locale: s.default_scrape_locale,
+        scrape_cache_ttl_ms: s.scrape_cache_ttl_ms,
+        inbox: s.inbox,
+        xmedia_webhook_enabled: s.xmedia_webhook.enabled,
+        xmedia_webhook_base_url: s.xmedia_webhook.base_url,
+        has_xmedia_webhook_api_key: s
+            .xmedia_webhook
+            .api_key
+            .as_deref()
+            .is_some_and(|k| !k.trim().is_empty()),
+        xmedia_webhook_api_key_masked: mask_secret(s.xmedia_webhook.api_key.as_deref()),
+        xmedia_webhook_notify_on_rename: s.xmedia_webhook.notify_on_rename,
+        xmedia_webhook_notify_on_scrape: s.xmedia_webhook.notify_on_scrape,
+        xmedia_webhook_notify_on_inbox: s.xmedia_webhook.notify_on_inbox,
     }
 }
 
@@ -487,37 +455,22 @@ mod tests {
             Ok(root.path.join(rel_path))
         }
 
-        fn atomic_write_bytes(&self, target: &Path, bytes: &[u8]) -> DomainResult<()> {
-            std::fs::write(target, bytes).map_err(|e| DomainError::Storage(e.to_string()))
-        }
-
-        fn cleanup_empty_parent_dirs(&self, _start_dir: &Path, _stop_at_root: &Path) {}
-
         fn find_companion_sidecars(&self, _media_file: &Path) -> Vec<(PathBuf, String)> {
             Vec::new()
         }
 
-        fn is_shared_dir_sidecar_name(&self, _file_name: &str) -> bool {
-            false
-        }
-
-        fn write_image_replacing_opposite_ext(
-            &self,
-            dir: &Path,
-            base_name: &str,
-            ext: &str,
-            bytes: &[u8],
-        ) -> DomainResult<()> {
-            let p = dir.join(format!("{base_name}.{ext}"));
-            std::fs::write(&p, bytes).map_err(|e| DomainError::Storage(e.to_string()))
-        }
+        fn cleanup_empty_parent_dirs(&self, _start_dir: &Path, _stop_at_root: &Path) {}
     }
 
     #[tokio::test]
     async fn concurrent_root_additions_do_not_lose_updates() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = Arc::new(InMemoryConfigRepo::default());
-        let svc = ToolSettingsService::new(repo, Arc::new(StubWorkspaceFs));
+        let svc = ToolSettingsService::new(
+            repo,
+            Arc::new(StubWorkspaceFs),
+            SettingsSandboxPolicy::default(),
+        );
 
         let mut dirs = Vec::new();
         for i in 0..6 {
@@ -534,6 +487,7 @@ mod tests {
                     format!("Root {i}"),
                     dir.to_string_lossy().into_owned(),
                     Some(MediaKind::Book),
+                    false,
                 )
                 .await
                 .unwrap();
@@ -559,33 +513,36 @@ mod tests {
         std::fs::create_dir_all(&outside_dir).unwrap();
 
         let repo = Arc::new(InMemoryConfigRepo::default());
-        let svc = ToolSettingsService::new(repo, Arc::new(StubWorkspaceFs)).with_sandbox_policy(
-            Some(data_dir.clone()),
-            std::slice::from_ref(&cli_root),
-            false,
+        let svc = ToolSettingsService::new(
+            repo,
+            Arc::new(StubWorkspaceFs),
+            SettingsSandboxPolicy {
+                data_dir: Some(data_dir.clone()),
+                cli_roots: vec![cli_root.clone()],
+                roots_locked: false,
+            },
         );
 
-        // Subdirectory inside CLI --root is allowed
         assert!(
             svc.add_root(
                 "Movies".into(),
                 sub_root.to_string_lossy().into_owned(),
                 Some(MediaKind::Video),
+                false,
             )
             .await
             .is_ok()
         );
-        // Directory outside CLI --root is forbidden
         assert!(matches!(
             svc.add_root(
                 "Outside".into(),
                 outside_dir.to_string_lossy().into_owned(),
-                None
+                None,
+                false,
             )
             .await,
             Err(DomainError::Forbidden(_))
         ));
-        // System directories like `/` and `/etc` are always rejected for inbox_path
         assert!(
             svc.update_settings(UpdateSettingsInput {
                 inbox: Some(InboxConfig {

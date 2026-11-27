@@ -6,15 +6,15 @@ use async_trait::async_trait;
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
-use xmedia_formats::comic::{ComicFormatExt, is_comic_image_dir, scan_comic_image_dir};
+use xmedia_formats::comic::{ComicFormatExt, scan_comic_image_dir};
 use xmedia_formats::sniff_image_mime;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::application::ports::{ArtworkIo, MediaInspectorPort, QuickFileSummary};
 use crate::domain::media::{
     ComicFileMeta, ComicMetaPatch, CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload,
 };
-use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::{atomic_write_bytes, atomic_write_via_temp};
 use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
 
@@ -88,7 +88,7 @@ pub(crate) fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
             .then_some(fallback_stem)
     });
 
-    if let Some(fmt) = ComicFormatExt::from_extension(&ext)
+    if let Some(fmt) = ComicFormatExt::from_path(path)
         && !fmt.is_zip_based()
     {
         return Ok(ComicFileMeta {
@@ -245,12 +245,12 @@ impl MediaInspectorPort for CbzComicInspector {
         MediaKind::Comic
     }
 
-    fn supports_extension(&self, ext_lower: &str) -> bool {
-        ComicFormatExt::from_extension(ext_lower).is_some()
-    }
-
-    fn supports_directory(&self, dir_path: &Path) -> bool {
-        is_comic_image_dir(dir_path)
+    fn supports_path(&self, path: &Path) -> bool {
+        if path.is_dir() {
+            scan_comic_image_dir(path).is_some()
+        } else {
+            ComicFormatExt::from_path(path).is_some()
+        }
     }
 
     async fn summarize_file(&self, path: &Path, fallback_stem: &str) -> QuickFileSummary {
@@ -360,16 +360,58 @@ impl MediaInspectorPort for CbzComicInspector {
         Ok(MediaMetadataPayload::Comic(updated))
     }
 
-    async fn read_artwork(
-        &self,
-        path: &Path,
-        slot: Option<&str>,
-    ) -> DomainResult<Option<BinaryPayload>> {
-        let p = path.to_path_buf();
-        let slot_owned = slot.map(str::to_ascii_lowercase);
-        tokio::task::spawn_blocking(move || {
-            if slot_owned.as_deref() == Some("series_cover")
-                && let Some(cov_path) = find_series_cover_path(&p)
+    async fn artwork(&self, path: &Path, op: ArtworkIo<'_>) -> DomainResult<Option<BinaryPayload>> {
+        match op {
+            ArtworkIo::Read { slot } => read_comic_artwork(path, slot).await,
+            ArtworkIo::Write {
+                slot,
+                bytes,
+                mime_type,
+            } => {
+                write_comic_artwork(path, bytes, mime_type, slot).await?;
+                Ok(None)
+            }
+        }
+    }
+}
+
+async fn read_comic_artwork(
+    path: &Path,
+    slot: Option<&str>,
+) -> DomainResult<Option<BinaryPayload>> {
+    let p = path.to_path_buf();
+    let slot_owned = slot.map(str::to_ascii_lowercase);
+    tokio::task::spawn_blocking(move || {
+        if slot_owned.as_deref() == Some("series_cover")
+            && let Some(cov_path) = find_series_cover_path(&p)
+            && let Ok(bytes) = std::fs::read(&cov_path)
+            && !bytes.is_empty()
+        {
+            let mime = sniff_image_mime(&bytes).to_string();
+            return Ok(Some(BinaryPayload {
+                bytes,
+                mime_type: mime,
+            }));
+        }
+
+        if p.is_dir() {
+            let Some(scan) = scan_comic_image_dir(&p) else {
+                return Ok(None);
+            };
+            let Some(cov_path) = scan.cover_path else {
+                return Ok(None);
+            };
+            let bytes = std::fs::read(&cov_path)
+                .map_err(|e| DomainError::Storage(format!("failed reading cover page: {e}")))?;
+            let mime = sniff_image_mime(&bytes).to_string();
+            return Ok(Some(BinaryPayload {
+                bytes,
+                mime_type: mime,
+            }));
+        }
+
+        if ComicFormatExt::from_path(&p).is_some_and(|f| !f.is_zip_based()) {
+            if let Some(cov_path) = find_series_cover_path(&p)
                 && let Ok(bytes) = std::fs::read(&cov_path)
                 && !bytes.is_empty()
             {
@@ -379,125 +421,92 @@ impl MediaInspectorPort for CbzComicInspector {
                     mime_type: mime,
                 }));
             }
-
-            if p.is_dir() {
-                let Some(scan) = scan_comic_image_dir(&p) else {
-                    return Ok(None);
-                };
-                let Some(cov_path) = scan.cover_path else {
-                    return Ok(None);
-                };
-                let bytes = std::fs::read(&cov_path)
-                    .map_err(|e| DomainError::Storage(format!("failed reading cover page: {e}")))?;
-                let mime = sniff_image_mime(&bytes).to_string();
-                return Ok(Some(BinaryPayload {
-                    bytes,
-                    mime_type: mime,
-                }));
-            }
-
-            if ComicFormatExt::from_path(&p).is_some_and(|f| !f.is_zip_based()) {
-                if let Some(cov_path) = find_series_cover_path(&p)
-                    && let Ok(bytes) = std::fs::read(&cov_path)
-                    && !bytes.is_empty()
-                {
-                    let mime = sniff_image_mime(&bytes).to_string();
-                    return Ok(Some(BinaryPayload {
-                        bytes,
-                        mime_type: mime,
-                    }));
-                }
-                return Ok(None);
-            }
-
-            let file = File::open(&p).map_err(|e| {
-                DomainError::Storage(format!("failed opening '{}': {e}", p.display()))
-            })?;
-            let mut archive = ZipArchive::new(BufReader::new(file))
-                .map_err(|e| DomainError::Validation(format!("invalid comic archive: {e}")))?;
-
-            let mut image_names: Vec<String> = Vec::new();
-            for idx in 0..archive.len() {
-                if let Ok(entry) = archive.by_index(idx)
-                    && let Ok(name) = entry.name()
-                    && is_image_entry(&name)
-                {
-                    image_names.push(name.into_owned());
-                }
-            }
-            image_names.sort_by(|a, b| natural_page_entry_cmp(a, b));
-            let Some(first_img) = image_names.first() else {
-                return Ok(None);
-            };
-            let mut entry = archive
-                .by_name(first_img)
-                .map_err(|e| DomainError::Storage(format!("failed reading cover page: {e}")))?;
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| DomainError::Storage(format!("failed reading cover bytes: {e}")))?;
-            let mime = sniff_image_mime(&buf).to_string();
-            Ok(Some(BinaryPayload {
-                bytes: buf,
-                mime_type: mime,
-            }))
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("comic cover read failed: {e}")))?
-    }
-
-    async fn write_artwork(
-        &self,
-        path: &Path,
-        bytes: &[u8],
-        mime_type: &str,
-        slot: &str,
-    ) -> DomainResult<()> {
-        let p = path.to_path_buf();
-        let raw = bytes.to_vec();
-        let detected = if mime_type.trim().is_empty() {
-            sniff_image_mime(&raw)
-        } else {
-            mime_type.trim()
-        };
-        let ext = if detected.contains("png") {
-            "png"
-        } else if detected.contains("webp") {
-            "webp"
-        } else {
-            "jpg"
-        };
-
-        if slot.eq_ignore_ascii_case("series_cover") {
-            let parent = p
-                .parent()
-                .ok_or_else(|| {
-                    DomainError::Validation("comic entry has no parent directory".into())
-                })?
-                .to_path_buf();
-            return tokio::task::spawn_blocking(move || {
-                write_image_replacing_opposite_ext(&parent, "cover", ext, &raw)
-            })
-            .await
-            .map_err(|e| DomainError::Storage(format!("comic series cover write failed: {e}")))?;
+            return Ok(None);
         }
 
-        if p.is_dir() {
-            return tokio::task::spawn_blocking(move || {
-                write_image_replacing_opposite_ext(&p, "000_cover", ext, &raw)
-            })
-            .await
-            .map_err(|e| DomainError::Storage(format!("comic folder cover write failed: {e}")))?;
-        }
+        let file = File::open(&p)
+            .map_err(|e| DomainError::Storage(format!("failed opening '{}': {e}", p.display())))?;
+        let mut archive = ZipArchive::new(BufReader::new(file))
+            .map_err(|e| DomainError::Validation(format!("invalid comic archive: {e}")))?;
 
-        let cover_entry = format!("000_cover.{ext}");
-        tokio::task::spawn_blocking(move || {
-            rewrite_zip_with_replacements(&p, vec![(cover_entry, raw)], |entry_name| {
-                let lower = entry_name.to_ascii_lowercase();
-                lower.starts_with("000_cover.")
-            })
+        let mut image_names: Vec<String> = Vec::new();
+        for idx in 0..archive.len() {
+            if let Ok(entry) = archive.by_index(idx)
+                && let Ok(name) = entry.name()
+                && is_image_entry(&name)
+            {
+                image_names.push(name.into_owned());
+            }
+        }
+        image_names.sort_by(|a, b| natural_page_entry_cmp(a, b));
+        let Some(first_img) = image_names.first() else {
+            return Ok(None);
+        };
+        let mut entry = archive
+            .by_name(first_img)
+            .map_err(|e| DomainError::Storage(format!("failed reading cover page: {e}")))?;
+        let mut buf = Vec::new();
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| DomainError::Storage(format!("failed reading cover bytes: {e}")))?;
+        let mime = sniff_image_mime(&buf).to_string();
+        Ok(Some(BinaryPayload {
+            bytes: buf,
+            mime_type: mime,
+        }))
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("comic cover read failed: {e}")))?
+}
+
+async fn write_comic_artwork(
+    path: &Path,
+    bytes: &[u8],
+    mime_type: &str,
+    slot: &str,
+) -> DomainResult<()> {
+    let p = path.to_path_buf();
+    let raw = bytes.to_vec();
+    let detected = if mime_type.trim().is_empty() {
+        sniff_image_mime(&raw)
+    } else {
+        mime_type.trim()
+    };
+    let ext = if detected.contains("png") {
+        "png"
+    } else if detected.contains("webp") {
+        "webp"
+    } else {
+        "jpg"
+    };
+
+    if slot.eq_ignore_ascii_case("series_cover") {
+        let parent = p
+            .parent()
+            .ok_or_else(|| DomainError::Validation("comic entry has no parent directory".into()))?
+            .to_path_buf();
+        return tokio::task::spawn_blocking(move || {
+            write_image_replacing_opposite_ext(&parent, "cover", ext, &raw)
         })
         .await
-        .map_err(|e| DomainError::Storage(format!("comic cover write failed: {e}")))?
+        .map_err(|e| DomainError::Storage(format!("comic series cover write failed: {e}")))?;
     }
+
+    if p.is_dir() {
+        return tokio::task::spawn_blocking(move || {
+            write_image_replacing_opposite_ext(&p, "000_cover", ext, &raw)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("comic folder cover write failed: {e}")))?;
+    }
+
+    let cover_entry = format!("000_cover.{ext}");
+    tokio::task::spawn_blocking(move || {
+        rewrite_zip_with_replacements(&p, vec![(cover_entry, raw)], |entry_name| {
+            let lower = entry_name.to_ascii_lowercase();
+            lower.starts_with("000_cover.")
+        })
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("comic cover write failed: {e}")))?
 }

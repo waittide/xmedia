@@ -5,12 +5,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::http::ApiResult;
 
-use crate::domain::media::MediaFileDetail;
-use crate::domain::ops::{
-    BatchMusicAlbumSyncInput, BatchMusicAlbumSyncReportDto, CueSplitReportDto,
-    MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
-    ReplayGainReportDto,
+use crate::application::ops::{
+    BatchMusicAlbumSyncInput, CueSplitReportDto, MusicCoverOptimizeReportDto, MusicLyricsToolInput,
+    MusicLyricsToolReportDto, ReplayGainReportDto,
 };
+use crate::application::workbench::{
+    BatchSyncReportDto, BatchSyncSpec, MusicWorkbenchOp, MusicWorkbenchResult,
+};
+use crate::domain::media::MediaFileDetail;
 use crate::domain::workspace::RootId;
 use crate::http::ToolHttpState;
 use crate::http::routes::default_jpeg_quality;
@@ -42,11 +44,21 @@ async fn run_music_lyrics_tool(
     State(state): State<ToolHttpState>,
     Json(req): Json<MusicLyricsToolRequest>,
 ) -> ApiResult<Json<MusicLyricsToolResponse>> {
-    let (report, detail) = state
-        .workbench
-        .run_music_lyrics_tool(RootId(req.root_id), &req.path, req.input)
-        .await?;
-    Ok(Json(MusicLyricsToolResponse { report, detail }))
+    let MusicWorkbenchResult::Lyrics(report, detail) = state
+        .tools
+        .run_music(MusicWorkbenchOp::Lyrics {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            input: req.input,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(MusicLyricsToolResponse {
+        report,
+        detail: *detail,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -73,16 +85,22 @@ async fn optimize_music_cover_route(
     State(state): State<ToolHttpState>,
     Json(req): Json<OptimizeMusicCoverRequest>,
 ) -> ApiResult<Json<OptimizeMusicCoverResponse>> {
-    let (report, detail) = state
-        .workbench
-        .optimize_music_cover(
-            RootId(req.root_id),
-            &req.path,
-            req.max_dimension,
-            req.jpeg_quality,
-        )
-        .await?;
-    Ok(Json(OptimizeMusicCoverResponse { report, detail }))
+    let MusicWorkbenchResult::Cover(report, detail) = state
+        .tools
+        .run_music(MusicWorkbenchOp::OptimizeCover {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            max_dimension: req.max_dimension,
+            jpeg_quality: req.jpeg_quality,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(OptimizeMusicCoverResponse {
+        report,
+        detail: *detail,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -95,10 +113,16 @@ async fn apply_music_replaygain(
     State(state): State<ToolHttpState>,
     Json(req): Json<ReplayGainRequest>,
 ) -> ApiResult<Json<ReplayGainReportDto>> {
-    let report = state
-        .workbench
-        .apply_music_replaygain(RootId(req.root_id), req.paths)
-        .await?;
+    let MusicWorkbenchResult::ReplayGain(report) = state
+        .tools
+        .run_music(MusicWorkbenchOp::ReplayGain {
+            root_id: RootId(req.root_id),
+            paths: req.paths,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(report))
 }
 
@@ -112,10 +136,16 @@ async fn split_music_cue(
     State(state): State<ToolHttpState>,
     Json(req): Json<SplitCueRequest>,
 ) -> ApiResult<Json<CueSplitReportDto>> {
-    let report = state
-        .workbench
-        .split_music_cue(RootId(req.root_id), &req.path)
-        .await?;
+    let MusicWorkbenchResult::CueSplit(report) = state
+        .tools
+        .run_music(MusicWorkbenchOp::SplitCue {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(report))
 }
 
@@ -130,10 +160,14 @@ struct BatchSyncMusicAlbumRequest {
 async fn batch_sync_music_album(
     State(state): State<ToolHttpState>,
     Json(req): Json<BatchSyncMusicAlbumRequest>,
-) -> ApiResult<Json<BatchMusicAlbumSyncReportDto>> {
+) -> ApiResult<Json<BatchSyncReportDto>> {
     let report = state
-        .workbench
-        .batch_sync_music_album(RootId(req.root_id), req.paths, req.input)
+        .metadata
+        .batch_sync(
+            RootId(req.root_id),
+            req.paths,
+            BatchSyncSpec::MusicAlbum(req.input),
+        )
         .await?;
     Ok(Json(report))
 }

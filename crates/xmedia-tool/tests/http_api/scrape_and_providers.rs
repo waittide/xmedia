@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use tempfile::TempDir;
 use xmedia_core::domain::library::MediaKind;
+use xmedia_tool::application::scraping::ApplyScrapeInput;
 use xmedia_tool::application::settings::UpdateSettingsInput;
 use xmedia_tool::domain::config::ProviderConfigOverride;
 use xmedia_tool::domain::media::{
@@ -41,8 +42,8 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
     .unwrap();
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "ch01.cbz",
             MediaMetadataPatch::Comic(ComicMetaPatch {
@@ -55,12 +56,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
         .await
         .unwrap();
     let comic_after = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "ch01.cbz",
-            MediaKind::Comic,
-            ScrapedMetadata {
+            rel_path: "ch01.cbz".into(),
+            media_kind: MediaKind::Comic,
+            scraped: ScrapedMetadata {
                 provider_id: "bangumi".into(),
                 external_id: "321".into(),
                 target: Some(ScrapeTargetKind::Comic),
@@ -68,11 +69,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
                 creators: vec!["藤本树".into()],
                 ..Default::default()
             },
-            false,
-            false,
-            Some(false),
-            false,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: false,
+            organize_by_template: Some(false),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     if let MediaMetadataPayload::Comic(c) = comic_after.metadata {
@@ -84,8 +86,8 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
         panic!("expected comic payload");
     }
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "track01.wav",
             MediaMetadataPatch::Music(MusicMetaPatch {
@@ -99,12 +101,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
         .await
         .unwrap();
     let music_after_album = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "track01.wav",
-            MediaKind::Music,
-            ScrapedMetadata {
+            rel_path: "track01.wav".into(),
+            media_kind: MediaKind::Music,
+            scraped: ScrapedMetadata {
                 provider_id: "itunes".into(),
                 external_id: "alb-1".into(),
                 target: Some(ScrapeTargetKind::MusicAlbum),
@@ -115,11 +117,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
                 genres: vec!["Mandopop".into()],
                 ..Default::default()
             },
-            false,
-            true,
-            Some(false),
-            false,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: true,
+            organize_by_template: Some(false),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     if let MediaMetadataPayload::Music(m) = music_after_album.metadata {
@@ -133,12 +136,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
         panic!("expected music payload");
     }
 
-    app.scraping
-        .apply_to_file(
+    app.scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "track01.wav",
-            MediaKind::Music,
-            ScrapedMetadata {
+            rel_path: "track01.wav".into(),
+            media_kind: MediaKind::Music,
+            scraped: ScrapedMetadata {
                 provider_id: "lrclib".into(),
                 external_id: "lrc-1".into(),
                 target: Some(ScrapeTargetKind::Lyrics),
@@ -147,22 +150,23 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
                 synced_lyrics: Some("纯文本无时间戳歌词".into()),
                 ..Default::default()
             },
-            false,
-            true,
-            Some(false),
-            false,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: true,
+            organize_by_template: Some(false),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     assert!(!root.join("track01.lrc").exists());
 
     let music_after_lrc = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "track01.wav",
-            MediaKind::Music,
-            ScrapedMetadata {
+            rel_path: "track01.wav".into(),
+            media_kind: MediaKind::Music,
+            scraped: ScrapedMetadata {
                 provider_id: "lrclib".into(),
                 external_id: "lrc-2".into(),
                 target: Some(ScrapeTargetKind::Lyrics),
@@ -170,11 +174,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
                 synced_lyrics: Some("[00:12.34]故事的小黄花".into()),
                 ..Default::default()
             },
-            false,
-            true,
-            Some(false),
-            false,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: true,
+            organize_by_template: Some(false),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     assert!(root.join("track01.lrc").is_file());
@@ -185,8 +190,8 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
         panic!("expected music payload");
     }
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "book.epub",
             MediaMetadataPatch::Book(BookMetaPatch {
@@ -197,12 +202,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
         .await
         .unwrap();
     let book_after = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "book.epub",
-            MediaKind::Book,
-            ScrapedMetadata {
+            rel_path: "book.epub".into(),
+            media_kind: MediaKind::Book,
+            scraped: ScrapedMetadata {
                 provider_id: "openlibrary".into(),
                 external_id: "OL1".into(),
                 target: Some(ScrapeTargetKind::Book),
@@ -213,11 +218,12 @@ async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard
                 isbn: Some("9780134494166".into()),
                 ..Default::default()
             },
-            false,
-            false,
-            Some(false),
-            true,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: false,
+            organize_by_template: Some(false),
+            only_fill_missing: true,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     if let MediaMetadataPayload::Book(b) = book_after.metadata {
@@ -251,16 +257,16 @@ async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
     })
     .await
     .unwrap();
-    app.scraping.set_allow_private_artwork_ips(true);
+    app.scrape_apply.set_allow_private_artwork_ips(true);
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let vid = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "inbox/movie_raw.mkv",
-            MediaKind::Video,
-            ScrapedMetadata {
+            rel_path: "inbox/movie_raw.mkv".into(),
+            media_kind: MediaKind::Video,
+            scraped: ScrapedMetadata {
                 provider_id: "tmdb".into(),
                 external_id: "99".into(),
                 target: Some(ScrapeTargetKind::Movie),
@@ -270,11 +276,12 @@ async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
                 backdrop_url: Some(format!("http://{addr}/f.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            Some(false),
-            false,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: Some(false),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     assert_eq!(vid.entry.rel_path, "inbox/movie_raw.mkv");
@@ -284,12 +291,12 @@ async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
     assert!(inbox.join("movie_raw-fanart.png").is_file());
 
     let book = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "inbox/book_raw.epub",
-            MediaKind::Book,
-            ScrapedMetadata {
+            rel_path: "inbox/book_raw.epub".into(),
+            media_kind: MediaKind::Book,
+            scraped: ScrapedMetadata {
                 provider_id: "openlibrary".into(),
                 external_id: "OL2".into(),
                 target: Some(ScrapeTargetKind::Book),
@@ -297,11 +304,12 @@ async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
                 creators: vec!["Robert Martin".into()],
                 ..Default::default()
             },
-            false,
-            false,
-            Some(true),
-            false,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: false,
+            organize_by_template: Some(true),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -313,7 +321,7 @@ async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
         root.join("Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub")
             .is_file()
     );
-    let history = app.workbench.list_metadata_history(Some(root_id)).await;
+    let history = app.metadata.list_history(Some(root_id)).await;
     let book_batch = history
         .iter()
         .find(|b| b.media_kind == MediaKind::Book)
@@ -322,16 +330,12 @@ async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
         book_batch.records[0].rel_path,
         "Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub"
     );
-    let undo_rep = app
-        .workbench
-        .undo_metadata_batch(book_batch.batch_id)
-        .await
-        .unwrap();
+    let undo_rep = app.metadata.undo_batch(book_batch.batch_id).await.unwrap();
     assert_eq!(undo_rep.restored_count, 1);
     assert!(undo_rep.failed_paths.is_empty());
     let restored_book = app
-        .workbench
-        .inspect_file(
+        .workspace
+        .inspect(
             root_id,
             "Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub",
             Some(MediaKind::Book),
@@ -423,7 +427,7 @@ async fn per_provider_switch_and_overrides_work_independently() {
     .await
     .unwrap();
 
-    let initial = app.scraping.list_providers(None, None).await.unwrap();
+    let initial = app.scrapers.list_providers(None, None).await.unwrap();
     let douban = initial
         .iter()
         .find(|p| p.descriptor.id == "douban")
@@ -471,7 +475,7 @@ async fn per_provider_switch_and_overrides_work_independently() {
         Some(45)
     );
 
-    let updated = app.scraping.list_providers(None, None).await.unwrap();
+    let updated = app.scrapers.list_providers(None, None).await.unwrap();
     let douban2 = updated
         .iter()
         .find(|p| p.descriptor.id == "douban")
@@ -498,7 +502,7 @@ async fn per_provider_switch_and_overrides_work_independently() {
     assert_eq!(raw.locale_for_provider("bangumi", "zh-CN"), "zh-CN");
 
     let err = app
-        .scraping
+        .scrapers
         .fetch_detail("douban", "12345", ScrapeTargetKind::Book, None)
         .await
         .unwrap_err();

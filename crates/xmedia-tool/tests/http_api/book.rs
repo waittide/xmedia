@@ -2,6 +2,9 @@ use std::io::{Read, Write};
 
 use tempfile::TempDir;
 use xmedia_core::domain::library::MediaKind;
+use xmedia_tool::application::ports::ArtworkIo;
+use xmedia_tool::application::scraping::ApplyScrapeInput;
+use xmedia_tool::application::workbench::{PreviewRenameOptions, WorkspaceArtworkOutput};
 use xmedia_tool::domain::media::{BookMetaPatch, MediaMetadataPatch, MediaMetadataPayload};
 use xmedia_tool::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
 use xmedia_tool::infra::atomic_fs::find_companion_sidecars;
@@ -104,8 +107,8 @@ async fn epub_preserves_rendition_uid_and_updates_cover_manifest_media_type() {
     .unwrap();
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "fixed.epub",
             MediaMetadataPatch::Book(BookMetaPatch {
@@ -118,14 +121,16 @@ async fn epub_preserves_rendition_uid_and_updates_cover_manifest_media_type() {
         .unwrap();
 
     let fake_jpg = [0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
-    app.workbench
-        .write_artwork(
+    app.workspace
+        .artwork(
             root_id,
             "fixed.epub",
-            &fake_jpg,
-            "image/jpeg",
-            "cover",
             Some(MediaKind::Book),
+            ArtworkIo::Write {
+                slot: "cover",
+                bytes: &fake_jpg,
+                mime_type: "image/jpeg",
+            },
         )
         .await
         .unwrap();
@@ -188,8 +193,8 @@ async fn txt_and_pdf_sidecar_opf_cover_and_rename_roundtrip() {
 
     for file in ["draft_novel.txt", "guide.pdf"] {
         let detail = app
-            .workbench
-            .write_metadata(
+            .metadata
+            .write(
                 root_id,
                 file,
                 MediaMetadataPatch::Book(BookMetaPatch {
@@ -206,24 +211,31 @@ async fn txt_and_pdf_sidecar_opf_cover_and_rename_roundtrip() {
             MediaMetadataPayload::Book(b) => assert!(b.writable),
             _ => panic!("expected book payload"),
         }
-        app.workbench
-            .write_artwork(
+        app.workspace
+            .artwork(
                 root_id,
                 file,
-                TINY_PNG,
-                "image/png",
-                "cover",
                 Some(MediaKind::Book),
+                ArtworkIo::Write {
+                    slot: "cover",
+                    bytes: TINY_PNG,
+                    mime_type: "image/png",
+                },
             )
             .await
             .unwrap();
-        assert!(
-            app.workbench
-                .read_artwork(root_id, file, Some(MediaKind::Book), None)
+        assert!(matches!(
+            app.workspace
+                .artwork(
+                    root_id,
+                    file,
+                    Some(MediaKind::Book),
+                    ArtworkIo::Read { slot: None },
+                )
                 .await
-                .unwrap()
-                .is_some()
-        );
+                .unwrap(),
+            WorkspaceArtworkOutput::Read(Some(_))
+        ));
     }
     assert!(root.join("draft_novel.opf").is_file());
     assert!(root.join("draft_novel.png").is_file());
@@ -231,18 +243,21 @@ async fn txt_and_pdf_sidecar_opf_cover_and_rename_roundtrip() {
     assert!(root.join("guide.png").is_file());
 
     let plans = app
-        .workbench
-        .preview_rename(
+        .rename
+        .preview(
             root_id,
             &["draft_novel.txt".to_string()],
-            Some("{author}/{title}"),
+            PreviewRenameOptions {
+                template_override: Some("{author}/{title}"),
+                preferred_kind: Some(MediaKind::Book),
+                ..Default::default()
+            },
             None,
-            Some(MediaKind::Book),
         )
         .await
         .unwrap();
     assert_eq!(plans[0].to_rel_path, "Alice/Title draft_novel.txt.txt");
-    app.workbench.execute_rename(root_id, &plans).await.unwrap();
+    app.rename.execute(root_id, &plans, None).await.unwrap();
     assert!(root.join("Alice/Title draft_novel.txt.opf").is_file());
     assert!(root.join("Alice/Title draft_novel.txt.png").is_file());
 }
@@ -272,12 +287,12 @@ async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() 
     })
     .await
     .unwrap();
-    app.scraping.set_allow_private_artwork_ips(true);
+    app.scrape_apply.set_allow_private_artwork_ips(true);
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let epub_patched = app
-        .workbench
-        .write_metadata(
+        .metadata
+        .write(
             root_id,
             "inbox/index_nt1.epub",
             MediaMetadataPatch::Book(BookMetaPatch {
@@ -301,13 +316,15 @@ async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() 
     }
 
     let epub_plans = app
-        .workbench
-        .preview_rename(
+        .rename
+        .preview(
             root_id,
             &["inbox/index_nt1.epub".to_string()],
+            PreviewRenameOptions {
+                preferred_kind: Some(MediaKind::Book),
+                ..Default::default()
+            },
             None,
-            None,
-            Some(MediaKind::Book),
         )
         .await
         .unwrap();
@@ -315,18 +332,18 @@ async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() 
         epub_plans[0].to_rel_path,
         "镰池和马/魔法禁书目录/新约/Vol.01 新约 魔法禁书目录 (2011)/新约 魔法禁书目录 - 镰池和马.epub"
     );
-    app.workbench
-        .execute_rename(root_id, &epub_plans)
+    app.rename
+        .execute(root_id, &epub_plans, None)
         .await
         .unwrap();
 
     let txt_detail = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "inbox/dark_forest.txt",
-            MediaKind::Book,
-            ScrapedMetadata {
+            rel_path: "inbox/dark_forest.txt".into(),
+            media_kind: MediaKind::Book,
+            scraped: ScrapedMetadata {
                 provider_id: "openlibrary".into(),
                 external_id: "ol-df".into(),
                 target: Some(ScrapeTargetKind::Book),
@@ -338,11 +355,12 @@ async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() 
                 cover_url: Some(format!("http://{addr}/df.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            None,
-            false,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: None,
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
 
@@ -363,8 +381,8 @@ async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() 
     }
 
     let cur_rel = txt_detail.entry.rel_path.clone();
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             &cur_rel,
             MediaMetadataPatch::Book(BookMetaPatch {
@@ -376,12 +394,12 @@ async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() 
         .unwrap();
 
     let rescraped = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            &cur_rel,
-            MediaKind::Book,
-            ScrapedMetadata {
+            rel_path: cur_rel,
+            media_kind: MediaKind::Book,
+            scraped: ScrapedMetadata {
                 provider_id: "douban".into(),
                 external_id: "db-df".into(),
                 target: Some(ScrapeTargetKind::Book),
@@ -392,11 +410,12 @@ async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() 
                 publisher_or_studio: Some("重庆出版社".into()),
                 ..Default::default()
             },
-            false,
-            false,
-            Some(false),
-            false,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: false,
+            organize_by_template: Some(false),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
 

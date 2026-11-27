@@ -17,10 +17,10 @@ use super::nfo::{
     render_season_nfo_xml_preserving, render_tvshow_nfo_xml_preserving,
     render_video_nfo_xml_preserving,
 };
+use crate::application::ports::{ArtworkIo, MediaInspectorPort, QuickFileSummary};
 use crate::domain::media::{
     CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload, VideoFileMeta, VideoMetaPatch,
 };
-use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::atomic_write_bytes;
 
 pub struct VideoNfoInspector {
@@ -39,8 +39,13 @@ impl MediaInspectorPort for VideoNfoInspector {
         MediaKind::Video
     }
 
-    fn supports_extension(&self, ext_lower: &str) -> bool {
-        VIDEO_EXTENSIONS.contains(&ext_lower)
+    fn supports_path(&self, path: &Path) -> bool {
+        !path.is_dir()
+            && path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .is_some_and(|ext| VIDEO_EXTENSIONS.contains(&ext.as_str()))
     }
 
     async fn summarize_file(&self, path: &Path, fallback_stem: &str) -> QuickFileSummary {
@@ -225,115 +230,123 @@ impl MediaInspectorPort for VideoNfoInspector {
         self.inspect_file(path).await
     }
 
-    async fn read_artwork(
-        &self,
-        path: &Path,
-        slot: Option<&str>,
-    ) -> DomainResult<Option<BinaryPayload>> {
-        let p = path.to_path_buf();
-        let slot_owned = slot.map(|s| s.trim().to_ascii_lowercase());
-        tokio::task::spawn_blocking(move || {
-            let resolved = match slot_owned.as_deref() {
-                Some("fanart") | Some("backdrop") => find_fanart_path(&p),
-                Some("thumb") => find_thumb_path(&p),
-                Some("clearlogo") | Some("logo") => find_clearlogo_path(&p),
-                Some("poster") | Some("cover") => find_poster_path(&p),
-                _ => find_poster_path(&p)
-                    .or_else(|| find_fanart_path(&p))
-                    .or_else(|| find_thumb_path(&p)),
-            };
-            let Some(img_path) = resolved else {
-                return Ok(None);
-            };
-            let raw = std::fs::read(&img_path)
-                .map_err(|e| DomainError::Storage(format!("failed reading poster: {e}")))?;
-            let mime = sniff_image_mime(&raw).to_string();
-            Ok(Some(BinaryPayload {
-                bytes: raw,
-                mime_type: mime,
-            }))
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("video poster read failed: {e}")))?
+    async fn artwork(&self, path: &Path, op: ArtworkIo<'_>) -> DomainResult<Option<BinaryPayload>> {
+        match op {
+            ArtworkIo::Read { slot } => read_video_artwork(path, slot).await,
+            ArtworkIo::Write {
+                slot,
+                bytes,
+                mime_type,
+            } => {
+                write_video_artwork(path, bytes, mime_type, slot).await?;
+                Ok(None)
+            }
+        }
     }
+}
 
-    async fn write_artwork(
-        &self,
-        path: &Path,
-        bytes: &[u8],
-        mime_type: &str,
-        slot: &str,
-    ) -> DomainResult<()> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| DomainError::Validation("video file has no parent folder".into()))?
-            .to_path_buf();
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("video")
-            .to_string();
-        let sniffed = sniff_image_mime(bytes);
-        let detected = if sniffed != "image/jpeg" {
-            sniffed
-        } else if !mime_type.trim().is_empty() {
-            mime_type.trim()
-        } else {
-            sniffed
+async fn read_video_artwork(
+    path: &Path,
+    slot: Option<&str>,
+) -> DomainResult<Option<BinaryPayload>> {
+    let p = path.to_path_buf();
+    let slot_owned = slot.map(|s| s.trim().to_ascii_lowercase());
+    tokio::task::spawn_blocking(move || {
+        let resolved = match slot_owned.as_deref() {
+            Some("fanart") | Some("backdrop") => find_fanart_path(&p),
+            Some("thumb") => find_thumb_path(&p),
+            Some("clearlogo") | Some("logo") => find_clearlogo_path(&p),
+            Some("poster") | Some("cover") => find_poster_path(&p),
+            _ => find_poster_path(&p)
+                .or_else(|| find_fanart_path(&p))
+                .or_else(|| find_thumb_path(&p)),
         };
-        let ext = if detected.contains("png") {
-            "png"
-        } else if detected.contains("webp") {
-            "webp"
-        } else {
-            "jpg"
+        let Some(img_path) = resolved else {
+            return Ok(None);
         };
-        let is_jellyfin_movie_dir =
-            parent.join("movie.nfo").is_file() && dir_has_single_video(&parent);
-        let is_jellyfin_season = is_season_dir(&parent) || parent.join("season.nfo").is_file();
-        let is_jellyfin_show = parent.join("tvshow.nfo").is_file();
-        let use_dir_artwork = is_jellyfin_movie_dir || is_jellyfin_season || is_jellyfin_show;
+        let raw = std::fs::read(&img_path)
+            .map_err(|e| DomainError::Storage(format!("failed reading poster: {e}")))?;
+        let mime = sniff_image_mime(&raw).to_string();
+        Ok(Some(BinaryPayload {
+            bytes: raw,
+            mime_type: mime,
+        }))
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("video poster read failed: {e}")))?
+}
 
-        let is_thumb = slot.eq_ignore_ascii_case("thumb");
-        let is_clearlogo =
-            slot.eq_ignore_ascii_case("clearlogo") || slot.eq_ignore_ascii_case("logo");
-        let is_fanart =
-            slot.eq_ignore_ascii_case("fanart") || slot.eq_ignore_ascii_case("backdrop");
-        let stem_base = if is_thumb {
-            format!("{stem}-thumb")
-        } else if is_clearlogo {
-            if use_dir_artwork {
-                "clearlogo".to_string()
-            } else {
-                format!("{stem}-clearlogo")
-            }
-        } else if is_fanart {
-            if use_dir_artwork {
-                "fanart".to_string()
-            } else {
-                format!("{stem}-fanart")
-            }
-        } else if use_dir_artwork {
-            "poster".to_string()
-        } else {
-            format!("{stem}-poster")
-        };
-        let raw = bytes.to_vec();
+async fn write_video_artwork(
+    path: &Path,
+    bytes: &[u8],
+    mime_type: &str,
+    slot: &str,
+) -> DomainResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| DomainError::Validation("video file has no parent folder".into()))?
+        .to_path_buf();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("video")
+        .to_string();
+    let sniffed = sniff_image_mime(bytes);
+    let detected = if sniffed != "image/jpeg" {
+        sniffed
+    } else if !mime_type.trim().is_empty() {
+        mime_type.trim()
+    } else {
+        sniffed
+    };
+    let ext = if detected.contains("png") {
+        "png"
+    } else if detected.contains("webp") {
+        "webp"
+    } else {
+        "jpg"
+    };
+    let is_jellyfin_movie_dir = parent.join("movie.nfo").is_file() && dir_has_single_video(&parent);
+    let is_jellyfin_season = is_season_dir(&parent) || parent.join("season.nfo").is_file();
+    let is_jellyfin_show = parent.join("tvshow.nfo").is_file();
+    let use_dir_artwork = is_jellyfin_movie_dir || is_jellyfin_season || is_jellyfin_show;
 
-        tokio::task::spawn_blocking(move || -> DomainResult<()> {
-            write_image_replacing_opposite_ext(&parent, &stem_base, ext, &raw)?;
-            // If inside `Season XX/` and parent show directory has `tvshow.nfo`, also keep series poster/fanart present
-            if !is_thumb
-                && is_jellyfin_season
-                && let Some(show_dir) = parent.parent()
-                && show_dir.join("tvshow.nfo").is_file()
-            {
-                write_image_replacing_opposite_ext(show_dir, &stem_base, ext, &raw)?;
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("video artwork write failed: {e}")))??;
+    let is_thumb = slot.eq_ignore_ascii_case("thumb");
+    let is_clearlogo = slot.eq_ignore_ascii_case("clearlogo") || slot.eq_ignore_ascii_case("logo");
+    let is_fanart = slot.eq_ignore_ascii_case("fanart") || slot.eq_ignore_ascii_case("backdrop");
+    let stem_base = if is_thumb {
+        format!("{stem}-thumb")
+    } else if is_clearlogo {
+        if use_dir_artwork {
+            "clearlogo".to_string()
+        } else {
+            format!("{stem}-clearlogo")
+        }
+    } else if is_fanart {
+        if use_dir_artwork {
+            "fanart".to_string()
+        } else {
+            format!("{stem}-fanart")
+        }
+    } else if use_dir_artwork {
+        "poster".to_string()
+    } else {
+        format!("{stem}-poster")
+    };
+    let raw = bytes.to_vec();
+
+    tokio::task::spawn_blocking(move || -> DomainResult<()> {
+        write_image_replacing_opposite_ext(&parent, &stem_base, ext, &raw)?;
+        if !is_thumb
+            && is_jellyfin_season
+            && let Some(show_dir) = parent.parent()
+            && show_dir.join("tvshow.nfo").is_file()
+        {
+            write_image_replacing_opposite_ext(show_dir, &stem_base, ext, &raw)?;
+        }
         Ok(())
-    }
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("video artwork write failed: {e}")))??;
+    Ok(())
 }

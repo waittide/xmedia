@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,6 +11,7 @@ pub const DEFAULT_TOOL_SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 3600
 const DEFAULT_UNLOCK_RATE_WINDOW: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_FAILED_UNLOCKS: usize = 5;
 const MAX_ACTIVE_SESSIONS: usize = 256;
+const MAX_TRACKED_UNLOCK_IPS: usize = 1024;
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let max_len = a.len().max(b.len());
@@ -57,7 +59,7 @@ struct PasswordVerifier {
 #[derive(Default)]
 struct AuthState {
     sessions: HashMap<[u8; 32], Instant>,
-    failed_unlocks: VecDeque<Instant>,
+    failed_unlocks: HashMap<Option<IpAddr>, VecDeque<Instant>>,
 }
 
 impl AuthState {
@@ -66,13 +68,16 @@ impl AuthState {
     }
 
     fn prune_unlock_window(&mut self, now: Instant, window: Duration) {
-        while let Some(&front) = self.failed_unlocks.front() {
-            if now.saturating_duration_since(front) >= window {
-                self.failed_unlocks.pop_front();
-            } else {
-                break;
+        self.failed_unlocks.retain(|_, attempts| {
+            while let Some(&front) = attempts.front() {
+                if now.saturating_duration_since(front) >= window {
+                    attempts.pop_front();
+                } else {
+                    break;
+                }
             }
-        }
+            !attempts.is_empty()
+        });
     }
 }
 
@@ -95,7 +100,7 @@ impl ToolAuthService {
         )
     }
 
-    pub fn with_options(
+    fn with_options(
         password: Option<String>,
         session_ttl: Duration,
         unlock_window: Duration,
@@ -126,25 +131,50 @@ impl ToolAuthService {
         self.verifier.is_some()
     }
 
-    pub fn unlock(&self, password: &str) -> DomainResult<String> {
+    #[cfg(test)]
+    fn unlock(&self, password: &str) -> DomainResult<String> {
+        self.unlock_with_ip(password, None)
+    }
+
+    pub fn unlock_with_ip(
+        &self,
+        password: &str,
+        client_ip: Option<IpAddr>,
+    ) -> DomainResult<String> {
         let Some(ref verifier) = self.verifier else {
             return Ok("open-mode".to_string());
         };
         let now = Instant::now();
+        let ip_key = client_ip.map(|ip| ip.to_canonical());
         let candidate = salted_password_digest(&verifier.salt, password.trim());
 
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.prune_unlock_window(now, self.unlock_window);
-        if guard.failed_unlocks.len() >= self.max_failed_unlocks {
+        if guard
+            .failed_unlocks
+            .get(&ip_key)
+            .is_some_and(|q| q.len() >= self.max_failed_unlocks)
+        {
             return Err(DomainError::TooManyRequests(
                 "too many failed unlock attempts; please wait before retrying".into(),
             ));
         }
 
         if !constant_time_eq(&candidate, &verifier.digest) {
-            guard.failed_unlocks.push_back(now);
+            if guard.failed_unlocks.len() >= MAX_TRACKED_UNLOCK_IPS
+                && !guard.failed_unlocks.contains_key(&ip_key)
+            {
+                guard.failed_unlocks.clear();
+            }
+            guard
+                .failed_unlocks
+                .entry(ip_key)
+                .or_default()
+                .push_back(now);
             return Err(DomainError::Unauthorized("invalid access password".into()));
         }
+
+        guard.failed_unlocks.remove(&ip_key);
 
         guard.prune_expired_sessions(now);
         if guard.sessions.len() >= MAX_ACTIVE_SESSIONS
@@ -185,7 +215,8 @@ impl ToolAuthService {
         }
     }
 
-    pub fn lock(&self, provided: Option<&str>) {
+    #[cfg(test)]
+    fn lock(&self, provided: Option<&str>) {
         self.lock_tokens(provided);
     }
 
@@ -272,5 +303,25 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(70));
         assert!(auth.unlock("secret-pass").is_ok());
+    }
+
+    #[test]
+    fn unlock_rate_limiting_is_isolated_per_client_ip() {
+        let auth = ToolAuthService::with_options(
+            Some("secret-pass".into()),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            2,
+        );
+        let ip_a: IpAddr = "192.168.1.10".parse().unwrap();
+        let ip_b: IpAddr = "192.168.1.20".parse().unwrap();
+
+        assert!(auth.unlock_with_ip("wrong", Some(ip_a)).is_err());
+        assert!(auth.unlock_with_ip("wrong", Some(ip_a)).is_err());
+        assert!(matches!(
+            auth.unlock_with_ip("secret-pass", Some(ip_a)),
+            Err(DomainError::TooManyRequests(_))
+        ));
+        assert!(auth.unlock_with_ip("secret-pass", Some(ip_b)).is_ok());
     }
 }

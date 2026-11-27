@@ -1,16 +1,11 @@
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::Path;
-
 use xmedia_formats::book::BookFormatExt;
 use xmedia_formats::book::opf::parse_opf_xml;
 use xmedia_formats::comic::ComicReadingDirection;
+pub(crate) use xmedia_formats::comic::comicinfo::extract_existing_comic_info_bytes;
 use xmedia_formats::comic::comicinfo::{
     ComicInfoMeta, parse_comic_info_xml,
     render_comic_info_xml_preserving as fmt_render_comic_info_xml_preserving,
 };
-use xmedia_formats::comic::scan_comic_image_dir;
-use zip::ZipArchive;
 
 use crate::domain::media::ComicFileMeta;
 
@@ -127,7 +122,7 @@ pub(super) fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) 
         meta.language_iso = parsed.language_iso;
     }
     if let Some(dir) = parsed.reading_direction {
-        meta.reading_direction = dir.as_str().to_string();
+        meta.reading_direction = dir.to_string();
     }
 }
 
@@ -162,33 +157,6 @@ fn file_meta_to_comic_info(meta: &ComicFileMeta) -> ComicInfoMeta {
         reading_direction,
         ..Default::default()
     }
-}
-
-pub(crate) fn extract_existing_comic_info_bytes(path: &Path) -> Option<Vec<u8>> {
-    if path.is_dir() {
-        let ci_path = scan_comic_image_dir(path)
-            .and_then(|s| s.comic_info_path)
-            .unwrap_or_else(|| path.join("ComicInfo.xml"));
-        return std::fs::read(ci_path).ok();
-    }
-    let file = File::open(path).ok()?;
-    let mut archive = ZipArchive::new(BufReader::new(file)).ok()?;
-    for idx in 0..archive.len() {
-        let Ok(mut entry) = archive.by_index(idx) else {
-            continue;
-        };
-        let Ok(name) = entry.name() else {
-            continue;
-        };
-        let lower = name.to_ascii_lowercase();
-        if lower == "comicinfo.xml" || lower.ends_with("/comicinfo.xml") {
-            let mut buf = Vec::new();
-            if entry.read_to_end(&mut buf).is_ok() {
-                return Some(buf);
-            }
-        }
-    }
-    None
 }
 
 pub(crate) fn render_comic_info_xml_preserving(

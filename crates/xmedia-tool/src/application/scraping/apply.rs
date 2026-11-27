@@ -5,28 +5,17 @@ use tracing::warn;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::MediaKind;
 
-use super::ScrapingOrchestratorService;
 use super::mapping::{existing_artwork_present, map_scraped_to_patch};
+use super::{ApplyScrapeInput, ScrapeApplyService};
+use crate::application::ops::{BookToolCommand, ToolboxCommand};
+use crate::application::workbench::PreviewRenameOptions;
 use crate::domain::media::{MediaFileDetail, MediaMetadataPayload};
-use crate::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
-use crate::domain::workspace::RootId;
+use crate::domain::scraper::ScrapeTargetKind;
+use crate::domain::workspace::is_dedicated_subfolder_for;
 
-impl ScrapingOrchestratorService {
-    /// Applies `ScrapedMetadata` directly onto a target media file (atomically writing tags/OPF/ComicInfo/NFO,
-    /// lyrics, downloading artwork, and optionally organizing into templates / Jellyfin folder layout).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn apply_to_file(
-        &self,
-        root_id: RootId,
-        rel_path: &str,
-        media_kind: MediaKind,
-        scraped: ScrapedMetadata,
-        apply_cover: bool,
-        write_sidecar_lrc: bool,
-        organize_by_template: Option<bool>,
-        only_fill_missing: bool,
-    ) -> DomainResult<MediaFileDetail> {
-        self.apply_to_file_ext(
+impl ScrapeApplyService {
+    pub async fn apply(&self, input: ApplyScrapeInput) -> DomainResult<MediaFileDetail> {
+        let ApplyScrapeInput {
             root_id,
             rel_path,
             media_kind,
@@ -35,31 +24,16 @@ impl ScrapingOrchestratorService {
             write_sidecar_lrc,
             organize_by_template,
             only_fill_missing,
-            false,
-        )
-        .await
-    }
+            write_album_cover,
+        } = input;
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn apply_to_file_ext(
-        &self,
-        root_id: RootId,
-        rel_path: &str,
-        media_kind: MediaKind,
-        scraped: ScrapedMetadata,
-        apply_cover: bool,
-        write_sidecar_lrc: bool,
-        organize_by_template: Option<bool>,
-        only_fill_missing: bool,
-        write_album_cover: bool,
-    ) -> DomainResult<MediaFileDetail> {
         let should_organize = organize_by_template.unwrap_or(true);
 
         if media_kind == MediaKind::Video && should_organize {
             return self
                 .apply_video_jellyfin_archive(
                     root_id,
-                    rel_path,
+                    &rel_path,
                     scraped,
                     apply_cover,
                     only_fill_missing,
@@ -74,8 +48,8 @@ impl ScrapingOrchestratorService {
                 && scraped.target == Some(ScrapeTargetKind::MusicAlbum));
         let existing_detail = if need_existing {
             Some(
-                self.workbench
-                    .inspect_file(root_id, rel_path, Some(media_kind))
+                self.workspace
+                    .inspect(root_id, &rel_path, Some(media_kind))
                     .await?,
             )
         } else {
@@ -94,7 +68,7 @@ impl ScrapingOrchestratorService {
         );
         let mut effective_apply_cover = apply_cover;
         if let Some(ref cur) = existing_detail {
-            let fallback_stem = Path::new(rel_path)
+            let fallback_stem = Path::new(&rel_path)
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
@@ -107,17 +81,14 @@ impl ScrapingOrchestratorService {
             );
         }
 
-        let mut detail = self
-            .workbench
-            .write_metadata(root_id, rel_path, patch)
-            .await?;
+        let mut detail = self.metadata.write(root_id, &rel_path, patch).await?;
 
         let defer_non_epub_book_cover = media_kind == MediaKind::Book
             && should_organize
             && !detail.entry.extension.eq_ignore_ascii_case("epub");
         let mut cached_cover_download: Option<(Vec<u8>, String)> = None;
         if effective_apply_cover && media_kind != MediaKind::Comic && !defer_non_epub_book_cover {
-            let creds = self.settings.get_credentials().await?;
+            let creds = self.settings.get_raw().await?.credentials;
 
             if media_kind == MediaKind::Video {
                 let (has_poster, has_fanart, has_thumb) = match existing_detail
@@ -144,14 +115,13 @@ impl ScrapingOrchestratorService {
                         {
                             Ok((bytes, mime)) => {
                                 detail = self
-                                    .workbench
-                                    .write_artwork(
+                                    .write_file_artwork(
                                         root_id,
-                                        rel_path,
+                                        &rel_path,
+                                        Some(media_kind),
+                                        slot,
                                         &bytes,
                                         &mime,
-                                        slot,
-                                        Some(media_kind),
                                     )
                                     .await?;
                             }
@@ -178,14 +148,13 @@ impl ScrapingOrchestratorService {
                             Ok((bytes, mime)) => {
                                 if need_embedded {
                                     detail = self
-                                        .workbench
-                                        .write_artwork(
+                                        .write_file_artwork(
                                             root_id,
-                                            rel_path,
+                                            &rel_path,
+                                            Some(media_kind),
+                                            "cover",
                                             &bytes,
                                             &mime,
-                                            "cover",
-                                            Some(media_kind),
                                         )
                                         .await?;
                                 }
@@ -202,59 +171,44 @@ impl ScrapingOrchestratorService {
 
         if should_organize {
             let plans = self
-                .workbench
-                .preview_rename(
+                .rename
+                .preview(
                     root_id,
-                    &[detail.entry.rel_path.clone()],
+                    std::slice::from_ref(&detail.entry.rel_path),
+                    PreviewRenameOptions {
+                        preferred_kind: Some(media_kind),
+                        ..Default::default()
+                    },
                     None,
-                    None,
-                    Some(media_kind),
                 )
                 .await?;
             if let Some(plan) = plans.first()
                 && !plan.unchanged
                 && plan.conflict.is_none()
             {
-                self.workbench.execute_rename(root_id, &plans).await?;
+                self.rename.execute(root_id, &plans, None).await?;
                 if media_kind == MediaKind::Book
                     && !detail.entry.extension.eq_ignore_ascii_case("epub")
-                    && let Ok(root) = self.settings.find_root(root_id).await
-                    && let Ok(dst_sb) = self
-                        .workbench
-                        .fs()
-                        .resolve_existing_in_root(&root, &plan.to_rel_path)
+                    && let Ok(settings) = self.settings.get_raw().await
+                    && let Ok(root) = settings.find_root(root_id)
+                    && let Ok(dst_sb) = self.fs.resolve_existing_in_root(root, &plan.to_rel_path)
                 {
                     let root_path = root.path.clone();
-                    let dst_abs = dst_sb.abs_path.clone();
-                    let toolbox = Arc::clone(self.workbench.toolbox());
+                    let book_path = dst_sb.abs_path;
+                    let toolbox = Arc::clone(&self.toolbox);
                     let _ = tokio::task::spawn_blocking(move || {
-                        if let Some(dst_dir) = dst_abs.parent()
-                            && dst_dir != root_path
-                            && dst_dir
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .is_some_and(|n| !toolbox.is_generic_book_folder(n))
-                            && toolbox.dir_has_single_book(dst_dir)
-                        {
-                            let stem_opf = dst_abs.with_extension("opf");
-                            let calibre_opf = dst_dir.join("metadata.opf");
-                            if stem_opf.is_file() && !calibre_opf.exists() {
-                                let _ = std::fs::rename(&stem_opf, &calibre_opf);
-                            }
-                            for ext in ["jpg", "jpeg", "png", "webp"] {
-                                let stem_cov = dst_abs.with_extension(ext);
-                                let calibre_cov = dst_dir.join(format!("cover.{ext}"));
-                                if stem_cov.is_file() && !calibre_cov.exists() {
-                                    let _ = std::fs::rename(&stem_cov, &calibre_cov);
-                                }
-                            }
-                        }
+                        toolbox.execute(ToolboxCommand::Book(
+                            BookToolCommand::PromoteCalibreSidecars {
+                                root_path,
+                                book_path,
+                            },
+                        ))
                     })
                     .await;
                 }
                 detail = self
-                    .workbench
-                    .inspect_file(root_id, &plan.to_rel_path, Some(media_kind))
+                    .workspace
+                    .inspect(root_id, &plan.to_rel_path, Some(media_kind))
                     .await?;
             }
         }
@@ -267,7 +221,7 @@ impl ScrapingOrchestratorService {
                 && let Some(ref cover_url) = scraped.cover_url
                 && !cover_url.trim().is_empty()
             {
-                let creds = self.settings.get_credentials().await?;
+                let creds = self.settings.get_raw().await?.credentials;
                 if let Ok((bytes, mime)) = self
                     .transport
                     .download_artwork(&creds, cover_url, self.allow_private_artwork_ips)
@@ -275,14 +229,13 @@ impl ScrapingOrchestratorService {
                 {
                     let cur_rel = detail.entry.rel_path.clone();
                     detail = self
-                        .workbench
-                        .write_artwork(
+                        .write_file_artwork(
                             root_id,
                             &cur_rel,
+                            Some(MediaKind::Book),
+                            "cover",
                             &bytes,
                             &mime,
-                            "cover",
-                            Some(MediaKind::Book),
                         )
                         .await?;
                 }
@@ -299,11 +252,7 @@ impl ScrapingOrchestratorService {
                 .and_then(|p| p.file_name())
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
-            let in_album_dir = !parent_dir_name.is_empty()
-                && !self
-                    .workbench
-                    .toolbox()
-                    .is_generic_music_folder(parent_dir_name);
+            let in_album_dir = is_dedicated_subfolder_for(MediaKind::Music, parent_dir_name);
             let already_has_dir_cover = matches!(
                 &detail.metadata,
                 MediaMetadataPayload::Music(m) if m.has_directory_cover
@@ -311,14 +260,13 @@ impl ScrapingOrchestratorService {
             if in_album_dir && !(only_fill_missing && already_has_dir_cover) {
                 let cur_rel = detail.entry.rel_path.clone();
                 detail = self
-                    .workbench
-                    .write_artwork(
+                    .write_file_artwork(
                         root_id,
                         &cur_rel,
+                        Some(MediaKind::Music),
+                        "album_cover",
                         &bytes,
                         &mime,
-                        "album_cover",
-                        Some(MediaKind::Music),
                     )
                     .await?;
             }
@@ -330,11 +278,7 @@ impl ScrapingOrchestratorService {
                 .and_then(|p| p.file_name())
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
-            let in_series_dir = !parent_dir_name.is_empty()
-                && !self
-                    .workbench
-                    .toolbox()
-                    .is_generic_comic_folder(parent_dir_name);
+            let in_series_dir = is_dedicated_subfolder_for(MediaKind::Comic, parent_dir_name);
             let already_has_series_cover = matches!(
                 &detail.metadata,
                 MediaMetadataPayload::Comic(c) if c.has_series_cover
@@ -344,7 +288,7 @@ impl ScrapingOrchestratorService {
                 && let Some(ref cover_url) = scraped.cover_url
                 && !cover_url.trim().is_empty()
             {
-                let creds = self.settings.get_credentials().await?;
+                let creds = self.settings.get_raw().await?.credentials;
                 if let Ok((bytes, mime)) = self
                     .transport
                     .download_artwork(&creds, cover_url, self.allow_private_artwork_ips)
@@ -352,14 +296,13 @@ impl ScrapingOrchestratorService {
                 {
                     let cur_rel = detail.entry.rel_path.clone();
                     detail = self
-                        .workbench
-                        .write_artwork(
+                        .write_file_artwork(
                             root_id,
                             &cur_rel,
+                            Some(MediaKind::Comic),
+                            "series_cover",
                             &bytes,
                             &mime,
-                            "series_cover",
-                            Some(MediaKind::Comic),
                         )
                         .await?;
                 }
@@ -368,11 +311,11 @@ impl ScrapingOrchestratorService {
 
         if let Ok(settings) = self.settings.get_raw().await
             && settings.xmedia_webhook.notify_on_scrape
-            && let Ok(root) = self.settings.find_root(root_id).await
+            && let Ok(root) = settings.find_root(root_id)
         {
-            let webhook_cfg = settings.xmedia_webhook;
-            let root_path = root.path;
-            let webhook = Arc::clone(self.workbench.webhook());
+            let webhook_cfg = settings.xmedia_webhook.clone();
+            let root_path = root.path.clone();
+            let webhook = Arc::clone(&self.webhook);
             tokio::spawn(async move {
                 webhook.notify_rescan(&webhook_cfg, &root_path).await;
             });

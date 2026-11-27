@@ -90,7 +90,7 @@ pub struct BookFileMeta {
     pub writable: bool,
 }
 
-pub fn format_comic_volume(vol: f64) -> String {
+pub(in crate::domain) fn format_comic_volume(vol: f64) -> String {
     if !vol.is_finite() {
         return String::new();
     }

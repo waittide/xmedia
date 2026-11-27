@@ -1,4 +1,8 @@
-use axum::extract::{FromRequestParts, Request, State};
+use std::convert::Infallible;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+
+use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::header::{AUTHORIZATION, COOKIE, HOST, ORIGIN};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -10,6 +14,136 @@ use xmedia_core::http::{ApiError, error_json_response};
 use crate::http::ToolHttpState;
 
 pub const TOOL_COOKIE_NAME: &str = "xmedia_tool_token";
+
+#[derive(Clone, Debug, Default)]
+pub struct ToolRequestSecurityPolicy {
+    bind_addr: Option<SocketAddr>,
+    cors_allow_origins: Arc<Vec<String>>,
+}
+
+impl ToolRequestSecurityPolicy {
+    pub fn new(bind_addr: Option<SocketAddr>, cors_allow_origins: &[String]) -> Self {
+        let normalized = cors_allow_origins
+            .iter()
+            .map(|o| o.trim().trim_end_matches('/').to_string())
+            .filter(|o| !o.is_empty())
+            .collect();
+        Self {
+            bind_addr,
+            cors_allow_origins: Arc::new(normalized),
+        }
+    }
+
+    pub fn is_explicit_cors_origin(&self, raw_origin: &str) -> bool {
+        let trimmed = raw_origin.trim().trim_end_matches('/');
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+            return false;
+        }
+        self.cors_allow_origins
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(trimmed))
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn validate_request_headers(&self, headers: &HeaderMap) -> Result<(), Response> {
+        let loopback_mode = self
+            .bind_addr
+            .map(|addr| addr.ip().is_loopback())
+            .unwrap_or(true);
+
+        let (canonical_host, expected_port) = match self.bind_addr {
+            Some(addr) if addr.ip().is_loopback() => {
+                let Some(raw_host) = headers.get(HOST).and_then(|v| v.to_str().ok()) else {
+                    return Err(error_json_response(
+                        StatusCode::FORBIDDEN,
+                        "invalid_host",
+                        "Missing or invalid Host header on loopback tool endpoint",
+                    ));
+                };
+                let Some((host, port)) = parse_loopback_host_header(raw_host, Some(addr.port()))
+                else {
+                    return Err(error_json_response(
+                        StatusCode::FORBIDDEN,
+                        "invalid_host",
+                        "Loopback tool endpoints only accept matching loopback Host headers",
+                    ));
+                };
+                (host.to_string(), port)
+            }
+            Some(_addr) => {
+                let Some(raw_host) = headers.get(HOST).and_then(|v| v.to_str().ok()) else {
+                    return Err(error_json_response(
+                        StatusCode::FORBIDDEN,
+                        "invalid_host",
+                        "Missing or invalid Host header",
+                    ));
+                };
+                let Some((host, port)) = parse_general_host_header(raw_host) else {
+                    return Err(error_json_response(
+                        StatusCode::FORBIDDEN,
+                        "invalid_host",
+                        "Invalid Host header",
+                    ));
+                };
+                (host, port)
+            }
+            None => {
+                if let Some(raw_host_val) = headers.get(HOST) {
+                    let Some(raw_host) = raw_host_val.to_str().ok() else {
+                        return Err(error_json_response(
+                            StatusCode::FORBIDDEN,
+                            "invalid_host",
+                            "Invalid Host header",
+                        ));
+                    };
+                    let Some((host, port)) = parse_loopback_host_header(raw_host, None) else {
+                        return Err(error_json_response(
+                            StatusCode::FORBIDDEN,
+                            "invalid_host",
+                            "Loopback tool endpoints only accept loopback Host headers",
+                        ));
+                    };
+                    (host.to_string(), port)
+                } else {
+                    ("localhost".to_string(), Some(80))
+                }
+            }
+        };
+
+        let raw_origin_str = headers.get(ORIGIN).and_then(|v| v.to_str().ok());
+        let origin_explicitly_allowed =
+            raw_origin_str.is_some_and(|raw| self.is_explicit_cors_origin(raw));
+
+        if !origin_explicitly_allowed
+            && let Some(sec_fetch_site) =
+                headers.get("sec-fetch-site").and_then(|v| v.to_str().ok())
+        {
+            let sfs = sec_fetch_site.trim();
+            if !sfs.eq_ignore_ascii_case("same-origin") && !sfs.eq_ignore_ascii_case("none") {
+                return Err(error_json_response(
+                    StatusCode::FORBIDDEN,
+                    "cross_site_blocked",
+                    "Cross-site or cross-port requests to xmedia-tool are forbidden",
+                ));
+            }
+        }
+
+        if !origin_explicitly_allowed && let Some(origin_val) = headers.get(ORIGIN) {
+            let valid = origin_val.to_str().ok().is_some_and(|raw| {
+                is_allowed_same_origin_header(raw, &canonical_host, expected_port, loopback_mode)
+            });
+            if !valid {
+                return Err(error_json_response(
+                    StatusCode::FORBIDDEN,
+                    "cross_origin_blocked",
+                    "Cross-origin requests to xmedia-tool are forbidden",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
 
 fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     let raw_auth = headers.get(AUTHORIZATION).and_then(|h| h.to_str().ok())?;
@@ -197,104 +331,9 @@ pub async fn guard_tool_http_request(
     req: Request,
     next: Next,
 ) -> Response {
-    let loopback_mode = state
-        .security
-        .bind_addr
-        .map(|addr| addr.ip().is_loopback())
-        .unwrap_or(true);
-
-    let (canonical_host, expected_port) = match state.security.bind_addr {
-        Some(addr) if addr.ip().is_loopback() => {
-            let Some(raw_host) = req.headers().get(HOST).and_then(|v| v.to_str().ok()) else {
-                return error_json_response(
-                    StatusCode::FORBIDDEN,
-                    "invalid_host",
-                    "Missing or invalid Host header on loopback tool endpoint",
-                );
-            };
-            let Some((host, port)) = parse_loopback_host_header(raw_host, Some(addr.port())) else {
-                return error_json_response(
-                    StatusCode::FORBIDDEN,
-                    "invalid_host",
-                    "Loopback tool endpoints only accept matching loopback Host headers",
-                );
-            };
-            (host.to_string(), port)
-        }
-        Some(_addr) => {
-            let Some(raw_host) = req.headers().get(HOST).and_then(|v| v.to_str().ok()) else {
-                return error_json_response(
-                    StatusCode::FORBIDDEN,
-                    "invalid_host",
-                    "Missing or invalid Host header",
-                );
-            };
-            let Some((host, port)) = parse_general_host_header(raw_host) else {
-                return error_json_response(
-                    StatusCode::FORBIDDEN,
-                    "invalid_host",
-                    "Invalid Host header",
-                );
-            };
-            (host, port)
-        }
-        None => {
-            if let Some(raw_host_val) = req.headers().get(HOST) {
-                let Some(raw_host) = raw_host_val.to_str().ok() else {
-                    return error_json_response(
-                        StatusCode::FORBIDDEN,
-                        "invalid_host",
-                        "Invalid Host header",
-                    );
-                };
-                let Some((host, port)) = parse_loopback_host_header(raw_host, None) else {
-                    return error_json_response(
-                        StatusCode::FORBIDDEN,
-                        "invalid_host",
-                        "Loopback tool endpoints only accept loopback Host headers",
-                    );
-                };
-                (host.to_string(), port)
-            } else {
-                ("localhost".to_string(), Some(80))
-            }
-        }
-    };
-
-    let raw_origin_str = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok());
-    let origin_explicitly_allowed =
-        raw_origin_str.is_some_and(|raw| state.security.is_explicit_cors_origin(raw));
-
-    if !origin_explicitly_allowed
-        && let Some(sec_fetch_site) = req
-            .headers()
-            .get("sec-fetch-site")
-            .and_then(|v| v.to_str().ok())
-    {
-        let sfs = sec_fetch_site.trim();
-        // Block both `cross-site` AND `same-site` (cross-port localhost CSRF).
-        if !sfs.eq_ignore_ascii_case("same-origin") && !sfs.eq_ignore_ascii_case("none") {
-            return error_json_response(
-                StatusCode::FORBIDDEN,
-                "cross_site_blocked",
-                "Cross-site or cross-port requests to xmedia-tool are forbidden",
-            );
-        }
+    if let Err(resp) = state.security.validate_request_headers(req.headers()) {
+        return resp;
     }
-
-    if !origin_explicitly_allowed && let Some(origin_val) = req.headers().get(ORIGIN) {
-        let valid = origin_val.to_str().ok().is_some_and(|raw| {
-            is_allowed_same_origin_header(raw, &canonical_host, expected_port, loopback_mode)
-        });
-        if !valid {
-            return error_json_response(
-                StatusCode::FORBIDDEN,
-                "cross_origin_blocked",
-                "Cross-origin requests to xmedia-tool are forbidden",
-            );
-        }
-    }
-
     next.run(req).await
 }
 
@@ -307,6 +346,23 @@ pub async fn require_tool_auth(
     let provided = extract_tool_token_from_request(req.method(), req.headers(), req.uri());
     state.auth.verify_token(provided.as_deref())?;
     Ok(next.run(req).await)
+}
+
+pub struct ToolClientIp(pub Option<IpAddr>);
+
+impl<S> FromRequestParts<S> for ToolClientIp
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let ip = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip().to_canonical());
+        Ok(Self(ip))
+    }
 }
 
 pub struct ToolAuthGuard;

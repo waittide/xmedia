@@ -2,12 +2,11 @@ use async_trait::async_trait;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
+use crate::application::ports::ScraperTransportPort;
 use crate::domain::config::ProviderCredentials;
-use crate::domain::ports::ScraperTransportPort;
 
 use super::http_client::{
-    acquire_provider_rate_slot, build_ssrf_safe_http_client, validate_public_http_url_async,
-    validate_target_url_ssrf,
+    acquire_provider_rate_slot, build_ssrf_safe_http_client, validate_target_url_ssrf,
 };
 
 const MAX_IMAGE_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -19,11 +18,6 @@ pub struct ReqwestScraperTransport;
 impl ScraperTransportPort for ReqwestScraperTransport {
     async fn acquire_rate_slot(&self, provider_id: &str) {
         acquire_provider_rate_slot(provider_id).await;
-    }
-
-    async fn validate_public_http_url(&self, raw_url: &str) -> DomainResult<String> {
-        let parsed = validate_public_http_url_async(raw_url).await?;
-        Ok(parsed.into())
     }
 
     async fn download_artwork(

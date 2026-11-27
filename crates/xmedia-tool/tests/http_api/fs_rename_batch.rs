@@ -4,13 +4,17 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::MediaKind;
-use xmedia_tool::application::workbench::PreviewRenameOptions;
+use xmedia_tool::application::ops::{
+    BatchComicSeriesSyncInput, BatchMusicAlbumSyncInput, BatchRemapEpisodesInput,
+};
+use xmedia_tool::application::ports::ArtworkIo;
+use xmedia_tool::application::scraping::ApplyScrapeInput;
+use xmedia_tool::application::workbench::{
+    BatchSyncSpec, PreviewRenameOptions, WorkspaceArtworkOutput,
+};
 use xmedia_tool::domain::media::{
     BookMetaPatch, ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch,
     RenameConflictPolicy, RenamePlanItem, VideoMetaPatch,
-};
-use xmedia_tool::domain::ops::{
-    BatchComicSeriesSyncInput, BatchMusicAlbumSyncInput, BatchRemapEpisodesInput,
 };
 use xmedia_tool::{XMediaToolApp, XMediaToolConfig};
 use zip::CompressionMethod;
@@ -116,7 +120,6 @@ async fn password_guard_and_root_sandbox_traversal_rejection() {
         .unwrap();
     assert_eq!(trav_res.status(), StatusCode::FORBIDDEN);
 
-    // Anti-DNS-rebinding & anti-CSRF checks
     let rebind_res = app
         .router
         .clone()
@@ -163,7 +166,6 @@ async fn password_guard_and_root_sandbox_traversal_rejection() {
         .unwrap();
     assert_eq!(cross_origin_res.status(), StatusCode::FORBIDDEN);
 
-    // Server-side session invalidation on POST /auth/lock
     let lock_res = app
         .router
         .clone()
@@ -227,8 +229,8 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let music_detail = app
-        .workbench
-        .write_metadata(
+        .metadata
+        .write(
             root_id,
             "raw_song.wav",
             MediaMetadataPatch::Music(MusicMetaPatch {
@@ -253,48 +255,58 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
     } else {
         panic!("expected music payload");
     }
-    app.workbench
-        .write_artwork(
+    app.workspace
+        .artwork(
             root_id,
             "raw_song.wav",
-            TINY_PNG,
-            "image/png",
-            "cover",
             Some(MediaKind::Music),
+            ArtworkIo::Write {
+                slot: "cover",
+                bytes: TINY_PNG,
+                mime_type: "image/png",
+            },
         )
         .await
         .unwrap();
-    assert!(
-        app.workbench
-            .read_artwork(root_id, "raw_song.wav", Some(MediaKind::Music), None)
+    assert!(matches!(
+        app.workspace
+            .artwork(
+                root_id,
+                "raw_song.wav",
+                Some(MediaKind::Music),
+                ArtworkIo::Read { slot: None },
+            )
             .await
-            .unwrap()
-            .is_some()
-    );
+            .unwrap(),
+        WorkspaceArtworkOutput::Read(Some(_))
+    ));
 
     let music_plans = app
-        .workbench
-        .preview_rename(
+        .rename
+        .preview(
             root_id,
             &["raw_song.wav".to_string()],
-            Some("{track:2} - {artist} - {title}"),
+            PreviewRenameOptions {
+                template_override: Some("{track:2} - {artist} - {title}"),
+                preferred_kind: Some(MediaKind::Music),
+                ..Default::default()
+            },
             None,
-            Some(MediaKind::Music),
         )
         .await
         .unwrap();
     assert_eq!(music_plans[0].to_rel_path, "03 - 周杰伦 - 晴天.wav");
     assert_eq!(music_plans[0].companion_moves.len(), 1);
-    app.workbench
-        .execute_rename(root_id, &music_plans)
+    app.rename
+        .execute(root_id, &music_plans, None)
         .await
         .unwrap();
     assert!(media_root.join("03 - 周杰伦 - 晴天.wav").exists());
     assert!(media_root.join("03 - 周杰伦 - 晴天.lrc").exists());
 
     let comic_detail = app
-        .workbench
-        .write_metadata(
+        .metadata
+        .write(
             root_id,
             "raw_chapter.cbz",
             MediaMetadataPatch::Comic(ComicMetaPatch {
@@ -310,20 +322,22 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
         .await
         .unwrap();
     assert!(comic_detail.entry.completeness.has_nfo_or_tag_block);
-    app.workbench
-        .write_artwork(
+    app.workspace
+        .artwork(
             root_id,
             "raw_chapter.cbz",
-            TINY_PNG,
-            "image/png",
-            "cover",
             Some(MediaKind::Comic),
+            ArtworkIo::Write {
+                slot: "cover",
+                bytes: TINY_PNG,
+                mime_type: "image/png",
+            },
         )
         .await
         .unwrap();
     let comic_reloaded = app
-        .workbench
-        .inspect_file(root_id, "raw_chapter.cbz", Some(MediaKind::Comic))
+        .workspace
+        .inspect(root_id, "raw_chapter.cbz", Some(MediaKind::Comic))
         .await
         .unwrap();
     if let MediaMetadataPayload::Comic(c) = comic_reloaded.metadata {
@@ -334,8 +348,8 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
         panic!("expected comic payload");
     }
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "raw_book.epub",
             MediaMetadataPatch::Book(BookMetaPatch {
@@ -349,20 +363,22 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
         )
         .await
         .unwrap();
-    app.workbench
-        .write_artwork(
+    app.workspace
+        .artwork(
             root_id,
             "raw_book.epub",
-            TINY_PNG,
-            "image/png",
-            "cover",
             Some(MediaKind::Book),
+            ArtworkIo::Write {
+                slot: "cover",
+                bytes: TINY_PNG,
+                mime_type: "image/png",
+            },
         )
         .await
         .unwrap();
     let book_reloaded = app
-        .workbench
-        .inspect_file(root_id, "raw_book.epub", Some(MediaKind::Book))
+        .workspace
+        .inspect(root_id, "raw_book.epub", Some(MediaKind::Book))
         .await
         .unwrap();
     if let MediaMetadataPayload::Book(b) = book_reloaded.metadata {
@@ -381,8 +397,8 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
         assert_eq!(first.compression(), CompressionMethod::Stored);
     }
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "raw_ep.mkv",
             MediaMetadataPatch::Video(VideoMetaPatch {
@@ -398,26 +414,30 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
         )
         .await
         .unwrap();
-    app.workbench
-        .write_artwork(
+    app.workspace
+        .artwork(
             root_id,
             "raw_ep.mkv",
-            TINY_PNG,
-            "image/png",
-            "poster",
             Some(MediaKind::Video),
+            ArtworkIo::Write {
+                slot: "poster",
+                bytes: TINY_PNG,
+                mime_type: "image/png",
+            },
         )
         .await
         .unwrap();
 
     let video_plans = app
-        .workbench
-        .preview_rename(
+        .rename
+        .preview(
             root_id,
             &["raw_ep.mkv".to_string()],
+            PreviewRenameOptions {
+                preferred_kind: Some(MediaKind::Video),
+                ..Default::default()
+            },
             None,
-            None,
-            Some(MediaKind::Video),
         )
         .await
         .unwrap();
@@ -425,8 +445,8 @@ async fn all_four_domains_atomic_metadata_artwork_and_rename_roundtrip() {
         video_plans[0].to_rel_path,
         "Frieren (2023)/Season 01/Frieren - S01E01 - The Journey's End.mkv"
     );
-    app.workbench
-        .execute_rename(root_id, &video_plans)
+    app.rename
+        .execute(root_id, &video_plans, None)
         .await
         .unwrap();
     let expected_ep_dir = media_root.join("Frieren (2023)").join("Season 01");
@@ -472,8 +492,8 @@ async fn folder_raw_files_and_delete_companions_vs_single_file() {
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let snap = app
-        .workbench
-        .browse_directory(root_id, "sub", Some(MediaKind::Book), false)
+        .workspace
+        .browse(root_id, "sub", Some(MediaKind::Book), false, None)
         .await
         .unwrap();
     let raw_names: Vec<&str> = snap
@@ -502,8 +522,8 @@ async fn folder_raw_files_and_delete_companions_vs_single_file() {
     );
 
     let rep_single = app
-        .workbench
-        .delete_files(root_id, &["sub/extra_note.md".into()], false)
+        .workspace
+        .delete(root_id, &["sub/extra_note.md".into()], false)
         .await
         .unwrap();
     assert_eq!(rep_single.deleted_count, 1);
@@ -513,8 +533,8 @@ async fn folder_raw_files_and_delete_companions_vs_single_file() {
     assert!(sub.join("novel.opf").exists());
 
     let rep_media = app
-        .workbench
-        .delete_files(root_id, &["sub/novel.txt".into()], true)
+        .workspace
+        .delete(root_id, &["sub/novel.txt".into()], true)
         .await
         .unwrap();
     assert_eq!(rep_media.deleted_count, 1);
@@ -533,8 +553,8 @@ async fn folder_raw_files_and_delete_companions_vs_single_file() {
     std::fs::write(folder_b.join("keep.txt"), "keep").unwrap();
 
     let rep_main_dir = app
-        .workbench
-        .delete_files(root_id, &["Author A".into()], true)
+        .workspace
+        .delete(root_id, &["Author A".into()], true)
         .await
         .unwrap();
     assert_eq!(rep_main_dir.deleted_count, 0);
@@ -542,8 +562,8 @@ async fn folder_raw_files_and_delete_companions_vs_single_file() {
     assert!(folder_a.exists());
 
     let rep_root_dir = app
-        .workbench
-        .delete_files(root_id, &[".".into()], false)
+        .workspace
+        .delete(root_id, &[".".into()], false)
         .await
         .unwrap();
     assert_eq!(rep_root_dir.deleted_count, 0);
@@ -551,8 +571,8 @@ async fn folder_raw_files_and_delete_companions_vs_single_file() {
     assert!(root.exists());
 
     let rep_folder = app
-        .workbench
-        .delete_files(root_id, &["Author A".into()], false)
+        .workspace
+        .delete(root_id, &["Author A".into()], false)
         .await
         .unwrap();
     assert_eq!(rep_folder.deleted_count, 1);
@@ -582,8 +602,8 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
     .unwrap();
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "草枕_竖排.txt",
             MediaMetadataPatch::Book(BookMetaPatch {
@@ -598,8 +618,8 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
     let tpl = "{author}/{title}";
 
     let skip_plans = app
-        .workbench
-        .preview_rename_with_options(
+        .rename
+        .preview(
             root_id,
             &["草枕_竖排.txt".into()],
             PreviewRenameOptions {
@@ -608,6 +628,7 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
                 preferred_kind: Some(MediaKind::Book),
                 conflict_policy: RenameConflictPolicy::Skip,
             },
+            None,
         )
         .await
         .unwrap();
@@ -616,8 +637,8 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
     assert!(!skip_plans[0].will_overwrite);
 
     let suffix_plans = app
-        .workbench
-        .preview_rename_with_options(
+        .rename
+        .preview(
             root_id,
             &["草枕_竖排.txt".into()],
             PreviewRenameOptions {
@@ -626,14 +647,15 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
                 preferred_kind: Some(MediaKind::Book),
                 conflict_policy: RenameConflictPolicy::AutoSuffix,
             },
+            None,
         )
         .await
         .unwrap();
     assert_eq!(suffix_plans[0].conflict, None);
     assert_eq!(suffix_plans[0].to_rel_path, "夏目漱石/草枕 (2).txt");
     let moved = app
-        .workbench
-        .execute_rename(root_id, &suffix_plans)
+        .rename
+        .execute(root_id, &suffix_plans, None)
         .await
         .unwrap();
     assert_eq!(moved, 1);
@@ -641,8 +663,8 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
     assert!(root.join("夏目漱石/草枕.txt").is_file());
 
     let overwrite_plans = app
-        .workbench
-        .preview_rename_with_options(
+        .rename
+        .preview(
             root_id,
             &["夏目漱石/草枕 (2).txt".into()],
             PreviewRenameOptions {
@@ -651,6 +673,7 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
                 preferred_kind: Some(MediaKind::Book),
                 conflict_policy: RenameConflictPolicy::Overwrite,
             },
+            None,
         )
         .await
         .unwrap();
@@ -658,8 +681,8 @@ async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
     assert!(overwrite_plans[0].will_overwrite);
     assert_eq!(overwrite_plans[0].to_rel_path, "夏目漱石/草枕.txt");
     let moved_ov = app
-        .workbench
-        .execute_rename(root_id, &overwrite_plans)
+        .rename
+        .execute(root_id, &overwrite_plans, None)
         .await
         .unwrap();
     assert_eq!(moved_ov, 1);
@@ -701,37 +724,33 @@ async fn batch_sync_comic_music_and_video_record_single_undoable_batch_and_handl
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let comic_rep = app
-        .workbench
-        .batch_sync_comic_series(
+        .metadata
+        .batch_sync(
             root_id,
             vec!["c1.cbz".into(), "c2.cbz".into(), "c3.cbz".into()],
-            BatchComicSeriesSyncInput {
+            BatchSyncSpec::ComicSeries(BatchComicSeriesSyncInput {
                 series: Some("Unified Series".into()),
                 numbering_mode: "chapter".into(),
                 start_index: 1,
                 pad_width: 2,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .unwrap();
     assert_eq!(comic_rep.updated_count, 3);
     assert!(comic_rep.failed_paths.is_empty());
 
-    let hist1 = app.workbench.list_metadata_history(Some(root_id)).await;
+    let hist1 = app.metadata.list_history(Some(root_id)).await;
     assert_eq!(hist1.len(), 1);
     assert_eq!(hist1[0].records.len(), 3);
     let comic_batch_id = hist1[0].batch_id;
 
-    let undo_comic = app
-        .workbench
-        .undo_metadata_batch(comic_batch_id)
-        .await
-        .unwrap();
+    let undo_comic = app.metadata.undo_batch(comic_batch_id).await.unwrap();
     assert_eq!(undo_comic.restored_count, 3);
     let c1_after = app
-        .workbench
-        .inspect_file(root_id, "c1.cbz", Some(MediaKind::Comic))
+        .workspace
+        .inspect(root_id, "c1.cbz", Some(MediaKind::Comic))
         .await
         .unwrap();
     if let MediaMetadataPayload::Comic(c) = c1_after.metadata {
@@ -741,35 +760,31 @@ async fn batch_sync_comic_music_and_video_record_single_undoable_batch_and_handl
     }
 
     let music_rep = app
-        .workbench
-        .batch_sync_music_album(
+        .metadata
+        .batch_sync(
             root_id,
             vec!["m1.wav".into(), "m2.wav".into(), "m3.wav".into()],
-            BatchMusicAlbumSyncInput {
+            BatchSyncSpec::MusicAlbum(BatchMusicAlbumSyncInput {
                 artist: Some("Artist X".into()),
                 album: Some("Album Y".into()),
                 auto_number_tracks: true,
                 start_track: 1,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .unwrap();
     assert_eq!(music_rep.updated_count, 3);
-    let hist2 = app.workbench.list_metadata_history(Some(root_id)).await;
+    let hist2 = app.metadata.list_history(Some(root_id)).await;
     assert_eq!(hist2.len(), 1);
     assert_eq!(hist2[0].records.len(), 3);
     let music_batch_id = hist2[0].batch_id;
 
-    let undo_music = app
-        .workbench
-        .undo_metadata_batch(music_batch_id)
-        .await
-        .unwrap();
+    let undo_music = app.metadata.undo_batch(music_batch_id).await.unwrap();
     assert_eq!(undo_music.restored_count, 3);
     let m2_after = app
-        .workbench
-        .inspect_file(root_id, "m2.wav", Some(MediaKind::Music))
+        .workspace
+        .inspect(root_id, "m2.wav", Some(MediaKind::Music))
         .await
         .unwrap();
     if let MediaMetadataPayload::Music(m) = m2_after.metadata {
@@ -779,21 +794,21 @@ async fn batch_sync_comic_music_and_video_record_single_undoable_batch_and_handl
     }
 
     let video_rep = app
-        .workbench
-        .batch_remap_video_episodes(
+        .metadata
+        .batch_sync(
             root_id,
             vec![
                 "Show/Season 01/ep_a.mkv".into(),
                 "Show/Season 02/ep_b.mkv".into(),
             ],
-            BatchRemapEpisodesInput {
+            BatchSyncSpec::VideoEpisodes(BatchRemapEpisodesInput {
                 mode: "renumber".into(),
                 show_title: Some("Demo Show".into()),
                 season_number: Some(2),
                 start_episode: 10,
                 episode_offset: 0,
                 write_season_nfo: true,
-            },
+            }),
         )
         .await
         .unwrap();
@@ -801,14 +816,10 @@ async fn batch_sync_comic_music_and_video_record_single_undoable_batch_and_handl
     assert!(s1.join("season.nfo").is_file());
     assert!(s2.join("season.nfo").is_file());
 
-    let hist3 = app.workbench.list_metadata_history(Some(root_id)).await;
+    let hist3 = app.metadata.list_history(Some(root_id)).await;
     assert_eq!(hist3.len(), 1);
     assert_eq!(hist3[0].records.len(), 2);
-    let undo_video = app
-        .workbench
-        .undo_metadata_batch(hist3[0].batch_id)
-        .await
-        .unwrap();
+    let undo_video = app.metadata.undo_batch(hist3[0].batch_id).await.unwrap();
     assert_eq!(undo_video.restored_count, 2);
 
     app.settings
@@ -816,18 +827,18 @@ async fn batch_sync_comic_music_and_video_record_single_undoable_batch_and_handl
         .await
         .unwrap();
     let ro_err = app
-        .workbench
-        .batch_remap_video_episodes(
+        .metadata
+        .batch_sync(
             root_id,
             vec!["Show/Season 01/ep_a.mkv".into()],
-            BatchRemapEpisodesInput {
+            BatchSyncSpec::VideoEpisodes(BatchRemapEpisodesInput {
                 mode: "renumber".into(),
                 show_title: Some("Blocked".into()),
                 season_number: Some(1),
                 start_episode: 1,
                 episode_offset: 0,
                 write_season_nfo: false,
-            },
+            }),
         )
         .await
         .unwrap_err();
@@ -874,33 +885,26 @@ async fn execute_rename_partial_failure_records_history_and_undo_retains_when_ze
         },
     ];
 
-    let err = app
-        .workbench
-        .execute_rename(root_id, &plans)
-        .await
-        .unwrap_err();
+    let err = app.rename.execute(root_id, &plans, None).await.unwrap_err();
     assert!(matches!(err, DomainError::Conflict(_)));
     assert!(root.join("a_moved.txt").is_file());
     assert!(!root.join("a.txt").exists());
     assert!(root.join("b.txt").is_file());
 
-    let history = app.workbench.list_rename_history(Some(root_id)).await;
+    let history = app.rename.list_history(Some(root_id)).await;
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].moved_count, 1);
     assert_eq!(history[0].moves.len(), 1);
     let batch_id = history[0].batch_id;
 
     std::fs::write(root.join("a.txt"), "temporary-blocker").unwrap();
-    let failed_undo = app.workbench.undo_rename_batch(batch_id).await.unwrap();
+    let failed_undo = app.rename.undo_batch(batch_id).await.unwrap();
     assert_eq!(failed_undo.restored_count, 0);
     assert_eq!(failed_undo.skipped_conflicts, vec!["a.txt".to_string()]);
-    assert_eq!(
-        app.workbench.list_rename_history(Some(root_id)).await.len(),
-        1
-    );
+    assert_eq!(app.rename.list_history(Some(root_id)).await.len(), 1);
 
     std::fs::remove_file(root.join("a.txt")).unwrap();
-    let ok_undo = app.workbench.undo_rename_batch(batch_id).await.unwrap();
+    let ok_undo = app.rename.undo_batch(batch_id).await.unwrap();
     assert_eq!(ok_undo.restored_count, 1);
     assert!(ok_undo.skipped_conflicts.is_empty());
     assert_eq!(
@@ -908,12 +912,7 @@ async fn execute_rename_partial_failure_records_history_and_undo_retains_when_ze
         "content-a"
     );
     assert!(!root.join("a_moved.txt").exists());
-    assert!(
-        app.workbench
-            .list_rename_history(Some(root_id))
-            .await
-            .is_empty()
-    );
+    assert!(app.rename.list_history(Some(root_id)).await.is_empty());
 }
 
 #[tokio::test]
@@ -997,7 +996,7 @@ async fn apply_video_jellyfin_archive_enforces_read_only_root() {
 
     let root = app
         .settings
-        .add_root_with_options(
+        .add_root(
             "ReadOnly".into(),
             video_dir.to_string_lossy().into_owned(),
             Some(MediaKind::Video),
@@ -1007,21 +1006,22 @@ async fn apply_video_jellyfin_archive_enforces_read_only_root() {
         .unwrap();
 
     let err = app
-        .scraping
-        .apply_to_file(
-            root.id,
-            "Movie (2024).mkv",
-            MediaKind::Video,
-            xmedia_tool::domain::scraper::ScrapedMetadata {
+        .scrape_apply
+        .apply(ApplyScrapeInput {
+            root_id: root.id,
+            rel_path: "Movie (2024).mkv".into(),
+            media_kind: MediaKind::Video,
+            scraped: xmedia_tool::domain::scraper::ScrapedMetadata {
                 title: Some("Movie".into()),
                 year: Some(2024),
                 ..Default::default()
             },
-            false,
-            false,
-            Some(true),
-            false,
-        )
+            apply_cover: false,
+            write_sidecar_lrc: false,
+            organize_by_template: Some(true),
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap_err();
     assert!(matches!(err, DomainError::Forbidden(_)));

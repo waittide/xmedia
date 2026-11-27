@@ -6,6 +6,9 @@ use lofty::prelude::{AudioFile, TaggedFileExt};
 use lofty::tag::Tag;
 use tempfile::TempDir;
 use xmedia_core::domain::library::MediaKind;
+use xmedia_tool::application::ports::ArtworkIo;
+use xmedia_tool::application::scraping::ApplyScrapeInput;
+use xmedia_tool::application::workbench::PreviewRenameOptions;
 use xmedia_tool::domain::media::{
     ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch,
 };
@@ -52,8 +55,8 @@ async fn music_id3v2_year_persists_and_replacing_front_cover_keeps_back_cover() 
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let updated = app
-        .workbench
-        .write_metadata(
+        .metadata
+        .write(
             root_id,
             "track.wav",
             MediaMetadataPatch::Music(MusicMetaPatch {
@@ -70,14 +73,16 @@ async fn music_id3v2_year_persists_and_replacing_front_cover_keeps_back_cover() 
         panic!("expected music payload");
     }
 
-    app.workbench
-        .write_artwork(
+    app.workspace
+        .artwork(
             root_id,
             "track.wav",
-            TINY_PNG,
-            "image/png",
-            "cover",
             Some(MediaKind::Music),
+            ArtworkIo::Write {
+                slot: "cover",
+                bytes: TINY_PNG,
+                mime_type: "image/png",
+            },
         )
         .await
         .unwrap();
@@ -119,20 +124,23 @@ async fn comic_webtoon_roundtrip_and_template_avoids_duplicate_title() {
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let detail = app
-        .workbench
-        .inspect_file(root_id, "Solo_Ch01.cbz", Some(MediaKind::Comic))
+        .workspace
+        .inspect(root_id, "Solo_Ch01.cbz", Some(MediaKind::Comic))
         .await
         .unwrap();
     if let MediaMetadataPayload::Comic(ref c) = detail.metadata {
         assert_eq!(c.reading_direction, "webtoon");
         let plans = app
-            .workbench
-            .preview_rename(
+            .rename
+            .preview(
                 root_id,
                 &["Solo_Ch01.cbz".to_string()],
-                Some("{series}/{series} Ch.{number:03} - {title}"),
+                PreviewRenameOptions {
+                    template_override: Some("{series}/{series} Ch.{number:03} - {title}"),
+                    preferred_kind: Some(MediaKind::Comic),
+                    ..Default::default()
+                },
                 None,
-                Some(MediaKind::Comic),
             )
             .await
             .unwrap();
@@ -141,8 +149,8 @@ async fn comic_webtoon_roundtrip_and_template_avoids_duplicate_title() {
         panic!("expected comic payload");
     }
 
-    app.workbench
-        .write_metadata(
+    app.metadata
+        .write(
             root_id,
             "Solo_Ch01.cbz",
             MediaMetadataPatch::Comic(ComicMetaPatch {
@@ -185,16 +193,16 @@ async fn comic_komga_archive_series_group_and_series_cover_without_polluting_cbz
     })
     .await
     .unwrap();
-    app.scraping.set_allow_private_artwork_ips(true);
+    app.scrape_apply.set_allow_private_artwork_ips(true);
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let detail = app
-        .scraping
-        .apply_to_file(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "JOJO4_Ch01.cbz",
-            MediaKind::Comic,
-            ScrapedMetadata {
+            rel_path: "JOJO4_Ch01.cbz".into(),
+            media_kind: MediaKind::Comic,
+            scraped: ScrapedMetadata {
                 provider_id: "bangumi".into(),
                 external_id: "bgm-jojo4".into(),
                 target: Some(ScrapeTargetKind::Comic),
@@ -203,11 +211,12 @@ async fn comic_komga_archive_series_group_and_series_cover_without_polluting_cbz
                 cover_url: Some(format!("http://{addr}/series_cover.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            None,
-            false,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: None,
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
 
@@ -227,8 +236,8 @@ async fn comic_komga_archive_series_group_and_series_cover_without_polluting_cbz
     }
 
     let patched = app
-        .workbench
-        .write_metadata(
+        .metadata
+        .write(
             root_id,
             &detail.entry.rel_path,
             MediaMetadataPatch::Comic(ComicMetaPatch {
@@ -247,18 +256,20 @@ async fn comic_komga_archive_series_group_and_series_cover_without_polluting_cbz
     }
 
     let plans = app
-        .workbench
-        .preview_rename(
+        .rename
+        .preview(
             root_id,
             std::slice::from_ref(&detail.entry.rel_path),
+            PreviewRenameOptions {
+                preferred_kind: Some(MediaKind::Comic),
+                ..Default::default()
+            },
             None,
-            None,
-            Some(MediaKind::Comic),
         )
         .await
         .unwrap();
     assert_eq!(plans[0].to_rel_path, "不灭钻石/不灭钻石 Vol.01 Ch.01.cbz");
-    app.workbench.execute_rename(root_id, &plans).await.unwrap();
+    app.rename.execute(root_id, &plans, None).await.unwrap();
     assert!(root.join("不灭钻石/cover.png").is_file());
     assert!(!root.join("JOJO的奇妙冒险 第4部 不灭钻石").exists());
 }
@@ -283,16 +294,16 @@ async fn music_picard_archive_and_opt_in_album_directory_cover() {
     })
     .await
     .unwrap();
-    app.scraping.set_allow_private_artwork_ips(true);
+    app.scrape_apply.set_allow_private_artwork_ips(true);
     let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
     let d1 = app
-        .scraping
-        .apply_to_file_ext(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "t1.wav",
-            MediaKind::Music,
-            ScrapedMetadata {
+            rel_path: "t1.wav".into(),
+            media_kind: MediaKind::Music,
+            scraped: ScrapedMetadata {
                 provider_id: "itunes".into(),
                 external_id: "it-1".into(),
                 target: Some(ScrapeTargetKind::MusicTrack),
@@ -304,24 +315,24 @@ async fn music_picard_archive_and_opt_in_album_directory_cover() {
                 cover_url: Some(format!("http://{addr}/alb.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            None,
-            false,
-            false,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: None,
+            only_fill_missing: false,
+            write_album_cover: false,
+        })
         .await
         .unwrap();
     assert_eq!(d1.entry.rel_path, "周杰伦/叶惠美 (2003)/01 - 以父之名.wav");
     assert!(!root.join("周杰伦/叶惠美 (2003)/cover.png").exists());
 
     let d2 = app
-        .scraping
-        .apply_to_file_ext(
+        .scrape_apply
+        .apply(ApplyScrapeInput {
             root_id,
-            "t2.wav",
-            MediaKind::Music,
-            ScrapedMetadata {
+            rel_path: "t2.wav".into(),
+            media_kind: MediaKind::Music,
+            scraped: ScrapedMetadata {
                 provider_id: "itunes".into(),
                 external_id: "it-3".into(),
                 target: Some(ScrapeTargetKind::MusicTrack),
@@ -333,12 +344,12 @@ async fn music_picard_archive_and_opt_in_album_directory_cover() {
                 cover_url: Some(format!("http://{addr}/alb.png")),
                 ..Default::default()
             },
-            true,
-            false,
-            None,
-            false,
-            true,
-        )
+            apply_cover: true,
+            write_sidecar_lrc: false,
+            organize_by_template: None,
+            only_fill_missing: false,
+            write_album_cover: true,
+        })
         .await
         .unwrap();
     assert_eq!(d2.entry.rel_path, "周杰伦/叶惠美 (2003)/03 - 晴天.wav");

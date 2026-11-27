@@ -7,11 +7,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::http::ApiResult;
 
-use crate::domain::media::MediaFileDetail;
-use crate::domain::ops::{
-    BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
-    ComicOptimizeReportDto, ComicPagesSnapshotDto, MergeComicsReportDto, SaveComicPageInput,
+use crate::application::ops::{
+    BatchComicSeriesSyncInput, ComicImageReencodeFormat, ComicOptimizeReportDto,
+    ComicPagesSnapshotDto, MergeComicsReportDto, SaveComicPageInput,
 };
+use crate::application::workbench::{
+    BatchSyncReportDto, BatchSyncSpec, ComicWorkbenchOp, ComicWorkbenchResult,
+};
+use crate::domain::media::MediaFileDetail;
 use crate::domain::workspace::RootId;
 use crate::http::ToolHttpState;
 use crate::http::routes::{FileTargetQuery, apply_sandboxed_asset_headers, default_jpeg_quality};
@@ -37,10 +40,16 @@ async fn get_comic_pages(
     State(state): State<ToolHttpState>,
     Query(q): Query<FileTargetQuery>,
 ) -> ApiResult<Json<ComicPagesSnapshotDto>> {
-    let snap = state
-        .workbench
-        .get_comic_pages(RootId(q.root_id), &q.path)
-        .await?;
+    let ComicWorkbenchResult::Pages(snap) = state
+        .tools
+        .run_comic(ComicWorkbenchOp::ListPages {
+            root_id: RootId(q.root_id),
+            rel_path: q.path,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(snap))
 }
 
@@ -48,10 +57,18 @@ async fn get_comic_page_image(
     State(state): State<ToolHttpState>,
     Query(q): Query<ComicPageImageQuery>,
 ) -> ApiResult<Response> {
-    let payload = state
-        .workbench
-        .read_comic_page(RootId(q.root_id), &q.path, &q.entry, q.max_width)
-        .await?;
+    let ComicWorkbenchResult::Binary(payload) = state
+        .tools
+        .run_comic(ComicWorkbenchOp::ReadPage {
+            root_id: RootId(q.root_id),
+            rel_path: q.path,
+            entry_name: q.entry,
+            max_width: q.max_width,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     let mut resp = (StatusCode::OK, payload.bytes).into_response();
     apply_sandboxed_asset_headers(
         resp.headers_mut(),
@@ -83,18 +100,24 @@ async fn put_comic_pages(
     State(state): State<ToolHttpState>,
     Json(req): Json<SaveComicPagesRequest>,
 ) -> ApiResult<Json<ComicOptimizeResponse>> {
-    let (report, detail) = state
-        .workbench
-        .save_comic_pages(
-            RootId(req.root_id),
-            &req.path,
-            req.pages,
-            req.reencode,
-            req.jpeg_quality,
-            req.max_width,
-        )
-        .await?;
-    Ok(Json(ComicOptimizeResponse { report, detail }))
+    let ComicWorkbenchResult::Optimized(report, detail) = state
+        .tools
+        .run_comic(ComicWorkbenchOp::SavePages {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            pages: req.pages,
+            reencode: req.reencode,
+            jpeg_quality: req.jpeg_quality,
+            max_width: req.max_width,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(ComicOptimizeResponse {
+        report,
+        detail: *detail,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -112,17 +135,23 @@ async fn optimize_comic(
     State(state): State<ToolHttpState>,
     Json(req): Json<OptimizeComicRequest>,
 ) -> ApiResult<Json<ComicOptimizeResponse>> {
-    let (report, detail) = state
-        .workbench
-        .optimize_comic(
-            RootId(req.root_id),
-            &req.path,
-            req.reencode,
-            req.jpeg_quality,
-            req.max_width,
-        )
-        .await?;
-    Ok(Json(ComicOptimizeResponse { report, detail }))
+    let ComicWorkbenchResult::Optimized(report, detail) = state
+        .tools
+        .run_comic(ComicWorkbenchOp::Optimize {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            reencode: req.reencode,
+            jpeg_quality: req.jpeg_quality,
+            max_width: req.max_width,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(ComicOptimizeResponse {
+        report,
+        detail: *detail,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -145,18 +174,24 @@ async fn merge_comics(
     State(state): State<ToolHttpState>,
     Json(req): Json<MergeComicsRequest>,
 ) -> ApiResult<Json<MergeComicsResponse>> {
-    let (report, detail) = state
-        .workbench
-        .merge_comics(
-            RootId(req.root_id),
-            req.source_paths,
-            &req.output_rel_path,
-            req.series,
-            req.title,
-            req.volume,
-        )
-        .await?;
-    Ok(Json(MergeComicsResponse { report, detail }))
+    let ComicWorkbenchResult::Merged(report, detail) = state
+        .tools
+        .run_comic(ComicWorkbenchOp::Merge {
+            root_id: RootId(req.root_id),
+            source_paths: req.source_paths,
+            output_rel_path: req.output_rel_path,
+            series: req.series,
+            title: req.title,
+            volume: req.volume,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(MergeComicsResponse {
+        report,
+        detail: *detail,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -170,10 +205,14 @@ struct BatchSyncComicsRequest {
 async fn batch_sync_comics(
     State(state): State<ToolHttpState>,
     Json(req): Json<BatchSyncComicsRequest>,
-) -> ApiResult<Json<BatchComicSeriesSyncReportDto>> {
+) -> ApiResult<Json<BatchSyncReportDto>> {
     let report = state
-        .workbench
-        .batch_sync_comic_series(RootId(req.root_id), req.paths, req.input)
+        .metadata
+        .batch_sync(
+            RootId(req.root_id),
+            req.paths,
+            BatchSyncSpec::ComicSeries(req.input),
+        )
         .await?;
     Ok(Json(report))
 }

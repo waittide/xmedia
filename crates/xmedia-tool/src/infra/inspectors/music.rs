@@ -13,10 +13,10 @@ pub(crate) use xmedia_formats::music::{
 };
 use xmedia_formats::sniff_image_mime;
 
+use crate::application::ports::{ArtworkIo, MediaInspectorPort, QuickFileSummary};
 use crate::domain::media::{
     CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload, MusicFileMeta, MusicMetaPatch,
 };
-use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::{atomic_mutate_copy, atomic_write_bytes};
 use crate::infra::inspectors::map_format_err;
 use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
@@ -118,8 +118,13 @@ impl MediaInspectorPort for LoftyMusicInspector {
         MediaKind::Music
     }
 
-    fn supports_extension(&self, ext_lower: &str) -> bool {
-        AudioFormatExt::from_extension(ext_lower).is_some()
+    fn supports_path(&self, path: &Path) -> bool {
+        !path.is_dir()
+            && path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .is_some_and(|ext| AudioFormatExt::from_extension(&ext).is_some())
     }
 
     async fn summarize_file(&self, path: &Path, fallback_stem: &str) -> QuickFileSummary {
@@ -198,78 +203,88 @@ impl MediaInspectorPort for LoftyMusicInspector {
         Ok(MediaMetadataPayload::Music(updated))
     }
 
-    async fn read_artwork(
-        &self,
-        path: &Path,
-        slot: Option<&str>,
-    ) -> DomainResult<Option<BinaryPayload>> {
-        let p = path.to_path_buf();
-        let slot_owned = slot.map(str::to_ascii_lowercase);
-        tokio::task::spawn_blocking(move || {
-            if slot_owned.as_deref() != Some("album_cover")
-                && let Some(asset) = read_embedded_cover_from_path(&p).map_err(map_format_err)?
-            {
-                return Ok(Some(BinaryPayload {
-                    bytes: asset.bytes,
-                    mime_type: asset.mime_type,
-                }));
+    async fn artwork(&self, path: &Path, op: ArtworkIo<'_>) -> DomainResult<Option<BinaryPayload>> {
+        match op {
+            ArtworkIo::Read { slot } => read_music_artwork(path, slot).await,
+            ArtworkIo::Write {
+                slot,
+                bytes,
+                mime_type,
+            } => {
+                write_music_artwork(path, bytes, mime_type, slot).await?;
+                Ok(None)
             }
-            if let Some(cov_path) = find_album_cover_path(&p)
-                && let Ok(bytes) = std::fs::read(&cov_path)
-                && !bytes.is_empty()
-            {
-                let mime = sniff_image_mime(&bytes).to_string();
-                return Ok(Some(BinaryPayload {
-                    bytes,
-                    mime_type: mime,
-                }));
-            }
-            Ok(None)
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("artwork read task failed: {e}")))?
-    }
-
-    async fn write_artwork(
-        &self,
-        path: &Path,
-        bytes: &[u8],
-        mime_type: &str,
-        slot: &str,
-    ) -> DomainResult<()> {
-        let p = path.to_path_buf();
-        let raw = bytes.to_vec();
-        let mime_hint = if mime_type.trim().is_empty() {
-            sniff_image_mime(&raw).to_string()
-        } else {
-            mime_type.trim().to_string()
-        };
-        if slot.eq_ignore_ascii_case("album_cover") {
-            let ext = if mime_hint.contains("png") {
-                "png"
-            } else if mime_hint.contains("webp") {
-                "webp"
-            } else {
-                "jpg"
-            };
-            let parent = p
-                .parent()
-                .ok_or_else(|| {
-                    DomainError::Validation("audio file has no parent directory".into())
-                })?
-                .to_path_buf();
-            return tokio::task::spawn_blocking(move || {
-                write_image_replacing_opposite_ext(&parent, "cover", ext, &raw)
-            })
-            .await
-            .map_err(|e| DomainError::Storage(format!("album cover write failed: {e}")))?;
         }
-        tokio::task::spawn_blocking(move || {
-            atomic_mutate_copy(&p, |staging| {
-                write_embedded_cover_in_place(staging, &raw, &mime_hint).map_err(map_format_err)
-            })
+    }
+}
+
+async fn read_music_artwork(
+    path: &Path,
+    slot: Option<&str>,
+) -> DomainResult<Option<BinaryPayload>> {
+    let p = path.to_path_buf();
+    let slot_owned = slot.map(str::to_ascii_lowercase);
+    tokio::task::spawn_blocking(move || {
+        if slot_owned.as_deref() != Some("album_cover")
+            && let Some(asset) = read_embedded_cover_from_path(&p).map_err(map_format_err)?
+        {
+            return Ok(Some(BinaryPayload {
+                bytes: asset.bytes,
+                mime_type: asset.mime_type,
+            }));
+        }
+        if let Some(cov_path) = find_album_cover_path(&p)
+            && let Ok(bytes) = std::fs::read(&cov_path)
+            && !bytes.is_empty()
+        {
+            let mime = sniff_image_mime(&bytes).to_string();
+            return Ok(Some(BinaryPayload {
+                bytes,
+                mime_type: mime,
+            }));
+        }
+        Ok(None)
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("artwork read task failed: {e}")))?
+}
+
+async fn write_music_artwork(
+    path: &Path,
+    bytes: &[u8],
+    mime_type: &str,
+    slot: &str,
+) -> DomainResult<()> {
+    let p = path.to_path_buf();
+    let raw = bytes.to_vec();
+    let mime_hint = if mime_type.trim().is_empty() {
+        sniff_image_mime(&raw).to_string()
+    } else {
+        mime_type.trim().to_string()
+    };
+    if slot.eq_ignore_ascii_case("album_cover") {
+        let ext = if mime_hint.contains("png") {
+            "png"
+        } else if mime_hint.contains("webp") {
+            "webp"
+        } else {
+            "jpg"
+        };
+        let parent = p
+            .parent()
+            .ok_or_else(|| DomainError::Validation("audio file has no parent directory".into()))?
+            .to_path_buf();
+        return tokio::task::spawn_blocking(move || {
+            write_image_replacing_opposite_ext(&parent, "cover", ext, &raw)
         })
         .await
-        .map_err(|e| DomainError::Storage(format!("artwork write task failed: {e}")))?
+        .map_err(|e| DomainError::Storage(format!("album cover write failed: {e}")))?;
     }
+    tokio::task::spawn_blocking(move || {
+        atomic_mutate_copy(&p, |staging| {
+            write_embedded_cover_in_place(staging, &raw, &mime_hint).map_err(map_format_err)
+        })
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("artwork write task failed: {e}")))?
 }

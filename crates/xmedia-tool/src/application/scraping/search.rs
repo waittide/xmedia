@@ -11,11 +11,13 @@ use super::mapping::{
     filter_scraped_metadata_by_groups, is_webnovel_serial_only_provider,
 };
 use super::{
-    AutoScrapeMatchMode, AutoScrapeOptions, AutoScrapeResultDto, DryRunScrapeItemDto,
-    ScrapingOrchestratorService,
+    ApplyScrapeInput, AutoScrapeMatchMode, AutoScrapeOptions, AutoScrapeResultDto,
+    DryRunScrapeItemDto, ScrapeApplyService, ScraperCatalogService,
+};
+use crate::application::ports::{
+    ScrapeCacheLookup, ScrapeCacheValue, ScrapeCacheWrite, ScraperProviderPort,
 };
 use crate::domain::config::{ScraperPriorities, ToolSettings};
-use crate::domain::ports::ScraperProviderPort;
 use crate::domain::scraper::{
     AggregateScrapeResponse, FieldSourceBadge, ProviderBriefDto, ProviderStatusDto,
     ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
@@ -23,7 +25,7 @@ use crate::domain::scraper::{
 };
 use crate::domain::workspace::RootId;
 
-impl ScrapingOrchestratorService {
+impl ScraperCatalogService {
     fn sort_providers_by_priority(
         &self,
         domain: Option<MediaKind>,
@@ -155,13 +157,28 @@ impl ScrapingOrchestratorService {
             let cache = self.cache.clone();
             let transport = self.transport.clone();
             set.spawn(async move {
-                if let Some(cached) = cache.get_search(&id, &q, &loc, ttl_ms) {
+                if let Some(ScrapeCacheValue::Search(cached)) = cache.get(
+                    ScrapeCacheLookup::Search {
+                        provider_id: &id,
+                        query: &q,
+                        locale: &loc,
+                    },
+                    ttl_ms,
+                ) {
                     return (order_idx, cached);
                 }
                 transport.acquire_rate_slot(&id).await;
                 let items = match provider.search(&q, &c).await {
                     Ok(items) => {
-                        cache.put_search(&id, &q, &loc, ttl_ms, &items);
+                        cache.put(
+                            ScrapeCacheWrite::Search {
+                                provider_id: &id,
+                                query: &q,
+                                locale: &loc,
+                                items: &items,
+                            },
+                            ttl_ms,
+                        );
                         items
                     }
                     Err(err) => {
@@ -182,22 +199,6 @@ impl ScrapingOrchestratorService {
             }
         }
         per_provider
-    }
-
-    fn interleave_provider_candidates(
-        per_provider: &[Vec<ScrapeCandidate>],
-    ) -> Vec<ScrapeCandidate> {
-        let max_len = per_provider.iter().map(Vec::len).max().unwrap_or(0);
-        let total_cap: usize = per_provider.iter().map(Vec::len).sum();
-        let mut combined = Vec::with_capacity(total_cap);
-        for row in 0..max_len {
-            for bucket in per_provider {
-                if let Some(item) = bucket.get(row) {
-                    combined.push(item.clone());
-                }
-            }
-        }
-        combined
     }
 
     pub async fn search(&self, mut query: ScrapeQuery) -> DomainResult<Vec<ScrapeCandidate>> {
@@ -221,11 +222,9 @@ impl ScrapingOrchestratorService {
         let per_provider = self
             .search_selected_providers(&selected, &raw_settings, &query, &effective_locale)
             .await;
-        Ok(Self::interleave_provider_candidates(&per_provider))
+        Ok(interleave_provider_candidates(&per_provider))
     }
 
-    /// Searches all enabled providers concurrently in user-configured priority order, fetches full
-    /// details for each provider's top candidate in parallel, and merges all fields with provenance badges.
     pub async fn aggregate(&self, mut query: ScrapeQuery) -> DomainResult<AggregateScrapeResponse> {
         if query.keyword.trim().is_empty() && query.isbn.as_deref().unwrap_or("").trim().is_empty()
         {
@@ -240,7 +239,6 @@ impl ScrapingOrchestratorService {
         query.locale = Some(effective_locale.clone());
         let ttl_ms = raw_settings.scrape_cache_ttl_ms;
 
-        // Preserve user's configured priority order (or explicit ordered list when passed)
         let selected = self.select_providers_for_query(&raw_settings, &query);
         if selected.is_empty() {
             return Ok(AggregateScrapeResponse::default());
@@ -257,13 +255,11 @@ impl ScrapingOrchestratorService {
             })
             .collect();
 
-        // Phase 1: Parallel search across all selected providers
         let provider_count = selected.len();
         let per_provider = self
             .search_selected_providers(&selected, &raw_settings, &query, &effective_locale)
             .await;
 
-        // Phase 2: Parallel detail fetch for each provider's #1 candidate
         let mut selected_by_provider: BTreeMap<String, ScrapeCandidate> = BTreeMap::new();
         let mut detail_set = JoinSet::new();
 
@@ -281,24 +277,32 @@ impl ScrapingOrchestratorService {
             let transport = self.transport.clone();
             detail_set.spawn(async move {
                 let id = prov_desc.id.clone();
-                if let Some(cached) =
-                    cache.get_detail(&id, top_cand.target, &top_cand.external_id, &loc, ttl_ms)
-                {
-                    return (order_idx, id, prov_desc.name, cached);
+                if let Some(ScrapeCacheValue::Detail(cached)) = cache.get(
+                    ScrapeCacheLookup::Detail {
+                        provider_id: &id,
+                        target: top_cand.target,
+                        external_id: &top_cand.external_id,
+                        locale: &loc,
+                    },
+                    ttl_ms,
+                ) {
+                    return (order_idx, id, prov_desc.name, *cached);
                 }
                 transport.acquire_rate_slot(&id).await;
-                let detail_res = provider
+                let detail = match provider
                     .fetch_detail(&top_cand.external_id, top_cand.target, &loc, &c)
-                    .await;
-                let detail = match detail_res {
+                    .await
+                {
                     Ok(d) => {
-                        cache.put_detail(
-                            &id,
-                            top_cand.target,
-                            &top_cand.external_id,
-                            &loc,
+                        cache.put(
+                            ScrapeCacheWrite::Detail {
+                                provider_id: &id,
+                                target: top_cand.target,
+                                external_id: &top_cand.external_id,
+                                locale: &loc,
+                                detail: &d,
+                            },
                             ttl_ms,
-                            &d,
                         );
                         d
                     }
@@ -348,7 +352,7 @@ impl ScrapingOrchestratorService {
             raw_active
         };
         let merged = merge_scraped_by_priority(&active_sources, query.target);
-        let combined = Self::interleave_provider_candidates(&per_provider);
+        let combined = interleave_provider_candidates(&per_provider);
 
         Ok(AggregateScrapeResponse {
             provider_order,
@@ -396,31 +400,52 @@ impl ScrapingOrchestratorService {
         }
 
         let ttl_ms = raw_settings.scrape_cache_ttl_ms;
-        if let Some(cached) =
-            self.cache
-                .get_detail(provider_id, target, external_id, &effective_locale, ttl_ms)
-        {
-            return Ok(cached);
+        if let Some(ScrapeCacheValue::Detail(cached)) = self.cache.get(
+            ScrapeCacheLookup::Detail {
+                provider_id,
+                target,
+                external_id,
+                locale: &effective_locale,
+            },
+            ttl_ms,
+        ) {
+            return Ok(*cached);
         }
 
         self.transport.acquire_rate_slot(provider_id).await;
         let detail = provider
             .fetch_detail(external_id, target, &effective_locale, &creds)
             .await?;
-        self.cache.put_detail(
-            provider_id,
-            target,
-            external_id,
-            &effective_locale,
+        self.cache.put(
+            ScrapeCacheWrite::Detail {
+                provider_id,
+                target,
+                external_id,
+                locale: &effective_locale,
+                detail: &detail,
+            },
             ttl_ms,
-            &detail,
         );
         Ok(detail)
     }
+}
 
-    /// Automatic waterfall scrape for background task queue:
-    /// Priority order: Local non-empty metadata -> #1 Priority Provider -> #2 Priority Provider -> ...
-    pub async fn dry_run_files(
+fn interleave_provider_candidates(per_provider: &[Vec<ScrapeCandidate>]) -> Vec<ScrapeCandidate> {
+    let max_len = per_provider.iter().map(Vec::len).max().unwrap_or(0);
+    let total_cap: usize = per_provider.iter().map(Vec::len).sum();
+    let mut combined = Vec::with_capacity(total_cap);
+    for row in 0..max_len {
+        for bucket in per_provider {
+            if let Some(item) = bucket.get(row) {
+                combined.push(item.clone());
+            }
+        }
+    }
+    combined
+}
+
+impl ScrapeApplyService {
+    pub async fn dry_run(
         &self,
         root_id: RootId,
         paths: Vec<String>,
@@ -428,7 +453,7 @@ impl ScrapingOrchestratorService {
     ) -> DomainResult<Vec<DryRunScrapeItemDto>> {
         let mut results = Vec::with_capacity(paths.len());
         for rel_path in paths {
-            let detail = match self.workbench.inspect_file(root_id, &rel_path, None).await {
+            let detail = match self.workspace.inspect(root_id, &rel_path, None).await {
                 Ok(d) => d,
                 Err(e) => {
                     results.push(DryRunScrapeItemDto {
@@ -452,7 +477,7 @@ impl ScrapingOrchestratorService {
                 query.locale = locale.clone();
             }
             let kw = query.keyword.clone();
-            match self.aggregate(query.clone()).await {
+            match self.catalog.aggregate(query.clone()).await {
                 Ok(agg) => {
                     let confidence = compute_scrape_confidence(&query, &agg);
                     let meta = agg.merged.metadata;
@@ -497,22 +522,7 @@ impl ScrapingOrchestratorService {
         Ok(results)
     }
 
-    pub async fn auto_scrape_file(
-        &self,
-        root_id: RootId,
-        rel_path: &str,
-        media_kind: MediaKind,
-    ) -> DomainResult<AutoScrapeResultDto> {
-        self.auto_scrape_file_with_options(
-            root_id,
-            rel_path,
-            media_kind,
-            AutoScrapeOptions::default(),
-        )
-        .await
-    }
-
-    pub async fn auto_scrape_file_with_options(
+    pub async fn auto_scrape(
         &self,
         root_id: RootId,
         rel_path: &str,
@@ -520,8 +530,8 @@ impl ScrapingOrchestratorService {
         opts: AutoScrapeOptions,
     ) -> DomainResult<AutoScrapeResultDto> {
         let local_detail = self
-            .workbench
-            .inspect_file(root_id, rel_path, Some(media_kind))
+            .workspace
+            .inspect(root_id, rel_path, Some(media_kind))
             .await?;
         let mut query = build_auto_query_from_detail(&local_detail);
         if !opts.providers.is_empty() {
@@ -536,7 +546,7 @@ impl ScrapingOrchestratorService {
             });
         }
 
-        let agg = self.aggregate(query.clone()).await?;
+        let agg = self.catalog.aggregate(query.clone()).await?;
         let confidence = compute_scrape_confidence(&query, &agg);
         let has_hit = agg
             .merged
@@ -567,17 +577,17 @@ impl ScrapingOrchestratorService {
             filter_scraped_metadata_by_groups(agg.merged.metadata, &opts.field_groups);
 
         let updated = self
-            .apply_to_file_ext(
+            .apply(ApplyScrapeInput {
                 root_id,
-                rel_path,
+                rel_path: rel_path.to_string(),
                 media_kind,
-                filtered_meta,
-                opts.apply_cover,
-                opts.write_sidecar_lrc,
-                Some(opts.organize_by_template),
-                opts.only_fill_missing,
-                false,
-            )
+                scraped: filtered_meta,
+                apply_cover: opts.apply_cover,
+                write_sidecar_lrc: opts.write_sidecar_lrc,
+                organize_by_template: Some(opts.organize_by_template),
+                only_fill_missing: opts.only_fill_missing,
+                write_album_cover: false,
+            })
             .await?;
 
         Ok(AutoScrapeResultDto {

@@ -10,9 +10,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
+use crate::application::ops::WebhookTestReportDto;
+use crate::application::ports::HttpWebhookPort;
 use crate::domain::config::XmediaWebhookConfig;
-use crate::domain::ops::WebhookTestReportDto;
-use crate::domain::ports::HttpWebhookPort;
 use crate::infra::scrapers::http_client::{
     DEFAULT_TOOL_USER_AGENT, is_blocked_metadata_or_link_local_ip,
 };
@@ -22,22 +22,6 @@ pub struct ReqwestWebhookClient;
 
 #[async_trait]
 impl HttpWebhookPort for ReqwestWebhookClient {
-    async fn test_webhook(&self, cfg: &XmediaWebhookConfig) -> DomainResult<WebhookTestReportDto> {
-        let (_client, _base, _api_key, libs) = fetch_remote_libraries(cfg).await?;
-        let mount_names: Vec<String> = libs
-            .iter()
-            .filter(|l| matches!(l.kind, RemoteLibraryKind::LocalMount { .. }))
-            .map(|l| l.name.clone())
-            .collect();
-
-        Ok(WebhookTestReportDto {
-            ok: true,
-            matched_libraries: mount_names,
-            total_libraries: libs.len(),
-            message: format!("已连接主站，发现 {} 个媒体库", libs.len()),
-        })
-    }
-
     async fn notify_rescan(&self, cfg: &XmediaWebhookConfig, changed_root_path: &Path) {
         if !cfg.enabled {
             return;
@@ -61,13 +45,28 @@ impl HttpWebhookPort for ReqwestWebhookClient {
         .await;
     }
 
-    async fn trigger_rescan(
+    async fn dispatch_rescan(
         &self,
         cfg: &XmediaWebhookConfig,
         changed_root_path: Option<&Path>,
+        trigger_scans: bool,
     ) -> DomainResult<WebhookTestReportDto> {
         let (client, base, api_key, libs) = fetch_remote_libraries(cfg).await?;
         let total_libraries = libs.len();
+        if !trigger_scans {
+            let mount_names: Vec<String> = libs
+                .iter()
+                .filter(|l| matches!(l.kind, RemoteLibraryKind::LocalMount { .. }))
+                .map(|l| l.name.clone())
+                .collect();
+            return Ok(WebhookTestReportDto {
+                ok: true,
+                matched_libraries: mount_names,
+                total_libraries,
+                message: format!("已连接主站，发现 {total_libraries} 个媒体库"),
+            });
+        }
+
         let triggered =
             dispatch_matching_scans(&client, base, api_key, libs, changed_root_path, "manual")
                 .await;

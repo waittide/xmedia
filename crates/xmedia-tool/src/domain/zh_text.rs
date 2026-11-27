@@ -258,7 +258,7 @@ fn is_verbatim_xhtml_tag(tag_name: &str) -> bool {
 
 /// Converts text nodes inside HTML/XHTML without touching tag names, attributes, XML entities,
 /// or verbatim code/style/script blocks.
-pub fn transform_xhtml_preserving_tags<F>(xhtml: &str, mut transform_text: F) -> String
+fn transform_xhtml_preserving_tags<F>(xhtml: &str, mut transform_text: F) -> String
 where
     F: FnMut(&str) -> String,
 {
@@ -337,7 +337,7 @@ where
     out
 }
 
-pub fn convert_quotes_vertical_to_horizontal(text: &str) -> String {
+fn convert_quotes_vertical_to_horizontal(text: &str) -> String {
     text.replace('「', "“")
         .replace('」', "”")
         .replace('『', "‘")
@@ -395,7 +395,7 @@ fn replace_bounded_runs(text: &str) -> String {
     out
 }
 
-pub fn normalize_chinese_punctuation_segment(
+fn normalize_chinese_punctuation_segment(
     text: &str,
     open_double: &mut bool,
     open_single: &mut bool,
@@ -433,7 +433,7 @@ pub fn normalize_chinese_punctuation_segment(
     out
 }
 
-pub fn strip_webnovel_noise_lines(
+fn strip_webnovel_noise_lines(
     plain_or_xhtml: &str,
     clean_builtin: bool,
     custom_res: &[Regex],

@@ -10,7 +10,7 @@ use xmedia_core::domain::library::MediaKind;
 pub struct RootId(pub Uuid);
 
 impl RootId {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self(Uuid::now_v7())
     }
 }
@@ -69,11 +69,6 @@ impl ManagedRoot {
             default_kind,
             read_only: false,
         }
-    }
-
-    pub fn with_read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only;
-        self
     }
 
     pub fn ensure_writable(&self) -> DomainResult<()> {
@@ -167,7 +162,7 @@ pub fn sanitize_relative_path(raw: &str) -> DomainResult<PathBuf> {
     Ok(out)
 }
 
-pub fn sanitize_filename_component(raw: &str) -> String {
+pub(in crate::domain) fn sanitize_filename_component(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
         .map(|c| match c {
@@ -182,4 +177,53 @@ pub fn sanitize_filename_component(raw: &str) -> String {
         .join(" ")
         .trim_matches('.')
         .to_string()
+}
+
+pub fn paths_overlap(a: &Path, b: &Path) -> bool {
+    a == b || a.starts_with(b) || b.starts_with(a)
+}
+
+pub const SHARED_DIR_SIDECAR_FILES: &[&str] = &[
+    "metadata.opf",
+    "movie.nfo",
+    "season.nfo",
+    "tvshow.nfo",
+    "poster.jpg",
+    "poster.jpeg",
+    "poster.png",
+    "poster.webp",
+    "fanart.jpg",
+    "fanart.jpeg",
+    "fanart.png",
+    "fanart.webp",
+    "cover.jpg",
+    "cover.jpeg",
+    "cover.png",
+    "cover.webp",
+    "folder.jpg",
+    "folder.jpeg",
+    "folder.png",
+    "folder.webp",
+    "front.jpg",
+    "front.jpeg",
+    "front.png",
+    "front.webp",
+];
+
+pub fn is_shared_dir_sidecar_name(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    SHARED_DIR_SIDECAR_FILES.contains(&lower.as_str())
+}
+
+pub fn is_dedicated_subfolder_for(kind: MediaKind, dir_name: &str) -> bool {
+    let trimmed = dir_name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    match kind {
+        MediaKind::Book => !xmedia_formats::book::sidecar::is_generic_book_folder(trimmed),
+        MediaKind::Comic => !xmedia_formats::comic::filename::is_generic_comic_folder(trimmed),
+        MediaKind::Music => !xmedia_formats::music::is_generic_music_folder(trimmed),
+        MediaKind::Video => true,
+    }
 }

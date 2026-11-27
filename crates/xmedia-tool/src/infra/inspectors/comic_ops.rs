@@ -11,20 +11,61 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_formats::comic::probe_comic_pages;
+use xmedia_formats::comic::inspect_comic_path;
 use xmedia_formats::sniff_image_mime;
 use zip::ZipArchive;
 
-pub use crate::domain::ops::{
-    BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
-    ComicOptimizeReportDto, ComicPageInfoDto, ComicPagesSnapshotDto, MergeComicsReportDto,
-    SaveComicPageInput,
+use crate::application::ops::{
+    ComicImageReencodeFormat, ComicOptimizeReportDto, ComicPageInfoDto, ComicPagesSnapshotDto,
+    ComicToolCommand, ComicToolOutput, MergeComicsReportDto, SaveComicPageInput,
 };
 use crate::infra::inspectors::map_format_err;
 
-pub use archive::{merge_comics_to_cbz, optimize_comic_cbz, save_comic_pages};
+use archive::{merge_comics_to_cbz, optimize_comic_cbz, save_comic_pages};
 
-pub fn list_comic_pages(path: &Path) -> DomainResult<ComicPagesSnapshotDto> {
+pub fn run_comic_tool(cmd: ComicToolCommand) -> DomainResult<ComicToolOutput> {
+    match cmd {
+        ComicToolCommand::ListPages { path } => list_comic_pages(&path).map(ComicToolOutput::Pages),
+        ComicToolCommand::ReadPageImage {
+            path,
+            entry_name,
+            max_width,
+        } => read_comic_page_image(&path, &entry_name, max_width).map(ComicToolOutput::Binary),
+        ComicToolCommand::SavePages {
+            path,
+            pages,
+            reencode,
+            jpeg_quality,
+            max_width,
+        } => save_comic_pages(&path, &pages, reencode, jpeg_quality, max_width)
+            .map(ComicToolOutput::Optimized),
+        ComicToolCommand::OptimizeCbz {
+            path,
+            reencode,
+            jpeg_quality,
+            max_width,
+        } => optimize_comic_cbz(&path, reencode, jpeg_quality, max_width)
+            .map(ComicToolOutput::Optimized),
+        ComicToolCommand::MergeToCbz {
+            sources,
+            target_abs,
+            output_rel_path,
+            series,
+            title,
+            volume,
+        } => merge_comics_to_cbz(
+            &sources,
+            &target_abs,
+            output_rel_path,
+            series,
+            title,
+            volume,
+        )
+        .map(ComicToolOutput::Merged),
+    }
+}
+
+fn list_comic_pages(path: &Path) -> DomainResult<ComicPagesSnapshotDto> {
     let format = if path.is_dir() {
         "folder".to_string()
     } else {
@@ -34,7 +75,7 @@ pub fn list_comic_pages(path: &Path) -> DomainResult<ComicPagesSnapshotDto> {
             .to_ascii_lowercase()
     };
 
-    let probed = probe_comic_pages(path).map_err(map_format_err)?;
+    let probed = inspect_comic_path(path).map_err(map_format_err)?.pages;
     let total_size_bytes = if path.is_dir() {
         probed.iter().map(|p| p.file_size).sum()
     } else {
@@ -74,7 +115,7 @@ pub fn list_comic_pages(path: &Path) -> DomainResult<ComicPagesSnapshotDto> {
     })
 }
 
-pub fn read_comic_page_image(
+fn read_comic_page_image(
     path: &Path,
     entry_name: &str,
     max_width: Option<u32>,

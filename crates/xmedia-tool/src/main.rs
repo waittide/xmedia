@@ -6,7 +6,7 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use xmedia_tool::{XMediaToolApp, XMediaToolConfig};
+use xmedia_tool::{ToolInitOptions, XMediaToolApp, XMediaToolConfig};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .local_addr()
         .context("failed resolving bound socket address")?;
 
-    let app = XMediaToolApp::init_with_bind_cors_and_lock(
+    let app = XMediaToolApp::init_with_options(
         XMediaToolConfig {
             data_dir: cli.data_dir,
             initial_roots: cli.roots,
@@ -89,9 +89,12 @@ async fn main() -> anyhow::Result<()> {
             ffmpeg_bin: cli.ffmpeg_bin,
             external_web_dir: cli.web_dir,
         },
-        Some(bound_addr),
-        &cli.cors_allow_origins,
-        cli.lock_roots,
+        ToolInitOptions {
+            providers: None,
+            bind_addr: Some(bound_addr),
+            cors_allow_origins: cli.cors_allow_origins,
+            lock_roots: cli.lock_roots,
+        },
     )
     .await?;
 
@@ -101,10 +104,14 @@ async fn main() -> anyhow::Result<()> {
         if password_enabled { "enabled" } else { "open" }
     );
 
-    axum::serve(listener, app.router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("xmedia-tool http server error")?;
+    axum::serve(
+        listener,
+        app.router
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("xmedia-tool http server error")?;
 
     Ok(())
 }

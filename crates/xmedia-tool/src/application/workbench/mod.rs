@@ -1,31 +1,34 @@
-mod book_ops;
 mod browse;
-mod media_ops;
 mod metadata;
 mod rename;
 mod rename_exec;
+mod tools;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use tokio::sync::RwLock;
 use uuid::Uuid;
 use walkdir::WalkDir;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 
-use crate::application::batch_metadata::MetadataHistoryBatchDto;
-use crate::application::settings::ToolSettingsService;
+use crate::application::ports::MediaInspectorPort;
 use crate::domain::config::RenameTemplates;
 use crate::domain::media::{MediaFileEntry, MediaMetadataPayload, RenameConflictPolicy};
-use crate::domain::ports::{
-    HttpWebhookPort, MediaInspectorPort, MediaToolboxPort, WorkspaceFsPort,
-};
 use crate::domain::template::render_template_target;
-use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
+use crate::domain::workspace::{ManagedRoot, RootId, path_to_slash};
+
+pub use browse::{WorkspaceArtworkOutput, WorkspaceBrowserService};
+pub(in crate::application) use metadata::MetadataHistoryEvent;
+pub use metadata::{BatchSyncReportDto, BatchSyncSpec, MetadataService};
+pub use rename::RenameService;
+pub use tools::{
+    BookWorkbenchOp, BookWorkbenchResult, ComicWorkbenchOp, ComicWorkbenchResult,
+    FormatToolsService, MusicWorkbenchOp, MusicWorkbenchResult, VideoWorkbenchOp,
+    VideoWorkbenchResult,
+};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkbenchProgress {
@@ -75,212 +78,105 @@ pub struct UndoRenameReportDto {
     pub skipped_conflicts: Vec<String>,
 }
 
-#[derive(Clone)]
-pub struct MediaWorkbenchService {
-    pub(super) settings: ToolSettingsService,
-    pub(super) inspectors: Vec<Arc<dyn MediaInspectorPort>>,
-    pub(super) fs: Arc<dyn WorkspaceFsPort>,
-    pub(super) toolbox: Arc<dyn MediaToolboxPort>,
-    pub(super) webhook: Arc<dyn HttpWebhookPort>,
-    pub(super) ffmpeg: FfmpegToolkit,
-    pub(super) rename_history: Arc<RwLock<Vec<RenameHistoryBatchDto>>>,
-    pub(super) metadata_history: Arc<RwLock<Vec<MetadataHistoryBatchDto>>>,
-    pub(super) root_locks: Arc<std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
+/// Shared per-root mutex registry serializing rename/archive mutations within a `ManagedRoot`.
+#[derive(Clone, Default)]
+pub struct RootLockRegistry {
+    locks: Arc<std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
-impl MediaWorkbenchService {
-    pub fn new(
-        settings: ToolSettingsService,
-        inspectors: Vec<Arc<dyn MediaInspectorPort>>,
-        fs: Arc<dyn WorkspaceFsPort>,
-        toolbox: Arc<dyn MediaToolboxPort>,
-        webhook: Arc<dyn HttpWebhookPort>,
-        ffmpeg: FfmpegToolkit,
-    ) -> Self {
-        Self {
-            settings,
-            inspectors,
-            fs,
-            toolbox,
-            webhook,
-            ffmpeg,
-            rename_history: Arc::new(RwLock::new(Vec::new())),
-            metadata_history: Arc::new(RwLock::new(Vec::new())),
-            root_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn fs(&self) -> &Arc<dyn WorkspaceFsPort> {
-        &self.fs
-    }
-
-    pub fn toolbox(&self) -> &Arc<dyn MediaToolboxPort> {
-        &self.toolbox
-    }
-
-    pub fn webhook(&self) -> &Arc<dyn HttpWebhookPort> {
-        &self.webhook
-    }
-
-    pub(crate) fn root_write_lock(&self, root_id: RootId) -> Arc<tokio::sync::Mutex<()>> {
-        let mut guard = self.root_locks.lock().unwrap_or_else(|e| e.into_inner());
+impl RootLockRegistry {
+    pub(in crate::application) fn lock_for(&self, root_id: RootId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self.locks.lock().unwrap_or_else(|e| e.into_inner());
         Arc::clone(
             guard
                 .entry(root_id.0)
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
         )
     }
+}
 
-    pub fn resolve_inspector_for_path(
-        &self,
-        path: &Path,
-        preferred_kind: Option<MediaKind>,
-    ) -> Option<Arc<dyn MediaInspectorPort>> {
-        if path.is_dir() {
-            if let Some(pref) = preferred_kind
-                && let Some(matched) = self
-                    .inspectors
-                    .iter()
-                    .find(|ins| ins.media_kind() == pref && ins.supports_directory(path))
-            {
-                return Some(Arc::clone(matched));
-            }
-            return self
-                .inspectors
-                .iter()
-                .find(|ins| ins.supports_directory(path))
-                .cloned();
-        }
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())?
-            .to_ascii_lowercase();
-        if let Some(pref) = preferred_kind
-            && let Some(matched) = self
-                .inspectors
-                .iter()
-                .find(|ins| ins.media_kind() == pref && ins.supports_extension(&ext))
-        {
-            return Some(Arc::clone(matched));
-        }
-        self.inspectors
+pub(super) fn find_inspector_for_path(
+    inspectors: &[Arc<dyn MediaInspectorPort>],
+    path: &Path,
+    preferred_kind: Option<MediaKind>,
+) -> Option<Arc<dyn MediaInspectorPort>> {
+    if let Some(pref) = preferred_kind
+        && let Some(matched) = inspectors
             .iter()
-            .find(|ins| ins.supports_extension(&ext))
-            .cloned()
+            .find(|ins| ins.media_kind() == pref && ins.supports_path(path))
+    {
+        return Some(Arc::clone(matched));
     }
+    inspectors
+        .iter()
+        .find(|ins| ins.supports_path(path))
+        .cloned()
+}
 
-    pub(super) async fn resolve_writable_media_file(
-        &self,
-        root_id: RootId,
-        rel_path: &str,
-        preferred_kind: Option<MediaKind>,
-    ) -> DomainResult<(ManagedRoot, SandboxPath, Arc<dyn MediaInspectorPort>)> {
-        let (root, sandbox, inspector) = self
-            .resolve_media_file(root_id, rel_path, preferred_kind)
-            .await?;
-        root.ensure_writable()?;
-        Ok((root, sandbox, inspector))
-    }
-
-    pub(super) async fn resolve_media_file(
-        &self,
-        root_id: RootId,
-        rel_path: &str,
-        preferred_kind: Option<MediaKind>,
-    ) -> DomainResult<(ManagedRoot, SandboxPath, Arc<dyn MediaInspectorPort>)> {
-        let root = self.settings.find_root(root_id).await?;
-        let sandbox = self.fs.resolve_existing_in_root(&root, rel_path)?;
-        let effective_pref = preferred_kind.or(root.default_kind);
-        if !sandbox.abs_path.is_file() && !sandbox.abs_path.is_dir() {
-            return Err(DomainError::Validation(format!(
-                "'{}' is not a regular file",
-                sandbox.rel_slash_string()
-            )));
-        }
-        let inspector = self
-            .resolve_inspector_for_path(&sandbox.abs_path, effective_pref)
-            .ok_or_else(|| {
-                if sandbox.abs_path.is_dir() {
-                    DomainError::Validation(format!(
-                        "'{}' is not a regular file",
-                        sandbox.rel_slash_string()
-                    ))
-                } else {
-                    DomainError::UnsupportedFormat(format!(
-                        "unsupported media file '{}'",
-                        sandbox.rel_slash_string()
-                    ))
-                }
-            })?;
-        Ok((root, sandbox, inspector))
-    }
-
-    pub(super) async fn build_file_entry(
-        &self,
-        root: &ManagedRoot,
-        abs_path: &Path,
-        file_name: &str,
-        inspector: &dyn MediaInspectorPort,
-        rename_templates: &RenameTemplates,
-    ) -> DomainResult<MediaFileEntry> {
-        let fs_meta = tokio::fs::metadata(abs_path).await.map_err(|e| {
-            DomainError::Storage(format!("failed stating '{}': {e}", abs_path.display()))
-        })?;
-        let modified_unix_secs = fs_meta
-            .modified()
+pub(super) async fn build_file_entry(
+    root: &ManagedRoot,
+    abs_path: &Path,
+    file_name: &str,
+    inspector: &dyn MediaInspectorPort,
+    rename_templates: &RenameTemplates,
+) -> DomainResult<MediaFileEntry> {
+    let fs_meta = tokio::fs::metadata(abs_path).await.map_err(|e| {
+        DomainError::Storage(format!("failed stating '{}': {e}", abs_path.display()))
+    })?;
+    let modified_unix_secs = fs_meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let rel_path = abs_path
+        .strip_prefix(&root.path)
+        .map(path_to_slash)
+        .unwrap_or_else(|_| file_name.to_string());
+    let is_dir = abs_path.is_dir();
+    let (raw_ext, ext, fallback_stem, file_size) = if is_dir {
+        let dir_bytes = std::fs::read_dir(abs_path)
             .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| e.metadata().ok())
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .sum::<u64>()
+            })
             .unwrap_or(0);
-        let rel_path = abs_path
-            .strip_prefix(&root.path)
-            .map(path_to_slash)
-            .unwrap_or_else(|_| file_name.to_string());
-        let is_dir = abs_path.is_dir();
-        let (raw_ext, ext, fallback_stem, file_size) = if is_dir {
-            let dir_bytes = std::fs::read_dir(abs_path)
-                .ok()
-                .map(|rd| {
-                    rd.flatten()
-                        .filter_map(|e| e.metadata().ok())
-                        .filter(|m| m.is_file())
-                        .map(|m| m.len())
-                        .sum::<u64>()
-                })
-                .unwrap_or(0);
-            ("", "folder".to_string(), file_name, dir_bytes)
-        } else {
-            let re = abs_path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default();
-            let fs = abs_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(file_name);
-            (re, re.to_ascii_lowercase(), fs, fs_meta.len())
-        };
+        ("", "folder".to_string(), file_name, dir_bytes)
+    } else {
+        let re = abs_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let fs = abs_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(file_name);
+        (re, re.to_ascii_lowercase(), fs, fs_meta.len())
+    };
 
-        let mut quick = inspector.summarize_file(abs_path, fallback_stem).await;
-        if let Some(ref meta) = quick.metadata {
-            quick.completeness.is_organized =
-                is_entry_organized(abs_path, &rel_path, raw_ext, meta, rename_templates);
-        }
-
-        Ok(MediaFileEntry {
-            root_id: root.id,
-            rel_path,
-            file_name: file_name.to_string(),
-            extension: ext,
-            media_kind: inspector.media_kind(),
-            file_size,
-            modified_unix_secs,
-            display_title: quick.display_title,
-            display_subtitle: quick.display_subtitle,
-            year: quick.year,
-            completeness: quick.completeness,
-        })
+    let mut quick = inspector.summarize_file(abs_path, fallback_stem).await;
+    if let Some(ref meta) = quick.metadata {
+        quick.completeness.is_organized =
+            is_entry_organized(abs_path, &rel_path, raw_ext, meta, rename_templates);
     }
+
+    Ok(MediaFileEntry {
+        root_id: root.id,
+        rel_path,
+        file_name: file_name.to_string(),
+        extension: ext,
+        media_kind: inspector.media_kind(),
+        file_size,
+        modified_unix_secs,
+        display_title: quick.display_title,
+        display_subtitle: quick.display_subtitle,
+        year: quick.year,
+        completeness: quick.completeness,
+    })
 }
 
 fn is_entry_organized(
@@ -331,19 +227,71 @@ pub(super) fn dir_has_any_media_file(
         })
         .flatten()
         .any(|entry| {
-            if entry.depth() > 0 && entry.file_type().is_dir() {
-                return inspectors
-                    .iter()
-                    .any(|ins| ins.supports_directory(entry.path()));
-            }
-            entry.file_type().is_file()
-                && entry
-                    .path()
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_ascii_lowercase())
-                    .is_some_and(|lower| {
-                        inspectors.iter().any(|ins| ins.supports_extension(&lower))
-                    })
+            entry.depth() > 0
+                && !entry.file_type().is_symlink()
+                && inspectors.iter().any(|ins| ins.supports_path(entry.path()))
         })
+}
+
+pub(super) fn is_same_physical_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return ma.dev() == mb.dev() && ma.ino() == mb.ino();
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        if let (Ok(ca), Ok(cb)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            return ca == cb;
+        }
+        false
+    }
+}
+
+pub(super) fn rename_path_preserving_case(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if src == dst {
+        return Ok(());
+    }
+    if is_same_physical_file(src, dst) {
+        let tmp = src.with_file_name(format!(".xmedia_case_{}.tmp", Uuid::now_v7().simple()));
+        std::fs::rename(src, &tmp)?;
+        if let Err(err) = std::fs::rename(&tmp, dst) {
+            let _ = std::fs::rename(&tmp, src);
+            return Err(err);
+        }
+        return Ok(());
+    }
+    std::fs::rename(src, dst)
+}
+
+#[cfg(test)]
+mod rename_case_tests {
+    use super::{is_same_physical_file, rename_path_preserving_case};
+
+    #[test]
+    fn same_physical_file_and_two_step_rename_preserve_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_a = tmp.path().join("song.flac");
+        let file_b = tmp.path().join("other.flac");
+        std::fs::write(&file_a, b"audio-bytes").unwrap();
+        std::fs::write(&file_b, b"other-bytes").unwrap();
+
+        assert!(is_same_physical_file(&file_a, &file_a));
+        assert!(!is_same_physical_file(&file_a, &file_b));
+
+        #[cfg(unix)]
+        {
+            let link_a = tmp.path().join("Song.flac");
+            std::fs::hard_link(&file_a, &link_a).unwrap();
+            assert!(is_same_physical_file(&file_a, &link_a));
+            rename_path_preserving_case(&file_a, &link_a).unwrap();
+            assert_eq!(std::fs::read(&link_a).unwrap(), b"audio-bytes");
+        }
+    }
 }

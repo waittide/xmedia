@@ -4,10 +4,9 @@ use quick_xml::events::BytesStart;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_formats::book::epub::{
     find_opf_path_in_container as fmt_find_opf_path_in_container, inspect_epub_path,
-    normalize_zip_path,
 };
 use xmedia_formats::book::epub_write::rewrite_epub_file_entries;
-use xmedia_formats::common::xml_attr_value;
+use xmedia_formats::common::{normalize_zip_path, xml_attr_value};
 
 use super::opf::parsed_book_to_file_meta;
 use crate::domain::media::BookFileMeta;

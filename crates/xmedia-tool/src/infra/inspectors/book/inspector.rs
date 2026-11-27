@@ -19,10 +19,10 @@ use super::sidecar::{
     BOOK_EXTENSIONS, dir_has_single_book, find_existing_sidecar_opf, find_sidecar_cover,
     is_dedicated_calibre_book_dir, preferred_write_opf_path, read_book_meta_any,
 };
+use crate::application::ports::{ArtworkIo, MediaInspectorPort, QuickFileSummary};
 use crate::domain::media::{
     BookFileMeta, BookMetaPatch, CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload,
 };
-use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::atomic_write_bytes;
 use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
 use xmedia_formats::book::{BookFormatExt, parse_book_bytes};
@@ -35,8 +35,13 @@ impl MediaInspectorPort for EpubBookInspector {
         MediaKind::Book
     }
 
-    fn supports_extension(&self, ext_lower: &str) -> bool {
-        BOOK_EXTENSIONS.contains(&ext_lower)
+    fn supports_path(&self, path: &Path) -> bool {
+        !path.is_dir()
+            && path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .is_some_and(|ext| BOOK_EXTENSIONS.contains(&ext.as_str()))
     }
 
     async fn summarize_file(&self, path: &Path, fallback_stem: &str) -> QuickFileSummary {
@@ -182,89 +187,92 @@ impl MediaInspectorPort for EpubBookInspector {
         Ok(MediaMetadataPayload::Book(updated))
     }
 
-    async fn read_artwork(
-        &self,
-        path: &Path,
-        _slot: Option<&str>,
-    ) -> DomainResult<Option<BinaryPayload>> {
-        let p = path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let ext = p
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if ext == "epub" {
-                let parsed = parse_epub_archive(&p)?;
-                if let Some(cover_entry) = parsed.cover_entry_path {
-                    let src_file = File::open(&p)
-                        .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
-                    let mut archive = ZipArchive::new(BufReader::new(src_file))
-                        .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
-                    let mut entry = archive
-                        .by_name(&cover_entry)
-                        .map_err(|e| DomainError::Storage(format!("cover missing: {e}")))?;
-                    let mut buf = Vec::new();
-                    entry
-                        .read_to_end(&mut buf)
-                        .map_err(|e| DomainError::Storage(format!("cover read error: {e}")))?;
-                    let mime = sniff_image_mime(&buf).to_string();
-                    return Ok(Some(BinaryPayload {
-                        bytes: buf,
-                        mime_type: mime,
-                    }));
-                }
+    async fn artwork(&self, path: &Path, op: ArtworkIo<'_>) -> DomainResult<Option<BinaryPayload>> {
+        match op {
+            ArtworkIo::Read { .. } => read_book_artwork(path).await,
+            ArtworkIo::Write {
+                bytes, mime_type, ..
+            } => {
+                write_book_artwork(path, bytes, mime_type).await?;
+                Ok(None)
             }
+        }
+    }
+}
 
-            if let Some(sidecar) = find_sidecar_cover(&p) {
-                let buf = std::fs::read(&sidecar)
-                    .map_err(|e| DomainError::Storage(format!("sidecar read error: {e}")))?;
+async fn read_book_artwork(path: &Path) -> DomainResult<Option<BinaryPayload>> {
+    let p = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if ext == "epub" {
+            let parsed = parse_epub_archive(&p)?;
+            if let Some(cover_entry) = parsed.cover_entry_path {
+                let src_file = File::open(&p)
+                    .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
+                let mut archive = ZipArchive::new(BufReader::new(src_file))
+                    .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
+                let mut entry = archive
+                    .by_name(&cover_entry)
+                    .map_err(|e| DomainError::Storage(format!("cover missing: {e}")))?;
+                let mut buf = Vec::new();
+                entry
+                    .read_to_end(&mut buf)
+                    .map_err(|e| DomainError::Storage(format!("cover read error: {e}")))?;
                 let mime = sniff_image_mime(&buf).to_string();
                 return Ok(Some(BinaryPayload {
                     bytes: buf,
                     mime_type: mime,
                 }));
             }
+        }
 
-            if let Some(fmt_ext) = BookFormatExt::from_extension(&ext)
-                && matches!(
-                    fmt_ext,
-                    BookFormatExt::Fb2 | BookFormatExt::Mobi | BookFormatExt::Azw3
-                )
-                && let Ok(raw) = std::fs::read(&p)
-                && let Ok(pkg) = parse_book_bytes(fmt_ext, &raw, "Untitled")
-                && let Some(cov) = pkg.cover
-            {
-                return Ok(Some(BinaryPayload {
-                    bytes: cov.bytes,
-                    mime_type: cov.mime_type,
-                }));
-            }
-            Ok(None)
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("book cover read failed: {e}")))?
-    }
+        if let Some(sidecar) = find_sidecar_cover(&p) {
+            let buf = std::fs::read(&sidecar)
+                .map_err(|e| DomainError::Storage(format!("sidecar read error: {e}")))?;
+            let mime = sniff_image_mime(&buf).to_string();
+            return Ok(Some(BinaryPayload {
+                bytes: buf,
+                mime_type: mime,
+            }));
+        }
 
-    async fn write_artwork(
-        &self,
-        path: &Path,
-        bytes: &[u8],
-        mime_type: &str,
-        _slot: &str,
-    ) -> DomainResult<()> {
-        let p = path.to_path_buf();
-        let raw = bytes.to_vec();
-        let sniffed = sniff_image_mime(&raw).to_string();
-        let detected = if sniffed.starts_with("image/") && sniffed != "image/jpeg" {
-            sniffed
-        } else if mime_type.trim().starts_with("image/") {
-            mime_type.trim().to_string()
-        } else {
-            sniffed
-        };
+        if let Some(fmt_ext) = BookFormatExt::from_extension(&ext)
+            && matches!(
+                fmt_ext,
+                BookFormatExt::Fb2 | BookFormatExt::Mobi | BookFormatExt::Azw3
+            )
+            && let Ok(raw) = std::fs::read(&p)
+            && let Ok(pkg) = parse_book_bytes(fmt_ext, &raw, "Untitled")
+            && let Some(cov) = pkg.cover
+        {
+            return Ok(Some(BinaryPayload {
+                bytes: cov.bytes,
+                mime_type: cov.mime_type,
+            }));
+        }
+        Ok(None)
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("book cover read failed: {e}")))?
+}
 
-        tokio::task::spawn_blocking(move || {
+async fn write_book_artwork(path: &Path, bytes: &[u8], mime_type: &str) -> DomainResult<()> {
+    let p = path.to_path_buf();
+    let raw = bytes.to_vec();
+    let sniffed = sniff_image_mime(&raw).to_string();
+    let detected = if sniffed.starts_with("image/") && sniffed != "image/jpeg" {
+        sniffed
+    } else if mime_type.trim().starts_with("image/") {
+        mime_type.trim().to_string()
+    } else {
+        sniffed
+    };
+
+    tokio::task::spawn_blocking(move || {
             let ext = p
                 .extension()
                 .and_then(|s| s.to_str())
@@ -407,7 +415,6 @@ impl MediaInspectorPort for EpubBookInspector {
                 &[],
             )
         })
-        .await
-        .map_err(|e| DomainError::Storage(format!("book cover write failed: {e}")))?
-    }
+    .await
+    .map_err(|e| DomainError::Storage(format!("book cover write failed: {e}")))?
 }

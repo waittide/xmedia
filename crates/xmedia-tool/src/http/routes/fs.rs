@@ -11,14 +11,13 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{ApiError, ApiResult};
 use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
-use crate::http::routes::apply_sandboxed_asset_headers;
-
 use crate::application::batch_metadata::{
     BatchMetadataEditInput, BatchMetadataEditReportDto, MetadataHistoryBatchDto,
     UndoMetadataReportDto,
 };
+use crate::application::ports::ArtworkIo;
 use crate::application::workbench::{
-    PreviewRenameOptions, RenameHistoryBatchDto, UndoRenameReportDto,
+    PreviewRenameOptions, RenameHistoryBatchDto, UndoRenameReportDto, WorkspaceArtworkOutput,
 };
 use crate::domain::media::{
     DeleteFilesReportDto, DirectorySnapshot, MediaFileDetail, MediaMetadataPatch,
@@ -26,7 +25,7 @@ use crate::domain::media::{
 };
 use crate::domain::workspace::RootId;
 use crate::http::ToolHttpState;
-use crate::http::routes::{FileTargetQuery, spawn_ndjson_stream};
+use crate::http::routes::{FileTargetQuery, apply_sandboxed_asset_headers, spawn_ndjson_stream};
 
 pub(super) fn router() -> Router<ToolHttpState> {
     Router::new()
@@ -68,8 +67,8 @@ async fn browse_fs(
     Query(q): Query<BrowseQuery>,
 ) -> ApiResult<Json<DirectorySnapshot>> {
     let snap = state
-        .workbench
-        .browse_directory(RootId(q.root_id), &q.path, q.kind, q.recursive)
+        .workspace
+        .browse(RootId(q.root_id), &q.path, q.kind, q.recursive, None)
         .await?;
     Ok(Json(snap))
 }
@@ -80,15 +79,13 @@ async fn browse_fs_stream(
 ) -> Response {
     spawn_ndjson_stream(move |prog_tx| async move {
         state
-            .workbench
-            .browse_directory_with_progress(
+            .workspace
+            .browse(
                 RootId(q.root_id),
                 &q.path,
                 q.kind,
                 q.recursive,
-                move |p| {
-                    let _ = prog_tx.try_send(p);
-                },
+                Some(prog_tx),
             )
             .await
     })
@@ -99,8 +96,8 @@ async fn inspect_file(
     Query(q): Query<FileTargetQuery>,
 ) -> ApiResult<Json<MediaFileDetail>> {
     let detail = state
-        .workbench
-        .inspect_file(RootId(q.root_id), &q.path, q.kind)
+        .workspace
+        .inspect(RootId(q.root_id), &q.path, q.kind)
         .await?;
     Ok(Json(detail))
 }
@@ -118,8 +115,8 @@ async fn write_metadata(
     Json(req): Json<WriteMetadataRequest>,
 ) -> ApiResult<Json<MediaFileDetail>> {
     let detail = state
-        .workbench
-        .write_metadata(RootId(req.root_id), &req.path, req.patch)
+        .metadata
+        .write(RootId(req.root_id), &req.path, req.patch)
         .await?;
     Ok(Json(detail))
 }
@@ -136,8 +133,8 @@ async fn batch_edit_metadata_route(
     Json(req): Json<BatchMetadataEditRequest>,
 ) -> ApiResult<Json<BatchMetadataEditReportDto>> {
     let report = state
-        .workbench
-        .batch_edit_metadata(RootId(req.root_id), req.input)
+        .metadata
+        .batch_edit(RootId(req.root_id), req.input)
         .await?;
     Ok(Json(report))
 }
@@ -156,10 +153,7 @@ async fn list_metadata_history_route(
     State(state): State<ToolHttpState>,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<Vec<MetadataHistoryBatchDto>>> {
-    let items = state
-        .workbench
-        .list_metadata_history(q.root_id.map(RootId))
-        .await;
+    let items = state.metadata.list_history(q.root_id.map(RootId)).await;
     Ok(Json(items))
 }
 
@@ -167,7 +161,7 @@ async fn undo_metadata_batch_route(
     State(state): State<ToolHttpState>,
     Json(req): Json<UndoBatchRequest>,
 ) -> ApiResult<Json<UndoMetadataReportDto>> {
-    let report = state.workbench.undo_metadata_batch(req.batch_id).await?;
+    let report = state.metadata.undo_batch(req.batch_id).await?;
     Ok(Json(report))
 }
 
@@ -175,9 +169,16 @@ async fn get_artwork(
     State(state): State<ToolHttpState>,
     Query(q): Query<FileTargetQuery>,
 ) -> ApiResult<Response> {
-    let Some(payload) = state
-        .workbench
-        .read_artwork(RootId(q.root_id), &q.path, q.kind, q.slot.as_deref())
+    let WorkspaceArtworkOutput::Read(Some(payload)) = state
+        .workspace
+        .artwork(
+            RootId(q.root_id),
+            &q.path,
+            q.kind,
+            ArtworkIo::Read {
+                slot: q.slot.as_deref(),
+            },
+        )
         .await?
     else {
         return Err(ApiError(DomainError::NotFound(
@@ -189,8 +190,6 @@ async fn get_artwork(
     Ok(res)
 }
 
-/// Strictly sniffs magic bytes and rejects SVG, XML, HTML, or unknown non-image payloads so
-/// untrusted artwork uploads can never store active same-origin scripts.
 fn detect_uploaded_artwork_mime(bytes: &[u8], _client_mime: Option<&str>) -> DomainResult<String> {
     let sniffed = sniff_raster_image_mime(bytes).ok_or_else(|| {
         DomainError::Validation(
@@ -273,18 +272,23 @@ async fn upload_artwork(
 
     let mime = detect_uploaded_artwork_mime(&bytes, file_mime.as_deref())?;
 
-    let detail = state
-        .workbench
-        .write_artwork(
+    let WorkspaceArtworkOutput::Written(detail) = state
+        .workspace
+        .artwork(
             RootId(root_uuid),
             &path_str,
-            &bytes,
-            &mime,
-            &slot,
             preferred_kind,
+            ArtworkIo::Write {
+                slot: &slot,
+                bytes: &bytes,
+                mime_type: &mime,
+            },
         )
-        .await?;
-    Ok(Json(detail))
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(*detail))
 }
 
 #[derive(Deserialize)]
@@ -307,7 +311,7 @@ async fn upload_artwork_from_url(
     Json(req): Json<UploadArtworkFromUrlRequest>,
 ) -> ApiResult<Json<MediaFileDetail>> {
     let detail = state
-        .scraping
+        .scrape_apply
         .apply_remote_artwork(
             RootId(req.root_id),
             &req.path,
@@ -335,8 +339,8 @@ async fn preview_rename(
     Json(req): Json<PreviewRenameRequest>,
 ) -> ApiResult<Json<Vec<RenamePlanItem>>> {
     let plans = state
-        .workbench
-        .preview_rename_with_options(
+        .rename
+        .preview(
             RootId(req.root_id),
             &req.paths,
             PreviewRenameOptions {
@@ -345,6 +349,7 @@ async fn preview_rename(
                 preferred_kind: req.kind,
                 conflict_policy: req.conflict_policy,
             },
+            None,
         )
         .await?;
     Ok(Json(plans))
@@ -356,8 +361,8 @@ async fn preview_rename_stream(
 ) -> Response {
     spawn_ndjson_stream(move |prog_tx| async move {
         state
-            .workbench
-            .preview_rename_with_progress(
+            .rename
+            .preview(
                 RootId(req.root_id),
                 &req.paths,
                 PreviewRenameOptions {
@@ -366,9 +371,7 @@ async fn preview_rename_stream(
                     preferred_kind: req.kind,
                     conflict_policy: req.conflict_policy,
                 },
-                move |p| {
-                    let _ = prog_tx.try_send(p);
-                },
+                Some(prog_tx),
             )
             .await
     })
@@ -390,8 +393,8 @@ async fn execute_rename(
     Json(req): Json<ExecuteRenameRequest>,
 ) -> ApiResult<Json<ExecuteRenameResponse>> {
     let moved_count = state
-        .workbench
-        .execute_rename(RootId(req.root_id), &req.plans)
+        .rename
+        .execute(RootId(req.root_id), &req.plans, None)
         .await?;
     Ok(Json(ExecuteRenameResponse { moved_count }))
 }
@@ -402,10 +405,8 @@ async fn execute_rename_stream(
 ) -> Response {
     spawn_ndjson_stream(move |prog_tx| async move {
         let moved_count = state
-            .workbench
-            .execute_rename_with_progress(RootId(req.root_id), &req.plans, move |p| {
-                let _ = prog_tx.try_send(p);
-            })
+            .rename
+            .execute(RootId(req.root_id), &req.plans, Some(prog_tx))
             .await?;
         Ok(ExecuteRenameResponse { moved_count })
     })
@@ -415,10 +416,7 @@ async fn list_rename_history(
     State(state): State<ToolHttpState>,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<Vec<RenameHistoryBatchDto>>> {
-    let items = state
-        .workbench
-        .list_rename_history(q.root_id.map(RootId))
-        .await;
+    let items = state.rename.list_history(q.root_id.map(RootId)).await;
     Ok(Json(items))
 }
 
@@ -426,7 +424,7 @@ async fn undo_rename_batch(
     State(state): State<ToolHttpState>,
     Json(req): Json<UndoBatchRequest>,
 ) -> ApiResult<Json<UndoRenameReportDto>> {
-    let report = state.workbench.undo_rename_batch(req.batch_id).await?;
+    let report = state.rename.undo_batch(req.batch_id).await?;
     Ok(Json(report))
 }
 
@@ -443,8 +441,8 @@ async fn delete_files_route(
     Json(req): Json<DeleteFilesRequest>,
 ) -> ApiResult<Json<DeleteFilesReportDto>> {
     let report = state
-        .workbench
-        .delete_files(RootId(req.root_id), &req.paths, req.delete_companions)
+        .workspace
+        .delete(RootId(req.root_id), &req.paths, req.delete_companions)
         .await?;
     Ok(Json(report))
 }
@@ -471,7 +469,6 @@ mod tests {
             "image/jpeg"
         );
 
-        // SVG and unknown bytes must be rejected
         assert!(
             detect_uploaded_artwork_mime(b"<svg xmlns='http://www.w3.org/2000/svg'/>", None)
                 .is_err()

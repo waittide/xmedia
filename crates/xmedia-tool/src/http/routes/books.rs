@@ -9,12 +9,13 @@ use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::http::{ApiError, ApiResult};
 
-use crate::domain::media::MediaFileDetail;
-use crate::domain::ops::{
+use crate::application::ops::{
     BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto,
     NormalizeBookToEpubOptions, NormalizeBooksBatchReportDto, SaveBookChapterInput,
     TransformBookContentResultDto,
 };
+use crate::application::workbench::{BookWorkbenchOp, BookWorkbenchResult};
+use crate::domain::media::MediaFileDetail;
 use crate::domain::workspace::RootId;
 use crate::domain::zh_text::BookTextTransformOptions;
 use crate::http::ToolHttpState;
@@ -63,10 +64,17 @@ async fn get_book_epub_asset(
     State(state): State<ToolHttpState>,
     Query(q): Query<BookEpubAssetQuery>,
 ) -> ApiResult<Response> {
-    let payload = state
-        .workbench
-        .read_epub_asset(RootId(q.root_id), &q.path, &q.asset)
-        .await?;
+    let BookWorkbenchResult::Binary(payload) = state
+        .tools
+        .run_book(BookWorkbenchOp::ReadEpubAsset {
+            root_id: RootId(q.root_id),
+            rel_path: q.path,
+            asset_path: q.asset,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     let mut res = (StatusCode::OK, Body::from(payload.bytes)).into_response();
     apply_sandboxed_asset_headers(
         res.headers_mut(),
@@ -80,10 +88,16 @@ async fn get_book_content(
     State(state): State<ToolHttpState>,
     Query(q): Query<BookContentQuery>,
 ) -> ApiResult<Json<BookContentDocumentDto>> {
-    let doc = state
-        .workbench
-        .get_book_content(RootId(q.root_id), &q.path)
-        .await?;
+    let BookWorkbenchResult::Document(doc) = state
+        .tools
+        .run_book(BookWorkbenchOp::ReadContent {
+            root_id: RootId(q.root_id),
+            rel_path: q.path,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(doc))
 }
 
@@ -101,15 +115,18 @@ async fn resegment_txt_book(
     State(state): State<ToolHttpState>,
     Json(req): Json<ResegmentTxtRequest>,
 ) -> ApiResult<Json<Vec<EditableBookChapterDto>>> {
-    let chapters = state
-        .workbench
-        .resegment_txt_book(
-            RootId(req.root_id),
-            &req.path,
-            req.chapter_pattern,
-            req.volume_pattern,
-        )
-        .await?;
+    let BookWorkbenchResult::Chapters(chapters) = state
+        .tools
+        .run_book(BookWorkbenchOp::ResegmentTxt {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            chapter_pattern: req.chapter_pattern,
+            volume_pattern: req.volume_pattern,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(chapters))
 }
 
@@ -128,17 +145,20 @@ async fn put_book_content(
     State(state): State<ToolHttpState>,
     Json(req): Json<SaveBookContentRequest>,
 ) -> ApiResult<Json<MediaFileDetail>> {
-    let detail = state
-        .workbench
-        .save_book_content(
-            RootId(req.root_id),
-            &req.path,
-            req.chapters,
-            req.stylesheets,
-            req.force_horizontal_spine,
-        )
-        .await?;
-    Ok(Json(detail))
+    let BookWorkbenchResult::Detail(detail) = state
+        .tools
+        .run_book(BookWorkbenchOp::SaveContent {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            chapters: req.chapters,
+            stylesheets: req.stylesheets,
+            force_horizontal_spine: req.force_horizontal_spine,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
+    Ok(Json(*detail))
 }
 
 #[derive(Deserialize)]
@@ -153,10 +173,17 @@ async fn transform_book_content(
     State(state): State<ToolHttpState>,
     Json(req): Json<TransformBookContentRequest>,
 ) -> ApiResult<Json<TransformBookContentResultDto>> {
-    let out = state
-        .workbench
-        .transform_book_content(req.chapters, req.stylesheets, req.options)
-        .await?;
+    let BookWorkbenchResult::Transform(out) = state
+        .tools
+        .run_book(BookWorkbenchOp::TransformContent {
+            chapters: req.chapters,
+            stylesheets: req.stylesheets,
+            options: req.options,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(out))
 }
 
@@ -177,14 +204,20 @@ async fn polish_book(
     State(state): State<ToolHttpState>,
     Json(req): Json<PolishBookRequest>,
 ) -> ApiResult<Json<PolishBookResponse>> {
-    let (report, detail) = state
-        .workbench
-        .polish_book(RootId(req.root_id), &req.path)
-        .await?;
+    let BookWorkbenchResult::Polished(report, detail) = state
+        .tools
+        .run_book(BookWorkbenchOp::Polish {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(PolishBookResponse {
         jacket_updated: report.jacket_updated,
         removed_orphan_files: report.removed_orphan_files,
-        detail,
+        detail: *detail,
     }))
 }
 
@@ -200,10 +233,17 @@ async fn normalize_books_to_epub_route(
     State(state): State<ToolHttpState>,
     Json(req): Json<NormalizeBooksToEpubRequest>,
 ) -> ApiResult<Json<NormalizeBooksBatchReportDto>> {
-    let report = state
-        .workbench
-        .normalize_books_to_epub(RootId(req.root_id), &req.paths, req.options)
-        .await?;
+    let BookWorkbenchResult::NormalizedBatch(report) = state
+        .tools
+        .run_book(BookWorkbenchOp::NormalizeBatch {
+            root_id: RootId(req.root_id),
+            rel_paths: req.paths,
+            options: req.options,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(report))
 }
 
@@ -269,16 +309,19 @@ async fn upload_book_epub_image(
         .filter(|b| !b.is_empty())
         .ok_or_else(|| ApiError(DomainError::Validation("missing image file".into())))?;
 
-    let inserted = state
-        .workbench
-        .insert_epub_chapter_image(
-            RootId(root_uuid),
-            &path_str,
+    let BookWorkbenchResult::InsertedImage(inserted) = state
+        .tools
+        .run_book(BookWorkbenchOp::InsertEpubImage {
+            root_id: RootId(root_uuid),
+            rel_path: path_str,
             chapter_source_href,
             bytes,
-            file_mime,
-        )
-        .await?;
+            mime_hint: file_mime,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(inserted))
 }
 
@@ -304,18 +347,21 @@ async fn convert_txt_book_to_epub(
     State(state): State<ToolHttpState>,
     Json(req): Json<ConvertTxtToEpubRequest>,
 ) -> ApiResult<Json<ConvertTxtToEpubResponse>> {
-    let detail = state
-        .workbench
-        .convert_txt_book_to_epub(
-            RootId(req.root_id),
-            &req.path,
-            req.chapters,
-            req.stylesheets,
-            req.delete_source_txt,
-        )
-        .await?;
+    let BookWorkbenchResult::Detail(detail) = state
+        .tools
+        .run_book(BookWorkbenchOp::ConvertTxtToEpub {
+            root_id: RootId(req.root_id),
+            rel_path: req.path,
+            chapters: req.chapters,
+            stylesheets: req.stylesheets,
+            delete_source_txt: req.delete_source_txt,
+        })
+        .await?
+    else {
+        unreachable!()
+    };
     Ok(Json(ConvertTxtToEpubResponse {
-        detail,
+        detail: *detail,
         deleted_source_txt: req.delete_source_txt,
     }))
 }

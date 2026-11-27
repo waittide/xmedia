@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
+use crate::domain::workspace::SHARED_DIR_SIDECAR_FILES;
+
 fn apply_target_permissions(target: &Path, staging: &Path) {
     if let Ok(meta) = std::fs::metadata(target) {
         let _ = std::fs::set_permissions(staging, meta.permissions());
@@ -238,38 +240,6 @@ pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// Shared directory-level metadata and artwork sidecar filenames (lowercase).
-///
-/// These files belong to an entire folder (book/album/series/season/movie) rather than a single
-/// media item and must be copied across folders during moves and preserved until a directory is
-/// otherwise empty during deletes.
-pub const SHARED_DIR_SIDECAR_FILES: &[&str] = &[
-    "metadata.opf",
-    "movie.nfo",
-    "season.nfo",
-    "tvshow.nfo",
-    "poster.jpg",
-    "poster.jpeg",
-    "poster.png",
-    "poster.webp",
-    "fanart.jpg",
-    "fanart.jpeg",
-    "fanart.png",
-    "fanart.webp",
-    "cover.jpg",
-    "cover.jpeg",
-    "cover.png",
-    "cover.webp",
-    "folder.jpg",
-    "folder.jpeg",
-    "folder.png",
-    "folder.webp",
-    "front.jpg",
-    "front.jpeg",
-    "front.png",
-    "front.webp",
-];
-
 /// Additional orphan-only filenames cleaned when a vacated directory has no media files left.
 const EXTRA_ORPHAN_DIR_SIDECAR_FILES: &[&str] = &[
     "backdrop.jpg",
@@ -279,11 +249,6 @@ const EXTRA_ORPHAN_DIR_SIDECAR_FILES: &[&str] = &[
     ".ds_store",
     "thumbs.db",
 ];
-
-pub fn is_shared_dir_sidecar_name(file_name: &str) -> bool {
-    let lower = file_name.to_ascii_lowercase();
-    SHARED_DIR_SIDECAR_FILES.contains(&lower.as_str())
-}
 
 fn is_orphan_jellyfin_dir_sidecar(file_name: &str) -> bool {
     let lower = file_name.to_ascii_lowercase();
