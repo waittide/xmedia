@@ -14,7 +14,7 @@ const appClientStore = useAppClientStore()
 const themeStore = useThemeStore()
 
 const displayVersion = computed(
-  () => authStore.capabilities?.version || appClientStore.appVersion || '0.1.1',
+  () => authStore.capabilities?.version || appClientStore.appVersion || '0.1.2',
 )
 </script>
 

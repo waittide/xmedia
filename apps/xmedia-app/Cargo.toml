@@ -1,6 +1,6 @@
 [package]
 name = "xmedia-app"
-version = "0.1.1"
+version = "0.1.2"
 description = "XMedia standalone cross-platform client powered by Tauri v2"
 edition = "2024"
 license = "MIT"
