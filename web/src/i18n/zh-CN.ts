@@ -373,7 +373,7 @@ export default {
       pink: '莓粉',
     },
     appIconTitle: '应用图标',
-    appIconHint: '即时切换浏览器标签页、应用内徽标与桌面窗口图标',
+    appIconHint: '切换浏览器标签页、应用内徽标及桌面与移动端应用图标（移动端桌面图标在返回主屏幕后生效）',
     navDisplayTitle: '侧边栏与导航栏',
     navDisplayHint: '控制桌面侧边栏及底部/顶部导航栏是否显示文字标签',
     showSidebarLabels: '侧边栏显示文字',

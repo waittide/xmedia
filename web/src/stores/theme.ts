@@ -169,6 +169,7 @@ export const useThemeStore = defineStore('theme', () => {
     applyDocumentUiFont()
     setAppLocale(locale.value)
     writeStoredVisualPreferences(getVisualSnapshot())
+    syncStandaloneIconIfNeeded()
     cloudSyncBridge?.onHydrateUser(prefs)
     void ensureCustomFontsLoaded(true)
   }
@@ -286,16 +287,22 @@ export const useThemeStore = defineStore('theme', () => {
   )
 
   let lastSyncedStandaloneIcon: AppIconId | null = null
+  function syncStandaloneIconIfNeeded(): void {
+    const iconId = effectiveAppIcon.value
+    if (!appClientStore.isStandaloneApp || iconId === lastSyncedStandaloneIcon) return
+    lastSyncedStandaloneIcon = iconId
+    void appHostApi.setAppIcon(iconId).catch(() => {
+      if (lastSyncedStandaloneIcon === iconId) {
+        lastSyncedStandaloneIcon = null
+      }
+    })
+  }
+
   watch(
     [effectiveAppIcon, () => appClientStore.isStandaloneApp],
-    ([iconId, isStandalone]) => {
+    ([iconId]) => {
       applyDocumentFavicon(iconId)
-      if (isStandalone && iconId !== lastSyncedStandaloneIcon) {
-        lastSyncedStandaloneIcon = iconId
-        void appHostApi.setAppIcon(iconId).catch(() => {
-          // Non-fatal: favicon and in-app brand icon are already updated.
-        })
-      }
+      syncStandaloneIconIfNeeded()
     },
     { immediate: true },
   )

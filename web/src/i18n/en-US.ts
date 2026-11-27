@@ -373,7 +373,7 @@ export default {
       pink: 'Pink',
     },
     appIconTitle: 'App Icon',
-    appIconHint: 'Instantly switches the browser favicon, in-app mark, and desktop window icon',
+    appIconHint: 'Switches the browser favicon, in-app mark, and desktop/mobile app icon (mobile home screen icon updates when returning to Home)',
     navDisplayTitle: 'Sidebar & Navigation Bar',
     navDisplayHint: 'Control whether text labels are shown in the sidebar and navigation bars',
     showSidebarLabels: 'Show sidebar labels',

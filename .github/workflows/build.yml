@@ -630,14 +630,7 @@ jobs:
           '
           cargo tauri android init --ci
           cargo tauri icon icons/icon.png
-          python3 -c '
-          import pathlib
-          p = pathlib.Path("gen/android/app/src/main/AndroidManifest.xml")
-          txt = p.read_text(encoding="utf-8")
-          if "usesCleartextTraffic" not in txt:
-              txt = txt.replace("<application", "<application\n        android:usesCleartextTraffic=\"true\"", 1)
-              p.write_text(txt, encoding="utf-8")
-          '
+          python3 scripts/configure_android.py
 
       - name: Build Android APK (aarch64)
         working-directory: apps/xmedia-app

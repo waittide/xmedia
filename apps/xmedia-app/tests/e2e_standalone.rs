@@ -1176,6 +1176,22 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
         .build()
         .unwrap();
 
+    assert_eq!(
+        gateway.mobile_ui().cached_desired_icon(),
+        Some(xmedia_app_lib::app_icon::AppIconVariant::Cobalt)
+    );
+    let set_icon_res = client
+        .put(format!("{}/_app/icon", gateway.url))
+        .json(&json!({ "icon": "porcelain" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(set_icon_res.status(), StatusCode::OK);
+    assert_eq!(
+        gateway.mobile_ui().cached_desired_icon(),
+        Some(xmedia_app_lib::app_icon::AppIconVariant::Porcelain)
+    );
+
     // 3. Register OPDS & Subsonic mock sources with secrets
     let opds_created: MutatedRemoteSourceResponse = client
         .post(format!("{}/_app/remote-sources", gateway.url))

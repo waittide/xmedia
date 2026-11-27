@@ -268,8 +268,15 @@ pub async fn start_gateway_with_icon_applier(
         sources_path,
         local_engine.secret_encryption_key(),
     )?;
-    let app_icon = AppIconStore::open(app_icon_path, icon_applier);
     let mobile_ui = MobileUiBridge::new();
+    let effective_applier: Option<IconApplier> = icon_applier.or_else(|| {
+        let bridge = mobile_ui.clone();
+        Some(Arc::new(move |variant| {
+            bridge.apply_app_icon(variant);
+        }))
+    });
+    let app_icon = AppIconStore::open(app_icon_path, effective_applier);
+    mobile_ui.apply_app_icon(app_icon.current());
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;

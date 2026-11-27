@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
 use tokio::sync::oneshot;
 
+use crate::app_icon::AppIconVariant;
+
 const MAX_SYSTEM_FONT_BYTES: u64 = 48 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -169,13 +171,19 @@ type AndroidSyncFn = Arc<
     dyn Fn(Option<bool>, oneshot::Sender<(SafeAreaInsetsDto, Vec<SystemFontEntry>)>) + Send + Sync,
 >;
 
+#[cfg(target_os = "android")]
+type AndroidIconFn = Arc<dyn Fn(AppIconVariant) + Send + Sync>;
+
 #[derive(Default)]
 struct MobileUiBridgeInner {
     cached_insets: RwLock<Option<SafeAreaInsetsDto>>,
     system_fonts: RwLock<Vec<SystemFontEntry>>,
     last_dark: RwLock<Option<bool>>,
+    desired_icon: RwLock<Option<AppIconVariant>>,
     #[cfg(target_os = "android")]
     android_sync: RwLock<Option<AndroidSyncFn>>,
+    #[cfg(target_os = "android")]
+    android_icon_sync: RwLock<Option<AndroidIconFn>>,
 }
 
 #[derive(Clone, Default)]
@@ -206,6 +214,26 @@ impl MobileUiBridge {
             .read()
             .ok()
             .and_then(|g| g.get(slot).cloned())
+    }
+
+    pub fn cached_desired_icon(&self) -> Option<AppIconVariant> {
+        self.inner.desired_icon.read().ok().and_then(|g| *g)
+    }
+
+    pub fn apply_app_icon(&self, variant: AppIconVariant) {
+        if let Ok(mut guard) = self.inner.desired_icon.write() {
+            *guard = Some(variant);
+        }
+        #[cfg(target_os = "android")]
+        if let Some(icon_fn) = self
+            .inner
+            .android_icon_sync
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+        {
+            icon_fn(variant);
+        }
     }
 
     pub async fn query_safe_area(&self) -> Option<SafeAreaInsetsDto> {
@@ -255,7 +283,9 @@ impl MobileUiBridge {
         let inner = Arc::clone(&self.inner);
         let _ = window.with_webview(move |wv| {
             let jni_handle = wv.jni_handle();
+            let icon_jni_handle = wv.jni_handle();
             let initial_dark = inner.last_dark.read().ok().and_then(|g| *g);
+            let initial_icon = inner.desired_icon.read().ok().and_then(|g| *g);
             let init_inner = Arc::clone(&inner);
             jni_handle.exec(move |env, activity, webview| {
                 let (insets, fonts) =
@@ -267,6 +297,9 @@ impl MobileUiBridge {
                     && let Ok(mut fguard) = init_inner.system_fonts.write()
                 {
                     *fguard = fonts;
+                }
+                if let Some(variant) = initial_icon {
+                    sync_android_launcher_icon(env, activity, variant);
                 }
             });
 
@@ -287,6 +320,15 @@ impl MobileUiBridge {
             if let Ok(mut guard) = inner.android_sync.write() {
                 *guard = Some(sync_fn);
             }
+
+            let icon_fn: AndroidIconFn = Arc::new(move |variant| {
+                icon_jni_handle.exec(move |env, activity, _webview| {
+                    sync_android_launcher_icon(env, activity, variant);
+                });
+            });
+            if let Ok(mut guard) = inner.android_icon_sync.write() {
+                *guard = Some(icon_fn);
+            }
         });
     }
 
@@ -299,6 +341,26 @@ fn clear_jni_exception(env: &mut jni::JNIEnv<'_>) {
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_clear();
     }
+}
+
+#[cfg(target_os = "android")]
+fn sync_android_launcher_icon(
+    env: &mut jni::JNIEnv<'_>,
+    activity: &jni::objects::JObject<'_>,
+    variant: AppIconVariant,
+) {
+    if activity.is_null() {
+        return;
+    }
+    if let Ok(jvariant) = env.new_string(variant.as_str()) {
+        let _ = env.call_method(
+            activity,
+            "setLauncherIconVariant",
+            "(Ljava/lang/String;)V",
+            &[(&jvariant).into()],
+        );
+    }
+    clear_jni_exception(env);
 }
 
 #[cfg(target_os = "android")]
@@ -862,5 +924,20 @@ mod tests {
             Path::new("/system/fonts/MapleMono-NF-CN-Regular.ttf"),
             0
         ));
+    }
+
+    #[test]
+    fn tracks_desired_app_icon_across_updates() {
+        let bridge = MobileUiBridge::new();
+        assert_eq!(bridge.cached_desired_icon(), None);
+
+        bridge.apply_app_icon(AppIconVariant::Porcelain);
+        assert_eq!(
+            bridge.cached_desired_icon(),
+            Some(AppIconVariant::Porcelain)
+        );
+
+        bridge.apply_app_icon(AppIconVariant::Monolith);
+        assert_eq!(bridge.cached_desired_icon(), Some(AppIconVariant::Monolith));
     }
 }
