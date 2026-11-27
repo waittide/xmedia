@@ -203,7 +203,8 @@ export function useBookLibraryCatalog(options: UseBookLibraryCatalogOptions) {
       catalogStore.filterAuthors.length +
       catalogStore.filterTags.length +
       (activeCollectionId.value ? 1 : 0) +
-      (catalogStore.includeMissing ? 1 : 0)
+      (catalogStore.includeMissing ? 1 : 0) +
+      (catalogStore.sortBy !== 'created_at' || catalogStore.sortOrder !== 'desc' ? 1 : 0)
     )
   })
 

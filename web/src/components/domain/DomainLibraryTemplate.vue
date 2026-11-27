@@ -256,7 +256,7 @@ defineExpose({
 
 <template>
   <div class="mx-auto w-full space-y-2.5 sm:space-y-4" :class="maxWidthClass">
-    <div class="flex flex-col gap-2.5 sm:gap-4">
+    <div class="flex flex-col gap-2 sm:gap-4">
       <!-- Row 1 (>=600px): Title + Upload (left of SourceScopeBar) + SourceScopeBar (rightmost, h-10) -->
       <header
         class="order-1 items-center justify-between gap-2 sm:flex sm:flex-wrap sm:gap-3"
@@ -301,20 +301,21 @@ defineExpose({
         </div>
       </header>
 
-      <!-- Content Tabs (Row 2 on >=600px; below mobile scope bar on <600px so scope bar never jumps vertically) -->
+      <!-- MD3 Primary Content Tabs (directly beneath Top App Bar on <600px / Row 2 on >=600px) -->
       <MdTabs
         v-if="tabs.length > 1"
-        class="order-3 sm:order-2"
+        class="order-2"
         :model-value="activeTab"
         :tabs="tabs"
+        :mobile-equal="tabs.length <= 4"
         variant="primary"
         @update:model-value="emit('update:activeTab', $event)"
       />
 
-      <!-- Single Compact Control Bar (Row 1 on <600px / Row 3 on >=600px) -->
+      <!-- Single Compact Control Bar (1-row horizontal strip on <600px / flexible toolbar on >=600px) -->
       <div
         v-if="hasToolbarRow"
-        class="order-2 flex flex-wrap items-start gap-2 sm:order-3 sm:items-center"
+        class="order-3 flex min-w-0 items-center gap-1.5 sm:flex-wrap sm:gap-2"
       >
         <MdIconButton
           v-if="showSearch && !isMobileSearchExpanded"
@@ -328,7 +329,7 @@ defineExpose({
         <form
           v-if="showSearch"
           class="items-center gap-1.5 sm:block sm:min-w-48 sm:max-w-sm sm:flex-1"
-          :class="isMobileSearchExpanded ? 'flex w-full' : 'hidden sm:block'"
+          :class="isMobileSearchExpanded ? 'flex min-w-0 flex-1' : 'hidden sm:block'"
           @submit.prevent="handleSearchSubmit"
           @keydown.esc="
             !searchQuery.trim() && isMobileSearchExpanded ? closeMobileSearch() : undefined
@@ -348,7 +349,7 @@ defineExpose({
           </div>
           <MdIconButton
             v-if="isMobileSearchExpanded && !searchQuery.trim()"
-            class="sm:hidden"
+            class="shrink-0 sm:hidden"
             size="sm"
             :icon="LuX"
             :aria-label="t('common.close')"
@@ -358,7 +359,8 @@ defineExpose({
 
         <div
           v-if="showScopeBar || $slots['toolbar-chips'] || hasFilterSheet"
-          class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2"
+          class="no-scrollbar min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto py-0.5 sm:flex sm:flex-wrap sm:gap-2 sm:overflow-visible sm:py-0"
+          :class="isMobileSearchExpanded ? 'hidden sm:flex' : 'flex'"
         >
           <div v-if="showScopeBar" class="inline-flex shrink-0 sm:hidden">
             <SourceScopeBar
@@ -384,20 +386,23 @@ defineExpose({
         </div>
 
         <div
-          v-if="$slots['toolbar-trailing'] || showLocalUploadBtn"
-          class="w-full items-center gap-1.5 sm:ml-auto sm:w-auto sm:shrink-0 sm:justify-end [&>:first-child]:mr-auto sm:[&>:first-child]:mr-0"
-          :class="$slots['toolbar-trailing'] ? 'flex' : 'flex sm:hidden'"
+          v-if="$slots['toolbar-trailing'] || (showLocalUploadBtn && !empty)"
+          class="shrink-0 items-center gap-1 sm:ml-auto sm:gap-1.5"
+          :class="[
+            isMobileSearchExpanded ? 'hidden sm:flex' : 'flex',
+            !$slots['toolbar-trailing'] ? 'sm:hidden' : '',
+          ]"
         >
-          <MdButton
-            v-if="showLocalUploadBtn"
+          <MdIconButton
+            v-if="showLocalUploadBtn && !empty"
             class="sm:hidden"
             size="sm"
             variant="tonal"
             :icon="LuUpload"
+            :aria-label="t('common.upload')"
+            :tooltip="t('common.upload')"
             @click="triggerUpload"
-          >
-            {{ t('common.upload') }}
-          </MdButton>
+          />
           <slot name="toolbar-trailing" />
         </div>
       </div>

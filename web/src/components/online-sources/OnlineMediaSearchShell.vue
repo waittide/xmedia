@@ -377,9 +377,10 @@ function handleKeywordClear(): void {
       v-else-if="enabledSources.length > 0"
       role="group"
       :aria-label="allSourcesLabel"
-      class="flex flex-wrap items-center gap-1.5"
+      class="no-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto py-0.5 sm:flex-wrap sm:overflow-visible sm:py-0"
     >
       <MdChip
+        class="shrink-0"
         variant="filter"
         :icon="LuGlobe"
         :label="allSourcesLabel"
@@ -390,6 +391,7 @@ function handleKeywordClear(): void {
       <MdChip
         v-for="src in visibleSources"
         :key="src.id"
+        class="shrink-0"
         variant="filter"
         :label="src.name"
         :selected="selectedSourceIds.includes(src.id)"
@@ -397,6 +399,8 @@ function handleKeywordClear(): void {
       />
       <MdButton
         v-if="canCollapseSources"
+        class="shrink-0"
+        size="sm"
         variant="text"
         :icon="sourcesExpanded ? LuChevronUp : LuChevronDown"
         @click="sourcesExpanded = !sourcesExpanded"
@@ -410,9 +414,10 @@ function handleKeywordClear(): void {
       v-if="showBrowseView && browseCategories.length > 0"
       role="group"
       :aria-label="categoriesAriaLabel"
-      class="flex flex-wrap items-center gap-1.5"
+      class="no-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto py-0.5 sm:flex-wrap sm:overflow-visible sm:py-0"
     >
       <MdChip
+        class="shrink-0"
         variant="filter"
         :icon="LuCompass"
         :label="allCategoriesLabel"
@@ -423,6 +428,7 @@ function handleKeywordClear(): void {
       <MdChip
         v-for="cat in visibleCategories"
         :key="cat.id"
+        class="shrink-0"
         variant="filter"
         :label="cat.name"
         :selected="activeCategoryId === cat.id"
@@ -431,6 +437,8 @@ function handleKeywordClear(): void {
       />
       <MdButton
         v-if="canCollapseCategories"
+        class="shrink-0"
+        size="sm"
         variant="text"
         :icon="categoriesExpanded ? LuChevronUp : LuChevronDown"
         @click="categoriesExpanded = !categoriesExpanded"

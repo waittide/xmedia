@@ -205,7 +205,7 @@ function handlePoolChanged(): void {
 </script>
 
 <template>
-  <div class="px-4 py-6 sm:px-6 lg:px-8">
+  <div class="px-4 pt-1.5 pb-5 sm:px-6 sm:py-6 lg:px-8">
     <DomainLibraryTemplate
       domain="music"
       :title="pageTitle"
@@ -240,6 +240,7 @@ function handlePoolChanged(): void {
         <MdChip
           v-for="chip in viewChips"
           :key="chip.value"
+          class="shrink-0"
           variant="filter"
           :icon="chip.icon"
           :label="chip.label"
@@ -249,6 +250,7 @@ function handlePoolChanged(): void {
         />
         <MdChip
           v-if="selectedLibrary && activeLibraryName"
+          class="shrink-0"
           variant="input"
           :label="activeLibraryName"
           selected
@@ -258,6 +260,7 @@ function handlePoolChanged(): void {
         />
         <MdChip
           v-if="selectedGenre"
+          class="shrink-0"
           variant="input"
           :label="selectedGenre"
           selected
@@ -267,6 +270,7 @@ function handlePoolChanged(): void {
         />
         <MdChip
           v-if="selectedTag"
+          class="shrink-0"
           variant="input"
           :label="`#${selectedTag}`"
           selected
@@ -279,6 +283,7 @@ function handlePoolChanged(): void {
       <template v-if="isLocalCatalogMode" #toolbar-trailing>
         <template v-if="activeView === 'tracks' && tracks.length > 0">
           <MdButton
+            size="sm"
             variant="tonal"
             :icon="LuPlay"
             @click="playerStore.playQueue(tracks, 0)"

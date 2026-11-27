@@ -18,7 +18,6 @@ import {
   MdButton,
   MdChip,
   MdIconButton,
-  MdSegmentedButton,
   MdSelect,
 } from '@/components/ui'
 import BookCatalogBooksGrid from '@/domains/book/components/catalog/BookCatalogBooksGrid.vue'
@@ -159,7 +158,7 @@ function triggerUpload(): void {
 </script>
 
 <template>
-  <div class="px-4 py-5 sm:px-6 sm:py-6">
+  <div class="px-4 pt-1.5 pb-5 sm:px-6 sm:py-6">
     <DomainLibraryTemplate
       ref="templateRef"
       domain="book"
@@ -203,19 +202,23 @@ function triggerUpload(): void {
       @reset-filters="handleResetFilters"
     >
       <template v-if="isLocalScope && activeTab === 'all'" #toolbar-chips>
-        <MdSegmentedButton
-          v-if="!activeCollectionId"
-          class="!h-8 sm:!h-9"
-          :model-value="activeView"
-          :options="viewModeOptions"
-          size="sm"
-          :show-check="false"
-          @update:model-value="handleViewChange"
-        />
+        <template v-if="!activeCollectionId">
+          <MdChip
+            v-for="opt in viewModeOptions"
+            :key="opt.value"
+            class="shrink-0"
+            variant="filter"
+            :label="opt.label"
+            :selected="activeView === opt.value"
+            hide-check
+            @click="handleViewChange(opt.value)"
+          />
+        </template>
 
         <template v-if="isShowingBooksGrid">
           <MdChip
             v-if="activeShelf"
+            class="shrink-0"
             variant="input"
             selected
             :label="activeShelf.name"
@@ -224,6 +227,7 @@ function triggerUpload(): void {
           <MdChip
             v-for="fmt in catalogStore.filterFormats"
             :key="`fmt-${fmt}`"
+            class="shrink-0"
             variant="input"
             selected
             :label="fmt.toUpperCase()"
@@ -232,6 +236,7 @@ function triggerUpload(): void {
           <MdChip
             v-for="libId in catalogStore.filterLibraryIds"
             :key="`lib-${libId}`"
+            class="shrink-0"
             variant="input"
             selected
             :label="resolveLibraryName(libId)"
@@ -240,6 +245,7 @@ function triggerUpload(): void {
           <MdChip
             v-for="author in catalogStore.filterAuthors"
             :key="`au-${author}`"
+            class="shrink-0"
             variant="input"
             selected
             :label="author"
@@ -247,6 +253,7 @@ function triggerUpload(): void {
           />
           <MdChip
             v-if="catalogStore.filterTags.length > 1"
+            class="shrink-0"
             variant="filter"
             selected
             hide-check
@@ -263,6 +270,7 @@ function triggerUpload(): void {
           <MdChip
             v-for="tg in catalogStore.filterTags"
             :key="`tg-${tg}`"
+            class="shrink-0"
             variant="input"
             selected
             :label="`#${tg}`"
@@ -274,6 +282,8 @@ function triggerUpload(): void {
       <template v-if="isLocalScope" #toolbar-trailing>
         <MdButton
           v-if="activeTab === 'collections' && !activeCollectionId"
+          :class="templateEmpty ? 'hidden sm:inline-flex' : ''"
+          size="sm"
           variant="tonal"
           :icon="LuPlus"
           @click="handleCreateShelf"
@@ -282,7 +292,7 @@ function triggerUpload(): void {
         </MdButton>
 
         <template v-if="isShowingBooksGrid">
-          <div class="w-32 sm:w-36">
+          <div class="hidden w-36 sm:block">
             <MdSelect
               :model-value="catalogStore.sortBy"
               :options="sortOptions"
@@ -292,6 +302,7 @@ function triggerUpload(): void {
           </div>
 
           <MdIconButton
+            class="hidden sm:inline-flex"
             variant="standard"
             size="sm"
             :icon="catalogStore.sortOrder === 'desc' ? LuArrowDown : LuArrowUp"
@@ -307,7 +318,7 @@ function triggerUpload(): void {
           <div
             role="radiogroup"
             :aria-label="t('catalog.gridView')"
-            class="inline-flex h-9 items-stretch overflow-hidden rounded-corner-full border border-outline"
+            class="hidden h-9 shrink-0 items-stretch overflow-hidden rounded-corner-full border border-outline sm:inline-flex"
           >
             <button
               v-for="(opt, idx) in layoutOptions"
@@ -363,6 +374,7 @@ function triggerUpload(): void {
           :active-collection-id="activeCollectionId"
           @refetch="triggerRefetch"
           @select-shelf="selectShelfCollection"
+          @layout-change="handleLayoutModeChange"
         />
       </template>
 

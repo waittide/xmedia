@@ -187,6 +187,8 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
     filterTagMode.value = 'any'
     filterLibraryIds.value = []
     includeMissing.value = false
+    sortBy.value = 'created_at'
+    sortOrder.value = 'desc'
     page.value = 1
     void fetchBooks()
   }

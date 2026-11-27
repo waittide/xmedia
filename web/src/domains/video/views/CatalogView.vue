@@ -107,7 +107,7 @@ const {
 </script>
 
 <template>
-  <div class="px-4 py-6 sm:px-6 lg:px-8">
+  <div class="px-4 pt-1.5 pb-5 sm:px-6 sm:py-6 lg:px-8">
     <DomainLibraryTemplate
       domain="video"
       :title="pageTitle"
@@ -145,6 +145,7 @@ const {
         <MdChip
           v-for="opt in viewChipOptions"
           :key="opt.value"
+          class="shrink-0"
           variant="filter"
           :label="opt.label"
           :selected="activeView === opt.value"
@@ -154,6 +155,7 @@ const {
 
         <MdChip
           v-if="activeLibraryName"
+          class="shrink-0"
           variant="input"
           :label="activeLibraryName"
           removable
@@ -161,6 +163,7 @@ const {
         />
         <MdChip
           v-if="selectedGenre"
+          class="shrink-0"
           variant="input"
           :label="selectedGenre"
           removable
@@ -168,6 +171,7 @@ const {
         />
         <MdChip
           v-if="selectedTag"
+          class="shrink-0"
           variant="input"
           :label="`#${selectedTag}`"
           removable
@@ -176,7 +180,7 @@ const {
       </template>
 
       <template v-if="showVideoSort || activeScope !== 'remote'" #toolbar-trailing>
-        <div v-if="showVideoSort" class="w-40">
+        <div v-if="showVideoSort" class="hidden w-40 sm:block">
           <MdSelect
             :model-value="sortKey"
             :options="sortOptions"

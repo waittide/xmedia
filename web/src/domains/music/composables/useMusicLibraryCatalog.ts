@@ -2,10 +2,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import {
-  LuClock,
   LuDisc3,
-  LuHeart,
-  LuListMusic,
   LuMic,
   LuMusic,
   LuRadio,
@@ -138,10 +135,10 @@ export function useMusicLibraryCatalog() {
   const tabs = computed<MdTabItem<string>[]>(() => {
     if (isSubDetailView.value || activeScope.value !== 'local') return []
     return [
-      { value: 'all', label: t('nav.all'), icon: LuMusic },
-      { value: 'continue', label: t('nav.continueListening'), icon: LuClock },
-      { value: 'favorites', label: t('nav.favorites'), icon: LuHeart },
-      { value: 'collections', label: t('nav.collections'), icon: LuListMusic },
+      { value: 'all', label: t('nav.all') },
+      { value: 'continue', label: t('nav.continueListening') },
+      { value: 'favorites', label: t('nav.favorites') },
+      { value: 'collections', label: t('nav.collections') },
     ]
   })
 

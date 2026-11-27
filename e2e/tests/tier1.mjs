@@ -3790,6 +3790,189 @@ function buildTier1Cases() {
         }
       },
     },
+    {
+      id: 'T1-F19-07',
+      feature: 'F19',
+      domain: 'ui',
+      title: 'Mobile (<600px): MD3 left modal navigation drawer switches domains & library toolbars stay single-row',
+      async run(ctx) {
+        const meBefore = (
+          await ctx.admin.failLoudlyRequest('GET', '/api/v1/auth/me', { expectedStatus: 200 })
+        ).json;
+        const savedPrefs = meBefore.preferences || {};
+
+        let cdp = null;
+        try {
+          cdp = await openAuthenticatedPage(
+            ctx.CdpClient,
+            ctx.baseUrl,
+            ctx.admin,
+            '/book/library',
+          );
+          await cdp.send('Emulation.setDeviceMetricsOverride', {
+            width: 390,
+            height: 844,
+            deviceScaleFactor: 2,
+            mobile: true,
+          });
+
+          await cdp.waitForSelector('[data-mobile-drawer-trigger]', {
+            visible: true,
+            timeoutMs: 10000,
+          });
+
+          // 1. Drawer is hidden initially until clicking the collapse/menu icon.
+          const initialDrawerExists = await cdp.evalJs(
+            `Boolean(document.querySelector('[data-mobile-domain-drawer]'))`,
+          );
+          assert.equal(
+            initialDrawerExists,
+            false,
+            'Mobile domain drawer must stay hidden until [data-mobile-drawer-trigger] is clicked',
+          );
+
+          // 2. Account menu no longer embeds domain radio buttons.
+          await cdp.click('[data-account-menu]');
+          await cdp.waitForSelector('[role="menu"]', { visible: true, timeoutMs: 5000 });
+          const hasLegacyAccountDomainGrid = await cdp.evalJs(
+            `Boolean(document.querySelector('[role="menu"] [data-user-domain-switch]'))`,
+          );
+          assert.equal(
+            hasLegacyAccountDomainGrid,
+            false,
+            'Account menu must not duplicate domain switching buttons',
+          );
+          await cdp.click('[data-account-menu]');
+          await cdp.waitForFn(`!document.querySelector('[role="menu"]')`, {
+            timeoutMs: 5000,
+            label: 'Account menu closed',
+          });
+
+          // 3. Verify all 4 domain library views on 390x844 mobile:
+          //    Primary Tabs sit above the compact control strip, and the control strip stays 1 row without overflow.
+          for (const domainPath of [
+            '/book/library',
+            '/comic/library',
+            '/music/library',
+            '/video/library',
+          ]) {
+            await cdp.goto(`${ctx.baseUrl}${domainPath}`);
+            await cdp.waitForSelector('main [role="tablist"]', {
+              visible: true,
+              timeoutMs: 10000,
+            });
+            await cdp.waitForSelector('main [data-scope-switch][data-scope-mode="chip-menu"]', {
+              visible: true,
+              timeoutMs: 10000,
+            });
+
+            const metrics = await cdp.evalJs(`(() => {
+              const tablist = document.querySelector('main [role="tablist"]');
+              const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+              const scopeEl = document.querySelector(
+                'main [data-scope-switch][data-scope-mode="chip-menu"]',
+              );
+              const controlRow = scopeEl?.closest('.order-3');
+              const directChildren = controlRow
+                ? [...controlRow.children].filter((el) => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                  })
+                : [];
+              const centersY = directChildren.map((el) => {
+                const r = el.getBoundingClientRect();
+                return r.top + r.height / 2;
+              });
+              const rowSpreadY =
+                centersY.length > 1 ? Math.max(...centersY) - Math.min(...centersY) : 0;
+              return {
+                docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+                tablistBottom: Math.round(tablist.getBoundingClientRect().bottom),
+                scopeTop: Math.round(scopeEl.getBoundingClientRect().top),
+                tabWidths: tabs.map((t) => Math.round(t.getBoundingClientRect().width)),
+                rowSpreadY: Math.round(rowSpreadY),
+                controlRowHeight: controlRow ? Math.round(controlRow.getBoundingClientRect().height) : 0,
+              };
+            })()`);
+
+            assert.ok(
+              metrics.docOverflow <= 0,
+              `${domainPath} overflowed horizontally by ${metrics.docOverflow}px at 390px width`,
+            );
+            assert.ok(
+              metrics.tablistBottom <= metrics.scopeTop + 4,
+              `${domainPath} MD3 primary tabs (${metrics.tablistBottom}px) must sit above scope/filter bar (${metrics.scopeTop}px)`,
+            );
+            assert.ok(
+              metrics.rowSpreadY <= 8 && metrics.controlRowHeight <= 48,
+              `${domainPath} mobile toolbar wrapped onto multiple rows (spreadY=${metrics.rowSpreadY}px, height=${metrics.controlRowHeight}px)`,
+            );
+            assert.equal(metrics.tabWidths.length, 4, `${domainPath} expected 4 primary tabs`);
+          }
+
+          // 4. On /book/library mobile, open Filter bottom sheet and verify Sort & View Layout controls live inside it.
+          await cdp.goto(`${ctx.baseUrl}/book/library`);
+          await cdp.waitForSelector('main [data-scope-switch][data-scope-mode="chip-menu"]', {
+            visible: true,
+            timeoutMs: 10000,
+          });
+          await clickButtonMatching(cdp, [/筛选|Filter/i], { rootSelector: 'main' });
+          await cdp.waitForSelector('[role="dialog"][aria-modal="true"]', {
+            visible: true,
+            timeoutMs: 8000,
+          });
+          const sheetText = await cdp.evalJs(
+            `document.querySelector('[role="dialog"][aria-modal="true"]')?.innerText || ''`,
+          );
+          assert.match(sheetText, /排序方式|Sort by/i);
+          assert.match(sheetText, /显示布局|View layout/i);
+          await clickButtonMatching(cdp, [/完成|Done/i], {
+            rootSelector: '[role="dialog"][aria-modal="true"]',
+          });
+          await cdp.waitForFn(`!document.querySelector('[role="dialog"][aria-modal="true"]')`, {
+            timeoutMs: 5000,
+            label: 'Book filter sheet closed',
+          });
+
+          // 5. Open left MD3 Modal Navigation Drawer via top-left trigger and switch domain to Comic.
+          await cdp.click('[data-mobile-drawer-trigger]');
+          await cdp.waitForFn(
+            `(() => {
+              const el = document.querySelector('[data-mobile-domain-drawer]');
+              return Boolean(el && Math.round(el.getBoundingClientRect().left) === 0);
+            })()`,
+            { timeoutMs: 5000, label: 'Mobile MD3 domain drawer slid in to left=0' },
+          );
+          const drawerFacts = await cdp.evalJs(`(() => {
+            const el = document.querySelector('[data-mobile-domain-drawer]');
+            const r = el.getBoundingClientRect();
+            const kinds = [...el.querySelectorAll('[data-drawer-domain-switch]')].map((b) =>
+              b.getAttribute('data-drawer-domain-switch'),
+            );
+            return { left: Math.round(r.left), width: Math.round(r.width), kinds };
+          })()`);
+          assert.equal(drawerFacts.left, 0, 'Left MD3 domain drawer must anchor to left edge (0px)');
+          assert.ok(
+            drawerFacts.width >= 64 && drawerFacts.width <= 340,
+            `Expected modal drawer width within MD3 bounds, got ${drawerFacts.width}px`,
+          );
+          assert.deepEqual(drawerFacts.kinds, ['book', 'comic', 'music', 'video']);
+
+          await cdp.click('[data-drawer-domain-switch="comic"]');
+          await cdp.waitForFn(
+            `location.pathname.startsWith('/comic') && !document.querySelector('[data-mobile-domain-drawer]')`,
+            { timeoutMs: 8000, label: 'Switched to /comic and closed mobile drawer' },
+          );
+
+          cdp.assertNoErrors('T1-F19-07');
+        } finally {
+          if (cdp) await cdp.close();
+          await ctx.admin
+            .request('PUT', '/api/v1/auth/preferences', { body: savedPrefs })
+            .catch(() => {});
+        }
+      },
+    },
   ];
 }
 

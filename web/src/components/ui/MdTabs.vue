@@ -16,11 +16,13 @@ const props = withDefaults(
     variant?: 'primary' | 'secondary'
     ariaLabel?: string
     scrollable?: boolean
+    mobileEqual?: boolean
   }>(),
   {
     variant: 'primary',
     ariaLabel: undefined,
     scrollable: true,
+    mobileEqual: false,
   },
 )
 
@@ -92,10 +94,15 @@ function onKeydown(ev: KeyboardEvent, currentIndex: number): void {
       :aria-selected="modelValue === tab.value"
       :tabindex="modelValue === tab.value ? 0 : -1"
       :disabled="tab.disabled"
-      class="md-state text-title-small relative inline-flex cursor-pointer items-center justify-center px-4 transition-colors duration-150 ease-standard outline-none select-none focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-secondary disabled:cursor-not-allowed disabled:opacity-38"
+      class="md-state text-title-small relative inline-flex cursor-pointer items-center justify-center transition-colors duration-150 ease-standard outline-none select-none focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-secondary disabled:cursor-not-allowed disabled:opacity-38"
       :class="[
         isStackedPrimary ? 'h-16' : 'h-12',
-        scrollable ? 'shrink-0' : 'flex-1',
+        mobileEqual ? 'px-2 sm:px-4' : 'px-4',
+        scrollable
+          ? mobileEqual
+            ? 'flex-1 sm:flex-none sm:shrink-0'
+            : 'shrink-0'
+          : 'flex-1',
         modelValue === tab.value
           ? variant === 'primary'
             ? 'text-primary'

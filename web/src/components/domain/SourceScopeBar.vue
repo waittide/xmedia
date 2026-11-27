@@ -142,6 +142,7 @@ async function handleSelect(nextScope: SourceScope): Promise<void> {
   <div
     v-if="mode === 'chip-menu'"
     data-scope-switch
+    data-scope-mode="chip-menu"
     :data-scope="activeScope"
     class="inline-flex shrink-0"
   >
@@ -183,7 +184,13 @@ async function handleSelect(nextScope: SourceScope): Promise<void> {
   </div>
 
   <!-- Standard >=600px Segmented Scope Switcher -->
-  <div v-else data-scope-switch :data-scope="activeScope" class="inline-flex max-w-full">
+  <div
+    v-else
+    data-scope-switch
+    data-scope-mode="segmented"
+    :data-scope="activeScope"
+    class="inline-flex max-w-full"
+  >
     <MdSegmentedButton
       :model-value="activeScope"
       :options="options"

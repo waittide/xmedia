@@ -118,7 +118,7 @@ const {
 </script>
 
 <template>
-  <div class="px-4 py-6 sm:px-6 md:px-8">
+  <div class="px-4 pt-1.5 pb-5 sm:px-6 sm:py-6 md:px-8">
     <DomainLibraryTemplate
       domain="comic"
       :title="headerTitle"
@@ -160,6 +160,7 @@ const {
           <MdChip
             v-for="opt in viewOptions"
             :key="opt.value"
+            class="shrink-0"
             variant="filter"
             :label="opt.label"
             :selected="activeView === opt.value"
@@ -171,6 +172,7 @@ const {
         <MdChip
           v-for="chip in activeFilterChips"
           :key="chip.key"
+          class="shrink-0"
           variant="input"
           :label="chip.label"
           selected
@@ -181,6 +183,8 @@ const {
 
         <MdButton
           v-if="activeFilterChips.length > 0"
+          class="shrink-0"
+          size="sm"
           variant="text"
           @click="resetLocalFilters"
         >
@@ -191,6 +195,8 @@ const {
       <template v-if="isCollectionsView || !isRemoteBrowseView" #toolbar-trailing>
         <MdButton
           v-if="isCollectionsView"
+          :class="templateEmpty ? 'hidden sm:inline-flex' : ''"
+          size="sm"
           variant="tonal"
           :icon="LuPlus"
           @click="openCreateShelf"
