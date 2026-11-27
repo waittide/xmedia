@@ -155,7 +155,11 @@ export function createDomainI18n(loaders: DomainLocaleLoaders) {
     if (!loadedLocales.has(targetLocale) && !failedLocales.has(targetLocale)) {
       void loadLocale(targetLocale)
     }
-    return named ? inst.global.t(key, named) : inst.global.t(key)
+    try {
+      return named ? inst.global.t(key, named) : inst.global.t(key)
+    } catch {
+      return key
+    }
   }
 
   const useI18n = () => ({

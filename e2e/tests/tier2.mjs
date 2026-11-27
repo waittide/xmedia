@@ -1663,9 +1663,11 @@ function buildTier2Cases() {
       id: 'T2-F12-05',
       feature: 'F12',
       domain: 'ui',
-      title: 'Browser: Switching locale zh-CN <-> en-US renders zero raw i18n keys',
+      title: 'Browser: Switching locale zh-CN <-> en-US renders zero raw i18n keys and opens Book Rules tab cleanly',
       async run(ctx) {
         await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await clearDomainSources(ctx.admin, 'book');
+        await importSources(ctx.admin, 'book', buildMockBookSources(ctx.mockBaseUrl).basicBook);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -1684,10 +1686,41 @@ function buildTier2Cases() {
             });
             const rawKeyLeak = await cdp.evalJs(`(() => {
               const txt = document.body.innerText;
-              const m = txt.match(/\\b(settings|comic|music|video|onlineSources)\\.[a-zA-Z0-9_]+\\b/);
+              const m = txt.match(/\\b(settings|comic|music|video|book|onlineSources)\\.[a-zA-Z0-9_]+\\b/);
               return m ? m[0] : null;
             })()`);
             assert.equal(rawKeyLeak, null, `Detected untranslated i18n key in ${locale}: ${rawKeyLeak}`);
+
+            // Regression check: editing a Book plugin and switching to the Rules tab must never freeze or throw
+            await cdp.goto(`${ctx.baseUrl}/book/settings?tab=sources&advanced=1`);
+            await cdp.waitForFn(`document.body.innerText.includes('Mock Legado Book')`, {
+              timeoutMs: 8000,
+              label: `Mock Legado Book rendered in ${locale}`,
+            });
+            await clickButtonMatching(cdp, [/编辑|edit/i]);
+            await cdp.waitForSelector('[role="dialog"]', { visible: true, timeoutMs: 8000 });
+            await cdp.waitForFn(
+              `Boolean(document.querySelector('[role="dialog"] [role="tablist"]')) && !document.querySelector('[role="dialog"] .animate-spin')`,
+              { timeoutMs: 8000, label: `Book edit sheet loaded in ${locale}` },
+            );
+            await clickButtonMatching(cdp, [/规则|rules/i], {
+              rootSelector: '[role="dialog"] [role="tablist"]',
+            });
+            await cdp.waitForFn(
+              `(() => {
+                const dlg = document.querySelector('[role="dialog"]');
+                if (!dlg) return false;
+                const placeholders = [...dlg.querySelectorAll('textarea, input')].map((el) => el.getAttribute('placeholder') || '');
+                return placeholders.some((p) => p.includes('{{key}}') && p.includes('@js'))
+                  && placeholders.some((p) => p.includes('@js') && /列表|list/i.test(p));
+              })()`,
+              { timeoutMs: 8000, label: `Book Rules tab rendered placeholders cleanly in ${locale}` },
+            );
+            await cdp.pressKey('Escape');
+            await cdp.waitForFn(`!document.querySelector('[role="dialog"]')`, {
+              timeoutMs: 5000,
+              label: `Book edit sheet closed cleanly in ${locale}`,
+            });
           }
           cdp.assertNoErrors('T2-F12-05');
         } finally {
