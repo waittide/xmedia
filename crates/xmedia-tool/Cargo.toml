@@ -39,6 +39,7 @@ uuid.workspace = true
 walkdir.workspace = true
 xmedia-core = { workspace = true, default-features = false }
 xmedia-formats.workspace = true
+xmedia-source.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

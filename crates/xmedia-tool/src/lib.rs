@@ -2,6 +2,7 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
+pub mod plugin_cli;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -2,19 +2,32 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use xmedia_tool::plugin_cli::{PluginCommand, run_plugin_cli};
 use xmedia_tool::{ToolInitOptions, XMediaToolApp, XMediaToolConfig};
+
+#[derive(Debug, Subcommand)]
+enum ToolSubcommand {
+    /// Validate, debug, and test XMedia Plugin v2 (.js) and JSON rule plugins locally
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCommand,
+    },
+}
 
 #[derive(Debug, Parser)]
 #[command(
     name = "xmedia-tool",
     version,
-    about = "Standalone Web workbench for scraping & editing raw Book, Comic, Music & Video source files"
+    about = "Standalone Web workbench and plugin debugger for XMedia"
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<ToolSubcommand>,
+
     /// Socket address to listen on (defaults to loopback for local safety)
     #[arg(long, env = "XMEDIA_TOOL_BIND", default_value = "127.0.0.1:8091")]
     bind: SocketAddr,
@@ -54,6 +67,13 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    if let Some(ToolSubcommand::Plugin { action }) = cli.command {
+        return tokio::task::spawn_blocking(move || run_plugin_cli(action))
+            .await
+            .context("plugin CLI worker panicked")?;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -61,7 +81,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
     let password_enabled = cli
         .password
         .as_deref()
