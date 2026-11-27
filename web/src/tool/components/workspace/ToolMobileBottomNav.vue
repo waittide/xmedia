@@ -2,6 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { LuClock, LuHome, LuLibrary, LuLoader2, LuSettings } from 'vue-icons-plus/lu'
 import MdBadge from '@/components/ui/MdBadge.vue'
+import { useThemeStore } from '@/stores/theme'
 import type { PrimaryNavKey } from '../../router'
 
 defineProps<{
@@ -18,23 +19,30 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const themeStore = useThemeStore()
 </script>
 
 <template>
   <nav
     data-mobile-bottom-nav
+    :data-compact="themeStore.showNavLabels ? '0' : '1'"
     :aria-label="t('nav.navigation')"
     class="safe-pb safe-px relative z-30 shrink-0 bg-surface-container select-none sm:hidden"
   >
-    <div class="grid h-20 grid-cols-4 items-center">
+    <div
+      class="grid grid-cols-4 items-center"
+      :class="themeStore.showNavLabels ? 'h-16' : 'h-13'"
+    >
       <button
         type="button"
+        :aria-label="t('tool.nav.home')"
+        :title="t('tool.nav.home')"
         :aria-current="activeNav === 'home' && !tasksDrawerOpen ? 'page' : undefined"
-        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-1 outline-none"
+        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-0.5 outline-none"
         @click="emit('navigatePrimary', 'home')"
       >
         <span
-          class="md-state md-state-target flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             activeNav === 'home' && !tasksDrawerOpen
               ? 'bg-secondary-container text-on-secondary-container'
@@ -44,6 +52,7 @@ const { t } = useI18n()
           <LuHome class="h-5 w-5 shrink-0" aria-hidden="true" />
         </span>
         <span
+          v-if="themeStore.showNavLabels"
           class="text-label-medium truncate"
           :class="
             activeNav === 'home' && !tasksDrawerOpen
@@ -57,12 +66,14 @@ const { t } = useI18n()
 
       <button
         type="button"
+        :aria-label="t('tool.nav.items')"
+        :title="t('tool.nav.items')"
         :aria-current="activeNav === 'items' && !tasksDrawerOpen ? 'page' : undefined"
-        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-1 outline-none"
+        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-0.5 outline-none"
         @click="emit('navigatePrimary', 'items')"
       >
         <span
-          class="md-state md-state-target flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             activeNav === 'items' && !tasksDrawerOpen
               ? 'bg-secondary-container text-on-secondary-container'
@@ -72,6 +83,7 @@ const { t } = useI18n()
           <LuLibrary class="h-5 w-5 shrink-0" aria-hidden="true" />
         </span>
         <span
+          v-if="themeStore.showNavLabels"
           class="text-label-medium truncate"
           :class="
             activeNav === 'items' && !tasksDrawerOpen
@@ -85,12 +97,14 @@ const { t } = useI18n()
 
       <button
         type="button"
+        :aria-label="t('tool.tasks.title')"
+        :title="t('tool.tasks.title')"
         :aria-pressed="tasksDrawerOpen"
-        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-1 outline-none"
+        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-0.5 outline-none"
         @click="emit('toggleTasks')"
       >
         <span
-          class="md-state md-state-target relative flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          class="md-state md-state-target relative flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             tasksDrawerOpen
               ? 'bg-secondary-container text-on-secondary-container'
@@ -104,10 +118,11 @@ const { t } = useI18n()
             :value="unresolvedCount"
             :max="99"
             tone="error"
-            class="pointer-events-none absolute top-0.5 right-3"
+            class="pointer-events-none absolute top-0.5 right-2.5"
           />
         </span>
         <span
+          v-if="themeStore.showNavLabels"
           class="text-label-medium truncate"
           :class="tasksDrawerOpen ? 'text-on-surface' : 'text-on-surface-variant'"
         >
@@ -117,12 +132,14 @@ const { t } = useI18n()
 
       <button
         type="button"
+        :aria-label="t('nav.settings')"
+        :title="t('nav.settings')"
         :aria-current="activeNav === 'settings' && !tasksDrawerOpen ? 'page' : undefined"
-        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-1 outline-none"
+        class="group flex h-full cursor-pointer flex-col items-center justify-center gap-0.5 outline-none"
         @click="emit('toggleSettings')"
       >
         <span
-          class="md-state md-state-target flex h-8 w-16 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
           :class="
             activeNav === 'settings' && !tasksDrawerOpen
               ? 'bg-secondary-container text-on-secondary-container'
@@ -132,6 +149,7 @@ const { t } = useI18n()
           <LuSettings class="h-5 w-5 shrink-0" aria-hidden="true" />
         </span>
         <span
+          v-if="themeStore.showNavLabels"
           class="text-label-medium truncate"
           :class="
             activeNav === 'settings' && !tasksDrawerOpen

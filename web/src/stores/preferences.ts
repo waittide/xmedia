@@ -94,6 +94,8 @@ function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
     ui_font: normalizeStoredUiFont(parsed.ui_font),
     locale: (parsed.locale ?? (localStorage.getItem('xmedia.locale') as LocaleCode | null)) || 'zh-CN',
     active_domain: isMediaKind(parsed.active_domain) ? parsed.active_domain : null,
+    show_sidebar_labels: parsed.show_sidebar_labels !== false,
+    show_nav_labels: parsed.show_nav_labels !== false,
   }
 }
 

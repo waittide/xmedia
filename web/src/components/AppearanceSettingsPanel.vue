@@ -5,6 +5,7 @@ import { LuCheck, LuMonitor, LuMoon, LuRotateCw, LuSun } from 'vue-icons-plus/lu
 import FontPickerField from '@/components/FontPickerField.vue'
 import AppColorPicker from '@/components/ui/AppColorPicker.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
+import MdSwitch from '@/components/ui/MdSwitch.vue'
 import { useThemeStore } from '@/stores/theme'
 import { APP_ICON_PRESETS } from '@/theme/appIcons'
 import {
@@ -88,6 +89,39 @@ function onHexInputChange(raw: string): void {
           :model-value="themeStore.themeMode"
           :options="themeModeOptions"
           @update:model-value="themeStore.setThemeMode($event)"
+        />
+      </div>
+    </div>
+  </section>
+
+  <!-- Sidebar & Navigation Bar Labels -->
+  <section
+    data-appearance-nav-labels
+    class="rounded-corner-lg bg-surface-container-low p-6"
+  >
+    <div>
+      <h2 class="text-title-small text-on-surface">
+        {{ t('theme.navDisplayTitle') }}
+      </h2>
+      <p class="text-body-small mt-0.5 text-on-surface-variant">
+        {{ t('theme.navDisplayHint') }}
+      </p>
+    </div>
+
+    <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div class="flex items-center justify-between gap-3 rounded-corner-md bg-surface-container px-4 py-3">
+        <MdSwitch
+          :model-value="themeStore.showSidebarLabels"
+          :label="t('theme.showSidebarLabels')"
+          @update:model-value="themeStore.setShowSidebarLabels($event)"
+        />
+      </div>
+
+      <div class="flex items-center justify-between gap-3 rounded-corner-md bg-surface-container px-4 py-3">
+        <MdSwitch
+          :model-value="themeStore.showNavLabels"
+          :label="t('theme.showNavLabels')"
+          @update:model-value="themeStore.setShowNavLabels($event)"
         />
       </div>
     </div>

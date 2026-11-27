@@ -71,6 +71,8 @@ export interface UserPreferences {
   ui_font?: string | null
   locale: LocaleCode
   active_domain?: MediaKind | null
+  show_sidebar_labels?: boolean
+  show_nav_labels?: boolean
   book: ReaderPreferences
   comic: ComicReaderPreferences
   music: PlaybackPreferences

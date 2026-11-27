@@ -374,6 +374,10 @@ export default {
     },
     appIconTitle: 'App Icon',
     appIconHint: 'Instantly switches the browser favicon, in-app mark, and desktop window icon',
+    navDisplayTitle: 'Sidebar & Navigation Bar',
+    navDisplayHint: 'Control whether text labels are shown in the sidebar and navigation bars',
+    showSidebarLabels: 'Show sidebar labels',
+    showNavLabels: 'Show navigation bar labels',
     icons: {
       cobalt: 'Cobalt Wings',
       porcelain: 'Porcelain Wings',

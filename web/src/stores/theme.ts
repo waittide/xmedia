@@ -59,6 +59,8 @@ function loadInitialVisualPrefs(): VisualPreferencesSnapshot {
     ui_font: normalizeStoredUiFont(parsed.ui_font),
     locale: parsed.locale ?? ((i18n.global.locale.value as LocaleCode) || 'zh-CN'),
     active_domain: isMediaKind(parsed.active_domain) ? parsed.active_domain : null,
+    show_sidebar_labels: parsed.show_sidebar_labels !== false,
+    show_nav_labels: parsed.show_nav_labels !== false,
   }
 }
 
@@ -72,6 +74,8 @@ export const useThemeStore = defineStore('theme', () => {
   const uiFont = ref<string | null>(normalizeStoredUiFont(initial.ui_font))
   const locale = ref<LocaleCode>(initial.locale)
   const activeDomainPref = ref<MediaKind | null>(initial.active_domain ?? null)
+  const showSidebarLabels = ref<boolean>(initial.show_sidebar_labels !== false)
+  const showNavLabels = ref<boolean>(initial.show_nav_labels !== false)
 
   function getVisualSnapshot(): VisualPreferencesSnapshot {
     return {
@@ -81,6 +85,8 @@ export const useThemeStore = defineStore('theme', () => {
       ui_font: uiFont.value,
       locale: locale.value,
       active_domain: activeDomainPref.value,
+      show_sidebar_labels: showSidebarLabels.value,
+      show_nav_labels: showNavLabels.value,
     }
   }
 
@@ -153,6 +159,8 @@ export const useThemeStore = defineStore('theme', () => {
     uiFont.value = normalizeStoredUiFont(prefs.ui_font)
     locale.value = prefs.locale
     activeDomainPref.value = isMediaKind(prefs.active_domain) ? prefs.active_domain : null
+    showSidebarLabels.value = prefs.show_sidebar_labels !== false
+    showNavLabels.value = prefs.show_nav_labels !== false
     if (activeDomainPref.value) {
       useDomainStore().hydratePreferredDomain(activeDomainPref.value)
     }
@@ -168,6 +176,18 @@ export const useThemeStore = defineStore('theme', () => {
   function rememberActiveDomain(next: MediaKind): void {
     if (activeDomainPref.value === next) return
     activeDomainPref.value = next
+    persistAndNotifyVisualChange()
+  }
+
+  function setShowSidebarLabels(next: boolean): void {
+    if (showSidebarLabels.value === next) return
+    showSidebarLabels.value = next
+    persistAndNotifyVisualChange()
+  }
+
+  function setShowNavLabels(next: boolean): void {
+    if (showNavLabels.value === next) return
+    showNavLabels.value = next
     persistAndNotifyVisualChange()
   }
 
@@ -234,6 +254,8 @@ export const useThemeStore = defineStore('theme', () => {
       seedColor.value = next.seed_color ?? null
       appIcon.value = resolveStoredAppIcon(next.app_icon)
       uiFont.value = normalizeStoredUiFont(next.ui_font)
+      showSidebarLabels.value = next.show_sidebar_labels !== false
+      showNavLabels.value = next.show_nav_labels !== false
       if (next.locale && next.locale !== locale.value) {
         locale.value = next.locale
         setAppLocale(locale.value)
@@ -337,5 +359,9 @@ export const useThemeStore = defineStore('theme', () => {
     setLocale,
     activeDomainPref,
     rememberActiveDomain,
+    showSidebarLabels,
+    showNavLabels,
+    setShowSidebarLabels,
+    setShowNavLabels,
   }
 })

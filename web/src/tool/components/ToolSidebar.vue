@@ -12,6 +12,7 @@ import {
 import MdIconButton from '@/components/ui/MdIconButton.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import type { ManagedRootDto } from '../types'
 
@@ -36,6 +37,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const themeStore = useThemeStore()
 const rootsFolded = ref(false)
 const asideRef = ref<HTMLElement | null>(null)
 const escapeStack = useEscapeStack()
@@ -65,7 +67,11 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
       mobileMenuOpen
         ? 'w-72 translate-x-0 rounded-r-corner-lg bg-surface-container-low shadow-elevation-1 sm:rounded-none sm:bg-surface-container sm:shadow-none'
         : '-translate-x-full sm:translate-x-0',
-      collapsed ? 'sm:w-20' : 'sm:w-64',
+      collapsed
+        ? themeStore.showSidebarLabels
+          ? 'sm:w-20'
+          : 'sm:w-16'
+        : 'sm:w-64',
     ]"
   >
     <!-- Mobile 4-Domain Switcher Pills -->
@@ -94,20 +100,24 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
     >
       <button
         type="button"
+        :aria-label="t('tool.nav.home')"
+        :title="!themeStore.showSidebarLabels ? t('tool.nav.home') : undefined"
         class="group flex w-full cursor-pointer flex-col items-center gap-1 py-1 outline-none"
         @click="emit('navigatePrimary', 'home')"
       >
         <span
-          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
-          :class="
+          class="md-state md-state-target flex items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          :class="[
+            themeStore.showSidebarLabels ? 'h-8 w-14' : 'h-10 w-10',
             activeNav === 'home'
               ? 'bg-secondary-container text-on-secondary-container'
-              : 'text-on-surface-variant group-hover:text-on-surface'
-          "
+              : 'text-on-surface-variant group-hover:text-on-surface',
+          ]"
         >
           <LuHome class="h-5 w-5" aria-hidden="true" />
         </span>
         <span
+          v-if="themeStore.showSidebarLabels"
           class="text-label-medium truncate"
           :class="activeNav === 'home' ? 'text-on-surface' : 'text-on-surface-variant'"
         >
@@ -117,20 +127,24 @@ useFocusTrap(asideRef, () => props.mobileMenuOpen)
 
       <button
         type="button"
+        :aria-label="t('tool.nav.items')"
+        :title="!themeStore.showSidebarLabels ? t('tool.nav.items') : undefined"
         class="group flex w-full cursor-pointer flex-col items-center gap-1 py-1 outline-none"
         @click="emit('navigatePrimary', 'items')"
       >
         <span
-          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
-          :class="
+          class="md-state md-state-target flex items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          :class="[
+            themeStore.showSidebarLabels ? 'h-8 w-14' : 'h-10 w-10',
             activeNav === 'items' && !activeRootId
               ? 'bg-secondary-container text-on-secondary-container'
-              : 'text-on-surface-variant group-hover:text-on-surface'
-          "
+              : 'text-on-surface-variant group-hover:text-on-surface',
+          ]"
         >
           <LuLibrary class="h-5 w-5" aria-hidden="true" />
         </span>
         <span
+          v-if="themeStore.showSidebarLabels"
           class="text-label-medium truncate"
           :class="
             activeNav === 'items' && !activeRootId ? 'text-on-surface' : 'text-on-surface-variant'

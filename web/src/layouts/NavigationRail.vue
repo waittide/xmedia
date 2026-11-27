@@ -29,7 +29,8 @@ const themeStore = useThemeStore()
 <template>
   <nav
     :aria-label="t('nav.navigation')"
-    class="hidden w-20 shrink-0 flex-col items-center bg-surface-container pt-[calc(var(--safe-area-top)+0.75rem)] pb-[calc(var(--safe-area-bottom)+0.75rem)] pl-[var(--safe-area-left)] select-none sm:flex"
+    class="hidden shrink-0 flex-col items-center bg-surface-container pt-[calc(var(--safe-area-top)+0.75rem)] pb-[calc(var(--safe-area-bottom)+0.75rem)] pl-[var(--safe-area-left)] transition-[width] duration-150 ease-standard select-none sm:flex"
+    :class="themeStore.showSidebarLabels ? 'w-20' : 'w-16'"
   >
     <div class="flex w-full flex-col items-center gap-3">
       <!-- Brand mark -->
@@ -52,17 +53,20 @@ const themeStore = useThemeStore()
         :key="tab.kind"
         type="button"
         :data-domain-switch="tab.kind"
+        :aria-label="tab.label"
+        :title="!themeStore.showSidebarLabels ? tab.label : undefined"
         :aria-current="!isSettingsRoute && activeDomain === tab.kind ? 'page' : undefined"
         class="group flex w-full cursor-pointer flex-col items-center gap-1 py-1 outline-none"
         @click="emit('switchDomain', tab.kind)"
       >
         <span
-          class="md-state md-state-target flex h-8 w-14 items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
-          :class="
+          class="md-state md-state-target flex items-center justify-center rounded-corner-full transition-colors duration-150 ease-standard group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-secondary"
+          :class="[
+            themeStore.showSidebarLabels ? 'h-8 w-14' : 'h-10 w-10',
             !isSettingsRoute && activeDomain === tab.kind
               ? 'bg-secondary-container text-on-secondary-container'
-              : 'text-on-surface-variant group-hover:text-on-surface'
-          "
+              : 'text-on-surface-variant group-hover:text-on-surface',
+          ]"
         >
           <MdDomainIcons
             :kind="tab.kind"
@@ -71,6 +75,7 @@ const themeStore = useThemeStore()
           />
         </span>
         <span
+          v-if="themeStore.showSidebarLabels"
           class="text-label-medium max-w-[72px] truncate"
           :class="
             !isSettingsRoute && activeDomain === tab.kind

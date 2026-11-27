@@ -54,6 +54,8 @@ fn default_preferences_use_system_mode_and_default_seed() {
     assert_eq!(prefs.theme_mode, ThemeMode::System);
     assert_eq!(prefs.seed_color, None);
     assert_eq!(prefs.ui().locale, Locale::ZhCn);
+    assert!(prefs.ui().show_sidebar_labels);
+    assert!(prefs.ui().show_nav_labels);
 }
 
 #[test]
@@ -66,6 +68,8 @@ fn seed_color_and_app_icon_are_sanitized_via_ui_preferences() {
         ui_font: Some("  LXGW WenKai  ".into()),
         locale: Locale::EnUs,
         active_domain: Some(MediaKind::Music),
+        show_sidebar_labels: false,
+        show_nav_labels: false,
     });
     assert_eq!(prefs.theme_mode, ThemeMode::Dark);
     assert_eq!(prefs.seed_color.as_deref(), Some("#6750a4"));
@@ -73,6 +77,8 @@ fn seed_color_and_app_icon_are_sanitized_via_ui_preferences() {
     assert_eq!(prefs.ui_font.as_deref(), Some("LXGW WenKai"));
     assert_eq!(prefs.locale, Locale::EnUs);
     assert_eq!(prefs.active_domain, Some(MediaKind::Music));
+    assert!(!prefs.show_sidebar_labels);
+    assert!(!prefs.show_nav_labels);
 
     prefs.seed_color = Some("#ABC".into());
     prefs.normalize();

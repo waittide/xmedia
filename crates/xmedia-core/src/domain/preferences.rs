@@ -24,7 +24,7 @@ pub enum Locale {
 }
 
 /// Shell/UI appearance and localization preferences.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiPreferences {
     #[serde(default)]
     pub theme_mode: ThemeMode,
@@ -42,6 +42,27 @@ pub struct UiPreferences {
     /// Last selected media domain remembered across sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_domain: Option<MediaKind>,
+    /// Whether left sidebar / navigation rail items display text labels.
+    #[serde(default = "default_true")]
+    pub show_sidebar_labels: bool,
+    /// Whether bottom and top navigation bars display text labels.
+    #[serde(default = "default_true")]
+    pub show_nav_labels: bool,
+}
+
+impl Default for UiPreferences {
+    fn default() -> Self {
+        Self {
+            theme_mode: ThemeMode::default(),
+            seed_color: None,
+            app_icon: None,
+            ui_font: None,
+            locale: Locale::default(),
+            active_domain: None,
+            show_sidebar_labels: true,
+            show_nav_labels: true,
+        }
+    }
 }
 
 impl UiPreferences {
@@ -535,7 +556,7 @@ impl Default for VideoPlaybackPreferences {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserPreferences {
     #[serde(default)]
     theme_mode: ThemeMode,
@@ -552,6 +573,10 @@ pub struct UserPreferences {
     locale: Locale,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     active_domain: Option<MediaKind>,
+    #[serde(default = "default_true")]
+    show_sidebar_labels: bool,
+    #[serde(default = "default_true")]
+    show_nav_labels: bool,
     #[serde(default)]
     book: BookReaderPreferences,
     #[serde(default)]
@@ -560,6 +585,25 @@ pub struct UserPreferences {
     music: MusicPlaybackPreferences,
     #[serde(default)]
     video: VideoPlaybackPreferences,
+}
+
+impl Default for UserPreferences {
+    fn default() -> Self {
+        Self {
+            theme_mode: ThemeMode::default(),
+            seed_color: None,
+            app_icon: None,
+            ui_font: None,
+            locale: Locale::default(),
+            active_domain: None,
+            show_sidebar_labels: true,
+            show_nav_labels: true,
+            book: BookReaderPreferences::default(),
+            comic: ComicReaderPreferences::default(),
+            music: MusicPlaybackPreferences::default(),
+            video: VideoPlaybackPreferences::default(),
+        }
+    }
 }
 
 impl UserPreferences {
@@ -571,6 +615,8 @@ impl UserPreferences {
             ui_font: self.ui_font.clone(),
             locale: self.locale,
             active_domain: self.active_domain,
+            show_sidebar_labels: self.show_sidebar_labels,
+            show_nav_labels: self.show_nav_labels,
         }
     }
 
@@ -590,6 +636,8 @@ impl UserPreferences {
         self.ui_font = ui.ui_font;
         self.locale = ui.locale;
         self.active_domain = ui.active_domain;
+        self.show_sidebar_labels = ui.show_sidebar_labels;
+        self.show_nav_labels = ui.show_nav_labels;
     }
 
     /// Clamps and sanitizes all preference values into safe bounds.
@@ -602,6 +650,8 @@ impl UserPreferences {
         self.ui_font = ui.ui_font;
         self.locale = ui.locale;
         self.active_domain = ui.active_domain;
+        self.show_sidebar_labels = ui.show_sidebar_labels;
+        self.show_nav_labels = ui.show_nav_labels;
         self.book.normalize();
         self.comic.normalize();
         self.music.normalize();

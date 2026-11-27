@@ -4,7 +4,14 @@ export const PREFS_STORAGE_KEY = 'xmedia.preferences'
 
 export type VisualPreferencesSnapshot = Pick<
   UserPreferences,
-  'theme_mode' | 'seed_color' | 'app_icon' | 'ui_font' | 'locale' | 'active_domain'
+  | 'theme_mode'
+  | 'seed_color'
+  | 'app_icon'
+  | 'ui_font'
+  | 'locale'
+  | 'active_domain'
+  | 'show_sidebar_labels'
+  | 'show_nav_labels'
 >
 
 export function readStoredPreferencesRaw(): Partial<UserPreferences> {

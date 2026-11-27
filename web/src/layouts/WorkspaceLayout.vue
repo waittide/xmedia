@@ -503,18 +503,21 @@ onBeforeUnmount(() => {
             :key="tab.key"
             type="button"
             :data-nav="!isCompactViewport ? tab.key : undefined"
+            :aria-label="tab.label"
+            :title="!themeStore.showNavLabels ? tab.label : undefined"
             :aria-current="tab.active ? 'page' : undefined"
-            class="md-state text-title-small relative inline-flex h-16 shrink-0 cursor-pointer items-center justify-center px-5 whitespace-nowrap transition-colors duration-150 ease-standard"
-            :class="
+            class="md-state text-title-small relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap transition-colors duration-150 ease-standard"
+            :class="[
+              themeStore.showNavLabels ? 'h-16 px-5' : 'h-12 px-4',
               tab.active
                 ? 'text-primary'
-                : 'text-on-surface-variant hover:text-on-surface'
-            "
+                : 'text-on-surface-variant hover:text-on-surface',
+            ]"
             @click="navigateTab(tab)"
           >
             <span class="relative inline-flex h-full flex-col items-center justify-center gap-1">
-              <component :is="tab.icon" class="h-6 w-6 shrink-0" aria-hidden="true" />
-              <span>{{ tab.label }}</span>
+              <component :is="tab.icon" class="h-5 w-5 shrink-0 sm:h-6 sm:w-6" aria-hidden="true" />
+              <span v-if="themeStore.showNavLabels">{{ tab.label }}</span>
               <span
                 v-if="tab.active"
                 aria-hidden="true"
