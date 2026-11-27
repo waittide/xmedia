@@ -172,11 +172,11 @@ export async function runTier4(context = {}) {
           const mangadex = cImport.sources.find((s) => s.name === 'Mock MangaDex');
           assert.ok(xkcd && webtoon && mangadex);
 
-          await fAdmin.failLoudlyRequest('POST', '/api/v1/comic/sources/reorder', {
-            body: { ordered_ids: [webtoon.id, mangadex.id, xkcd.id] },
+          await fAdmin.failLoudlyRequest('POST', '/api/v1/plugins/reorder?domain=comic', {
+            body: { domain: 'comic', ordered_ids: [webtoon.id, mangadex.id, xkcd.id] },
             expectedStatus: 200,
           });
-          await fAdmin.failLoudlyRequest('PATCH', `/api/v1/comic/sources/${xkcd.id}`, {
+          await fAdmin.failLoudlyRequest('PATCH', `/api/v1/plugins/${xkcd.id}`, {
             body: { enabled: false, group_name: 'Disabled-Archive' },
             expectedStatus: 200,
           });
@@ -193,7 +193,7 @@ export async function runTier4(context = {}) {
           }
 
           const adminComics = (
-            await postAdmin.failLoudlyRequest('GET', '/api/v1/comic/sources', {
+            await postAdmin.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', {
               expectedStatus: 200,
             })
           ).json;
@@ -203,18 +203,14 @@ export async function runTier4(context = {}) {
           assert.equal(persistedXkcd.group_name, 'Disabled-Archive');
 
           const memberComics = (
-            await postMember.failLoudlyRequest('GET', '/api/v1/comic/sources', {
+            await postMember.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', {
               expectedStatus: 200,
             })
           ).json;
-          assert.equal(memberComics.length, 2);
-          assert.ok(!memberComics.some((s) => s.id === xkcd.id));
-          for (const s of memberComics) {
-            assert.deepEqual(s.login_info || {}, {});
-            assert.deepEqual(s.login_ui || [], []);
-            assert.equal(s.variable_preview || '', '');
-            assert.deepEqual(s.cookie_hosts || [], []);
-          }
+          assert.equal(memberComics.length, 0, 'Admin plugins must not be shared with member');
+          await postMember.failLoudlyRequest('GET', `/api/v1/plugins/${mangadex.id}`, {
+            expectedStatus: 404,
+          });
 
           // Clean up if reusing external --base-url
           if (!localMgr) {
@@ -234,8 +230,8 @@ export async function runTier4(context = {}) {
       ['comic', 'ui'],
       'End-to-End Online Comic Reading Journey (GlobalSearch -> WEBTOON webtoon -> MangaDex rtl_double)',
       async () => {
-        const wt = (await importSources(admin, 'comic', comicMocks.webtoon)).sources[0];
-        const md = (await importSources(admin, 'comic', comicMocks.mangadex)).sources[0];
+        const wt = (await importSources(member, 'comic', comicMocks.webtoon)).sources[0];
+        const md = (await importSources(member, 'comic', comicMocks.mangadex)).sources[0];
         try {
           // API contract check for both sources
           const wtPagesRes = await member.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
@@ -331,8 +327,8 @@ export async function runTier4(context = {}) {
             cdp.assertNoErrors('T4-02 Online Comic Reading Journey');
           });
         } finally {
-          await deleteSourceSafe(admin, 'comic', wt.id);
-          await deleteSourceSafe(admin, 'comic', md.id);
+          await deleteSourceSafe(member, 'comic', wt.id);
+          await deleteSourceSafe(member, 'comic', md.id);
         }
       },
     );
@@ -343,8 +339,8 @@ export async function runTier4(context = {}) {
       ['music', 'ui'],
       'End-to-End Online Music Listening, Synced Lyrics & Queue Journey',
       async () => {
-        const gd = (await importSources(admin, 'music', musicMocks.gdstudio)).sources[0];
-        const aud = (await importSources(admin, 'music', musicMocks.audius)).sources[0];
+        const gd = (await importSources(member, 'music', musicMocks.gdstudio)).sources[0];
+        const aud = (await importSources(member, 'music', musicMocks.audius)).sources[0];
         try {
           // Verify API 206 + 200 streaming first
           const gdSearch = await member.failLoudlyRequest('POST', '/api/v1/music/online/search', {
@@ -428,8 +424,8 @@ export async function runTier4(context = {}) {
             cdp.assertNoErrors('T4-03 Online Music Journey');
           });
         } finally {
-          await deleteSourceSafe(admin, 'music', gd.id);
-          await deleteSourceSafe(admin, 'music', aud.id);
+          await deleteSourceSafe(member, 'music', gd.id);
+          await deleteSourceSafe(member, 'music', aud.id);
         }
       },
     );
@@ -440,8 +436,8 @@ export async function runTier4(context = {}) {
       ['video', 'ui'],
       'End-to-End Online Video HLS (AppleCMS) & MP4 (PeerTube) Cinema Journey',
       async () => {
-        const ac = (await importSources(admin, 'video', videoMocks.applecms)).sources[0];
-        const pt = (await importSources(admin, 'video', videoMocks.peertube)).sources[0];
+        const ac = (await importSources(member, 'video', videoMocks.applecms)).sources[0];
+        const pt = (await importSources(member, 'video', videoMocks.peertube)).sources[0];
         try {
           // API contract check on AppleCMS detail + HLS rewrite + PeerTube MP4
           const acDetail = await member.failLoudlyRequest('POST', '/api/v1/video/online/detail', {
@@ -562,8 +558,8 @@ export async function runTier4(context = {}) {
             cdp.assertNoErrors('T4-04 Online Video Journey');
           });
         } finally {
-          await deleteSourceSafe(admin, 'video', ac.id);
-          await deleteSourceSafe(admin, 'video', pt.id);
+          await deleteSourceSafe(member, 'video', ac.id);
+          await deleteSourceSafe(member, 'video', pt.id);
         }
       },
     );
@@ -597,14 +593,14 @@ export async function runTier4(context = {}) {
 
           // Trigger login action via UI or API & verify cookie_hosts + debug flow
           const srcs = (
-            await admin.failLoudlyRequest('GET', '/api/v1/comic/sources', { expectedStatus: 200 })
+            await admin.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', { expectedStatus: 200 })
           ).json;
           const gated = srcs.find((s) => s.name === 'Edge Cookie Gated Comic');
           assert.ok(gated, 'Cookie-gated source must exist in DB after UI import');
 
           const loginResp = await admin.failLoudlyRequest(
             'POST',
-            `/api/v1/comic/sources/${gated.id}/login-action`,
+            `/api/v1/plugins/${gated.id}/login-action`,
             {
               body: { action: 'login', login_info: { username: 'alice', password: 'secret' } },
               expectedStatus: 200,
@@ -615,10 +611,47 @@ export async function runTier4(context = {}) {
           // Run full test debugger via API + reload UI to verify green status indicator
           const testResp = await admin.failLoudlyRequest(
             'POST',
-            `/api/v1/comic/sources/${gated.id}/test`,
+            `/api/v1/plugins/${gated.id}/test`,
             { body: { mode: 'full', keyword: 'xkcd' }, expectedStatus: 200 },
           );
           assert.equal(testResp.json?.ok, true, `Debug test failed: ${testResp.text}`);
+
+          // Import a Plugin v2 JS ES Module with Contract Auth QR and verify QR SVG modal in Chromium
+          const jsV2Src = `export default definePlugin({
+            id: 'e2e.v2.qr',
+            name: 'E2E V2 QR Music',
+            version: '1.0.0',
+            domain: 'music',
+            baseUrl: ${JSON.stringify(mockUrl)},
+            auth: {
+              qrCode: {
+                create() {
+                  return { key: 'qr-e2e-1', url: 'https://music.example.com/qr/e2e-1', message: '请扫码授权' };
+                },
+                poll() {
+                  return { status: 'waiting', message: '等待扫码' };
+                },
+              },
+            },
+            search() {
+              return [{ id: '1', title: 'V2 Song', artist: 'V2 Artist' }];
+            },
+          });`;
+          const v2Imp = await importSources(admin, 'music', jsV2Src);
+          const v2Plugin = v2Imp.sources[0];
+          assert.equal(v2Plugin.format, 'js_module');
+
+          await cdp.goto(`${baseUrl}/music/settings?tab=sources`);
+          await cdp.waitForFn(
+            `document.body.textContent.includes('E2E V2 QR Music')`,
+            { timeoutMs: 10000, label: 'Plugin v2 JS module visible in Music Settings' },
+          );
+          await clickButtonMatching(cdp, [/登录|配置|login|settings/i], { rootSelector: 'main' });
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('[data-contract-auth-qr] [data-qrcode-svg] svg'))`,
+            { timeoutMs: 10000, label: 'Contract Auth QR SVG auto-rendered in modal' },
+          );
+          await cdp.pressKey('Escape');
 
           await cdp.goto(`${baseUrl}/comic/settings?tab=sources&advanced=1`);
           await cdp.waitForFn(
@@ -627,6 +660,7 @@ export async function runTier4(context = {}) {
           );
           cdp.assertNoErrors('T4-05 Admin Settings Source Journey');
 
+          await deleteSourceSafe(admin, 'music', v2Plugin.id);
           await deleteSourceSafe(admin, 'comic', gated.id);
         });
       },
@@ -638,10 +672,10 @@ export async function runTier4(context = {}) {
       ['core', 'comic', 'music', 'video'],
       'Adversarial & Hostile Upstream Resilience + Hardened SSRF Blocking Journey',
       async () => {
-        const healthy = (await importSources(admin, 'comic', comicMocks.xkcd)).sources[0];
-        const s502 = (await importSources(admin, 'comic', edgeMocks.error502)).sources[0];
-        const sMalformed = (await importSources(admin, 'comic', edgeMocks.malformedJson)).sources[0];
-        const sDelay = (await importSources(admin, 'comic', edgeMocks.delayTimeout)).sources[0];
+        const healthy = (await importSources(member, 'comic', comicMocks.xkcd)).sources[0];
+        const s502 = (await importSources(member, 'comic', edgeMocks.error502)).sources[0];
+        const sMalformed = (await importSources(member, 'comic', edgeMocks.malformedJson)).sources[0];
+        const sDelay = (await importSources(member, 'comic', edgeMocks.delayTimeout)).sources[0];
 
         let hardenedMgr = null;
         try {
@@ -694,10 +728,10 @@ export async function runTier4(context = {}) {
           }
         } finally {
           if (hardenedMgr) await hardenedMgr.cleanup().catch(() => {});
-          await deleteSourceSafe(admin, 'comic', healthy.id);
-          await deleteSourceSafe(admin, 'comic', s502.id);
-          await deleteSourceSafe(admin, 'comic', sMalformed.id);
-          await deleteSourceSafe(admin, 'comic', sDelay.id);
+          await deleteSourceSafe(member, 'comic', healthy.id);
+          await deleteSourceSafe(member, 'comic', s502.id);
+          await deleteSourceSafe(member, 'comic', sMalformed.id);
+          await deleteSourceSafe(member, 'comic', sDelay.id);
         }
       },
     );
@@ -708,10 +742,10 @@ export async function runTier4(context = {}) {
       ['nonreg', 'core', 'comic', 'music', 'video'],
       'Mixed Local Library + xmedia-book Online + OPDS/Subsonic + New Domain Sources Coexistence',
       async () => {
-        const bSrc = (await importSources(admin, 'book', bookMocks.basicBook)).sources[0];
-        const cSrc = (await importSources(admin, 'comic', comicMocks.xkcd)).sources[0];
-        const mSrc = (await importSources(admin, 'music', musicMocks.gdstudio)).sources[0];
-        const vSrc = (await importSources(admin, 'video', videoMocks.applecms)).sources[0];
+        const bSrc = (await importSources(member, 'book', bookMocks.basicBook)).sources[0];
+        const cSrc = (await importSources(member, 'comic', comicMocks.xkcd)).sources[0];
+        const mSrc = (await importSources(member, 'music', musicMocks.gdstudio)).sources[0];
+        const vSrc = (await importSources(member, 'video', videoMocks.applecms)).sources[0];
 
         let bookId = null;
         let seriesId = null;
@@ -848,10 +882,10 @@ export async function runTier4(context = {}) {
           if (seriesId) await admin.request('DELETE', `/api/v1/comic/series/${seriesId}`).catch(() => {});
           if (trackId) await admin.request('DELETE', `/api/v1/music/tracks/${trackId}`).catch(() => {});
           if (videoId) await admin.request('DELETE', `/api/v1/video/videos/${videoId}`).catch(() => {});
-          await deleteSourceSafe(admin, 'book', bSrc.id);
-          await deleteSourceSafe(admin, 'comic', cSrc.id);
-          await deleteSourceSafe(admin, 'music', mSrc.id);
-          await deleteSourceSafe(admin, 'video', vSrc.id);
+          await deleteSourceSafe(member, 'book', bSrc.id);
+          await deleteSourceSafe(member, 'comic', cSrc.id);
+          await deleteSourceSafe(member, 'music', mSrc.id);
+          await deleteSourceSafe(member, 'video', vSrc.id);
         }
       },
     );
@@ -911,8 +945,8 @@ export async function runTier4(context = {}) {
           for (const domain of domains) {
             const imp1 = await sAdmin.failLoudlyRequest(
               'POST',
-              `/api/v1/${domain}/sources/import`,
-              { body: { raw_json: packRaw[domain] }, expectedStatus: 200 },
+              `/api/v1/plugins/import?domain=${domain}`,
+              { body: { domain, raw_json: packRaw[domain] }, expectedStatus: 200 },
             );
             assert.ok(
               (imp1.json?.sources || []).length >= packMeta[domain].length,
@@ -923,8 +957,8 @@ export async function runTier4(context = {}) {
             // Second import of identical pack MUST upsert without duplicates
             const imp2 = await sAdmin.failLoudlyRequest(
               'POST',
-              `/api/v1/${domain}/sources/import`,
-              { body: { raw_json: packRaw[domain] }, expectedStatus: 200 },
+              `/api/v1/plugins/import?domain=${domain}`,
+              { body: { domain, raw_json: packRaw[domain] }, expectedStatus: 200 },
             );
             assert.equal(imp2.json?.imported_count, 0, `${domain} second import must have imported_count: 0`);
           }
@@ -937,7 +971,7 @@ export async function runTier4(context = {}) {
           }
 
           for (const domain of domains) {
-            const listRes = await postAdmin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
+            const listRes = await postAdmin.failLoudlyRequest('GET', `/api/v1/plugins?domain=${domain}`, {
               expectedStatus: 200,
             });
             assert.ok(listRes.json.length >= packMeta[domain].length);

@@ -137,26 +137,27 @@ export async function runTier3(context = {}) {
     const videoMocks = buildMockVideoSources(mockUrl);
     const edgeMocks = buildEdgeMockSources(mockUrl);
 
-    // T3-01: Cookie x User x comic x sources/import
+    // T3-01: Cookie x User/Admin x comic plugins/import strict isolation
     await runCase(
       'T3-01',
       ['core', 'comic'],
-      'Cookie x User/Admin x comic sources/import RBAC',
+      'Cookie x User/Admin x comic plugins/import per-user isolation',
       async () => {
         const userCookie = member.withAuthMode('cookie');
         const adminCookie = admin.withAuthMode('cookie');
 
-        const denied = await userCookie.failLoudlyRequest('POST', '/api/v1/comic/sources/import', {
-          body: { raw_json: JSON.stringify(comicMocks.xkcd) },
-          expectedStatus: 403,
-        });
-        assert.equal(denied.json?.error?.code, 'forbidden');
-
-        const imported = await importSource(adminCookie, 'comic', comicMocks.xkcd);
+        const adminPlugin = await importSource(adminCookie, 'comic', comicMocks.xkcd);
+        let memberPlugin = null;
         try {
-          assert.equal(imported.name, 'Mock XKCD');
+          assert.equal(adminPlugin.name, 'Mock XKCD');
+          await userCookie.failLoudlyRequest('GET', `/api/v1/plugins/${adminPlugin.id}`, {
+            expectedStatus: 404,
+          });
+          memberPlugin = await importSource(userCookie, 'comic', comicMocks.xkcd);
+          assert.notEqual(memberPlugin.id, adminPlugin.id, 'User and Admin plugins must be isolated');
         } finally {
-          await deleteSourceSafe(admin, 'comic', imported.id);
+          await deleteSourceSafe(admin, 'comic', adminPlugin.id);
+          if (memberPlugin) await deleteSourceSafe(member, 'comic', memberPlugin.id);
         }
       },
     );
@@ -165,7 +166,7 @@ export async function runTier3(context = {}) {
     await runCase(
       'T3-02',
       ['core', 'music'],
-      'Bearer x User x music online/search excludes disabled sources',
+      'Bearer x User x music online/search excludes disabled plugins',
       async () => {
         const disabledAudius = {
           ...musicMocks.audius,
@@ -173,8 +174,8 @@ export async function runTier3(context = {}) {
           sourceUrl: `${mockUrl}/music/audius-disabled-t3`,
           enabled: false,
         };
-        const sEnabled = await importSource(admin, 'music', musicMocks.gdstudio);
-        const sDisabled = await importSource(admin, 'music', disabledAudius);
+        const sEnabled = await importSource(member, 'music', musicMocks.gdstudio);
+        const sDisabled = await importSource(member, 'music', disabledAudius);
         try {
           await resetMockRequests(mockUrl);
           const userBearer = member.withAuthMode('bearer');
@@ -191,20 +192,24 @@ export async function runTier3(context = {}) {
             'Disabled music source MUST NOT be queried',
           );
 
-          const listRes = await userBearer.failLoudlyRequest('GET', '/api/v1/music/sources', {
+          const listRes = await userBearer.failLoudlyRequest('GET', '/api/v1/plugins?domain=music', {
             expectedStatus: 200,
           });
           const visibleIds = (listRes.json || []).map((s) => s.id);
           assert.ok(visibleIds.includes(sEnabled.id));
-          assert.ok(!visibleIds.includes(sDisabled.id));
+          assert.ok(visibleIds.includes(sDisabled.id));
+          const adminList = await admin.failLoudlyRequest('GET', '/api/v1/plugins?domain=music', {
+            expectedStatus: 200,
+          });
+          assert.ok(!(adminList.json || []).some((s) => s.id === sEnabled.id));
         } finally {
-          await deleteSourceSafe(admin, 'music', sEnabled.id);
-          await deleteSourceSafe(admin, 'music', sDisabled.id);
+          await deleteSourceSafe(member, 'music', sEnabled.id);
+          await deleteSourceSafe(member, 'music', sDisabled.id);
         }
       },
     );
 
-    // T3-03: x-api-key x Admin x video x sources/{id}/test
+    // T3-03: x-api-key x Admin x video x plugins/{id}/test
     await runCase(
       'T3-03',
       ['core', 'video'],
@@ -216,7 +221,7 @@ export async function runTier3(context = {}) {
         try {
           const testRes = await adminKey.failLoudlyRequest(
             'POST',
-            `/api/v1/video/sources/${src.id}/test`,
+            `/api/v1/plugins/${src.id}/test`,
             {
               body: { mode: 'full', keyword: 'Earth' },
               expectedStatus: 200,
@@ -237,7 +242,7 @@ export async function runTier3(context = {}) {
       ['core', 'comic'],
       '?token= x User x comic image-proxy GET 200 vs POST /online/search 401',
       async () => {
-        const src = await importSource(admin, 'comic', comicMocks.xkcd);
+        const src = await importSource(member, 'comic', comicMocks.xkcd);
         try {
           const userQuery = member.withAuthMode('query_token');
           const imgRes = await userQuery.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
@@ -252,7 +257,7 @@ export async function runTier3(context = {}) {
             expectedStatus: 401,
           });
         } finally {
-          await deleteSourceSafe(admin, 'comic', src.id);
+          await deleteSourceSafe(member, 'comic', src.id);
         }
       },
     );
@@ -290,7 +295,7 @@ export async function runTier3(context = {}) {
       ['core', 'video'],
       '?token= x User x video hls-proxy master rewrite & segment fetch',
       async () => {
-        const src = await importSource(admin, 'video', videoMocks.applecms);
+        const src = await importSource(member, 'video', videoMocks.applecms);
         try {
           const userQuery = member.withAuthMode('query_token');
           const masterRes = await userQuery.failLoudlyRequest(
@@ -324,7 +329,7 @@ export async function runTier3(context = {}) {
           const decSeg = decryptAes128Cbc(segRes.buffer, MOCK_AES_KEY_BYTES, 0);
           assertMpegTs(decSeg, 'T3-06 rewritten TS segment');
         } finally {
-          await deleteSourceSafe(admin, 'video', src.id);
+          await deleteSourceSafe(member, 'video', src.id);
         }
       },
     );
@@ -335,7 +340,7 @@ export async function runTier3(context = {}) {
       ['comic'],
       'WEBTOON HTML data-url resolution x Referer-gated image-proxy',
       async () => {
-        const src = await importSource(admin, 'comic', comicMocks.webtoon);
+        const src = await importSource(member, 'comic', comicMocks.webtoon);
         try {
           await resetMockRequests(mockUrl);
           const searchRes = await member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
@@ -380,7 +385,7 @@ export async function runTier3(context = {}) {
             'image-proxy must inject source imageHeader Referer',
           );
         } finally {
-          await deleteSourceSafe(admin, 'comic', src.id);
+          await deleteSourceSafe(member, 'comic', src.id);
         }
       },
     );
@@ -391,7 +396,7 @@ export async function runTier3(context = {}) {
       ['comic'],
       'MangaDex JSON strict UA gate + 405 HEAD x image-proxy',
       async () => {
-        const src = await importSource(admin, 'comic', comicMocks.mangadex);
+        const src = await importSource(member, 'comic', comicMocks.mangadex);
         try {
           await resetMockRequests(mockUrl);
           const searchRes = await member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
@@ -427,7 +432,7 @@ export async function runTier3(context = {}) {
           assert.ok(searchHit?.headers['user-agent']?.includes('xmedia'));
           assert.ok(!reqs.some((r) => r.method === 'HEAD' && r.path.startsWith('/comic/mangadex/cdn/')));
         } finally {
-          await deleteSourceSafe(admin, 'comic', src.id);
+          await deleteSourceSafe(member, 'comic', src.id);
         }
       },
     );
@@ -438,7 +443,7 @@ export async function runTier3(context = {}) {
       ['music'],
       'GDStudio multi-step resolve x 206 Range audio-proxy + cover-proxy',
       async () => {
-        const src = await importSource(admin, 'music', musicMocks.gdstudio);
+        const src = await importSource(member, 'music', musicMocks.gdstudio);
         try {
           const searchRes = await member.failLoudlyRequest('POST', '/api/v1/music/online/search', {
             body: { keyword: 'Mojito', source_ids: [src.id] },
@@ -478,7 +483,7 @@ export async function runTier3(context = {}) {
           assert.equal(audioRes.buffer.length, 4096);
           assert.ok(audioRes.buffer.equals(MOCK_MP3_BYTES.subarray(4096, 8192)));
         } finally {
-          await deleteSourceSafe(admin, 'music', src.id);
+          await deleteSourceSafe(member, 'music', src.id);
         }
       },
     );
@@ -489,7 +494,7 @@ export async function runTier3(context = {}) {
       ['music'],
       'Audius non-Range 200 upstream x Range-request audio-proxy',
       async () => {
-        const src = await importSource(admin, 'music', musicMocks.audius);
+        const src = await importSource(member, 'music', musicMocks.audius);
         try {
           const exploreRes = await member.failLoudlyRequest('POST', '/api/v1/music/online/explore', {
             body: { source_id: src.id },
@@ -514,7 +519,7 @@ export async function runTier3(context = {}) {
           assert.equal(audioRes.buffer.length, MOCK_MP3_BYTES.length);
           assertMp3(audioRes.buffer, 'Audius full 200 audio-proxy');
         } finally {
-          await deleteSourceSafe(admin, 'music', src.id);
+          await deleteSourceSafe(member, 'music', src.id);
         }
       },
     );
@@ -525,7 +530,7 @@ export async function runTier3(context = {}) {
       ['video'],
       'AppleCMS v10 relative HLS + AES-128 key + fMP4 init + TS rewrite via hls-proxy',
       async () => {
-        const src = await importSource(admin, 'video', videoMocks.applecmsToken);
+        const src = await importSource(member, 'video', videoMocks.applecmsToken);
         try {
           await resetMockRequests(mockUrl);
           const masterRes = await member.failLoudlyRequest(
@@ -593,7 +598,7 @@ export async function runTier3(context = {}) {
           const segHit = reqs.find((r) => r.path.endsWith('/seg0.ts'));
           assert.equal(segHit?.headers['x-video-token'], 'secret123');
         } finally {
-          await deleteSourceSafe(admin, 'video', src.id);
+          await deleteSourceSafe(member, 'video', src.id);
         }
       },
     );
@@ -604,7 +609,7 @@ export async function runTier3(context = {}) {
       ['video'],
       'PeerTube rule mode x 206 Range MP4 via stream-proxy',
       async () => {
-        const src = await importSource(admin, 'video', videoMocks.peertube);
+        const src = await importSource(member, 'video', videoMocks.peertube);
         try {
           const searchRes = await member.failLoudlyRequest('POST', '/api/v1/video/online/search', {
             body: { keyword: 'Blender', source_ids: [src.id] },
@@ -640,7 +645,7 @@ export async function runTier3(context = {}) {
           assertMp4(mp4Res.buffer, 'PeerTube Range MP4');
           assert.ok(mp4Res.buffer.equals(MOCK_MP4_BYTES.subarray(0, 1024)));
         } finally {
-          await deleteSourceSafe(admin, 'video', src.id);
+          await deleteSourceSafe(member, 'video', src.id);
         }
       },
     );
@@ -664,7 +669,7 @@ export async function runTier3(context = {}) {
 
           const loginRes = await admin.failLoudlyRequest(
             'POST',
-            `/api/v1/comic/sources/${src.id}/login-action`,
+            `/api/v1/plugins/${src.id}/login-action`,
             {
               body: { action: 'login', login_info: { username: 'alice', password: 'secret' } },
               expectedStatus: 200,
@@ -674,6 +679,11 @@ export async function runTier3(context = {}) {
             (loginRes.json?.source?.cookie_hosts || []).length >= 1,
             'Expected cookie_hosts populated after login-action',
           );
+          // Cross-user isolation: member cannot use admin's authenticated plugin
+          await member.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
+            body: { source_id: src.id, chapter_url: `${mockUrl}/edge/gated/comic-pages` },
+            expectedStatus: 404,
+          });
 
           const afterRes = await admin.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
             body: { source_id: src.id, chapter_url: `${mockUrl}/edge/gated/comic-pages` },
@@ -710,7 +720,7 @@ export async function runTier3(context = {}) {
             bookUrl: `@js:${JSON.stringify(`${mockUrl}/comic/xkcd/info.0.json`)}`,
           },
         };
-        const src = await importSource(admin, 'comic', gbkComic);
+        const src = await importSource(member, 'comic', gbkComic);
         try {
           const res = await member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
             body: { keyword: 'test', source_ids: [src.id] },
@@ -720,7 +730,7 @@ export async function runTier3(context = {}) {
           assert.equal(items.length, 1);
           assert.equal(items[0].title, '中文漫画', 'Expected GBK decoded + ## regex stripped title');
         } finally {
-          await deleteSourceSafe(admin, 'comic', src.id);
+          await deleteSourceSafe(member, 'comic', src.id);
         }
       },
     );
@@ -741,7 +751,7 @@ export async function runTier3(context = {}) {
             title: '$.name<js>tagTitle(result)</js>',
           },
         };
-        const src = await importSource(admin, 'music', jsMusic);
+        const src = await importSource(member, 'music', jsMusic);
         try {
           const searchRes = await member.failLoudlyRequest('POST', '/api/v1/music/online/search', {
             body: { keyword: 'Mojito', source_ids: [src.id] },
@@ -759,7 +769,7 @@ export async function runTier3(context = {}) {
           assert.equal(lyrRes.json?.lines?.[0]?.start_ms, 500);
           assert.equal(lyrRes.json?.lines?.[0]?.text, 'First synced line');
         } finally {
-          await deleteSourceSafe(admin, 'music', src.id);
+          await deleteSourceSafe(member, 'music', src.id);
         }
       },
     );
@@ -787,7 +797,7 @@ export async function runTier3(context = {}) {
         const hardenedUrl = await hardenedMgr.start({ mode: 'hardened' });
         try {
           const { admin: hAdmin, member: hMember } = await ensureBootstrapped(hardenedUrl);
-          const hSrc = await importSource(hAdmin, 'video', videoMocks.applecms);
+          const hSrc = await importSource(hMember, 'video', videoMocks.applecms);
 
           const directLoop = await hMember.failLoudlyRequest('GET', '/api/v1/video/online/hls-proxy', {
             query: { url: `${mockUrl}/video/applecms/hls/master.m3u8`, source_id: hSrc.id },
@@ -826,9 +836,9 @@ export async function runTier3(context = {}) {
       ['comic', 'music', 'video'],
       'SVG XSS payload rejected across comic/image-proxy, music/cover-proxy, video/poster-proxy',
       async () => {
-        const cSrc = await importSource(admin, 'comic', comicMocks.xkcd);
-        const mSrc = await importSource(admin, 'music', musicMocks.gdstudio);
-        const vSrc = await importSource(admin, 'video', videoMocks.applecms);
+        const cSrc = await importSource(member, 'comic', comicMocks.xkcd);
+        const mSrc = await importSource(member, 'music', musicMocks.gdstudio);
+        const vSrc = await importSource(member, 'video', videoMocks.applecms);
         try {
           for (const [ep, sid] of [
             ['/api/v1/comic/online/image-proxy', cSrc.id],
@@ -845,23 +855,23 @@ export async function runTier3(context = {}) {
             assert.ok(!res.text.includes('<svg'), `${ep} leaked raw SVG bytes`);
           }
         } finally {
-          await deleteSourceSafe(admin, 'comic', cSrc.id);
-          await deleteSourceSafe(admin, 'music', mSrc.id);
-          await deleteSourceSafe(admin, 'video', vSrc.id);
+          await deleteSourceSafe(member, 'comic', cSrc.id);
+          await deleteSourceSafe(member, 'music', mSrc.id);
+          await deleteSourceSafe(member, 'video', vSrc.id);
         }
       },
     );
 
-    // T3-18: Seed Persistence x Admin Modify x Restart x Non-Admin Read
+    // T3-18: Seed Persistence x Admin Modify x Restart x Cross-User Isolation
     await runCase(
       'T3-18',
       ['core', 'comic', 'music', 'video'],
-      'Seed persistence x admin disable x server restart x non-admin masking',
+      'Seed persistence x admin disable x server restart x strict cross-user isolation',
       async () => {
         const c1 = await importSource(admin, 'comic', comicMocks.mangadex);
         const c2 = await importSource(admin, 'comic', comicMocks.xkcd);
         try {
-          await admin.failLoudlyRequest('PATCH', `/api/v1/comic/sources/${c2.id}`, {
+          await admin.failLoudlyRequest('PATCH', `/api/v1/plugins/${c2.id}`, {
             body: { enabled: false, weight: 77, group_name: 'Pinned-T3' },
             expectedStatus: 200,
           });
@@ -874,7 +884,7 @@ export async function runTier3(context = {}) {
             await member.login(MEMBER_CREDS);
           }
 
-          const adminList = await admin.failLoudlyRequest('GET', '/api/v1/comic/sources', {
+          const adminList = await admin.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', {
             expectedStatus: 200,
           });
           const adminC2 = adminList.json.find((s) => s.id === c2.id);
@@ -883,17 +893,10 @@ export async function runTier3(context = {}) {
           assert.equal(adminC2.weight, 77);
           assert.equal(adminC2.group_name, 'Pinned-T3');
 
-          const memberList = await member.failLoudlyRequest('GET', '/api/v1/comic/sources', {
+          const memberList = await member.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', {
             expectedStatus: 200,
           });
-          assert.ok(memberList.json.some((s) => s.id === c1.id));
-          assert.ok(!memberList.json.some((s) => s.id === c2.id), 'Disabled source hidden from non-admin');
-          for (const s of memberList.json) {
-            assert.deepEqual(s.login_info || {}, {});
-            assert.deepEqual(s.login_ui || [], []);
-            assert.equal(s.variable_preview || '', '');
-            assert.deepEqual(s.cookie_hosts || [], []);
-          }
+          assert.ok(!memberList.json.some((s) => s.id === c1.id || s.id === c2.id));
         } finally {
           await deleteSourceSafe(admin, 'comic', c1.id);
           await deleteSourceSafe(admin, 'comic', c2.id);
@@ -909,7 +912,7 @@ export async function runTier3(context = {}) {
       async () => {
         const src = await importSource(admin, 'comic', edgeMocks.cookieGated);
         try {
-          await admin.failLoudlyRequest('POST', `/api/v1/comic/sources/${src.id}/login-action`, {
+          await admin.failLoudlyRequest('POST', `/api/v1/plugins/${src.id}/login-action`, {
             body: { action: 'login', login_info: { username: 'alice', password: 'secret' } },
             expectedStatus: 200,
           });
@@ -918,8 +921,8 @@ export async function runTier3(context = {}) {
             ...edgeMocks.cookieGated,
             searchUrl: `${mockUrl}/comic/xkcd/info.0.json?v=2`,
           };
-          const reimport = await admin.failLoudlyRequest('POST', '/api/v1/comic/sources/import', {
-            body: { raw_json: JSON.stringify(updatedSpec) },
+          const reimport = await admin.failLoudlyRequest('POST', '/api/v1/plugins/import?domain=comic', {
+            body: { domain: 'comic', raw_json: JSON.stringify(updatedSpec) },
             expectedStatus: 200,
           });
           assert.equal(reimport.json?.updated_count, 1);
@@ -928,7 +931,7 @@ export async function runTier3(context = {}) {
           const matched = reimport.json.sources.find((s) => s.id === src.id);
           assert.ok(matched && (matched.cookie_hosts || []).length >= 1, 'cookie_hosts must survive re-import');
 
-          const expRes = await admin.failLoudlyRequest('GET', `/api/v1/comic/sources/${src.id}/export`, {
+          const expRes = await admin.failLoudlyRequest('GET', `/api/v1/plugins/${src.id}/export`, {
             expectedStatus: 200,
           });
           const expStr = typeof expRes.json === 'string' ? expRes.json : JSON.stringify(expRes.json || expRes.text);
@@ -957,7 +960,7 @@ export async function runTier3(context = {}) {
             cdp.clearErrors();
 
             // Update group via API or edit sheet and verify Settings & Online Search remain healthy
-            await admin.failLoudlyRequest('PATCH', `/api/v1/comic/sources/${src.id}`, {
+            await admin.failLoudlyRequest('PATCH', `/api/v1/plugins/${src.id}`, {
               body: { group_name: 'UI-Group-T3', weight: 150 },
               expectedStatus: 200,
             });
@@ -986,9 +989,9 @@ export async function runTier3(context = {}) {
       ['ui', 'comic', 'music', 'video'],
       'Browser: GlobalSearchModal routes cleanly to comic/music/video online search',
       async () => {
-        const cSrc = await importSource(admin, 'comic', comicMocks.xkcd);
-        const mSrc = await importSource(admin, 'music', musicMocks.gdstudio);
-        const vSrc = await importSource(admin, 'video', videoMocks.applecms);
+        const cSrc = await importSource(member, 'comic', comicMocks.xkcd);
+        const mSrc = await importSource(member, 'music', musicMocks.gdstudio);
+        const vSrc = await importSource(member, 'video', videoMocks.applecms);
         try {
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
@@ -1067,9 +1070,9 @@ export async function runTier3(context = {}) {
             cdp.assertNoErrors('T3-21 GlobalSearchModal cross-domain');
           });
         } finally {
-          await deleteSourceSafe(admin, 'comic', cSrc.id);
-          await deleteSourceSafe(admin, 'music', mSrc.id);
-          await deleteSourceSafe(admin, 'video', vSrc.id);
+          await deleteSourceSafe(member, 'comic', cSrc.id);
+          await deleteSourceSafe(member, 'music', mSrc.id);
+          await deleteSourceSafe(member, 'video', vSrc.id);
         }
       },
     );
@@ -1080,8 +1083,8 @@ export async function runTier3(context = {}) {
       ['ui', 'music', 'video'],
       'Browser: Launching online Video automatically pauses active online Music playback',
       async () => {
-        const mSrc = await importSource(admin, 'music', musicMocks.gdstudio);
-        const vSrc = await importSource(admin, 'video', videoMocks.peertube);
+        const mSrc = await importSource(member, 'music', musicMocks.gdstudio);
+        const vSrc = await importSource(member, 'video', videoMocks.peertube);
         try {
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
@@ -1164,8 +1167,8 @@ export async function runTier3(context = {}) {
             cdp.assertNoErrors('T3-22 Music->Video handoff');
           });
         } finally {
-          await deleteSourceSafe(admin, 'music', mSrc.id);
-          await deleteSourceSafe(admin, 'video', vSrc.id);
+          await deleteSourceSafe(member, 'music', mSrc.id);
+          await deleteSourceSafe(member, 'video', vSrc.id);
         }
       },
     );
@@ -1176,7 +1179,7 @@ export async function runTier3(context = {}) {
       ['ui', 'comic'],
       'Browser: Online WEBTOON reader with zoom & dimImages loads proxied data-url images',
       async () => {
-        const src = await importSource(admin, 'comic', comicMocks.webtoon);
+        const src = await importSource(member, 'comic', comicMocks.webtoon);
         try {
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
@@ -1206,7 +1209,7 @@ export async function runTier3(context = {}) {
             cdp.assertNoErrors('T3-23 WEBTOON online reader');
           });
         } finally {
-          await deleteSourceSafe(admin, 'comic', src.id);
+          await deleteSourceSafe(member, 'comic', src.id);
         }
       },
     );
@@ -1217,9 +1220,9 @@ export async function runTier3(context = {}) {
       ['nonreg', 'comic', 'music', 'video'],
       'Local upload/browse/stream interleaved with online sources across all 3 domains',
       async () => {
-        const cSrc = await importSource(admin, 'comic', comicMocks.xkcd);
-        const mSrc = await importSource(admin, 'music', musicMocks.gdstudio);
-        const vSrc = await importSource(admin, 'video', videoMocks.peertube);
+        const cSrc = await importSource(member, 'comic', comicMocks.xkcd);
+        const mSrc = await importSource(member, 'music', musicMocks.gdstudio);
+        const vSrc = await importSource(member, 'video', videoMocks.peertube);
 
         let localSeriesId = null;
         let localTrackId = null;
@@ -1309,9 +1312,9 @@ export async function runTier3(context = {}) {
           if (localSeriesId) await admin.request('DELETE', `/api/v1/comic/series/${localSeriesId}`).catch(() => {});
           if (localTrackId) await admin.request('DELETE', `/api/v1/music/tracks/${localTrackId}`).catch(() => {});
           if (localVideoId) await admin.request('DELETE', `/api/v1/video/videos/${localVideoId}`).catch(() => {});
-          await deleteSourceSafe(admin, 'comic', cSrc.id);
-          await deleteSourceSafe(admin, 'music', mSrc.id);
-          await deleteSourceSafe(admin, 'video', vSrc.id);
+          await deleteSourceSafe(member, 'comic', cSrc.id);
+          await deleteSourceSafe(member, 'music', mSrc.id);
+          await deleteSourceSafe(member, 'video', vSrc.id);
         }
       },
     );

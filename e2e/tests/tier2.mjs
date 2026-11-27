@@ -59,13 +59,14 @@ function buildTier2Cases() {
       id: 'T2-F01-01',
       feature: 'F1',
       domain: 'core',
-      title: 'Unauthenticated requests to sources and online endpoints return 401 unauthorized',
+      title: 'Unauthenticated requests to plugins and online endpoints return 401 unauthorized',
       async run(ctx) {
         const anon = new ctx.ApiClient(ctx.baseUrl, { authMode: 'none' });
         for (const [method, p, body] of [
-          ['GET', '/api/v1/comic/sources', undefined],
-          ['GET', '/api/v1/music/sources', undefined],
-          ['GET', '/api/v1/video/sources', undefined],
+          ['GET', '/api/v1/plugins', undefined],
+          ['GET', '/api/v1/plugins?domain=comic', undefined],
+          ['GET', '/api/v1/plugins?domain=music', undefined],
+          ['GET', '/api/v1/plugins?domain=video', undefined],
           ['POST', '/api/v1/comic/online/search', { keyword: 'test' }],
           ['POST', '/api/v1/music/online/search', { keyword: 'test' }],
           ['POST', '/api/v1/video/online/search', { keyword: 'test' }],
@@ -98,28 +99,33 @@ function buildTier2Cases() {
       id: 'T2-F01-03',
       feature: 'F1',
       domain: 'core',
-      title: 'Non-admin receives 403 forbidden on all source mutation/admin endpoints across all 3 domains',
+      title: 'Cross-user plugin isolation returns 404 not_found when member accesses admin plugin IDs across all 3 domains',
       async run(ctx) {
-        const fakeId = '00000000-0000-4000-8000-000000000001';
-        for (const domain of ['comic', 'music', 'video']) {
+        const adminComics = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const adminMusics = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const adminVideos = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        for (const [, adminPluginId] of [
+          ['comic', adminComics.xkcd.id],
+          ['music', adminMusics.gdstudio.id],
+          ['video', adminVideos.peertube.id],
+        ]) {
           const checks = [
-            ['POST', `/api/v1/${domain}/sources/import`, { raw_json: '{}' }],
-            ['PATCH', `/api/v1/${domain}/sources/${fakeId}`, { enabled: false }],
-            ['DELETE', `/api/v1/${domain}/sources/${fakeId}`, undefined],
-            ['POST', `/api/v1/${domain}/sources/reorder`, { ordered_ids: [] }],
-            ['POST', `/api/v1/${domain}/sources/batch`, { ids: [], action: 'disable' }],
-            ['POST', `/api/v1/${domain}/sources/export-batch`, { ids: [] }],
-            ['GET', `/api/v1/${domain}/sources/${fakeId}/export`, undefined],
-            ['GET', `/api/v1/${domain}/sources/${fakeId}/variable`, undefined],
-            ['POST', `/api/v1/${domain}/sources/${fakeId}/login-action`, { login_info: {} }],
-            ['POST', `/api/v1/${domain}/sources/${fakeId}/test`, { mode: 'search' }],
+            ['GET', `/api/v1/plugins/${adminPluginId}`, undefined],
+            ['PATCH', `/api/v1/plugins/${adminPluginId}`, { enabled: false }],
+            ['DELETE', `/api/v1/plugins/${adminPluginId}`, undefined],
+            ['GET', `/api/v1/plugins/${adminPluginId}/export`, undefined],
+            ['GET', `/api/v1/plugins/${adminPluginId}/variable`, undefined],
+            ['POST', `/api/v1/plugins/${adminPluginId}/login-action`, { login_info: {} }],
+            ['POST', `/api/v1/plugins/${adminPluginId}/auth`, { action: 'status' }],
+            ['PUT', `/api/v1/plugins/${adminPluginId}/settings`, { values: {} }],
+            ['POST', `/api/v1/plugins/${adminPluginId}/test`, { mode: 'search' }],
           ];
           for (const [method, p, body] of checks) {
             const res = await ctx.member.failLoudlyRequest(method, p, {
               body,
-              expectedStatus: 403,
+              expectedStatus: 404,
             });
-            assert.equal(res.json?.error?.code, 'forbidden', `${method} ${p}`);
+            assert.equal(res.json?.error?.code, 'not_found', `${method} ${p}`);
           }
         }
       },
@@ -128,20 +134,20 @@ function buildTier2Cases() {
       id: 'T2-F01-04',
       feature: 'F1',
       domain: 'core',
-      title: 'Non-admin querying disabled source_id in /online/search or /detail never fetches upstream',
+      title: 'Member querying disabled source_id in /online/search or /detail never fetches upstream',
       async run(ctx) {
-        const comics = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
-        const musics = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
-        const videos = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
-        await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/comic/sources/${comics.xkcd.id}`, {
+        const comics = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
+        const musics = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
+        const videos = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
+        await ctx.member.failLoudlyRequest('PATCH', `/api/v1/plugins/${comics.xkcd.id}`, {
           body: { enabled: false },
           expectedStatus: 200,
         });
-        await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/music/sources/${musics.gdstudio.id}`, {
+        await ctx.member.failLoudlyRequest('PATCH', `/api/v1/plugins/${musics.gdstudio.id}`, {
           body: { enabled: false },
           expectedStatus: 200,
         });
-        await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/video/sources/${videos.peertube.id}`, {
+        await ctx.member.failLoudlyRequest('PATCH', `/api/v1/plugins/${videos.peertube.id}`, {
           body: { enabled: false },
           expectedStatus: 200,
         });
@@ -307,7 +313,7 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'Mock SUT rejects redirect chain exceeding 6 hops (/edge/redirect-chain?n=8)',
       async run(ctx) {
-        const comics = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const comics = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
           query: {
             url: `${ctx.mockBaseUrl}/edge/redirect-chain?n=8`,
@@ -324,9 +330,9 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'QuickJS sandbox terminates infinite loop, huge allocation, and HTTP flood without crashing server',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const edges = buildEdgeMockSources(ctx.mockBaseUrl);
-        const imp = await importSources(ctx.admin, 'comic', [
+        const imp = await importSources(ctx.member, 'comic', [
           edges.quickJsInfiniteLoop,
           edges.quickJsMemoryHog,
           edges.quickJsHttpFlood,
@@ -368,8 +374,8 @@ function buildTier2Cases() {
         const invalidBlank = { sourceName: '', sourceUrl: '' };
         const bomPayload = `\ufeff${JSON.stringify([validLenient, invalidBlank])}`;
 
-        const res = await ctx.admin.failLoudlyRequest('POST', '/api/v1/comic/sources/import', {
-          body: { raw_json: bomPayload },
+        const res = await ctx.admin.failLoudlyRequest('POST', '/api/v1/plugins/import?domain=comic', {
+          body: { domain: 'comic', raw_json: bomPayload },
           expectedStatus: [200, 400],
         });
         if (res.status === 200) {
@@ -389,11 +395,11 @@ function buildTier2Cases() {
         const edges = buildEdgeMockSources(ctx.mockBaseUrl);
         const imp1 = await importSources(ctx.admin, 'comic', edges.cookieGated);
         const srcId = imp1.sources[0].id;
-        await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/comic/sources/${srcId}`, {
+        await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/plugins/${srcId}`, {
           body: { variable: 'keep-me-var' },
           expectedStatus: 200,
         });
-        await ctx.admin.failLoudlyRequest('POST', `/api/v1/comic/sources/${srcId}/login-action`, {
+        await ctx.admin.failLoudlyRequest('POST', `/api/v1/plugins/${srcId}/login-action`, {
           body: { login_info: { username: 'alice', password: 'secret' } },
           expectedStatus: 200,
         });
@@ -410,7 +416,7 @@ function buildTier2Cases() {
 
         const varRes = await ctx.admin.failLoudlyRequest(
           'GET',
-          `/api/v1/comic/sources/${srcId}/variable`,
+          `/api/v1/plugins/${srcId}/variable`,
           { expectedStatus: 200 },
         );
         assert.equal(varRes.json.variable, 'keep-me-var');
@@ -424,8 +430,8 @@ function buildTier2Cases() {
       async run(ctx) {
         for (const domain of ['comic', 'music', 'video']) {
           for (const bad of ['{bad', '']) {
-            const res = await ctx.admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import`, {
-              body: { raw_json: bad },
+            const res = await ctx.admin.failLoudlyRequest('POST', `/api/v1/plugins/import?domain=${domain}`, {
+              body: { domain, raw_json: bad },
               expectedStatus: 400,
             });
             assert.equal(res.json?.error?.code, 'validation_error');
@@ -440,8 +446,8 @@ function buildTier2Cases() {
       title: 'Import exceeding 32 MiB limit returns 413 or 400 cleanly without OOM',
       async run(ctx) {
         const bigStr = 'x'.repeat(33 * 1024 * 1024);
-        const bodyBuf = Buffer.from(`{"raw_json":"${bigStr}"}`, 'utf8');
-        const res = await ctx.admin.failLoudlyRequest('POST', '/api/v1/comic/sources/import', {
+        const bodyBuf = Buffer.from(`{"domain":"comic","raw_json":"${bigStr}"}`, 'utf8');
+        const res = await ctx.admin.failLoudlyRequest('POST', '/api/v1/plugins/import?domain=comic', {
           headers: { 'Content-Type': 'application/json' },
           body: bodyBuf,
           timeoutMs: 30000,
@@ -454,22 +460,23 @@ function buildTier2Cases() {
       id: 'T2-F03-05',
       feature: 'F3',
       domain: 'core',
-      title: 'PATCH, DELETE, and test with nonexistent UUID return 404 not_found across all 3 domains',
+      title: 'GET, PATCH, DELETE, and test with nonexistent UUID return 404 not_found',
       async run(ctx) {
         const missingId = '99999999-9999-4999-8999-999999999999';
-        for (const domain of ['comic', 'music', 'video']) {
-          await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/${domain}/sources/${missingId}`, {
-            body: { enabled: false },
-            expectedStatus: 404,
-          });
-          await ctx.admin.failLoudlyRequest('DELETE', `/api/v1/${domain}/sources/${missingId}`, {
-            expectedStatus: 404,
-          });
-          await ctx.admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/${missingId}/test`, {
-            body: { mode: 'search', keyword: 'x' },
-            expectedStatus: 404,
-          });
-        }
+        await ctx.admin.failLoudlyRequest('GET', `/api/v1/plugins/${missingId}`, {
+          expectedStatus: 404,
+        });
+        await ctx.admin.failLoudlyRequest('PATCH', `/api/v1/plugins/${missingId}`, {
+          body: { enabled: false },
+          expectedStatus: 404,
+        });
+        await ctx.admin.failLoudlyRequest('DELETE', `/api/v1/plugins/${missingId}`, {
+          expectedStatus: 404,
+        });
+        await ctx.admin.failLoudlyRequest('POST', `/api/v1/plugins/${missingId}/test`, {
+          body: { mode: 'search', keyword: 'x' },
+          expectedStatus: 404,
+        });
       },
     },
 
@@ -482,9 +489,9 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'GBK-encoded HTML (/edge/gbk-html) decodes Chinese characters "中文测试漫画" cleanly',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const edges = buildEdgeMockSources(ctx.mockBaseUrl);
-        const imp = await importSources(ctx.admin, 'comic', edges.gbkHtml);
+        const imp = await importSources(ctx.member, 'comic', edges.gbkHtml);
         const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
           body: { keyword: 'gbk', source_ids: [imp.sources[0].id] },
           expectedStatus: 200,
@@ -500,7 +507,7 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'data: pseudo-URL in rule content resolves safely without external HTTP call',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const dataUri = `data:image/png;base64,${MOCK_PNG_BYTES.toString('base64')}`;
         const src = {
           sourceName: 'Data URI Source',
@@ -508,9 +515,9 @@ function buildTier2Cases() {
           sourceType: 2,
           enabled: true,
           searchUrl: `${ctx.mockBaseUrl}/comic/xkcd/info.0.json`,
-          ruleContent: { content: dataUri },
+          rulePages: { content: dataUri },
         };
-        const imp = await importSources(ctx.admin, 'comic', src);
+        const imp = await importSources(ctx.member, 'comic', src);
         await resetMockRequests(ctx.mockBaseUrl);
         const pagesRes = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
           body: {
@@ -528,12 +535,12 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'List reversal prefix (-$.data[*]) reverses extracted list order accurately',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const base = buildMockComicSources(ctx.mockBaseUrl).mangadex;
         base.sourceName = 'Reversed TOC MangaDex';
         base.sourceUrl = `${ctx.mockBaseUrl}/comic/mangadex-rev`;
         base.ruleToc.chapterList = '-$.data[*]';
-        const imp = await importSources(ctx.admin, 'comic', base);
+        const imp = await importSources(ctx.member, 'comic', base);
         const detail = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/detail', {
           body: {
             source_id: imp.sources[0].id,
@@ -552,7 +559,7 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'Recursive JSONPath ($..name) and unmatched CSS selector return cleanly without panic',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const src = {
           sourceName: 'Empty Selector Source',
           sourceUrl: `${ctx.mockBaseUrl}/comic/empty-sel`,
@@ -565,7 +572,7 @@ function buildTier2Cases() {
             bookUrl: 'a@href',
           },
         };
-        const imp = await importSources(ctx.admin, 'comic', src);
+        const imp = await importSources(ctx.member, 'comic', src);
         const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
           body: { keyword: 'test', source_ids: [imp.sources[0].id] },
           expectedStatus: 200,
@@ -579,12 +586,12 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'concurrentRate "1/500" throttles consecutive requests cleanly without dropping results',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const xkcd = buildMockComicSources(ctx.mockBaseUrl).xkcd;
         xkcd.sourceName = 'Throttled XKCD';
         xkcd.sourceUrl = `${ctx.mockBaseUrl}/comic/xkcd-throttled`;
         xkcd.concurrentRate = '1/500';
-        const imp = await importSources(ctx.admin, 'comic', xkcd);
+        const imp = await importSources(ctx.member, 'comic', xkcd);
         const id = imp.sources[0].id;
 
         const t0 = performance.now();
@@ -612,7 +619,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'MangaDex chapter with pages: 0 (md-ch-empty) returns empty pages[] gracefully',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
           body: {
             source_id: mocks.mangadex.id,
@@ -629,11 +636,11 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'Comic readingDirection override propagates from source/detail to pages response',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const wt = buildMockComicSources(ctx.mockBaseUrl).webtoon;
         wt.readingDirection = 'ltr';
-        wt.ruleBookInfo.readingDirection = 'webtoon';
-        const imp = await importSources(ctx.admin, 'comic', wt);
+        wt.ruleDetail.readingDirection = 'webtoon';
+        const imp = await importSources(ctx.member, 'comic', wt);
         const id = imp.sources[0].id;
         const det = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/detail', {
           body: { source_id: id, comic_url: `${ctx.mockBaseUrl}/comic/webtoon/list?title_no=95` },
@@ -648,7 +655,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'Paginated TOC (nextTocUrl) aggregates chapters across page 1 and page 2 without cycle',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const det = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/detail', {
           body: {
             source_id: mocks.webtoon.id,
@@ -666,7 +673,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'CJK and special characters in search keyword are properly percent-encoded upstream',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         await resetMockRequests(ctx.mockBaseUrl);
         await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
           body: { keyword: '神之塔 & 100%', source_ids: [mocks.webtoon.id] },
@@ -684,7 +691,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'Empty chapter_url or missing source_id on /online/pages returns 400 or 404/422',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
           body: { source_id: mocks.xkcd.id, chapter_url: '' },
           expectedStatus: [400, 422],
@@ -708,7 +715,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'image-proxy rejects /edge/svg-as-image and never returns SVG markup',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
           query: { url: `${ctx.mockBaseUrl}/edge/svg-as-image`, source_id: mocks.xkcd.id },
           expectedStatus: [400, 415, 502],
@@ -722,7 +729,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'image-proxy rejects HTML disguised as .jpg (/edge/html-as-image.jpg)',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
           query: { url: `${ctx.mockBaseUrl}/edge/html-as-image.jpg`, source_id: mocks.xkcd.id },
           expectedStatus: [400, 415, 502],
@@ -736,7 +743,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'image-proxy rejects /edge/oversized-image (>16 MiB cap) cleanly',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
           query: { url: `${ctx.mockBaseUrl}/edge/oversized-image`, source_id: mocks.xkcd.id },
           expectedStatus: [400, 413, 502],
@@ -750,7 +757,7 @@ function buildTier2Cases() {
       domain: 'comic',
       title: 'image-proxy surfaces upstream 403 cleanly when WEBTOON CDN lacks Referer (wrong source_id)',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
           query: {
             url: `${ctx.mockBaseUrl}/comic/webtoon/cdn/ep1_1.jpg`,
@@ -811,7 +818,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'Music artist normalizes both JSON array (GDStudio) and plain string (Audius)',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const r1 = await ctx.member.failLoudlyRequest('POST', '/api/v1/music/online/search', {
           body: { keyword: 'Mojito', source_ids: [mocks.gdstudio.id] },
           expectedStatus: 200,
@@ -832,7 +839,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'Music duration normalizes seconds (212), milliseconds (212000), and "03:32" string',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'music');
+        await clearDomainSources(ctx.member, 'music');
         const msSrc = {
           sourceName: 'Duration Ms Source',
           sourceUrl: `${ctx.mockBaseUrl}/music/dur-ms`,
@@ -859,7 +866,7 @@ function buildTier2Cases() {
             duration: '<js>"03:32"</js>',
           },
         };
-        const imp = await importSources(ctx.admin, 'music', [msSrc, mmssSrc]);
+        const imp = await importSources(ctx.member, 'music', [msSrc, mmssSrc]);
         for (const src of imp.sources) {
           const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/music/online/search', {
             body: { keyword: 'Fragments', source_ids: [src.id] },
@@ -877,7 +884,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'Plain-text lyrics set synced=false and LRC [offset:-500] adjusts/parses accurately',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const plain = await ctx.member.failLoudlyRequest('POST', '/api/v1/music/online/lyrics', {
           body: { source_id: mocks.gdstudio.id, track_id: 'gd-plain', lyric_id: 'gd-plain' },
           expectedStatus: 200,
@@ -902,7 +909,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'Unsupported quality="dsd" falls back gracefully or returns structured 400 error',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/music/online/stream', {
           body: {
             source_id: mocks.gdstudio.id,
@@ -925,7 +932,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'Track without lyric_id succeeds on /online/track-info with lyrics: null',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/music/online/track-info', {
           body: {
             source_id: mocks.audius.id,
@@ -948,7 +955,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'cover-proxy rejects SVG and HTML payloads via magic-byte sniffing',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         for (const p of ['/edge/svg-as-image', '/edge/html-as-image.jpg']) {
           const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/music/online/cover-proxy', {
             query: { url: `${ctx.mockBaseUrl}${p}`, source_id: mocks.gdstudio.id },
@@ -964,7 +971,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'audio-proxy handles suffix Range (bytes=-512) and open-ended Range (bytes=4096-)',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const mp3Url = `${ctx.mockBaseUrl}/music/gdstudio/cdn/gd-101.mp3?br=320`;
 
         const suf = await ctx.member.failLoudlyRequest('GET', '/api/v1/music/online/audio-proxy', {
@@ -990,7 +997,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'audio-proxy returns 416 Range Not Satisfiable for out-of-bounds Range',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         await ctx.member.failLoudlyRequest('GET', '/api/v1/music/online/audio-proxy', {
           query: {
             url: `${ctx.mockBaseUrl}/music/gdstudio/cdn/gd-101.mp3?br=320`,
@@ -1007,7 +1014,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'audio-proxy handles malformed Range header (bytes=abc-def) without 500 error',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/music/online/audio-proxy', {
           query: {
             url: `${ctx.mockBaseUrl}/music/gdstudio/cdn/gd-101.mp3?br=320`,
@@ -1027,7 +1034,7 @@ function buildTier2Cases() {
       domain: 'music',
       title: 'audio-proxy returns non-200 error envelope when upstream returns 502',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/music/online/audio-proxy', {
           query: { url: `${ctx.mockBaseUrl}/edge/error-502`, source_id: mocks.gdstudio.id },
           expectedStatus: [400, 502],
@@ -1045,7 +1052,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'AppleCMS with ONLY /share/ URLs filters non-media lines gracefully without panic',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const shareOnlySrv = http.createServer((req, res) => {
           const payload = JSON.stringify({
             code: 1,
@@ -1072,7 +1079,7 @@ function buildTier2Cases() {
             enabled: true,
             playUrlFilterRegex: '(?i)\\.(m3u8|mp4)(\\?|$)',
           };
-          const imp = await importSources(ctx.admin, 'video', src);
+          const imp = await importSources(ctx.member, 'video', src);
           const det = await ctx.member.failLoudlyRequest('POST', '/api/v1/video/online/detail', {
             body: { source_id: imp.sources[0].id, video_id: '2001' },
             expectedStatus: 200,
@@ -1089,7 +1096,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'AppleCMS mismatched vod_play_from/url group counts and missing $ label recover safely',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const mismatchSrv = http.createServer((req, res) => {
           const payload = JSON.stringify({
             code: 1,
@@ -1108,7 +1115,7 @@ function buildTier2Cases() {
         await new Promise((r) => mismatchSrv.listen(0, '127.0.0.1', r));
         try {
           const port = mismatchSrv.address().port;
-          const imp = await importSources(ctx.admin, 'video', {
+          const imp = await importSources(ctx.member, 'video', {
             sourceName: 'Mismatch AppleCMS',
             sourceUrl: `http://127.0.0.1:${port}`,
             sourceFormat: 'applecms_v10',
@@ -1131,10 +1138,10 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'AppleCMS preferredPlayFrom ["altm3u8", "ikm3u8"] reorders play_groups accordingly',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const ac = buildMockVideoSources(ctx.mockBaseUrl).applecms;
         ac.preferredPlayFrom = ['altm3u8', 'ikm3u8'];
-        const imp = await importSources(ctx.admin, 'video', ac);
+        const imp = await importSources(ctx.member, 'video', ac);
         const det = await ctx.member.failLoudlyRequest('POST', '/api/v1/video/online/detail', {
           body: { source_id: imp.sources[0].id, video_id: '1001' },
           expectedStatus: 200,
@@ -1149,7 +1156,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'AppleCMS vod_content HTML tags (<p>...</p>) are cleaned safely in detail.intro',
       async run(ctx) {
-        const mocks = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const det = await ctx.member.failLoudlyRequest('POST', '/api/v1/video/online/detail', {
           body: { source_id: mocks.applecms.id, video_id: '1001' },
           expectedStatus: 200,
@@ -1164,7 +1171,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'Empty video search keyword returns 400 and out-of-bounds page=999 returns results: []',
       async run(ctx) {
-        const mocks = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         await ctx.member.failLoudlyRequest('POST', '/api/v1/video/online/search', {
           body: { keyword: '', source_ids: [mocks.applecms.id] },
           expectedStatus: [400, 422],
@@ -1186,7 +1193,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'poster-proxy rejects /edge/svg-as-image',
       async run(ctx) {
-        const mocks = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/video/online/poster-proxy', {
           query: { url: `${ctx.mockBaseUrl}/edge/svg-as-image`, source_id: mocks.applecms.id },
           expectedStatus: [400, 415, 502],
@@ -1200,7 +1207,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'hls-proxy rejects /edge/malformed-m3u8 missing #EXTM3U header',
       async run(ctx) {
-        const mocks = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/video/online/hls-proxy', {
           query: { url: `${ctx.mockBaseUrl}/edge/malformed-m3u8`, source_id: mocks.applecms.id },
           expectedStatus: [400, 502],
@@ -1214,7 +1221,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'hls-proxy rejects /edge/oversized-m3u8 (>8 MiB cap) cleanly',
       async run(ctx) {
-        const mocks = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/video/online/hls-proxy', {
           query: { url: `${ctx.mockBaseUrl}/edge/oversized-m3u8`, source_id: mocks.applecms.id },
           expectedStatus: [400, 413, 502],
@@ -1228,7 +1235,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'hls-proxy preserves query parameters on rewritten segment and #EXT-X-KEY URIs',
       async run(ctx) {
-        const mocks = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         await resetMockRequests(ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('GET', '/api/v1/video/online/hls-proxy', {
           query: {
@@ -1255,7 +1262,7 @@ function buildTier2Cases() {
       domain: 'video',
       title: 'hls-proxy applies source mediaHeader (X-Video-Token) and strips forbidden hop-by-hop headers',
       async run(ctx) {
-        const mocks = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         await resetMockRequests(ctx.mockBaseUrl);
         const segRes = await ctx.member.failLoudlyRequest('GET', '/api/v1/video/online/hls-proxy', {
           query: {
@@ -1296,7 +1303,7 @@ function buildTier2Cases() {
           const url1 = await mgr.start({ mode: 'mock' });
           const { admin } = await bootstrapClients(url1, ctx.ApiClient);
           const mocks = await ensureMusicMocks(admin, ctx.mockBaseUrl);
-          await admin.failLoudlyRequest('DELETE', `/api/v1/music/sources/${mocks.gdstudio.id}`, {
+          await admin.failLoudlyRequest('DELETE', `/api/v1/plugins/${mocks.gdstudio.id}`, {
             expectedStatus: [200, 204],
           });
 
@@ -1304,7 +1311,7 @@ function buildTier2Cases() {
           const admin2 = new ctx.ApiClient(url2, { authMode: 'bearer' });
           await admin2.login({ username: 'admin', password: 'AdminPass123!' });
           const list = (
-            await admin2.failLoudlyRequest('GET', '/api/v1/music/sources', { expectedStatus: 200 })
+            await admin2.failLoudlyRequest('GET', '/api/v1/plugins?domain=music', { expectedStatus: 200 })
           ).json;
           assert.ok(!list.some((s) => s.id === mocks.gdstudio.id));
         } finally {
@@ -1331,7 +1338,7 @@ function buildTier2Cases() {
           const { admin } = await bootstrapClients(url1, ctx.ApiClient);
           const mocks = await ensureVideoMocks(admin, ctx.mockBaseUrl);
           const bigVar = 'V'.repeat(64 * 1024);
-          await admin.failLoudlyRequest('PATCH', `/api/v1/video/sources/${mocks.applecms.id}`, {
+          await admin.failLoudlyRequest('PATCH', `/api/v1/plugins/${mocks.applecms.id}`, {
             body: { variable: bigVar },
             expectedStatus: 200,
           });
@@ -1342,7 +1349,7 @@ function buildTier2Cases() {
           const got = (
             await admin2.failLoudlyRequest(
               'GET',
-              `/api/v1/video/sources/${mocks.applecms.id}/variable`,
+              `/api/v1/plugins/${mocks.applecms.id}/variable`,
               { expectedStatus: 200 },
             )
           ).json;
@@ -1361,9 +1368,14 @@ function buildTier2Cases() {
       id: 'T2-F12-01',
       feature: 'F12',
       domain: 'ui',
-      title: 'Browser (Non-Admin): /:domain/settings?tab=sources&advanced=1 shows admin-only lock for comic/music/video',
+      title: 'Browser (Non-Admin): /:domain/settings?tab=sources&advanced=1 opens personal plugin manager without leaking admin plugins',
       async run(ctx) {
         await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        await clearDomainSources(ctx.member, 'comic');
+        await clearDomainSources(ctx.member, 'music');
+        await clearDomainSources(ctx.member, 'video');
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -1372,13 +1384,19 @@ function buildTier2Cases() {
         );
         try {
           await cdp.waitForFn(
-            `!/Mock MangaDex/.test(document.body.innerText) && /管理员|admin/i.test(document.body.innerText)`,
-            { timeoutMs: 8000, label: 'non-admin lock card displayed' },
+            `!/Mock MangaDex/.test(document.body.innerText) && /导入|Import/i.test(document.body.innerText)`,
+            { timeoutMs: 8000, label: 'member personal comic plugin manager displayed without admin plugins' },
           );
-          for (const d of ['music', 'video']) {
-            await cdp.goto(`${ctx.baseUrl}/${d}/settings?tab=sources&advanced=1`);
-            await cdp.waitForFn(`/管理员|admin/i.test(document.body.innerText)`, { timeoutMs: 8000 });
-          }
+          await cdp.goto(`${ctx.baseUrl}/music/settings?tab=sources&advanced=1`);
+          await cdp.waitForFn(
+            `!/Mock GDStudio/.test(document.body.innerText) && /导入|Import/i.test(document.body.innerText)`,
+            { timeoutMs: 8000, label: 'member personal music plugin manager displayed without admin plugins' },
+          );
+          await cdp.goto(`${ctx.baseUrl}/video/settings?tab=sources&advanced=1`);
+          await cdp.waitForFn(
+            `!/Mock AppleCMS/.test(document.body.innerText) && /导入|Import/i.test(document.body.innerText)`,
+            { timeoutMs: 8000, label: 'member personal video plugin manager displayed without admin plugins' },
+          );
           cdp.assertNoErrors('T2-F12-01');
         } finally {
           await cdp.close();
@@ -1480,7 +1498,7 @@ function buildTier2Cases() {
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock XKCD')`, { timeoutMs: 10000 });
           await cdp.send('Fetch.enable', {
-            patterns: [{ urlPattern: '*/api/v1/comic/sources/*/export', requestStage: 'Request' }],
+            patterns: [{ urlPattern: '*/api/v1/plugins/*/export', requestStage: 'Request' }],
           });
           cdp.on('Fetch.requestPaused', async (params) => {
             await new Promise((r) => setTimeout(r, 900));
@@ -1530,7 +1548,7 @@ function buildTier2Cases() {
 
           const pendingPatchRequests = [];
           await cdp.send('Fetch.enable', {
-            patterns: [{ urlPattern: '*/api/v1/comic/sources/*', requestStage: 'Request' }],
+            patterns: [{ urlPattern: '*/api/v1/plugins/*', requestStage: 'Request' }],
           });
           cdp.on('Fetch.requestPaused', async (params) => {
             try {
@@ -1696,7 +1714,7 @@ function buildTier2Cases() {
         );
         try {
           await cdp.waitForFn(
-            `/数据源|来源|source|settings|设置/i.test(document.body.innerText)`,
+            `/数据源|来源|插件|plugin|source|settings|设置/i.test(document.body.innerText)`,
             { timeoutMs: 8000, label: 'empty sources guidance rendered' },
           );
           cdp.assertNoErrors('T2-F13-01');
@@ -1711,7 +1729,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Rapidly toggling local <-> online switcher keeps latest scope state clean',
       async run(ctx) {
-        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -1761,7 +1779,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser (Non-Admin): GlobalSearchModal & online search incur zero 403 admin-endpoint errors',
       async run(ctx) {
-        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -1784,10 +1802,10 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Multi-source search with 1 healthy + 1 502 source renders partial results & notice',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const comics = buildMockComicSources(ctx.mockBaseUrl);
         const edges = buildEdgeMockSources(ctx.mockBaseUrl);
-        await importSources(ctx.admin, 'comic', [comics.xkcd, edges.error502]);
+        await importSources(ctx.member, 'comic', [comics.xkcd, edges.error502]);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -1809,7 +1827,7 @@ function buildTier2Cases() {
       id: 'T2-F13-06',
       feature: 'F13',
       domain: 'ui',
-      title: 'Browser: Online search section shows explicit [role="alert"] + Retry instead of empty-sources CTA on /sources 500',
+      title: 'Browser: Online search section shows explicit [role="alert"] + Retry instead of empty-plugins CTA on /plugins 500',
       async run(ctx) {
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
@@ -1820,7 +1838,7 @@ function buildTier2Cases() {
         try {
           let interceptActive = true;
           await cdp.send('Fetch.enable', {
-            patterns: [{ urlPattern: '*/api/v1/comic/sources', requestStage: 'Request' }],
+            patterns: [{ urlPattern: '*/api/v1/plugins*', requestStage: 'Request' }],
           });
           cdp.on('Fetch.requestPaused', async (params) => {
             try {
@@ -1844,9 +1862,9 @@ function buildTier2Cases() {
             `(() => {
               const alert = document.querySelector('main [role="alert"]');
               const text = document.body.innerText || '';
-              return Boolean(alert) && !/没有已启用的在线漫画源|No online comic sources enabled/i.test(text);
+              return Boolean(alert) && !/没有已启用的在线漫画(?:源|插件)|No online comic (?:sources|plugins) enabled/i.test(text);
             })()`,
-            { timeoutMs: 10000, label: 'explicit [role="alert"] shown instead of no-enabled-sources CTA on 500' },
+            { timeoutMs: 10000, label: 'explicit [role="alert"] shown instead of no-enabled-plugins CTA on 500' },
           );
 
           interceptActive = false;
@@ -1854,7 +1872,7 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/重试|retry/i], { rootSelector: 'main [role="alert"]' });
           await cdp.waitForFn(`!document.querySelector('main [role="alert"]')`, {
             timeoutMs: 8000,
-            label: 'retry clears /sources 500 alert',
+            label: 'retry clears /plugins 500 alert',
           });
           assert.equal(cdp.exceptions.length, 0);
         } finally {
@@ -1872,7 +1890,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Comic reader handles broken image URL (/edge/svg-as-image) without JS crash',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const badImgSrc = {
           sourceName: 'Broken SVG Page Comic',
           sourceUrl: `${ctx.mockBaseUrl}/comic/broken-svg`,
@@ -1884,7 +1902,7 @@ function buildTier2Cases() {
             name: '$.title',
             bookUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/xkcd/info.0.json`)}`,
           },
-          ruleBookInfo: {
+          ruleDetail: {
             name: '$.title',
             tocUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/xkcd/info.0.json`)}`,
           },
@@ -1893,11 +1911,11 @@ function buildTier2Cases() {
             chapterName: '@js:"Broken Chapter"',
             chapterUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/xkcd/info.0.json`)}`,
           },
-          ruleContent: {
+          rulePages: {
             content: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/edge/svg-as-image`)}`,
           },
         };
-        await importSources(ctx.admin, 'comic', badImgSrc);
+        await importSources(ctx.member, 'comic', badImgSrc);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -1947,7 +1965,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Keyboard navigation (ArrowRight, ArrowLeft, Escape) in online comic reader',
       async run(ctx) {
-        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -1977,7 +1995,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Toggling dimImages eye-care filter & fit mode in online comic reader preserves pages',
       async run(ctx) {
-        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2007,7 +2025,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Online comic detail with 0 chapters renders empty chapter state cleanly',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const emptyChSrc = buildMockComicSources(ctx.mockBaseUrl).webtoon;
         emptyChSrc.searchUrl = `${ctx.mockBaseUrl}/comic/webtoon/list?title_no=0`;
         emptyChSrc.ruleSearch = {
@@ -2015,7 +2033,7 @@ function buildTier2Cases() {
           name: '@text',
           bookUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/webtoon/list?title_no=0`)}`,
         };
-        await importSources(ctx.admin, 'comic', emptyChSrc);
+        await importSources(ctx.member, 'comic', emptyChSrc);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2040,7 +2058,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: ComicReaderShell ignores page-turn shortcuts while settings popover is open',
       async run(ctx) {
-        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2099,7 +2117,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Playing online track with lyrics=null shows empty state in LyricsOverlay',
       async run(ctx) {
-        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2123,10 +2141,10 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Track with failing/missing cover falls back cleanly without broken image crash',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'music');
+        await clearDomainSources(ctx.member, 'music');
         const noCover = buildMockMusicSources(ctx.mockBaseUrl).audius;
         delete noCover.ruleSearch.coverUrl;
-        await importSources(ctx.admin, 'music', noCover);
+        await importSources(ctx.member, 'music', noCover);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2149,7 +2167,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Seeking Range-capable GDStudio track updates audio.currentTime cleanly',
       async run(ctx) {
-        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2177,7 +2195,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Clearing QueueDrawer resets PlayerBar cleanly after Audius non-Range playback',
       async run(ctx) {
-        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2205,7 +2223,6 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Logging out pauses/clears online music PlayerBar and redirects to /login',
       async run(ctx) {
-        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
         const ephemeralUsername = `logout_member_${Date.now()}`;
         const ephemeralCreds = {
           username: ephemeralUsername,
@@ -2219,6 +2236,7 @@ function buildTier2Cases() {
           password: ephemeralCreds.password,
           authMode: 'bearer',
         });
+        await ensureMusicMocks(ephemeralMember, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2262,7 +2280,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: PlayerBar renders localized error alert and Retry button when audio-proxy returns 502',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'music');
+        await clearDomainSources(ctx.member, 'music');
         const badAudioSrc = {
           ...buildMockMusicSources(ctx.mockBaseUrl).gdstudio,
           sourceName: 'Bad Audio 502 Music',
@@ -2272,7 +2290,7 @@ function buildTier2Cases() {
             streamUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/edge/error-502`)}`,
           },
         };
-        await importSources(ctx.admin, 'music', badAudioSrc);
+        await importSources(ctx.member, 'music', badAudioSrc);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2319,7 +2337,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Clicking PlayerBar Play during in-flight track-info does not issue duplicate track-info',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'music');
+        await clearDomainSources(ctx.member, 'music');
         const slowResolveSrc = {
           ...buildMockMusicSources(ctx.mockBaseUrl).gdstudio,
           sourceName: 'Slow Resolve Music',
@@ -2329,7 +2347,7 @@ function buildTier2Cases() {
             streamUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/music/audius/v1/tracks/aud-1/stream`)}`,
           },
         };
-        await importSources(ctx.admin, 'music', slowResolveSrc);
+        await importSources(ctx.member, 'music', slowResolveSrc);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2373,7 +2391,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Switching away from HLS video player destroys hls.js cleanly without MSE errors',
       async run(ctx) {
-        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2401,7 +2419,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Video returning /edge/malformed-m3u8 shows non-crashing error state in player',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const badM3u8Src = {
           sourceName: 'Bad M3U8 Source',
           sourceUrl: `${ctx.mockBaseUrl}/video/bad-m3u8`,
@@ -2425,7 +2443,7 @@ function buildTier2Cases() {
             streamType: 'hls',
           },
         };
-        await importSources(ctx.admin, 'video', badM3u8Src);
+        await importSources(ctx.member, 'video', badM3u8Src);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2455,7 +2473,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Video detail with 0 playable groups shows empty/unsupported notice cleanly',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const emptyVidSrc = {
           sourceName: 'Empty Groups Video',
           sourceUrl: `${ctx.mockBaseUrl}/video/empty-groups`,
@@ -2473,7 +2491,7 @@ function buildTier2Cases() {
             episodes: '$.nonexistent_episodes[*]',
           },
         };
-        await importSources(ctx.admin, 'video', emptyVidSrc);
+        await importSources(ctx.member, 'video', emptyVidSrc);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2500,7 +2518,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Direct MP4 (stream-proxy) video seek updates currentTime cleanly',
       async run(ctx) {
-        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2529,8 +2547,8 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Starting online video playback pauses active online music PlayerBar',
       async run(ctx) {
-        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
-        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
+        await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -2600,7 +2618,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: OnlineVideoSearchSection supports category-less rule browse and surfaces [role="alert"] + Retry on /categories 500',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const categorylessRuleSrc = {
           sourceName: 'Categoryless Rule Video',
           sourceUrl: `${ctx.mockBaseUrl}/video/peertube`,
@@ -2626,7 +2644,7 @@ function buildTier2Cases() {
           ruleDetail: { title: '$.name', episodes: '$.streamingPlaylists[0].files[*]', episodeName: '$.resolution.label', episodeUrl: '$.fileUrl' },
           rulePlay: { requestUrl: '{{playUrl}}', streamUrl: '{{playUrl}}' },
         };
-        await importSources(ctx.admin, 'video', categorylessRuleSrc);
+        await importSources(ctx.member, 'video', categorylessRuleSrc);
 
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
@@ -2693,9 +2711,9 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Online video, comic, and music search/explore clear stale results, show [role="alert"], and hide empty/prompt states on error',
       async run(ctx) {
-        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
-        const comicMocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
-        const musicMocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
+        const comicMocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
+        const musicMocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
 
         const scenarios = [
           {
@@ -2874,7 +2892,7 @@ function buildTier2Cases() {
               const alert = main?.querySelector('[role="alert"]');
               return Boolean(alert)
                 && (alert?.innerText || '').includes('comic explore timeout')
-                && !/输入关键词搜索，或选择支持发现的漫画源浏览推荐|Enter a keyword to search, or select a source with Explore enabled/i.test(text);
+                && !/输入关键词搜索，或选择支持发现的漫画(?:源|插件)浏览推荐|Enter a keyword to search, or select a (?:source|plugin) with Explore enabled/i.test(text);
             })()`,
             {
               timeoutMs: 10000,
@@ -2896,7 +2914,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: OnlineVideoPlayerView renders <track> subtitles via /api/v1/video/online/subtitle-proxy (wildcard ACAO VTT + Referer SRT)',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const subVideoSrc = {
           sourceName: 'Subtitled Rule Video',
           sourceUrl: `${ctx.mockBaseUrl}/video/subtitled`,
@@ -2921,7 +2939,7 @@ function buildTier2Cases() {
             subtitles: '$.subs',
           },
         };
-        const imp = await importSources(ctx.admin, 'video', subVideoSrc);
+        const imp = await importSources(ctx.member, 'video', subVideoSrc);
         const sid = imp.sources[0].id;
         const playUrl = `${ctx.mockBaseUrl}/video/subtitled/play`;
 
@@ -3000,7 +3018,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: Rapid episode switching Ep1 -> Ep2 in OnlineVideoPlayerView with delayed Ep1 /online/play stays on Ep2',
       async run(ctx) {
-        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
@@ -3072,7 +3090,7 @@ function buildTier2Cases() {
       domain: 'ui',
       title: 'Browser: OnlineVideoPlayerView clears stale stream-type badge and subtitle selector immediately when switching to a delayed/failing episode',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'video');
+        await clearDomainSources(ctx.member, 'video');
         const multiSubVideoSrc = {
           sourceName: 'Multi Ep Subtitled Rule Video',
           sourceUrl: `${ctx.mockBaseUrl}/video/subtitled`,
@@ -3097,7 +3115,7 @@ function buildTier2Cases() {
             subtitles: '$.subs',
           },
         };
-        await importSources(ctx.admin, 'video', multiSubVideoSrc);
+        await importSources(ctx.member, 'video', multiSubVideoSrc);
 
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
@@ -3237,7 +3255,7 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'Upstream 500 HTML error page returns structured JSON error envelope (never raw HTML)',
       async run(ctx) {
-        const mocks = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
         const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/detail', {
           body: { source_id: mocks.xkcd.id, comic_url: `${ctx.mockBaseUrl}/edge/error-500-html` },
           expectedStatus: [400, 502],
@@ -3252,9 +3270,9 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'Malformed broken HTML (/edge/malformed-html) is tolerated by CSS parser without panic',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const edges = buildEdgeMockSources(ctx.mockBaseUrl);
-        const imp = await importSources(ctx.admin, 'comic', edges.malformedHtml);
+        const imp = await importSources(ctx.member, 'comic', edges.malformedHtml);
         const res = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
           body: { keyword: 'partial', source_ids: [imp.sources[0].id] },
           expectedStatus: 200,
@@ -3270,9 +3288,9 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'Concurrent burst of 8 parallel /online/search calls across all 3 domains completes cleanly',
       async run(ctx) {
-        const comics = await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
-        const musics = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
-        const videos = await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const comics = await ensureComicMocks(ctx.member, ctx.mockBaseUrl);
+        const musics = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
+        const videos = await ensureVideoMocks(ctx.member, ctx.mockBaseUrl);
         const tasks = [
           ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
             body: { keyword: 'Naruto', source_ids: [comics.mangadex.id] },
@@ -3317,9 +3335,9 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'Gated endpoint /edge/gated/comic-pages fails before login-action and succeeds after login-action',
       async run(ctx) {
-        await clearDomainSources(ctx.admin, 'comic');
+        await clearDomainSources(ctx.member, 'comic');
         const edges = buildEdgeMockSources(ctx.mockBaseUrl);
-        const imp = await importSources(ctx.admin, 'comic', edges.cookieGated);
+        const imp = await importSources(ctx.member, 'comic', edges.cookieGated);
         const srcId = imp.sources[0].id;
 
         const before = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
@@ -3330,7 +3348,7 @@ function buildTier2Cases() {
           assert.equal(before.json.pages.length, 0);
         }
 
-        await ctx.admin.failLoudlyRequest('POST', `/api/v1/comic/sources/${srcId}/login-action`, {
+        await ctx.member.failLoudlyRequest('POST', `/api/v1/plugins/${srcId}/login-action`, {
           body: { login_info: { username: 'alice', password: 'secret' } },
           expectedStatus: 200,
         });
@@ -3347,7 +3365,7 @@ function buildTier2Cases() {
       domain: 'core',
       title: 'Upstream connection reset mid-body terminates proxy cleanly without crashing gateway',
       async run(ctx) {
-        const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const mocks = await ensureMusicMocks(ctx.member, ctx.mockBaseUrl);
         let resetHitCount = 0;
         const resetSrv = http.createServer((req, res) => {
           resetHitCount += 1;
@@ -3423,9 +3441,9 @@ function buildTier2Cases() {
           expectedStatus: [200, 204],
         });
 
-        // Online sources remain untouched
+        // Online plugins remain untouched
         const srcs = (
-          await ctx.admin.failLoudlyRequest('GET', '/api/v1/comic/sources', { expectedStatus: 200 })
+          await ctx.admin.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', { expectedStatus: 200 })
         ).json;
         assert.equal(srcs.length, 3);
       },
@@ -3537,18 +3555,24 @@ function buildTier2Cases() {
       id: 'T2-F18-04',
       feature: 'F18',
       domain: 'nonreg',
-      title: 'Non-privileged user access across local /api/v1/comic/series and online /api/v1/comic/sources enforces consistent RBAC',
+      title: 'Non-privileged user access across local /api/v1/comic/series and isolated /api/v1/plugins enforces per-user plugin boundary',
       async run(ctx) {
         await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await clearDomainSources(ctx.member, 'comic');
         await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/series', { expectedStatus: 200 });
-        const srcs = await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/sources', {
+        const srcs = await ctx.member.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', {
           expectedStatus: 200,
         });
-        assert.ok(srcs.json.every((s) => s.enabled === true && s.variable_preview === ''));
-        await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/sources/import', {
-          body: { raw_json: '[]' },
-          expectedStatus: 403,
+        assert.equal(srcs.json.length, 0, 'Member must not see admin plugins');
+        const imp = await ctx.member.failLoudlyRequest('POST', '/api/v1/plugins/import?domain=comic', {
+          body: {
+            domain: 'comic',
+            raw_json: JSON.stringify(buildMockComicSources(ctx.mockBaseUrl).xkcd),
+          },
+          expectedStatus: 200,
         });
+        assert.equal(imp.json.imported_count, 1);
+        await clearDomainSources(ctx.member, 'comic');
       },
     },
     {
@@ -3583,7 +3607,7 @@ function buildTier2Cases() {
           const admin2 = new ctx.ApiClient(url2, { authMode: 'bearer' });
           await admin2.login({ username: 'admin', password: 'AdminPass123!' });
           const srcs = (
-            await admin2.failLoudlyRequest('GET', '/api/v1/comic/sources', { expectedStatus: 200 })
+            await admin2.failLoudlyRequest('GET', '/api/v1/plugins?domain=comic', { expectedStatus: 200 })
           ).json;
           assert.equal(srcs.length, 3);
         } finally {

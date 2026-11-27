@@ -234,11 +234,11 @@ export async function runLiveTests(context = {}) {
       const rawJson = readFileSync(fixturePath, 'utf8');
       JSON.parse(rawJson);
 
-      await admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import`, {
-        body: { raw_json: rawJson },
+      await admin.failLoudlyRequest('POST', `/api/v1/plugins/import?domain=${domain}`, {
+        body: { domain, raw_json: rawJson },
         expectedStatus: 200,
       });
-      const listRes = await admin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
+      const listRes = await admin.failLoudlyRequest('GET', `/api/v1/plugins?domain=${domain}`, {
         expectedStatus: 200,
       });
       seeded[domain] = listRes.json || [];

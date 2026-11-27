@@ -152,38 +152,50 @@ export async function getMockRequests(mockBaseUrl, limit = 200) {
   return res.json();
 }
 
-export async function importSources(admin, domain, payload) {
+export async function importSources(client, domain, payload) {
   const rawJson = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  const res = await admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import`, {
-    body: { raw_json: rawJson },
-    expectedStatus: 200,
-  });
+  const res = await client.failLoudlyRequest(
+    'POST',
+    `/api/v1/plugins/import?domain=${encodeURIComponent(domain)}`,
+    {
+      body: { domain, raw_json: rawJson },
+      expectedStatus: 200,
+    },
+  );
   return res.json;
 }
 
-export async function importSource(admin, domain, sourceObj) {
-  const imported = await importSources(admin, domain, sourceObj);
+export async function importSource(client, domain, sourceObj) {
+  const imported = await importSources(client, domain, sourceObj);
   const list = imported?.sources || [];
   assert.ok(list.length >= 1, `Expected imported source in response for ${domain}`);
   const targetName = typeof sourceObj === 'object' ? (sourceObj.sourceName || sourceObj.name) : null;
   return (targetName && list.find((s) => s.name === targetName)) || list[0];
 }
 
-export async function deleteSourceSafe(admin, domain, id) {
+export async function deleteSourceSafe(client, _domain, id) {
   if (!id) return;
-  await admin.request('DELETE', `/api/v1/${domain}/sources/${id}`).catch(() => {});
+  await client.request('DELETE', `/api/v1/plugins/${id}`).catch(() => {});
 }
 
-export async function clearDomainSources(admin, domain) {
-  const res = await admin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
-    expectedStatus: 200,
-  });
+export async function clearDomainSources(client, domain) {
+  const res = await client.failLoudlyRequest(
+    'GET',
+    `/api/v1/plugins?domain=${encodeURIComponent(domain)}`,
+    {
+      expectedStatus: 200,
+    },
+  );
   const list = Array.isArray(res.json) ? res.json : [];
   if (list.length > 0) {
-    await admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/batch`, {
-      body: { ids: list.map((s) => s.id), action: 'delete' },
-      expectedStatus: 200,
-    });
+    await client.failLoudlyRequest(
+      'POST',
+      `/api/v1/plugins/batch?domain=${encodeURIComponent(domain)}`,
+      {
+        body: { domain, ids: list.map((s) => s.id), action: 'delete' },
+        expectedStatus: 200,
+      },
+    );
   }
 }
 
