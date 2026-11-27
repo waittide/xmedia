@@ -1,4 +1,5 @@
 mod actions;
+pub(super) mod v2;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -96,6 +97,7 @@ impl BookSourceEngine {
         )?;
         Ok(ReusableSourceContext {
             source,
+            http_config: self.http_config.clone(),
             http,
             state_arc,
             cookies_arc,
@@ -124,6 +126,7 @@ impl BookSourceEngine {
 
         Ok(ReusableSourceContext::new_worker_session(
             Arc::new(source.clone()),
+            self.http_config.clone(),
             http,
             state_arc,
             cookies_arc,
@@ -278,6 +281,19 @@ impl BookSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<SearchBookResult>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return v2::search_v2_sync(
+                manifest,
+                js_code,
+                state,
+                &self.http_config,
+                self.js_timeout,
+                keyword,
+                page,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let rule_search = source.require_search_rule()?;
 
         let mut session = self
@@ -378,6 +394,19 @@ impl BookSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<OnlineBookDetail>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return v2::fetch_book_info_v2_sync(
+                manifest,
+                js_code,
+                state,
+                &self.http_config,
+                self.js_timeout,
+                book_url,
+                fallback_hint,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;

@@ -265,4 +265,8 @@ impl BookSourceEnginePort for BookSourceEngine {
     ) -> Result<SourceCallOutput<String>, SourceCallError> {
         self.run_login_action_sync_with_diagnostics(source, state, login_info, action_js)
     }
+
+    fn http_config(&self) -> xmedia_source::http::HttpClientConfig {
+        self.http_config.clone()
+    }
 }

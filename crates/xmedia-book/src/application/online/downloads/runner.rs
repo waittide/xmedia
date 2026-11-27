@@ -63,14 +63,17 @@ impl BookOnlineService {
                 return;
             }
         };
-        let parsed_source = match serde_json::from_str::<LegadoBookSource>(&src_rec.raw_json) {
-            Ok(p) => Arc::new(p),
-            Err(e) => {
-                self.fail_job(job_id, started_at, format!("书源 JSON 无效: {e}"))
-                    .await;
-                return;
-            }
-        };
+        let parsed_source =
+            match <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                &src_rec.raw_json,
+            ) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    self.fail_job(job_id, started_at, format!("书籍插件解析无效: {e}"))
+                        .await;
+                    return;
+                }
+            };
         let mut last_persisted_state = src_rec.runtime_state.clone();
         let reusable_ctx = match self.engine.prepare_batch_context(
             Arc::clone(&parsed_source),

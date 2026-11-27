@@ -497,8 +497,10 @@ impl MusicOnlineService {
         input: MusicSourceTestInput,
     ) -> DomainResult<MusicSourceTestReportDto> {
         let rec = self.sources.load_owned_source(actor, id).await?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let raw_input = input
             .keyword

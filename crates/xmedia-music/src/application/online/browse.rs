@@ -127,7 +127,10 @@ impl MusicOnlineService {
         for rec in sources {
             let engine = self.engine.clone();
             let kw_owned = kw.to_string();
-            let parsed_res = serde_json::from_str::<MusicSourceSpec>(&rec.raw_json);
+            let parsed_res =
+                <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                    &rec.raw_json,
+                );
             let sid = rec.id;
             let sname = rec.name.clone();
             let state = rec.runtime_state.clone();
@@ -287,8 +290,10 @@ impl MusicOnlineService {
         limit: u32,
     ) -> DomainResult<OnlineMusicExploreResponseDto> {
         let rec = self.sources.load_source_for_actor(actor, source_id).await?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let op_timeout = self.op_timeout;
         self.acquire_rate_slot(

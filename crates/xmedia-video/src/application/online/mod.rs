@@ -89,6 +89,10 @@ impl VideoOnlineService {
         &self.source_crud
     }
 
+    pub fn http_config(&self) -> xmedia_source::http::HttpClientConfig {
+        self.engine.http_config()
+    }
+
     pub(in crate::application) fn with_tracking(mut self, deps: VideoTrackingDeps) -> Self {
         self.tracking = Some(deps);
         self
@@ -120,8 +124,10 @@ impl VideoOnlineService {
         target_url: &str,
     ) -> DomainResult<HashMap<String, String>> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let spec = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         Ok(spec.build_media_headers(target_url, None))
     }
 
@@ -132,8 +138,10 @@ impl VideoOnlineService {
         target_url: &str,
     ) -> DomainResult<HashMap<String, String>> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let spec = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         Ok(spec.build_media_headers(target_url, Some(&rec.runtime_state.cookies)))
     }
 
@@ -148,7 +156,9 @@ impl VideoOnlineService {
         let Ok(rec) = self.load_source(sid).await else {
             return HashMap::new();
         };
-        let Ok(spec) = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json) else {
+        let Ok(spec) = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        ) else {
             return HashMap::new();
         };
         spec.build_media_headers(target_url, Some(&rec.runtime_state.cookies))

@@ -23,19 +23,25 @@ impl VideoOnlineService {
         source_id: Uuid,
     ) -> DomainResult<OnlineVideoCategoriesResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let parsed = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         let op_timeout = self.op_timeout;
         self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
             .await
             .map_err(DomainError::Validation)?;
-        let has_explore = match parsed.backend() {
-            VideoSourceBackend::Applecms { .. } => true,
-            VideoSourceBackend::Rule {
-                enabled_explore,
-                explore_url,
-                ..
-            } => enabled_explore && explore_url.is_some(),
+        let has_explore = if let Some((ref m, _)) = parsed.v2_plugin {
+            m.has_explore
+        } else {
+            match parsed.backend() {
+                VideoSourceBackend::Applecms { .. } => true,
+                VideoSourceBackend::Rule {
+                    enabled_explore,
+                    explore_url,
+                    ..
+                } => enabled_explore && explore_url.is_some(),
+            }
         };
 
         let engine = self.engine.clone();
@@ -129,7 +135,10 @@ impl VideoOnlineService {
         let multi_source_mode = !explicit_single_or_filtered || sources.len() > 1;
 
         for rec in sources {
-            let parsed_res = serde_json::from_str::<VideoSourceSpec>(&rec.raw_json);
+            let parsed_res =
+                <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                    &rec.raw_json,
+                );
             if multi_source_mode
                 && let Ok(ref parsed) = parsed_res
                 && !parsed.searchable
@@ -275,8 +284,10 @@ impl VideoOnlineService {
         url_builder: &dyn VideoProxyUrlBuilder,
     ) -> DomainResult<OnlineVideoBrowseResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let parsed = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         let op_timeout = self.op_timeout;
         self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
             .await
@@ -374,8 +385,10 @@ impl VideoOnlineService {
         url_builder: Option<&dyn VideoProxyUrlBuilder>,
     ) -> DomainResult<OnlineVideoDetailResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let parsed = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         let op_timeout = self.op_timeout;
         let detail_timeout = self.detail_timeout;
         self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)

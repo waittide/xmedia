@@ -544,8 +544,10 @@ impl BookOnlineService {
         input: SourceTestInput,
     ) -> DomainResult<SourceTestReportDto> {
         let rec = self.sources.load_owned_source(actor, id).await?;
-        let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
+        let parsed = <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let raw_input = non_empty_trimmed(input.keyword.as_deref());
         let default_kw = parsed.default_test_keyword();

@@ -1,5 +1,6 @@
 mod rules;
 mod template;
+mod v2;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -97,6 +98,15 @@ impl VideoSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<OnlineVideoCategory>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.fetch_categories_v2_sync(
+                manifest,
+                js_code,
+                state,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -122,6 +132,17 @@ impl VideoSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<OnlineVideoSummary>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.search_v2_sync(
+                manifest,
+                js_code,
+                state,
+                keyword,
+                page,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -164,6 +185,17 @@ impl VideoSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<VideoBrowseOutput>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.browse_v2_sync(
+                manifest,
+                js_code,
+                state,
+                category_id,
+                page,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -207,6 +239,17 @@ impl VideoSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<OnlineVideoDetail>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.fetch_detail_v2_sync(
+                manifest,
+                js_code,
+                state,
+                video_id,
+                detail_url,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -237,6 +280,18 @@ impl VideoSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<OnlineVideoPlayResult>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.resolve_play_v2_sync(
+                source,
+                manifest,
+                js_code,
+                state,
+                play_url,
+                group_name,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -442,5 +497,9 @@ impl VideoSourceEnginePort for VideoSourceEngine {
         action: Option<&str>,
     ) -> Result<SourceCallOutput<String>, String> {
         VideoSourceEngine::run_login_action_sync(self, source, state, login_info, action)
+    }
+
+    fn http_config(&self) -> HttpClientConfig {
+        self.http_config.clone()
     }
 }

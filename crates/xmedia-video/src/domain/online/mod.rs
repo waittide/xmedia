@@ -233,6 +233,8 @@ pub struct VideoSourceSpec {
     rule_detail: Option<VideoDetailRule>,
     #[serde(default)]
     rule_play: Option<VideoPlayRule>,
+    #[serde(skip)]
+    pub v2_plugin: Option<(xmedia_source::plugin_v2::PluginV2Manifest, String)>,
 }
 
 impl VideoSourceSpec {
@@ -399,6 +401,36 @@ impl SourceSpecAdapter for VideoSourceSpec {
         Ok(batch)
     }
 
+    fn from_v2_manifest(
+        manifest: xmedia_source::plugin_v2::PluginV2Manifest,
+        js_code: String,
+    ) -> Result<Self, String> {
+        let header = (!manifest.headers.is_empty())
+            .then(|| serde_json::to_string(&manifest.headers).ok())
+            .flatten();
+        let media_header = (!manifest.media_headers.is_empty())
+            .then(|| serde_json::to_string(&manifest.media_headers).ok())
+            .flatten();
+        Ok(Self {
+            source_name: manifest.name.clone(),
+            source_url: manifest.base_url.clone(),
+            source_group: (!manifest.group.is_empty()).then(|| manifest.group.clone()),
+            source_comment: manifest.description.clone(),
+            source_format: Some(VideoSourceFormat::Rule),
+            enabled: manifest.enabled,
+            enabled_explore: manifest.has_explore,
+            enabled_cookie_jar: true,
+            searchable: manifest.has_search,
+            weight: manifest.weight,
+            header,
+            media_header,
+            concurrent_rate: manifest.rate_limit.clone(),
+            check_keyword: manifest.check_keyword.clone(),
+            v2_plugin: Some((manifest, js_code)),
+            ..Default::default()
+        })
+    }
+
     fn source_name(&self) -> &str {
         &self.source_name
     }
@@ -427,6 +459,17 @@ impl SourceSpecAdapter for VideoSourceSpec {
     }
 
     fn summary_meta(&self) -> ParsedSourceSummaryMeta {
+        if let Some((ref m, _)) = self.v2_plugin {
+            return ParsedSourceSummaryMeta {
+                version: Some(m.version.clone()),
+                comment: m.description.clone(),
+                check_keyword: m.check_keyword.clone(),
+                has_login_url: m.auth.is_supported(),
+                login_ui: Vec::new(),
+                auth: Some(m.auth.clone()),
+                settings_schema: m.settings.clone(),
+            };
+        }
         let login_ui = parse_login_ui_json(self.login_ui.as_deref());
         let has_login_url = self
             .login_url
@@ -445,6 +488,7 @@ impl SourceSpecAdapter for VideoSourceSpec {
             check_keyword,
             has_login_url,
             login_ui,
+            ..Default::default()
         }
     }
 }

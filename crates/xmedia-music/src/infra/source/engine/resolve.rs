@@ -47,6 +47,18 @@ impl MusicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<OnlineMusicStreamResult>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.resolve_stream_v2_sync(
+                source,
+                manifest,
+                js_code,
+                initial_state,
+                ctx,
+                quality,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, initial_state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -331,6 +343,16 @@ impl MusicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Option<String>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.resolve_cover_v2_sync(
+                manifest,
+                js_code,
+                initial_state,
+                ctx,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, initial_state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -445,6 +467,16 @@ impl MusicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Option<OnlineMusicLyricsResult>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.resolve_lyrics_v2_sync(
+                manifest,
+                js_code,
+                initial_state,
+                ctx,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_session(source, initial_state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;

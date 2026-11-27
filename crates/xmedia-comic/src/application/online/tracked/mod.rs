@@ -80,8 +80,10 @@ impl ComicOnlineService {
             .source_crud
             .load_source_for_actor(actor, input.source_id)
             .await?;
-        let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        let parsed = <ComicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let clean_comic_url = resolve_literal_http_url(&input.comic_url, Some(&parsed.source_url))?;
         let clean_input_toc = input

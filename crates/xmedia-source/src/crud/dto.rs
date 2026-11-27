@@ -6,6 +6,7 @@ use uuid::Uuid;
 use xmedia_core::domain::library::MediaKind;
 
 use crate::model::{ExecutionDiagnostics, LoginUiItem, PluginFormat};
+use crate::plugin_v2::{PluginAuthCapsDto, PluginSettingFieldDto};
 
 pub const MASKED_SECRET_PLACEHOLDER: &str = "••••••••";
 pub const VARIABLE_PREVIEW_MAX_CHARS: usize = 240;
@@ -16,6 +17,8 @@ pub struct SourceSummaryDto {
     pub domain: MediaKind,
     pub format: PluginFormat,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub source_url: String,
     pub group_name: String,
     pub comment: Option<String>,
@@ -26,6 +29,12 @@ pub struct SourceSummaryDto {
     pub has_login_url: bool,
     pub login_ui: Vec<LoginUiItem>,
     pub login_info: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<PluginAuthCapsDto>,
+    #[serde(default)]
+    pub settings_schema: Vec<PluginSettingFieldDto>,
+    #[serde(default)]
+    pub settings_values: HashMap<String, serde_json::Value>,
     pub has_variable: bool,
     pub variable_preview: String,
     pub cookie_hosts: Vec<String>,

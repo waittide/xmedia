@@ -447,6 +447,381 @@ impl JsExecutionContext {
             Ok(String::new())
         })
     }
+
+    /// Evaluates a Plugin v2 JS module (ESM `export default` or `definePlugin(...)` / CommonJS)
+    /// and binds `globalThis.__x_v2_plugin` plus `globalThis.__x_v2_ctx`.
+    pub fn load_v2_plugin(
+        &mut self,
+        js_code: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.check_active()?;
+        self.reset_deadline();
+        let settings_json = serde_json::to_string(settings).unwrap_or_else(|_| "{}".into());
+
+        let v2_bootstrap = format!(
+            r#"
+            globalThis.__x_v2_plugin = null;
+            globalThis.definePlugin = function(def) {{
+                globalThis.__x_v2_plugin = def;
+                return def;
+            }};
+            (function() {{
+                var settingsObj = Object.freeze({settings_json});
+                function buildQueryString(query) {{
+                    if (!query || typeof query !== 'object') return '';
+                    var pairs = [];
+                    var keys = Object.keys(query);
+                    for (var i = 0; i < keys.length; i++) {{
+                        var k = keys[i];
+                        var v = query[k];
+                        if (v === undefined || v === null) continue;
+                        pairs.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(v)));
+                    }}
+                    return pairs.join('&');
+                }}
+                function appendQuery(url, query) {{
+                    var qs = buildQueryString(query);
+                    if (!qs) return url;
+                    return url + (url.indexOf('?') >= 0 ? '&' : '?') + qs;
+                }}
+                function findHeaderCaseInsensitive(headers, target) {{
+                    var lower = target.toLowerCase();
+                    var keys = Object.keys(headers);
+                    for (var i = 0; i < keys.length; i++) {{
+                        if (keys[i].toLowerCase() === lower) return keys[i];
+                    }}
+                    return null;
+                }}
+                var httpApi = {{
+                    request: function(opts) {{
+                        if (typeof opts === 'string') opts = {{ url: opts }};
+                        opts = opts || {{}};
+                        var rawUrl = appendQuery(String(opts.url || ''), opts.query);
+                        var method = String(opts.method || 'GET').toUpperCase();
+                        var headers = Object.assign({{}}, opts.headers || {{}});
+                        var bodyStr = undefined;
+                        if (opts.form && typeof opts.form === 'object') {{
+                            bodyStr = buildQueryString(opts.form);
+                            if (!findHeaderCaseInsensitive(headers, 'content-type')) {{
+                                headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+                            }}
+                        }} else if (opts.json !== undefined) {{
+                            bodyStr = JSON.stringify(opts.json);
+                            if (!findHeaderCaseInsensitive(headers, 'content-type')) {{
+                                headers['Content-Type'] = 'application/json; charset=UTF-8';
+                            }}
+                        }} else if (opts.body !== undefined && opts.body !== null) {{
+                            bodyStr = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
+                        }}
+                        var reqSpec = {{ method: method, headers: headers }};
+                        if (bodyStr !== undefined) reqSpec.body = bodyStr;
+                        var combined = (method === 'GET' && bodyStr === undefined && Object.keys(headers).length === 0)
+                            ? rawUrl
+                            : (rawUrl + ',' + JSON.stringify(reqSpec));
+                        var resp = JSON.parse(__x_connect(combined));
+                        if (resp.error) {{
+                            throw new Error(resp.error);
+                        }}
+                        var status = Number(resp.code || 0);
+                        return {{
+                            status: status,
+                            ok: status >= 200 && status < 300,
+                            url: resp.url || rawUrl,
+                            headers: resp.headers || {{}},
+                            text: resp.body || '',
+                            bodyBase64: resp.bodyBase64 || '',
+                            dataUrl: resp.dataUrl || '',
+                            json: function() {{
+                                return JSON.parse(resp.body || 'null');
+                            }}
+                        }};
+                    }},
+                    get: function(url, opts) {{
+                        return this.request(Object.assign({{}}, opts || {{}}, {{ url: url, method: 'GET' }}));
+                    }},
+                    post: function(url, bodyOrOpts, opts) {{
+                        if (opts === undefined && bodyOrOpts && typeof bodyOrOpts === 'object' &&
+                            ('form' in bodyOrOpts || 'json' in bodyOrOpts || 'body' in bodyOrOpts || 'headers' in bodyOrOpts || 'query' in bodyOrOpts)) {{
+                            return this.request(Object.assign({{}}, bodyOrOpts, {{ url: url, method: 'POST' }}));
+                        }}
+                        var merged = Object.assign({{}}, opts || {{}}, {{ url: url, method: 'POST' }});
+                        if (typeof bodyOrOpts === 'string') merged.body = bodyOrOpts;
+                        else if (bodyOrOpts !== undefined && bodyOrOpts !== null) merged.json = bodyOrOpts;
+                        return this.request(merged);
+                    }}
+                }};
+                var cryptoApi = {{
+                    md5: function(data, inEnc, outEnc) {{ return __x_crypto_hash('md5', String(data == null ? '' : data), inEnc, outEnc); }},
+                    sha1: function(data, inEnc, outEnc) {{ return __x_crypto_hash('sha1', String(data == null ? '' : data), inEnc, outEnc); }},
+                    sha256: function(data, inEnc, outEnc) {{ return __x_crypto_hash('sha256', String(data == null ? '' : data), inEnc, outEnc); }},
+                    hmacSha1: function(key, data, opts) {{
+                        var o = typeof opts === 'string' ? {{ outputEncoding: opts }} : (opts || {{}});
+                        return __x_crypto_hmac('sha1', String(key || ''), String(data == null ? '' : data), JSON.stringify(o));
+                    }},
+                    hmacSha256: function(key, data, opts) {{
+                        var o = typeof opts === 'string' ? {{ outputEncoding: opts }} : (opts || {{}});
+                        return __x_crypto_hmac('sha256', String(key || ''), String(data == null ? '' : data), JSON.stringify(o));
+                    }},
+                    aesEncrypt: function(opts) {{ return __x_crypto_aes_enc(JSON.stringify(opts || {{}})); }},
+                    aesDecrypt: function(opts) {{ return __x_crypto_aes_dec(JSON.stringify(opts || {{}})); }},
+                    rsaEncrypt: function(opts) {{ return __x_crypto_rsa_enc(JSON.stringify(opts || {{}})); }},
+                    randomBytes: function(len, outEnc) {{ return __x_crypto_rand(Number(len || 16), outEnc); }},
+                    base64Encode: function(s) {{ return __x_b64_enc(String(s == null ? '' : s)); }},
+                    base64Decode: function(s) {{ return __x_b64_dec(String(s == null ? '' : s)); }},
+                    hexEncode: function(s) {{ return __x_hex_enc(String(s == null ? '' : s)); }},
+                    hexDecode: function(s) {{ return __x_hex_dec(String(s == null ? '' : s)); }}
+                }};
+                var cookiesApi = {{
+                    get: function(url, name) {{ return globalThis.cookie.getCookie(url || __srcUrl, name); }},
+                    getAll: function(url) {{
+                        var raw = globalThis.cookie.getCookie(url || __srcUrl);
+                        var map = {{}};
+                        if (!raw) return map;
+                        var parts = raw.split(';');
+                        for (var i = 0; i < parts.length; i++) {{
+                            var p = parts[i].trim();
+                            var eq = p.indexOf('=');
+                            if (eq > 0) map[p.slice(0, eq).trim()] = p.slice(eq + 1).trim();
+                        }}
+                        return map;
+                    }},
+                    set: function(url, val) {{ globalThis.cookie.setCookie(url || __srcUrl, val); }},
+                    remove: function(url) {{ globalThis.cookie.removeCookie(url || __srcUrl); }},
+                    clear: function() {{ __x_cookie_clear_all(); }}
+                }};
+                var storageApi = {{
+                    get: function(k) {{ return globalThis.cache.get(k); }},
+                    set: function(k, v) {{ globalThis.cache.put(k, v); }},
+                    remove: function(k) {{ globalThis.cache.delete(k); }},
+                    getJson: function(k) {{
+                        var raw = globalThis.cache.get(k);
+                        if (!raw) return null;
+                        try {{ return JSON.parse(raw); }} catch (e) {{ return null; }}
+                    }},
+                    setJson: function(k, v) {{ globalThis.cache.put(k, JSON.stringify(v)); }},
+                    clear: function() {{ __x_cache_clear_all(); }}
+                }};
+                var htmlApi = {{
+                    selectText: function(content, rule, baseUrl) {{
+                        return __x_select_text(String(content == null ? '' : content), String(rule || ''), baseUrl ? String(baseUrl) : __srcUrl);
+                    }},
+                    selectList: function(content, rule) {{
+                        try {{ return JSON.parse(__x_select_list(String(content == null ? '' : content), String(rule || ''))); }}
+                        catch (e) {{ return []; }}
+                    }}
+                }};
+                globalThis.__x_v2_ctx = Object.freeze({{
+                    http: Object.freeze(httpApi),
+                    crypto: Object.freeze(cryptoApi),
+                    cookies: Object.freeze(cookiesApi),
+                    storage: Object.freeze(storageApi),
+                    settings: settingsObj,
+                    html: Object.freeze(htmlApi),
+                    log: function() {{ globalThis.console.log.apply(null, arguments); }},
+                    toast: function(msg) {{ globalThis.java.toast(msg); }}
+                }});
+            }})();
+            "#
+        );
+
+        self.context.with(|ctx| -> Result<(), String> {
+            ctx.eval_with_options::<(), _>(v2_bootstrap.as_str(), sloppy_eval_options())
+                .catch(&ctx)
+                .map_err(|e| format_caught_js_error("初始化 Plugin v2 运行环境失败", e))?;
+
+            let trimmed = js_code.trim().trim_start_matches('\u{feff}');
+            let looks_like_esm = trimmed.lines().any(|line| {
+                let l = line.trim_start();
+                l.starts_with("export ") || l.starts_with("import ")
+            });
+
+            if looks_like_esm {
+                let declared = rquickjs::Module::declare(ctx.clone(), "plugin.mjs", trimmed)
+                    .catch(&ctx)
+                    .map_err(|e| format_caught_js_error("编译 ES Module 插件失败", e))?;
+                let (module, promise) = declared
+                    .eval()
+                    .catch(&ctx)
+                    .map_err(|e| format_caught_js_error("执行 ES Module 插件失败", e))?;
+                while ctx.execute_pending_job() {
+                    self.check_active()?;
+                }
+                promise
+                    .finish::<()>()
+                    .catch(&ctx)
+                    .map_err(|e| format_caught_js_error("完成 ES Module 初始化失败", e))?;
+                if let Ok(def_val) = module.get::<_, Value<'_>>("default")
+                    && def_val.is_object()
+                {
+                    ctx.globals()
+                        .set("__x_v2_plugin", def_val)
+                        .map_err(|e| e.to_string())?;
+                }
+            } else {
+                let wrapped = format!(
+                    "var module = {{ exports: {{}} }}; var exports = module.exports;\n{trimmed}\n\
+                     if (!globalThis.__x_v2_plugin) {{\n\
+                       var __exp = (module.exports && module.exports.default) ? module.exports.default : module.exports;\n\
+                       if (__exp && typeof __exp === 'object' && Object.keys(__exp).length > 0) globalThis.__x_v2_plugin = __exp;\n\
+                     }}"
+                );
+                let eval_val: Value<'_> = ctx
+                    .eval_with_options(wrapped.as_str(), sloppy_eval_options())
+                    .catch(&ctx)
+                    .map_err(|e| format_caught_js_error("加载 JS 插件脚本失败", e))?;
+                let has_global = ctx
+                    .globals()
+                    .get::<_, Value<'_>>("__x_v2_plugin")
+                    .ok()
+                    .is_some_and(|v| v.is_object());
+                if !has_global && eval_val.is_object() {
+                    ctx.globals()
+                        .set("__x_v2_plugin", eval_val)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            let plugin_val: Value<'_> = ctx
+                .globals()
+                .get("__x_v2_plugin")
+                .map_err(|e| e.to_string())?;
+            if !plugin_val.is_object() {
+                return Err(
+                    "JS 插件未导出有效的插件定义对象（请使用 export default definePlugin({ ... })）"
+                        .into(),
+                );
+            }
+            Ok(())
+        })
+    }
+
+    /// Evaluates a JS expression against `globalThis.__x_v2_plugin` and returns JSON.
+    pub fn eval_v2_json(&mut self, expr: &str) -> Result<serde_json::Value, String> {
+        self.check_active()?;
+        self.reset_deadline();
+        self.context.with(|ctx| {
+            let val: Value<'_> = ctx
+                .eval_with_options(expr, sloppy_eval_options())
+                .catch(&ctx)
+                .map_err(|e| format_caught_js_error("读取插件元数据失败", e))?;
+            js_value_to_json_strict(&ctx, val)
+        })
+    }
+
+    /// Calls a method path (e.g. `&["search"]` or `&["auth", "qrCode", "create"]`) on
+    /// `globalThis.__x_v2_plugin`, passing `(ctx, ...args)`, awaiting any returned Promise,
+    /// and returning the resolved JSON value.
+    pub fn call_v2_method(
+        &mut self,
+        method_path: &[&str],
+        args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        self.check_active()?;
+        self.reset_deadline();
+        let path_json = serde_json::to_string(method_path).map_err(|e| e.to_string())?;
+        let args_json = serde_json::to_string(args).map_err(|e| e.to_string())?;
+
+        let invoke_script = format!(
+            r#"
+            (function() {{
+                globalThis.__x_v2_done = false;
+                globalThis.__x_v2_res = null;
+                globalThis.__x_v2_err = null;
+                var path = {path_json};
+                var extraArgs = {args_json};
+                var owner = null;
+                var target = globalThis.__x_v2_plugin;
+                for (var i = 0; i < path.length; i++) {{
+                    if (target == null) break;
+                    owner = target;
+                    target = target[path[i]];
+                }}
+                if (typeof target !== 'function') {{
+                    throw new Error('插件未实现方法: ' + path.join('.'));
+                }}
+                var callArgs = [globalThis.__x_v2_ctx].concat(extraArgs);
+                var out = target.apply(owner, callArgs);
+                if (out && (typeof out === 'object' || typeof out === 'function') && typeof out.then === 'function') {{
+                    out.then(
+                        function(v) {{ globalThis.__x_v2_done = true; globalThis.__x_v2_res = (v === undefined ? null : v); }},
+                        function(e) {{
+                            globalThis.__x_v2_done = true;
+                            globalThis.__x_v2_err = e instanceof Error ? (e.message + (e.stack ? '\n' + e.stack : '')) : String(e);
+                        }}
+                    );
+                }} else {{
+                    globalThis.__x_v2_done = true;
+                    globalThis.__x_v2_res = (out === undefined ? null : out);
+                }}
+            }})();
+            "#
+        );
+
+        self.context
+            .with(|ctx| -> Result<serde_json::Value, String> {
+                ctx.eval_with_options::<(), _>(invoke_script.as_str(), sloppy_eval_options())
+                    .catch(&ctx)
+                    .map_err(|e| {
+                        format_caught_js_error(
+                            &format!("调用插件方法 {} 失败", method_path.join(".")),
+                            e,
+                        )
+                    })?;
+
+                while ctx.execute_pending_job() {
+                    self.check_active()?;
+                }
+
+                let err_opt: Option<String> = ctx.globals().get("__x_v2_err").ok().flatten();
+                if let Some(err_msg) = err_opt {
+                    return Err(format!(
+                        "调用插件方法 {} 失败: {err_msg}",
+                        method_path.join(".")
+                    ));
+                }
+
+                let done: bool = ctx.globals().get("__x_v2_done").unwrap_or(false);
+                if !done {
+                    return Err(format!(
+                        "插件方法 {} 返回了未决的 Promise（不支持外部计时器挂起）",
+                        method_path.join(".")
+                    ));
+                }
+
+                let res_val: Value<'_> =
+                    ctx.globals().get("__x_v2_res").map_err(|e| e.to_string())?;
+                js_value_to_json_strict(&ctx, res_val)
+            })
+    }
+}
+
+fn js_value_to_json_strict<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    val: Value<'js>,
+) -> Result<serde_json::Value, String> {
+    if val.is_null() || val.is_undefined() {
+        return Ok(serde_json::Value::Null);
+    }
+    if let Some(b) = val.as_bool() {
+        return Ok(serde_json::Value::Bool(b));
+    }
+    if let Some(i) = val.as_int() {
+        return Ok(serde_json::Value::from(i));
+    }
+    if let Some(f) = val.as_float() {
+        return Ok(serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null));
+    }
+    if val.is_string() {
+        let s: String = val.get().map_err(|e| e.to_string())?;
+        return Ok(serde_json::Value::String(s));
+    }
+    match js_value_to_rule_value(ctx, val)? {
+        RuleValue::Json(v) => Ok(v),
+        RuleValue::Text(s) => Ok(serde_json::Value::String(s)),
+    }
 }
 
 impl JsRuleEvaluator for JsExecutionContext {

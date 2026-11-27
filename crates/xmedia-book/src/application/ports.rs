@@ -337,4 +337,8 @@ pub trait BookSourceEnginePort: Send + Sync {
         login_info: HashMap<String, String>,
         action_js: Option<&str>,
     ) -> Result<SourceCallOutput<String>, SourceCallError>;
+
+    fn http_config(&self) -> xmedia_source::http::HttpClientConfig {
+        xmedia_source::http::HttpClientConfig::default()
+    }
 }

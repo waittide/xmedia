@@ -141,6 +141,10 @@ impl BookOnlineService {
     }
 
     /// Executes a `loginUi` / `loginUrl` action via `SourceCrudService::run_login_action_with`.
+    pub fn http_config(&self) -> xmedia_source::http::HttpClientConfig {
+        self.engine.http_config()
+    }
+
     pub async fn run_login_action(
         &self,
         actor: &User,

@@ -14,7 +14,7 @@ use xmedia_core::domain::user::{User, UserId};
 
 use super::dto::{
     BatchSourceAction, BatchSourcesInput, BatchSourcesReportDto, ImportSourcesReportDto,
-    LoginActionResponseDto, SourceSummaryDto, UpdateSourceInput,
+    LoginActionResponseDto, MASKED_SECRET_PLACEHOLDER, SourceSummaryDto, UpdateSourceInput,
 };
 use super::helpers::{
     ParsedSourceSummaryMeta, SourceRecordSnapshot, build_source_summary, compute_reorder_targets,
@@ -23,7 +23,12 @@ use super::helpers::{
 };
 use super::repository::{SourceMetadataUpdate, SourceRecord, SourceRepository};
 use crate::concurrency::{AsyncLockMap, weak_lock};
+use crate::http::HttpClientConfig;
 use crate::model::{PluginFormat, SourceCallError, SourceCallOutput, SourceRuntimeState};
+use crate::plugin_v2::{
+    PluginAuthActionRequest, PluginAuthActionResponseDto, PluginV2Manifest, PluginV2Runner,
+    inspect_js_plugin_manifest, is_js_plugin_source,
+};
 
 /// Adapter connecting a domain-specific plugin specification (`LegadoBookSource`, `ComicSourceSpec`,
 /// `MusicSourceSpec`, `VideoSourceSpec`) to [`SourceCrudService`].
@@ -48,8 +53,41 @@ pub trait SourceSpecAdapter: DeserializeOwned + Send + Sync + 'static {
         parse_json_batch(raw_json, Self::ENTITY_LABEL, &empty_hint, Self::is_blank)
     }
 
+    /// Constructs a domain `Spec` from a validated Plugin v2 JS manifest and source code.
+    fn from_v2_manifest(_manifest: PluginV2Manifest, _js_code: String) -> Result<Self, String> {
+        Err(format!(
+            "当前{}暂未启用 JS 模块插件适配",
+            Self::ENTITY_LABEL
+        ))
+    }
+
+    /// Parses a single plugin record (`raw_source` may be a Plugin v2 JS module or a JSON rule object).
+    fn parse_single(raw_source: &str) -> Result<Self, String> {
+        if is_js_plugin_source(raw_source) {
+            let manifest = inspect_js_plugin_manifest(raw_source)?;
+            if manifest.domain != Self::MEDIA_KIND {
+                return Err(format!(
+                    "插件声明领域 '{}' 与目标领域 '{}' 不匹配",
+                    manifest.domain.as_str(),
+                    Self::MEDIA_KIND.as_str()
+                ));
+            }
+            return Self::from_v2_manifest(manifest, raw_source.to_string());
+        }
+        serde_json::from_str::<Self>(raw_source)
+            .map_err(|e| format!("{} JSON 无效: {e}", Self::ENTITY_LABEL))
+    }
+
     /// Parses either a JSON rule batch or a JS module plugin into `(Spec, raw_source, PluginFormat)` tuples.
     fn parse_plugin_batch(raw_source: &str) -> Result<Vec<(Self, String, PluginFormat)>, String> {
+        if is_js_plugin_source(raw_source) {
+            let spec = Self::parse_single(raw_source)?;
+            return Ok(vec![(
+                spec,
+                raw_source.trim().to_string(),
+                PluginFormat::JsModule,
+            )]);
+        }
         Self::parse_batch(raw_source).map(|items| {
             items
                 .into_iter()
@@ -118,7 +156,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
     }
 
     pub fn record_to_summary(rec: &SourceRecord) -> SourceSummaryDto {
-        let meta = serde_json::from_str::<Spec>(&rec.raw_json)
+        let meta = Spec::parse_single(&rec.raw_json)
             .ok()
             .map(|spec| spec.summary_meta())
             .unwrap_or_default();
@@ -563,6 +601,15 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         actor: &User,
         ids: Vec<Uuid>,
     ) -> DomainResult<String> {
+        let (raw, _) = self.export_sources_batch(actor, ids).await?;
+        Ok(raw)
+    }
+
+    pub async fn export_sources_batch(
+        &self,
+        actor: &User,
+        ids: Vec<Uuid>,
+    ) -> DomainResult<(String, PluginFormat)> {
         actor.ensure_active()?;
         if ids.is_empty() {
             return Err(DomainError::Validation(format!(
@@ -571,15 +618,42 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             )));
         }
         let all = self.repo.list_by_user(actor.id.0).await?;
-        let mut by_id: HashMap<Uuid, &str> =
-            all.iter().map(|r| (r.id, r.raw_json.as_str())).collect();
-        format_export_batch_json(&ids, &mut by_id).map_err(|msg| {
+        let unique_ids = dedup_preserve_order_uuids(ids);
+        let matched: Vec<&SourceRecord> = unique_ids
+            .iter()
+            .filter_map(|id| all.iter().find(|r| &r.id == id))
+            .collect();
+        if matched.is_empty() {
+            return Err(DomainError::NotFound(format!(
+                "未找到可导出的{}",
+                Spec::ENTITY_LABEL
+            )));
+        }
+        let js_count = matched
+            .iter()
+            .filter(|r| r.format == PluginFormat::JsModule || is_js_plugin_source(&r.raw_json))
+            .count();
+        if js_count > 0 {
+            if matched.len() == 1 {
+                return Ok((matched[0].raw_json.clone(), PluginFormat::JsModule));
+            }
+            return Err(DomainError::Validation(
+                "JS 模块插件不支持合并为 JSON 数组，请单条导出为 .js 文件".into(),
+            ));
+        }
+
+        let mut by_id: HashMap<Uuid, &str> = matched
+            .iter()
+            .map(|r| (r.id, r.raw_json.as_str()))
+            .collect();
+        let json = format_export_batch_json(&unique_ids, &mut by_id).map_err(|msg| {
             if msg.contains("未找到") {
                 DomainError::NotFound(format!("未找到可导出的{}", Spec::ENTITY_LABEL))
             } else {
                 DomainError::Storage(msg)
             }
-        })
+        })?;
+        Ok((json, PluginFormat::JsonRule))
     }
 
     pub async fn delete_source(&self, actor: &User, id: Uuid) -> DomainResult<()> {
@@ -612,9 +686,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             + 'static,
     {
         let rec = self.load_owned_source(actor, id).await?;
-        let parsed: Spec = serde_json::from_str(&rec.raw_json).map_err(|e| {
-            DomainError::Validation(format!("{} JSON 无效: {e}", Spec::ENTITY_LABEL))
-        })?;
+        let parsed = Spec::parse_single(&rec.raw_json).map_err(DomainError::Validation)?;
 
         let merged_login =
             merge_login_info_preserving_masked(&rec.runtime_state.login_info, login_info);
@@ -637,6 +709,106 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             diagnostics: out.diagnostics,
             source: Self::record_to_summary(&refreshed),
         })
+    }
+
+    /// Executes a Plugin v2 Contract Auth action (`status`, `qr_create`, `qr_poll`, `otp_send`,
+    /// `otp_verify`, `password_login`, `cookie_login`, `logout`) and persists isolated user state.
+    pub async fn run_plugin_auth(
+        &self,
+        actor: &User,
+        id: Uuid,
+        req: PluginAuthActionRequest,
+        http_config: HttpClientConfig,
+    ) -> DomainResult<PluginAuthActionResponseDto> {
+        let rec = self.load_owned_source(actor, id).await?;
+        if rec.format != PluginFormat::JsModule && !is_js_plugin_source(&rec.raw_json) {
+            return Err(DomainError::Validation(
+                "当前插件为传统 JSON 规则格式，请使用 login-action 接口".into(),
+            ));
+        }
+        let js_code = rec.raw_json.clone();
+        let manifest = inspect_js_plugin_manifest(&js_code).map_err(DomainError::Validation)?;
+        let prev_state = rec.runtime_state.clone();
+        let base_state = prev_state.clone();
+        let is_logout = matches!(req, PluginAuthActionRequest::Logout);
+
+        let out = tokio::task::spawn_blocking(move || {
+            PluginV2Runner::run_auth_action_sync(
+                &js_code,
+                &manifest,
+                prev_state,
+                req,
+                &http_config,
+                std::time::Duration::from_secs(30),
+            )
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("执行插件认证线程失败: {e}")))?
+        .map_err(|e| DomainError::Validation(e.message))?;
+
+        if is_logout {
+            let lock = self.state_lock_for(id);
+            let _guard = lock.lock().await;
+            self.repo
+                .update_runtime_state(id, out.state, Timestamp::now())
+                .await?;
+        } else {
+            self.persist_runtime_state_with_base(id, &base_state, out.state, true)
+                .await?;
+        }
+
+        let refreshed = self.load_owned_source(actor, id).await?;
+        Ok(PluginAuthActionResponseDto {
+            ok: out.data.ok,
+            status: out.data.status,
+            message: out.data.message,
+            qr_key: out.data.qr_key,
+            qr_url: out.data.qr_url,
+            qr_image: out.data.qr_image,
+            cooldown_secs: out.data.cooldown_secs,
+            profile: out.data.profile,
+            diagnostics: out.diagnostics,
+            source: Self::record_to_summary(&refreshed),
+        })
+    }
+
+    /// Updates user-specific declarative settings for a plugin while preserving masked secrets.
+    pub async fn update_plugin_settings(
+        &self,
+        actor: &User,
+        id: Uuid,
+        submitted: HashMap<String, serde_json::Value>,
+    ) -> DomainResult<SourceSummaryDto> {
+        let rec = self.load_owned_source(actor, id).await?;
+        let meta = Spec::parse_single(&rec.raw_json)
+            .map_err(DomainError::Validation)?
+            .summary_meta();
+        let base_state = rec.runtime_state.clone();
+        let mut next_state = base_state.clone();
+
+        let schema_by_key: HashMap<&str, &crate::plugin_v2::PluginSettingFieldDto> = meta
+            .settings_schema
+            .iter()
+            .map(|f| (f.key.as_str(), f))
+            .collect();
+
+        for (k, v) in submitted {
+            let Some(field) = schema_by_key.get(k.as_str()) else {
+                continue;
+            };
+            if field.field_type == "password"
+                && v.as_str() == Some(MASKED_SECRET_PLACEHOLDER)
+                && next_state.settings.contains_key(&k)
+            {
+                continue;
+            }
+            next_state.settings.insert(k, v);
+        }
+
+        self.persist_runtime_state_with_base(id, &base_state, next_state, false)
+            .await?;
+        let refreshed = self.load_owned_source(actor, id).await?;
+        Ok(Self::record_to_summary(&refreshed))
     }
 
     async fn directory_sources(

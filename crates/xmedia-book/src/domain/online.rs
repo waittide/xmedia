@@ -154,6 +154,8 @@ pub struct LegadoBookSource {
     pub rule_toc: Option<LegadoTocRule>,
     #[serde(default)]
     pub rule_content: Option<LegadoContentRule>,
+    #[serde(skip)]
+    pub v2_plugin: Option<(xmedia_source::plugin_v2::PluginV2Manifest, String)>,
 }
 
 impl From<&LegadoBookSource> for SourceMetadata {
@@ -173,6 +175,12 @@ impl From<&LegadoBookSource> for SourceMetadata {
 
 impl LegadoBookSource {
     pub fn default_test_keyword(&self) -> String {
+        if let Some((ref m, _)) = self.v2_plugin
+            && let Some(ref kw) = m.check_keyword
+            && !kw.trim().is_empty()
+        {
+            return kw.trim().to_string();
+        }
         self.rule_search
             .as_ref()
             .and_then(|r| r.check_key_word.as_deref())
@@ -381,6 +389,33 @@ impl SourceSpecAdapter for LegadoBookSource {
         )
     }
 
+    fn from_v2_manifest(
+        manifest: xmedia_source::plugin_v2::PluginV2Manifest,
+        js_code: String,
+    ) -> Result<Self, String> {
+        let mut merged_headers = manifest.headers.clone();
+        for (k, v) in &manifest.media_headers {
+            merged_headers.insert(k.clone(), v.clone());
+        }
+        let header = (!merged_headers.is_empty())
+            .then(|| serde_json::to_string(&merged_headers).ok())
+            .flatten();
+        Ok(Self {
+            book_source_name: manifest.name.clone(),
+            book_source_url: manifest.base_url.clone(),
+            book_source_group: (!manifest.group.is_empty()).then(|| manifest.group.clone()),
+            book_source_comment: manifest.description.clone(),
+            enabled: manifest.enabled,
+            enabled_explore: manifest.has_explore,
+            enabled_cookie_jar: true,
+            weight: manifest.weight,
+            header,
+            concurrent_rate: manifest.rate_limit.clone(),
+            v2_plugin: Some((manifest, js_code)),
+            ..Default::default()
+        })
+    }
+
     fn source_name(&self) -> &str {
         &self.book_source_name
     }
@@ -406,6 +441,17 @@ impl SourceSpecAdapter for LegadoBookSource {
     }
 
     fn summary_meta(&self) -> ParsedSourceSummaryMeta {
+        if let Some((ref m, _)) = self.v2_plugin {
+            return ParsedSourceSummaryMeta {
+                version: Some(m.version.clone()),
+                comment: m.description.clone(),
+                check_keyword: m.check_keyword.clone(),
+                has_login_url: m.auth.is_supported(),
+                login_ui: Vec::new(),
+                auth: Some(m.auth.clone()),
+                settings_schema: m.settings.clone(),
+            };
+        }
         let login_ui = self.parse_login_ui();
         let has_login_url = self
             .login_url
@@ -426,6 +472,7 @@ impl SourceSpecAdapter for LegadoBookSource {
             check_keyword,
             has_login_url,
             login_ui,
+            ..Default::default()
         }
     }
 }

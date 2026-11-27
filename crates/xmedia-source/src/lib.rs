@@ -1,8 +1,10 @@
 pub mod concurrency;
 pub mod crud;
+pub mod crypto;
 pub mod http;
 pub mod js_runtime;
 pub mod model;
+pub mod plugin_v2;
 pub mod proxy;
 pub mod rate_limit;
 pub mod rule;

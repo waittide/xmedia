@@ -312,9 +312,17 @@ pub fn get_or_build_async_client(
     Ok(guard.entry(key).or_insert(client).clone())
 }
 
+#[derive(Debug, Clone)]
+enum BlockingClientMode {
+    LazyPool,
+    Offline,
+    #[cfg(test)]
+    Fixed(reqwest::blocking::Client),
+}
+
 #[derive(Clone)]
 pub struct LegadoHttpClient {
-    client: reqwest::blocking::Client,
+    mode: BlockingClientMode,
     config: HttpClientConfig,
     cookies: Arc<Mutex<HashMap<String, String>>>,
     default_headers: HashMap<String, String>,
@@ -322,13 +330,31 @@ pub struct LegadoHttpClient {
 }
 
 impl LegadoHttpClient {
+    /// Creates a zero-network `LegadoHttpClient` safe to construct and drop inside async contexts.
+    pub fn new_offline(cookies: Arc<Mutex<HashMap<String, String>>>) -> Self {
+        Self {
+            mode: BlockingClientMode::Offline,
+            config: HttpClientConfig::default(),
+            cookies,
+            default_headers: HashMap::new(),
+            enabled_cookie_jar: false,
+        }
+    }
+
     pub fn new(
         config: HttpClientConfig,
         cookies: Arc<Mutex<HashMap<String, String>>>,
         default_header_json: Option<&str>,
         enabled_cookie_jar: bool,
     ) -> Result<Self, String> {
-        let client = get_or_build_blocking_client(&config)?;
+        if let Some(proxy) = config
+            .proxy_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            reqwest::Proxy::all(proxy).map_err(|e| format!("代理配置无效: {e}"))?;
+        }
 
         let mut default_headers = HashMap::new();
         if let Some(raw) = default_header_json
@@ -344,7 +370,7 @@ impl LegadoHttpClient {
         }
 
         Ok(Self {
-            client,
+            mode: BlockingClientMode::LazyPool,
             config,
             cookies,
             default_headers,
@@ -358,7 +384,7 @@ impl LegadoHttpClient {
         config: HttpClientConfig,
     ) -> Self {
         Self {
-            client,
+            mode: BlockingClientMode::Fixed(client),
             config,
             cookies: Arc::new(Mutex::new(HashMap::new())),
             default_headers: HashMap::new(),
@@ -406,6 +432,11 @@ impl LegadoHttpClient {
         let key = normalize_cookie_key(url_or_domain);
         let mut guard = self.cookies.lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&key);
+    }
+
+    pub fn clear_all_cookies(&self) {
+        let mut guard = self.cookies.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
     }
 
     pub fn fetch(&self, raw_url: &str, base_url: &str) -> Result<HttpFetchResult, String> {
@@ -572,8 +603,17 @@ impl LegadoHttpClient {
             }
         }
 
-        let mut req = self
-            .client
+        let client = match &self.mode {
+            BlockingClientMode::LazyPool => {
+                get_or_build_blocking_client(&self.config).map_err(|m| (m, false))?
+            }
+            BlockingClientMode::Offline => {
+                return Err(("当前处于零网络校验模式，禁止发起 HTTP 请求".into(), false));
+            }
+            #[cfg(test)]
+            BlockingClientMode::Fixed(c) => c.clone(),
+        };
+        let mut req = client
             .request(method.clone(), validated.clone())
             .headers(header_map);
         if let Some(override_timeout) = timeout_override {

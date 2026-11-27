@@ -127,6 +127,14 @@ pub(super) fn install_bootstrap_globals(
             hexEncodeToString: function(s) {{ return __x_hex_enc(s == null ? '' : String(s)); }},
             md5Encode: function(s) {{ return __x_md5(s == null ? '' : String(s)); }},
             md5Encode16: function(s) {{ return __x_md5(s == null ? '' : String(s)).slice(8, 24); }},
+            sha1Encode: function(s) {{ return __x_crypto_hash('sha1', s == null ? '' : String(s), 'utf8', 'hex'); }},
+            sha256Encode: function(s) {{ return __x_crypto_hash('sha256', s == null ? '' : String(s), 'utf8', 'hex'); }},
+            hmacSha256: function(key, data, outEnc) {{
+                return __x_crypto_hmac('sha256', String(key || ''), String(data || ''), JSON.stringify({{ outputEncoding: outEnc || 'hex' }}));
+            }},
+            aesEncrypt: function(opts) {{ return __x_crypto_aes_enc(typeof opts === 'string' ? opts : JSON.stringify(opts || {{}})); }},
+            aesDecrypt: function(opts) {{ return __x_crypto_aes_dec(typeof opts === 'string' ? opts : JSON.stringify(opts || {{}})); }},
+            rsaEncrypt: function(opts) {{ return __x_crypto_rsa_enc(typeof opts === 'string' ? opts : JSON.stringify(opts || {{}})); }},
             encodeURI: function(s, enc) {{ return __x_encode_uri(s == null ? '' : String(s), enc ? String(enc) : 'utf-8'); }},
             timeFormat: function(ts) {{
                 var ms = ts instanceof Date ? ts.getTime() : Number(ts);

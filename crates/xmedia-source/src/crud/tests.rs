@@ -76,6 +76,7 @@ impl SourceSpecAdapter for SampleSpec {
                 url: None,
                 style: None,
             }],
+            ..Default::default()
         }
     }
 }
@@ -329,6 +330,7 @@ fn masking_and_build_source_summary_for_owner() {
         check_keyword: Some("kw".into()),
         has_login_url: true,
         login_ui: login_ui.clone(),
+        ..Default::default()
     };
 
     let dto = build_source_summary(snap, meta);

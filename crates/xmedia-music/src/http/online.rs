@@ -32,10 +32,12 @@ use crate::http::state::MusicHttpState;
 
 pub fn plugin_handler(online: Arc<MusicOnlineService>) -> Arc<dyn PluginDomainHandler> {
     let crud = online.sources_crud().clone();
+    let http_config = online.http_config();
     let online_login = online.clone();
     let online_test = online;
-    CrudPluginDomainHandler::into_arc(
+    CrudPluginDomainHandler::into_arc_with_http_config(
         crud,
+        http_config,
         move |user, id, req| {
             let svc = online_login.clone();
             async move {

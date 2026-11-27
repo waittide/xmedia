@@ -25,8 +25,10 @@ impl ComicOnlineService {
         input: ComicSourceTestInput,
     ) -> DomainResult<ComicSourceTestReportDto> {
         let rec = self.source_crud.load_owned_source(actor, id).await?;
-        let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        let parsed = <ComicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let raw_input = input
             .keyword

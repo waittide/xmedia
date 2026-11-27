@@ -75,7 +75,10 @@ impl ComicOnlineService {
         for rec in sources {
             let engine = self.engine.clone();
             let kw_owned = kw.to_string();
-            let parsed_res = serde_json::from_str::<ComicSourceSpec>(&rec.raw_json);
+            let parsed_res =
+                <ComicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                    &rec.raw_json,
+                );
             let sid = rec.id;
             let sname = rec.name.clone();
             let state = rec.runtime_state.clone();
@@ -212,8 +215,10 @@ impl ComicOnlineService {
             .source_crud
             .load_source_for_actor(actor, source_id)
             .await?;
-        let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        let parsed = <ComicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         self.acquire_rate_slot(
             source_id,
             parsed.parse_concurrent_rate(),
@@ -346,8 +351,10 @@ impl ComicOnlineService {
         let mut source_url: Option<String> = None;
         let custom_headers = if let Some(sid) = source_id {
             let rec = self.source_crud.load_source_for_actor(actor, sid).await?;
-            let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
-                .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+            let parsed = <ComicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                &rec.raw_json,
+            )
+            .map_err(DomainError::Validation)?;
             let mut headers = parsed.image_headers(Some(raw_url));
             headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
             if parsed.enabled_cookie_jar

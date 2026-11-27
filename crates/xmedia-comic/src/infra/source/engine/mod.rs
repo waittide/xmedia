@@ -1,5 +1,6 @@
 mod list_eval;
 mod url_template;
+mod v2;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -130,6 +131,18 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<OnlineComicDetail>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.fetch_detail_v2_sync(
+                source,
+                manifest,
+                js_code,
+                state,
+                comic_url,
+                fallback_hint,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -295,6 +308,17 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<OnlineComicChapter>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.fetch_chapters_v2_sync(
+                manifest,
+                js_code,
+                state,
+                toc_url,
+                comic_ctx,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -342,6 +366,18 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<String>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.fetch_pages_v2_sync(
+                manifest,
+                js_code,
+                state,
+                chapter_url,
+                comic_ctx,
+                chapter_ctx,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
@@ -555,5 +591,9 @@ impl ComicSourceEnginePort for ComicSourceEngine {
         action_js: Option<&str>,
     ) -> Result<SourceCallOutput<String>, SourceCallError> {
         self.run_login_action_checked(source, state, login_info, action_js)
+    }
+
+    fn http_config(&self) -> HttpClientConfig {
+        self.http_config.clone()
     }
 }

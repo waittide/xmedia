@@ -209,6 +209,8 @@ pub struct ComicSourceSpec {
     pub rule_toc: Option<ComicTocRule>,
     #[serde(default)]
     pub rule_pages: Option<ComicPagesRule>,
+    #[serde(skip)]
+    pub v2_plugin: Option<(xmedia_source::plugin_v2::PluginV2Manifest, String)>,
 }
 
 impl From<&ComicSourceSpec> for SourceMetadata {
@@ -232,6 +234,12 @@ impl ComicSourceSpec {
     }
 
     pub fn default_test_keyword(&self) -> String {
+        if let Some((ref m, _)) = self.v2_plugin
+            && let Some(ref kw) = m.check_keyword
+            && !kw.trim().is_empty()
+        {
+            return kw.trim().to_string();
+        }
         self.rule_search
             .as_ref()
             .and_then(|r| r.check_key_word.as_deref())
@@ -242,6 +250,16 @@ impl ComicSourceSpec {
     }
 
     pub fn supports_stage(&self, mode: ComicSourceTestMode) -> bool {
+        if let Some((ref m, _)) = self.v2_plugin {
+            return match mode {
+                ComicSourceTestMode::Search => m.has_search,
+                ComicSourceTestMode::Explore => m.has_explore,
+                ComicSourceTestMode::Detail => m.has_detail,
+                ComicSourceTestMode::Chapters => m.has_toc,
+                ComicSourceTestMode::Pages => m.has_content,
+                ComicSourceTestMode::Full => true,
+            };
+        }
         match mode {
             ComicSourceTestMode::Detail => self.rule_detail.is_some(),
             ComicSourceTestMode::Chapters => self
@@ -323,6 +341,34 @@ impl SourceSpecAdapter for ComicSourceSpec {
         )
     }
 
+    fn from_v2_manifest(
+        manifest: xmedia_source::plugin_v2::PluginV2Manifest,
+        js_code: String,
+    ) -> Result<Self, String> {
+        let header = (!manifest.headers.is_empty())
+            .then(|| serde_json::to_string(&manifest.headers).ok())
+            .flatten();
+        let image_header = (!manifest.media_headers.is_empty())
+            .then(|| serde_json::to_string(&manifest.media_headers).ok())
+            .flatten();
+        Ok(Self {
+            source_name: manifest.name.clone(),
+            source_url: manifest.base_url.clone(),
+            source_group: (!manifest.group.is_empty()).then(|| manifest.group.clone()),
+            source_comment: manifest.description.clone(),
+            source_type: 2,
+            enabled: manifest.enabled,
+            enabled_explore: manifest.has_explore,
+            enabled_cookie_jar: true,
+            weight: manifest.weight,
+            header,
+            image_header,
+            concurrent_rate: manifest.rate_limit.clone(),
+            v2_plugin: Some((manifest, js_code)),
+            ..Default::default()
+        })
+    }
+
     fn source_name(&self) -> &str {
         &self.source_name
     }
@@ -348,6 +394,17 @@ impl SourceSpecAdapter for ComicSourceSpec {
     }
 
     fn summary_meta(&self) -> ParsedSourceSummaryMeta {
+        if let Some((ref m, _)) = self.v2_plugin {
+            return ParsedSourceSummaryMeta {
+                version: Some(m.version.clone()),
+                comment: m.description.clone(),
+                check_keyword: m.check_keyword.clone(),
+                has_login_url: m.auth.is_supported(),
+                login_ui: Vec::new(),
+                auth: Some(m.auth.clone()),
+                settings_schema: m.settings.clone(),
+            };
+        }
         let login_ui = self.parse_login_ui();
         let has_login_url = self
             .login_url
@@ -366,6 +423,7 @@ impl SourceSpecAdapter for ComicSourceSpec {
             check_keyword,
             has_login_url,
             login_ui,
+            ..Default::default()
         }
     }
 }

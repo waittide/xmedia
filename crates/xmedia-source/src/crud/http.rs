@@ -24,7 +24,11 @@ use super::dto::{
     ReorderSourcesRequest, SourceSummaryDto, SourceVariableResponse, UpdateSourceInput,
 };
 use super::service::{SourceCrudService, SourceSpecAdapter};
+use crate::http::HttpClientConfig;
 use crate::model::PluginFormat;
+use crate::plugin_v2::{
+    PluginAuthActionRequest, PluginAuthActionResponseDto, UpdatePluginSettingsRequest,
+};
 
 /// Maximum request body accepted by `/plugins/import` (`32 MiB`).
 pub const SOURCE_IMPORT_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
@@ -95,7 +99,11 @@ pub trait PluginDomainHandler: Send + Sync {
 
     async fn export_plugin(&self, actor: &User, id: Uuid) -> DomainResult<(String, PluginFormat)>;
 
-    async fn export_plugins_batch(&self, actor: &User, ids: Vec<Uuid>) -> DomainResult<String>;
+    async fn export_plugins_batch(
+        &self,
+        actor: &User,
+        ids: Vec<Uuid>,
+    ) -> DomainResult<(String, PluginFormat)>;
 
     async fn run_login_action(
         &self,
@@ -103,6 +111,20 @@ pub trait PluginDomainHandler: Send + Sync {
         id: Uuid,
         req: LoginActionRequest,
     ) -> DomainResult<LoginActionResponseDto>;
+
+    async fn run_auth_action(
+        &self,
+        actor: &User,
+        id: Uuid,
+        req: PluginAuthActionRequest,
+    ) -> DomainResult<PluginAuthActionResponseDto>;
+
+    async fn update_plugin_settings(
+        &self,
+        actor: &User,
+        id: Uuid,
+        req: UpdatePluginSettingsRequest,
+    ) -> DomainResult<SourceSummaryDto>;
 
     async fn test_plugin(
         &self,
@@ -124,6 +146,7 @@ type TestHandlerFn = dyn Fn(User, Uuid, serde_json::Value) -> BoxFuture<'static,
 /// domain-specific `login_action` and `test` closures.
 pub struct CrudPluginDomainHandler<Spec: SourceSpecAdapter> {
     crud: Arc<SourceCrudService<Spec>>,
+    http_config: HttpClientConfig,
     login_fn: Box<LoginHandlerFn>,
     test_fn: Box<TestHandlerFn>,
 }
@@ -140,8 +163,24 @@ impl<Spec: SourceSpecAdapter> CrudPluginDomainHandler<Spec> {
         T: Fn(User, Uuid, serde_json::Value) -> TFut + Send + Sync + 'static,
         TFut: Future<Output = DomainResult<serde_json::Value>> + Send + 'static,
     {
+        Self::into_arc_with_http_config(crud, HttpClientConfig::default(), login_fn, test_fn)
+    }
+
+    pub fn into_arc_with_http_config<L, LFut, T, TFut>(
+        crud: Arc<SourceCrudService<Spec>>,
+        http_config: HttpClientConfig,
+        login_fn: L,
+        test_fn: T,
+    ) -> Arc<dyn PluginDomainHandler>
+    where
+        L: Fn(User, Uuid, LoginActionRequest) -> LFut + Send + Sync + 'static,
+        LFut: Future<Output = DomainResult<LoginActionResponseDto>> + Send + 'static,
+        T: Fn(User, Uuid, serde_json::Value) -> TFut + Send + Sync + 'static,
+        TFut: Future<Output = DomainResult<serde_json::Value>> + Send + 'static,
+    {
         Arc::new(Self {
             crud,
+            http_config,
             login_fn: Box::new(move |u, id, req| Box::pin(login_fn(u, id, req))),
             test_fn: Box::new(move |u, id, payload| Box::pin(test_fn(u, id, payload))),
         })
@@ -219,8 +258,12 @@ impl<Spec: SourceSpecAdapter> PluginDomainHandler for CrudPluginDomainHandler<Sp
         self.crud.export_source(actor, id).await
     }
 
-    async fn export_plugins_batch(&self, actor: &User, ids: Vec<Uuid>) -> DomainResult<String> {
-        self.crud.export_sources_batch_json(actor, ids).await
+    async fn export_plugins_batch(
+        &self,
+        actor: &User,
+        ids: Vec<Uuid>,
+    ) -> DomainResult<(String, PluginFormat)> {
+        self.crud.export_sources_batch(actor, ids).await
     }
 
     async fn run_login_action(
@@ -230,6 +273,28 @@ impl<Spec: SourceSpecAdapter> PluginDomainHandler for CrudPluginDomainHandler<Sp
         req: LoginActionRequest,
     ) -> DomainResult<LoginActionResponseDto> {
         (self.login_fn)(actor.clone(), id, req).await
+    }
+
+    async fn run_auth_action(
+        &self,
+        actor: &User,
+        id: Uuid,
+        req: PluginAuthActionRequest,
+    ) -> DomainResult<PluginAuthActionResponseDto> {
+        self.crud
+            .run_plugin_auth(actor, id, req, self.http_config.clone())
+            .await
+    }
+
+    async fn update_plugin_settings(
+        &self,
+        actor: &User,
+        id: Uuid,
+        req: UpdatePluginSettingsRequest,
+    ) -> DomainResult<SourceSummaryDto> {
+        self.crud
+            .update_plugin_settings(actor, id, req.values)
+            .await
     }
 
     async fn test_plugin(
@@ -432,6 +497,8 @@ where
         .route("/{id}/variable", get(get_plugin_variable))
         .route("/{id}/export", get(export_plugin))
         .route("/{id}/login-action", post(run_plugin_login_action))
+        .route("/{id}/auth", post(run_plugin_auth_action))
+        .route("/{id}/settings", axum::routing::put(update_plugin_settings))
         .route("/{id}/test", post(test_plugin))
 }
 
@@ -546,8 +613,8 @@ async fn export_plugins_batch(
 ) -> ApiResult<Response> {
     if let Some(domain) = req.domain.or(query.domain) {
         let handler = registry.get_domain(domain)?;
-        let raw = handler.export_plugins_batch(&user, req.ids).await?;
-        return Ok(into_raw_json_export_response(raw));
+        let (raw, format) = handler.export_plugins_batch(&user, req.ids).await?;
+        return Ok(into_raw_plugin_export_response(raw, format));
     }
     user.ensure_active()?;
     if req.ids.is_empty() {
@@ -555,8 +622,8 @@ async fn export_plugins_batch(
     }
     if let Some(&first_id) = req.ids.first() {
         let handler = registry.resolve_owned_handler(&user, first_id).await?;
-        let raw = handler.export_plugins_batch(&user, req.ids).await?;
-        return Ok(into_raw_json_export_response(raw));
+        let (raw, format) = handler.export_plugins_batch(&user, req.ids).await?;
+        return Ok(into_raw_plugin_export_response(raw, format));
     }
     Err(DomainError::NotFound("未找到可导出的插件".into()).into())
 }
@@ -609,6 +676,26 @@ async fn run_plugin_login_action(
 ) -> ApiResult<Json<LoginActionResponseDto>> {
     let handler = registry.resolve_owned_handler(&user, id).await?;
     Ok(Json(handler.run_login_action(&user, id, req).await?))
+}
+
+async fn run_plugin_auth_action(
+    State(registry): State<Arc<PluginRegistry>>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PluginAuthActionRequest>,
+) -> ApiResult<Json<PluginAuthActionResponseDto>> {
+    let handler = registry.resolve_owned_handler(&user, id).await?;
+    Ok(Json(handler.run_auth_action(&user, id, req).await?))
+}
+
+async fn update_plugin_settings(
+    State(registry): State<Arc<PluginRegistry>>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdatePluginSettingsRequest>,
+) -> ApiResult<Json<SourceSummaryDto>> {
+    let handler = registry.resolve_owned_handler(&user, id).await?;
+    Ok(Json(handler.update_plugin_settings(&user, id, req).await?))
 }
 
 async fn test_plugin(

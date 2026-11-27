@@ -236,6 +236,8 @@ pub struct MusicSourceSpec {
     pub rule_cover: Option<MusicCoverRule>,
     #[serde(default)]
     pub rule_lyric: Option<MusicLyricRule>,
+    #[serde(skip)]
+    pub v2_plugin: Option<(xmedia_source::plugin_v2::PluginV2Manifest, String)>,
 }
 
 impl From<&MusicSourceSpec> for SourceMetadata {
@@ -288,6 +290,44 @@ impl SourceSpecAdapter for MusicSourceSpec {
             .collect())
     }
 
+    fn from_v2_manifest(
+        manifest: xmedia_source::plugin_v2::PluginV2Manifest,
+        js_code: String,
+    ) -> Result<Self, String> {
+        let header = (!manifest.headers.is_empty())
+            .then(|| serde_json::to_string(&manifest.headers).ok())
+            .flatten();
+        let media_header = (!manifest.media_headers.is_empty())
+            .then(|| serde_json::to_string(&manifest.media_headers).ok())
+            .flatten();
+        let explore_url = (!manifest.explore_categories.is_empty())
+            .then(|| {
+                let arr: Vec<serde_json::Value> = manifest
+                    .explore_categories
+                    .iter()
+                    .map(|c| serde_json::json!({ "title": c.title, "url": c.id }))
+                    .collect();
+                serde_json::to_string(&arr).ok()
+            })
+            .flatten();
+        Ok(Self {
+            source_name: manifest.name.clone(),
+            source_url: manifest.base_url.clone(),
+            source_group: (!manifest.group.is_empty()).then(|| manifest.group.clone()),
+            source_comment: manifest.description.clone(),
+            enabled: manifest.enabled,
+            weight: manifest.weight,
+            header,
+            media_header,
+            concurrent_rate: manifest.rate_limit.clone(),
+            explore_url,
+            supported_qualities: manifest.qualities.clone(),
+            enabled_cookie_jar: true,
+            v2_plugin: Some((manifest, js_code)),
+            ..Default::default()
+        })
+    }
+
     fn source_name(&self) -> &str {
         &self.source_name
     }
@@ -313,6 +353,17 @@ impl SourceSpecAdapter for MusicSourceSpec {
     }
 
     fn summary_meta(&self) -> ParsedSourceSummaryMeta {
+        if let Some((ref m, _)) = self.v2_plugin {
+            return ParsedSourceSummaryMeta {
+                version: Some(m.version.clone()),
+                comment: m.description.clone(),
+                check_keyword: m.check_keyword.clone(),
+                has_login_url: m.auth.is_supported(),
+                login_ui: Vec::new(),
+                auth: Some(m.auth.clone()),
+                settings_schema: m.settings.clone(),
+            };
+        }
         let login_ui = self.parse_login_ui();
         let has_login_url = self.has_any_login_config(&login_ui);
         ParsedSourceSummaryMeta {
@@ -320,12 +371,23 @@ impl SourceSpecAdapter for MusicSourceSpec {
             check_keyword: self.extract_check_keyword().map(str::to_string),
             has_login_url,
             login_ui,
+            ..Default::default()
         }
     }
 }
 
 impl MusicSourceSpec {
     pub fn has_rule(&self, kind: MusicRuleKind) -> bool {
+        if let Some((ref m, _)) = self.v2_plugin {
+            return match kind {
+                MusicRuleKind::Search => m.has_search,
+                MusicRuleKind::Explore => m.has_explore,
+                MusicRuleKind::TrackDetail => m.has_detail,
+                MusicRuleKind::Stream => m.has_stream,
+                MusicRuleKind::Cover => m.has_cover_resolver,
+                MusicRuleKind::Lyric => m.has_lyrics,
+            };
+        }
         match kind {
             MusicRuleKind::Search => self.rule_search.is_some(),
             MusicRuleKind::Explore => self.rule_explore.is_some() || self.rule_search.is_some(),
@@ -407,6 +469,13 @@ impl MusicSourceSpec {
     }
 
     fn extract_check_keyword(&self) -> Option<&str> {
+        if let Some((ref m, _)) = self.v2_plugin {
+            return m
+                .check_keyword
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+        }
         self.rule_search
             .as_ref()
             .and_then(|r| r.check_key_word.as_deref())

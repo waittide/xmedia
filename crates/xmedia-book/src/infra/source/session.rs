@@ -48,6 +48,7 @@ globalThis.chapter = {
 #[derive(Clone)]
 pub struct ReusableSourceContext {
     pub(super) source: Arc<LegadoBookSource>,
+    pub(super) http_config: xmedia_source::http::HttpClientConfig,
     pub(super) http: LegadoHttpClient,
     pub(super) state_arc: Arc<Mutex<SourceRuntimeState>>,
     pub(super) cookies_arc: Arc<Mutex<HashMap<String, String>>>,
@@ -78,6 +79,7 @@ impl ReusableSourceContext {
     pub fn create_worker_session(&self) -> ReusableWorkerSession {
         Self::new_worker_session(
             Arc::clone(&self.source),
+            self.http_config.clone(),
             self.http.clone(),
             self.state_arc.clone(),
             self.cookies_arc.clone(),
@@ -87,8 +89,10 @@ impl ReusableSourceContext {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_worker_session(
         source: Arc<LegadoBookSource>,
+        http_config: xmedia_source::http::HttpClientConfig,
         http: LegadoHttpClient,
         state_arc: Arc<Mutex<SourceRuntimeState>>,
         cookies_arc: Arc<Mutex<HashMap<String, String>>>,
@@ -100,17 +104,22 @@ impl ReusableSourceContext {
         let mut inner = ReusableSourceSession::new(
             metadata,
             http,
-            state_arc,
-            cookies_arc,
+            state_arc.clone(),
+            cookies_arc.clone(),
             JsSandboxConfig::with_timeout(js_timeout),
             op_timeout,
-            cancel_flag,
+            cancel_flag.clone(),
         );
         inner.add_bootstrap_snippet(BOOK_JS_BOOTSTRAP);
         ReusableWorkerSession {
             source,
+            http_config,
+            state_arc,
+            cookies_arc,
             inner,
             js_timeout,
+            op_timeout,
+            cancel_flag,
         }
     }
 
@@ -145,8 +154,13 @@ impl BookBatchContextPort for ReusableSourceContext {
 /// Thread-confined worker session (owns lazy QuickJS VM if any rule requires JS).
 pub struct ReusableWorkerSession {
     pub(super) source: Arc<LegadoBookSource>,
+    pub(super) http_config: xmedia_source::http::HttpClientConfig,
+    pub(super) state_arc: Arc<Mutex<SourceRuntimeState>>,
+    pub(super) cookies_arc: Arc<Mutex<HashMap<String, String>>>,
     pub(super) inner: ReusableSourceSession,
     pub(super) js_timeout: Duration,
+    pub(super) op_timeout: Duration,
+    pub(super) cancel_flag: Arc<AtomicBool>,
 }
 
 impl ReusableWorkerSession {
@@ -236,6 +250,33 @@ impl ReusableWorkerSession {
         toc_url: &str,
         book_ctx: &BookJsContext,
     ) -> Result<Vec<OnlineChapterItem>, String> {
+        if let Some((ref manifest, ref js_code)) = self.source.v2_plugin {
+            let mut cur_state = self
+                .state_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            cur_state.cookies = self
+                .cookies_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let out = super::engine::v2::fetch_toc_v2_sync(
+                manifest,
+                js_code,
+                cur_state,
+                &self.http_config,
+                self.js_timeout,
+                toc_url,
+                book_ctx,
+                self.op_timeout,
+                self.cancel_flag.clone(),
+            )
+            .map_err(|e| e.message)?;
+            *self.cookies_arc.lock().unwrap_or_else(|e| e.into_inner()) = out.state.cookies.clone();
+            *self.state_arc.lock().unwrap_or_else(|e| e.into_inner()) = out.state;
+            return Ok(out.data);
+        }
         let rule_toc = self
             .source
             .rule_toc
@@ -319,6 +360,34 @@ impl ReusableWorkerSession {
         book_ctx: &BookJsContext,
         chapter_ctx: &ChapterJsContext,
     ) -> Result<OnlineChapterContent, String> {
+        if let Some((ref manifest, ref js_code)) = self.source.v2_plugin {
+            let mut cur_state = self
+                .state_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            cur_state.cookies = self
+                .cookies_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let out = super::engine::v2::fetch_chapter_content_v2_sync(
+                manifest,
+                js_code,
+                cur_state,
+                &self.http_config,
+                self.js_timeout,
+                chapter_url,
+                book_ctx,
+                chapter_ctx,
+                self.op_timeout,
+                self.cancel_flag.clone(),
+            )
+            .map_err(|e| e.message)?;
+            *self.cookies_arc.lock().unwrap_or_else(|e| e.into_inner()) = out.state.cookies.clone();
+            *self.state_arc.lock().unwrap_or_else(|e| e.into_inner()) = out.state;
+            return Ok(out.data);
+        }
         let rule_content =
             self.source.rule_content.clone().ok_or_else(|| {
                 format!("书源「{}」未配置 ruleContent", self.source.book_source_name)

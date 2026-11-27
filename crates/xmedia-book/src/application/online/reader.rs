@@ -45,7 +45,10 @@ impl BookOnlineService {
         for rec in sources {
             let engine = Arc::clone(&self.engine);
             let kw_owned = kw.to_string();
-            let parsed_res = serde_json::from_str::<LegadoBookSource>(&rec.raw_json);
+            let parsed_res =
+                <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                    &rec.raw_json,
+                );
             let sid = rec.id;
             let sname = rec.name.clone();
             let state = rec.runtime_state.clone();
@@ -170,8 +173,10 @@ impl BookOnlineService {
         include_logs: bool,
     ) -> DomainResult<OnlineBookDetailResponseDto> {
         let source_id = rec.id;
-        let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
+        let parsed = <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let detail_timeout = self.detail_timeout;
         let engine = Arc::clone(&self.engine);
@@ -242,9 +247,10 @@ impl BookOnlineService {
     }
 
     pub(super) fn validate_caller_http_url(raw: &str, raw_json: &str) -> DomainResult<String> {
-        let base = serde_json::from_str::<LegadoBookSource>(raw_json)
-            .ok()
-            .map(|s| s.book_source_url);
+        let base =
+            <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(raw_json)
+                .ok()
+                .map(|s| s.book_source_url);
         xmedia_source::http::resolve_literal_http_url(raw, base.as_deref())
     }
 
@@ -259,7 +265,11 @@ impl BookOnlineService {
             .get(..5)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
         {
-            let parsed_src = serde_json::from_str::<LegadoBookSource>(raw_json).ok();
+            let parsed_src =
+                <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                    raw_json,
+                )
+                .ok();
             if !parsed_src
                 .as_ref()
                 .is_some_and(LegadoBookSource::supports_data_pseudo_urls)
@@ -324,8 +334,10 @@ impl BookOnlineService {
         include_logs: bool,
     ) -> DomainResult<OnlineTocResponseDto> {
         let source_id = rec.id;
-        let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
+        let parsed = <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let detail_timeout = self.detail_timeout;
         let engine = Arc::clone(&self.engine);
@@ -442,8 +454,10 @@ impl BookOnlineService {
             }
         }
 
-        let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
+        let parsed = <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let detail_timeout = self.detail_timeout;
         let engine = Arc::clone(&self.engine);
@@ -580,7 +594,11 @@ impl BookOnlineService {
                 Some(u) => self.sources.load_source_for_actor(u, sid).await?,
                 None => self.sources.load_source(sid).await?,
             };
-            if let Ok(spec) = serde_json::from_str::<LegadoBookSource>(&rec.raw_json) {
+            if let Ok(spec) =
+                <LegadoBookSource as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                    &rec.raw_json,
+                )
+            {
                 headers =
                     spec.build_image_headers_with_cookies(&rec.runtime_state.cookies, trimmed);
                 source_url = Some(spec.book_source_url);

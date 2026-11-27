@@ -21,8 +21,10 @@ impl VideoOnlineService {
         url_builder: &dyn VideoProxyUrlBuilder,
     ) -> DomainResult<OnlineVideoPlayResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let parsed = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         let op_timeout = self.op_timeout;
         self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
             .await

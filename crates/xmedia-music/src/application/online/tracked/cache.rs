@@ -54,7 +54,10 @@ impl MusicOnlineService {
     ) -> HashMap<String, String> {
         let mut merged = HashMap::new();
         if let Ok(rec) = self.sources.load_source(source_id).await
-            && let Ok(spec) = serde_json::from_str::<MusicSourceSpec>(&rec.raw_json)
+            && let Ok(spec) =
+                <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+                    &rec.raw_json,
+                )
         {
             merged = spec.build_media_headers_with_cookies(&rec.runtime_state.cookies, target_url);
         }
@@ -102,7 +105,10 @@ impl MusicOnlineService {
         ctx: MusicTrackContext,
     ) -> Option<String> {
         let rec = self.sources.load_source(source_id).await.ok()?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json).ok()?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .ok()?;
         if !parsed.has_rule(MusicRuleKind::Cover) {
             return None;
         }
@@ -157,7 +163,10 @@ impl MusicOnlineService {
         ctx: MusicTrackContext,
     ) -> Option<String> {
         let rec = self.sources.load_source(source_id).await.ok()?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json).ok()?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .ok()?;
         if !parsed.has_rule(MusicRuleKind::Lyric) {
             return None;
         }
@@ -363,8 +372,10 @@ impl MusicOnlineService {
         let existing_lrc_key = info.sidecar_lrc_key;
 
         let rec = self.sources.load_source(source_id).await?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let op_timeout = self.op_timeout;
         self.acquire_rate_slot(

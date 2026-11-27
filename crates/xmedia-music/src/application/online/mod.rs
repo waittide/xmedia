@@ -97,6 +97,10 @@ impl MusicOnlineService {
         &self.sources
     }
 
+    pub fn http_config(&self) -> xmedia_source::http::HttpClientConfig {
+        self.engine.http_config()
+    }
+
     pub(crate) fn with_tracking(mut self, deps: MusicTrackingDeps) -> Self {
         self.tracking = Some(deps);
         self

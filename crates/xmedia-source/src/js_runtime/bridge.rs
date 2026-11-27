@@ -11,6 +11,10 @@ use md5::{Digest, Md5};
 use rquickjs::{Ctx, Exception, Function};
 use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
+use crate::crypto::{
+    AesRequest, HmacOptions, RsaEncryptRequest, aes_decrypt, aes_encrypt, hash_digest, hmac_digest,
+    random_bytes_encoded, rsa_encrypt,
+};
 use crate::http::{HttpFetchResult, LegadoHttpClient};
 use crate::model::{BrowserRedirectHint, ExecutionDiagnostics};
 use crate::proxy::DEFAULT_IMAGE_PROXY_MAX_BYTES;
@@ -266,6 +270,108 @@ pub(super) fn install_native_bridges(
     }
 
     {
+        let f = Function::new(
+            ctx.clone(),
+            |ctx_js: Ctx<'_>,
+             alg: String,
+             data: String,
+             in_enc: Option<String>,
+             out_enc: Option<String>|
+             -> rquickjs::Result<String> {
+                hash_digest(&alg, &data, in_enc.as_deref(), out_enc.as_deref())
+                    .map_err(|e| Exception::throw_message(&ctx_js, &e))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_crypto_hash", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let f = Function::new(
+            ctx.clone(),
+            |ctx_js: Ctx<'_>,
+             alg: String,
+             key: String,
+             data: String,
+             opts_json: Option<String>|
+             -> rquickjs::Result<String> {
+                let opts: HmacOptions = match opts_json {
+                    Some(ref s) if !s.trim().is_empty() => serde_json::from_str(s)
+                        .map_err(|e| Exception::throw_message(&ctx_js, &e.to_string()))?,
+                    _ => HmacOptions::default(),
+                };
+                hmac_digest(&alg, &key, &data, opts)
+                    .map_err(|e| Exception::throw_message(&ctx_js, &e))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_crypto_hmac", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let f = Function::new(
+            ctx.clone(),
+            |ctx_js: Ctx<'_>, req_json: String| -> rquickjs::Result<String> {
+                let req: AesRequest = serde_json::from_str(&req_json)
+                    .map_err(|e| Exception::throw_message(&ctx_js, &e.to_string()))?;
+                aes_encrypt(req).map_err(|e| Exception::throw_message(&ctx_js, &e))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_crypto_aes_enc", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let f = Function::new(
+            ctx.clone(),
+            |ctx_js: Ctx<'_>, req_json: String| -> rquickjs::Result<String> {
+                let req: AesRequest = serde_json::from_str(&req_json)
+                    .map_err(|e| Exception::throw_message(&ctx_js, &e.to_string()))?;
+                aes_decrypt(req).map_err(|e| Exception::throw_message(&ctx_js, &e))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_crypto_aes_dec", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let f = Function::new(
+            ctx.clone(),
+            |ctx_js: Ctx<'_>, req_json: String| -> rquickjs::Result<String> {
+                let req: RsaEncryptRequest = serde_json::from_str(&req_json)
+                    .map_err(|e| Exception::throw_message(&ctx_js, &e.to_string()))?;
+                rsa_encrypt(req).map_err(|e| Exception::throw_message(&ctx_js, &e))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_crypto_rsa_enc", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let f = Function::new(
+            ctx.clone(),
+            |ctx_js: Ctx<'_>, len: usize, out_enc: Option<String>| -> rquickjs::Result<String> {
+                random_bytes_encoded(len, out_enc.as_deref())
+                    .map_err(|e| Exception::throw_message(&ctx_js, &e))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_crypto_rand", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
         let f = Function::new(ctx.clone(), |s: String, enc_label: String| -> String {
             let enc =
                 Encoding::for_label(enc_label.trim().as_bytes()).unwrap_or(encoding_rs::UTF_8);
@@ -500,6 +606,50 @@ pub(super) fn install_native_bridges(
             .map_err(|e| e.to_string())?;
     }
 
+    {
+        let http = b.http.clone();
+        let f = Function::new(ctx.clone(), move || {
+            http.clear_all_cookies();
+        })
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_cookie_clear_all", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // 8b. Arbitrary input HTML/JSON rule helpers (`__x_eval_rule_text`, `__x_eval_rule_list`)
+    {
+        let f = Function::new(
+            ctx.clone(),
+            |content: String, rule: String, base_url: Option<String>| -> String {
+                let rv = RuleValue::from_raw(content);
+                eval_non_js_single(&rv, &rule, base_url.as_deref().unwrap_or(""))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_select_text", f)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let f = Function::new(ctx.clone(), |content: String, rule: String| -> String {
+            let rv = RuleValue::from_raw(content);
+            let list: Vec<serde_json::Value> = eval_non_js_list(&rv, &rule)
+                .into_iter()
+                .map(|item| match item {
+                    RuleValue::Json(v) => v,
+                    RuleValue::Text(s) => serde_json::Value::String(s),
+                })
+                .collect();
+            serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
+        })
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_select_list", f)
+            .map_err(|e| e.to_string())?;
+    }
+
     // 7. Persistent & memory caches
     {
         let st = b.runtime_state.clone();
@@ -539,6 +689,17 @@ pub(super) fn install_native_bridges(
         })
         .map_err(|e| e.to_string())?;
         globals.set("__x_cache_del", f).map_err(|e| e.to_string())?;
+    }
+
+    {
+        let st = b.runtime_state.clone();
+        let f = Function::new(ctx.clone(), move || {
+            st.lock().unwrap_or_else(|e| e.into_inner()).cache.clear();
+        })
+        .map_err(|e| e.to_string())?;
+        globals
+            .set("__x_cache_clear_all", f)
+            .map_err(|e| e.to_string())?;
     }
 
     {

@@ -146,6 +146,21 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<ExploreCategoryItem>>, SourceCallError> {
+        if let Some((ref manifest, _)) = source.v2_plugin {
+            let cats = manifest
+                .explore_categories
+                .iter()
+                .map(|c| ExploreCategoryItem {
+                    title: c.title.clone(),
+                    url: c.id.clone(),
+                })
+                .collect();
+            return Ok(SourceCallOutput {
+                data: cats,
+                state,
+                diagnostics: ExecutionDiagnostics::default(),
+            });
+        }
         if source
             .explore_url
             .as_deref()
@@ -205,6 +220,17 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<ComicSearchResult>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.search_v2_sync(
+                manifest,
+                js_code,
+                state,
+                keyword,
+                page,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         let (rule_search, _) = source.list_rules(false)?;
         let raw_tpl = source
             .search_url
@@ -273,6 +299,17 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<ComicSearchResult>>, SourceCallError> {
+        if let Some((ref manifest, ref js_code)) = source.v2_plugin {
+            return self.explore_v2_sync(
+                manifest,
+                js_code,
+                state,
+                explore_url,
+                page,
+                op_timeout,
+                cancel_flag,
+            );
+        }
         if !source.enabled_explore {
             return Err(SourceCallError::new(
                 format!("漫画源「{}」未启用发现分类", source.source_name),

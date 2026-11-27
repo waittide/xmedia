@@ -55,8 +55,10 @@ impl ComicOnlineService {
                 "该追更章节所属漫画源已被停用，无法按需拉取".into(),
             ));
         }
-        let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        let parsed = <ComicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         let clean_chapter_url = resolve_literal_http_url(chapter_url, Some(&parsed.source_url))?;
         self.acquire_rate_slot(
             source_id,

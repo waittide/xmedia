@@ -1,4 +1,5 @@
 mod crud_and_explore;
+mod plugin_v2_e2e;
 mod proxy_and_security;
 mod seeds_and_engine;
 mod tracked_and_cache;

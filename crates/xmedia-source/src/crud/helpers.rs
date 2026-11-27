@@ -6,6 +6,7 @@ use xmedia_core::domain::library::MediaKind;
 
 use super::dto::{MASKED_SECRET_PLACEHOLDER, SourceSummaryDto, VARIABLE_PREVIEW_MAX_CHARS};
 use crate::model::{LoginUiItem, PluginFormat, SourceRuntimeState};
+use crate::plugin_v2::{PluginAuthCapsDto, PluginSettingFieldDto};
 
 /// Parses a single JSON object or JSON array (stripping whitespace + UTF-8 BOM `\u{feff}`),
 /// preserving each item's serialized raw JSON string and skipping entries where `is_blank(&item)`
@@ -102,10 +103,13 @@ pub struct SourceRecordSnapshot<'a> {
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedSourceSummaryMeta {
+    pub version: Option<String>,
     pub comment: Option<String>,
     pub check_keyword: Option<String>,
     pub has_login_url: bool,
     pub login_ui: Vec<LoginUiItem>,
+    pub auth: Option<PluginAuthCapsDto>,
+    pub settings_schema: Vec<PluginSettingFieldDto>,
 }
 
 pub fn is_sensitive_login_field(key: &str, login_ui: &[LoginUiItem]) -> bool {
@@ -182,11 +186,35 @@ pub fn build_source_summary(
     let mut cookie_hosts: Vec<String> = rec.runtime_state.cookies.keys().cloned().collect();
     cookie_hosts.sort();
 
+    let mut settings_values = HashMap::new();
+    for field in &meta.settings_schema {
+        let raw_val = rec
+            .runtime_state
+            .settings
+            .get(&field.key)
+            .cloned()
+            .unwrap_or_else(|| field.default_value.clone());
+        let masked_val = if field.field_type == "password" {
+            match raw_val.as_str() {
+                Some(s) if !s.is_empty() => {
+                    serde_json::Value::String(MASKED_SECRET_PLACEHOLDER.to_string())
+                }
+                _ => serde_json::Value::String(String::new()),
+            }
+        } else {
+            raw_val
+        };
+        settings_values.insert(field.key.clone(), masked_val);
+    }
+
+    let has_v2_auth = meta.auth.as_ref().is_some_and(|a| a.is_supported());
+
     SourceSummaryDto {
         id: rec.id,
         domain: rec.domain,
         format: rec.format,
         name: rec.name.to_string(),
+        version: meta.version,
         source_url: rec.source_url.to_string(),
         group_name: rec.group_name.to_string(),
         comment: meta.comment,
@@ -194,9 +222,12 @@ pub fn build_source_summary(
         enabled: rec.enabled,
         weight: rec.weight,
         source_type: rec.source_type,
-        has_login_url: meta.has_login_url,
+        has_login_url: meta.has_login_url || has_v2_auth,
         login_ui: meta.login_ui,
         login_info,
+        auth: meta.auth.filter(|a| a.is_supported()),
+        settings_schema: meta.settings_schema,
+        settings_values,
         has_variable: !rec.runtime_state.variable.trim().is_empty(),
         variable_preview,
         cookie_hosts,

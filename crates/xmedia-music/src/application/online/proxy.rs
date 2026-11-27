@@ -29,7 +29,9 @@ fn extract_source_headers_from_record(
     rec: &SourceRecord,
     target_url: &str,
 ) -> HashMap<String, String> {
-    let Ok(spec) = serde_json::from_str::<MusicSourceSpec>(&rec.raw_json) else {
+    let Ok(spec) =
+        <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(&rec.raw_json)
+    else {
         return HashMap::new();
     };
     spec.build_media_headers_with_cookies(&rec.runtime_state.cookies, target_url)
@@ -98,8 +100,10 @@ impl MusicOnlineService {
             return self.fetch_cover_proxy(actor, &url, Some(source_id)).await;
         }
 
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
         if !parsed.has_rule(MusicRuleKind::Cover) {
             return Err(DomainError::NotFound("音源未配置封面解析规则".into()));
         }

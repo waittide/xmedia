@@ -88,6 +88,10 @@ impl ComicOnlineService {
         &self.source_crud
     }
 
+    pub fn http_config(&self) -> xmedia_source::http::HttpClientConfig {
+        self.engine.http_config()
+    }
+
     pub async fn run_login_action(
         &self,
         actor: &User,

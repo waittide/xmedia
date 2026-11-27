@@ -376,8 +376,10 @@ impl VideoOnlineService {
         url_builder: &dyn VideoProxyUrlBuilder,
     ) -> DomainResult<VideoSourceTestReportDto> {
         let rec = self.source_crud.load_owned_source(actor, id).await?;
-        let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let parsed = <VideoSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let trim_non_empty = |opt: Option<&str>| {
             opt.map(str::trim)

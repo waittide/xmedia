@@ -293,6 +293,10 @@ pub trait VideoSourceEnginePort: Send + Sync {
         login_info: HashMap<String, String>,
         action: Option<&str>,
     ) -> Result<SourceCallOutput<String>, String>;
+
+    fn http_config(&self) -> xmedia_source::http::HttpClientConfig {
+        xmedia_source::http::HttpClientConfig::default()
+    }
 }
 
 #[async_trait]

@@ -25,8 +25,10 @@ impl MusicOnlineService {
         quality: Option<String>,
     ) -> DomainResult<OnlineMusicResolvedTrackDto> {
         let rec = self.sources.load_source_for_actor(actor, source_id).await?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let op_timeout = self.op_timeout;
         let track_info_timeout = self.track_info_timeout;
@@ -298,8 +300,10 @@ impl MusicOnlineService {
         quality: Option<String>,
     ) -> DomainResult<OnlineMusicStreamResponseDto> {
         let rec = self.sources.load_source_for_actor(actor, source_id).await?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let op_timeout = self.op_timeout;
         self.acquire_rate_slot(
@@ -392,8 +396,10 @@ impl MusicOnlineService {
         ctx: MusicTrackContext,
     ) -> DomainResult<StructuredLyrics> {
         let rec = self.sources.load_source_for_actor(actor, source_id).await?;
-        let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
-            .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+        let parsed = <MusicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_single(
+            &rec.raw_json,
+        )
+        .map_err(DomainError::Validation)?;
 
         let op_timeout = self.op_timeout;
         self.acquire_rate_slot(

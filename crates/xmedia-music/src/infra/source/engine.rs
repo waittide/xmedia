@@ -3,6 +3,7 @@ mod search_explore;
 mod template;
 #[cfg(test)]
 mod tests;
+mod v2;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -202,5 +203,9 @@ impl MusicSourceEnginePort for MusicSourceEngine {
         action_js: Option<&str>,
     ) -> Result<SourceCallOutput<String>, SourceCallError> {
         MusicSourceEngine::run_login_action_sync(self, source, initial_state, login_info, action_js)
+    }
+
+    fn http_config(&self) -> HttpClientConfig {
+        self.http_config.clone()
     }
 }
