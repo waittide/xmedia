@@ -1,26 +1,28 @@
-pub mod gateway;
-pub mod static_files;
+mod gateway;
+mod static_files;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
 use axum::Router;
-use axum::http::HeaderValue;
+use axum::http::{HeaderValue, Method};
 use toasty::Db;
 use toasty::schema::ModelSet;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use xmedia_core::application::activity::ActivityService;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::UserRepository;
+use xmedia_core::domain::user::User;
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::fonts::FsFontStore;
@@ -30,8 +32,7 @@ use xmedia_core::infra::persistence::repositories::{
 };
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{
-    ensure_core_schema_with_report, ensure_sqlite_parent_dir, is_core_schema_initialized,
-    register_core_models,
+    ensure_core_schema, ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
 };
 
 use gateway::{FfmpegStatusCache, GatewayState, SseConnectionLimiter, core_api_router};
@@ -78,8 +79,8 @@ pub struct XMediaApp {
     pub auth: Arc<AuthService>,
     pub libraries: Arc<LibraryService>,
     pub events: Arc<BroadcastEventHub>,
-    pub enabled_modules: Vec<MediaKind>,
-    pub router: Router,
+    enabled_modules: Vec<MediaKind>,
+    router: Router,
     temp_dir: PathBuf,
     #[cfg(feature = "book")]
     book_catalog: Arc<xmedia_book::application::catalog::BookCatalogService>,
@@ -89,18 +90,14 @@ pub struct XMediaApp {
     music_ingest: Arc<xmedia_music::application::ingest::MusicIngestService>,
 }
 
+#[cfg(any(feature = "book", feature = "comic", feature = "music"))]
 struct ScopedImportTempFile {
     path: PathBuf,
 }
 
+#[cfg(any(feature = "book", feature = "comic", feature = "music"))]
 impl ScopedImportTempFile {
-    async fn write_in(
-        dir: &Path,
-        filename: &str,
-        data: &[u8],
-    ) -> xmedia_core::domain::error::DomainResult<Self> {
-        use xmedia_core::domain::error::DomainError;
-
+    async fn write_in(dir: &std::path::Path, filename: &str, data: &[u8]) -> DomainResult<Self> {
         if data.is_empty() {
             return Err(DomainError::Validation(
                 "imported file payload cannot be empty".into(),
@@ -109,7 +106,7 @@ impl ScopedImportTempFile {
         tokio::fs::create_dir_all(dir).await.map_err(|e| {
             DomainError::Storage(format!("failed to prepare import temp directory: {e}"))
         })?;
-        let clean_ext = Path::new(filename)
+        let clean_ext = std::path::Path::new(filename)
             .extension()
             .and_then(|s| s.to_str())
             .map(|e| {
@@ -132,11 +129,12 @@ impl ScopedImportTempFile {
         Ok(guard)
     }
 
-    fn path(&self) -> &Path {
+    fn path(&self) -> &std::path::Path {
         &self.path
     }
 }
 
+#[cfg(any(feature = "book", feature = "comic", feature = "music"))]
 impl Drop for ScopedImportTempFile {
     fn drop(&mut self) {
         let path = std::mem::take(&mut self.path);
@@ -154,25 +152,11 @@ impl Drop for ScopedImportTempFile {
 }
 
 impl XMediaApp {
-    pub async fn connect_and_init(cfg: XMediaConfig) -> anyhow::Result<Self> {
-        Self::connect_and_init_with_options(cfg, XMediaInitOptions::default()).await
+    pub async fn init(cfg: XMediaConfig) -> anyhow::Result<Self> {
+        Self::init_with_options(cfg, XMediaInitOptions::default()).await
     }
 
-    pub async fn connect_and_init_with_cors(
-        cfg: XMediaConfig,
-        allow_permissive_cors: bool,
-    ) -> anyhow::Result<Self> {
-        Self::connect_and_init_with_options(
-            cfg,
-            XMediaInitOptions {
-                allow_permissive_cors,
-                ..Default::default()
-            },
-        )
-        .await
-    }
-
-    pub async fn connect_and_init_with_options(
+    pub async fn init_with_options(
         cfg: XMediaConfig,
         opts: XMediaInitOptions,
     ) -> anyhow::Result<Self> {
@@ -191,60 +175,15 @@ impl XMediaApp {
         }
         ensure_sqlite_parent_dir(&cfg.database_url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-        let mut models = ModelSet::new();
-        register_core_models(&mut models);
-        #[cfg(feature = "book")]
-        xmedia_book::register_book_models(&mut models);
-        #[cfg(feature = "comic")]
-        xmedia_comic::register_comic_models(&mut models);
-        #[cfg(feature = "music")]
-        xmedia_music::register_music_models(&mut models);
-        #[cfg(feature = "video")]
-        xmedia_video::register_video_models(&mut models);
-
-        let mut db = Db::builder()
-            .models(models)
-            .connect(&cfg.database_url)
-            .await
-            .map_err(|e| anyhow::anyhow!("database connection failed: {e}"))?;
-
-        let bindings_table_created = if !is_core_schema_initialized(&mut db).await {
-            tracing::info!(
-                "cold start detected: pushing unified database schema for core and all enabled modules"
-            );
-            db.push_schema()
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to push unified database schema: {e}"))?;
-            false
-        } else {
-            let core_report = ensure_core_schema_with_report(&mut db, &cfg.database_url)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            #[cfg(feature = "book")]
-            xmedia_book::ensure_book_schema(&mut db, &cfg.database_url)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            #[cfg(feature = "comic")]
-            xmedia_comic::ensure_comic_schema(&mut db, &cfg.database_url)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            #[cfg(feature = "music")]
-            xmedia_music::ensure_music_schema(&mut db, &cfg.database_url)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            #[cfg(feature = "video")]
-            xmedia_video::ensure_video_schema(&mut db, &cfg.database_url)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            core_report.bindings_table_created
-        };
+        let (db, bindings_table_created) = connect_and_migrate_db(&cfg.database_url).await?;
 
         let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
         let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
         let binding_repo = Arc::new(ToastyUserMediaBindingRepository::new(db.clone()));
         let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
-        let activity_repo = Arc::new(ToastyUserActivityRepository::new(db.clone()));
-        let activity = Arc::new(ActivityService::new(activity_repo));
+        let activity = Arc::new(ActivityService::new(Arc::new(
+            ToastyUserActivityRepository::new(db.clone()),
+        )));
         let lifecycles = Arc::new(RwLock::new(HashMap::new()));
         let events = Arc::new(BroadcastEventHub::default());
         let bindings = Arc::new(MediaBindingService::new(binding_repo, Some(events.clone())));
@@ -257,16 +196,16 @@ impl XMediaApp {
 
         let auth = Arc::new(
             AuthService::new(users_repo.clone(), security, tokens, lifecycles.clone())
-                .with_activity(activity.clone())
-                .with_online_items(online_items_repo)
-                .with_bindings(bindings.clone()),
+                .with_cleanup(
+                    Some(activity.clone()),
+                    Some(online_items_repo),
+                    Some(bindings.clone()),
+                ),
         );
-        let libraries = Arc::new(LibraryService::with_data_dir(
-            libraries_repo.clone(),
-            events.clone(),
-            lifecycles,
-            Some(cfg.data_dir.clone()),
-        ));
+        let libraries = Arc::new(
+            LibraryService::new(libraries_repo.clone(), events.clone(), lifecycles)
+                .with_mount_policy(Some(cfg.data_dir.clone()), None),
+        );
         libraries
             .recover_interrupted_scans()
             .await
@@ -351,13 +290,12 @@ impl XMediaApp {
                 backfill_batches.push((MediaKind::Comic, ids));
             }
 
-            let comic_state = xmedia_comic::http::state::ComicHttpState::new(
-                auth.clone(),
-                libraries.clone(),
-                comic_services,
+            let comic_state =
+                xmedia_comic::http::state::ComicHttpState::new(auth.clone(), comic_services);
+            api_v1 = api_v1.nest(
+                "/comic",
+                xmedia_comic::http::rest_router(comic_state.clone()),
             );
-            let comic_router = xmedia_comic::http::rest_router(comic_state.clone());
-            api_v1 = api_v1.nest("/comic", comic_router);
             root_protocols =
                 root_protocols.nest("/opds/comic", xmedia_comic::http::opds_router(comic_state));
         }
@@ -395,8 +333,10 @@ impl XMediaApp {
                 libraries.clone(),
                 music_services,
             );
-            let music_router = xmedia_music::http::rest_router(music_state.clone());
-            api_v1 = api_v1.nest("/music", music_router);
+            api_v1 = api_v1.nest(
+                "/music",
+                xmedia_music::http::rest_router(music_state.clone()),
+            );
             root_protocols =
                 root_protocols.nest("/rest", xmedia_music::http::subsonic_router(music_state));
         }
@@ -433,8 +373,10 @@ impl XMediaApp {
                 libraries.clone(),
                 video_services,
             );
-            let video_router = xmedia_video::http::rest_router(video_state.clone());
-            api_v1 = api_v1.nest("/video", video_router);
+            api_v1 = api_v1.nest(
+                "/video",
+                xmedia_video::http::rest_router(video_state.clone()),
+            );
             root_protocols = root_protocols.nest(
                 "/jellyfin",
                 xmedia_video::http::jellyfin_router(video_state),
@@ -442,38 +384,10 @@ impl XMediaApp {
         }
 
         if bindings_table_created {
-            let admin_ids: Vec<_> = users_repo
-                .list_all()
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                .into_iter()
-                .filter(|u| u.role.is_admin())
-                .map(|u| u.id)
-                .collect();
-            if !admin_ids.is_empty() {
-                let mut total_bound = 0usize;
-                for (kind, ids) in &backfill_batches {
-                    if ids.is_empty() {
-                        continue;
-                    }
-                    for &admin_id in &admin_ids {
-                        total_bound += bindings
-                            .bind_batch(admin_id, *kind, ids)
-                            .await
-                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                    }
-                }
-                tracing::info!(
-                    admins = admin_ids.len(),
-                    total_bound,
-                    "completed one-time upgrade backfill for user_media_bindings"
-                );
-            }
+            backfill_admin_bindings(users_repo.as_ref(), &bindings, &backfill_batches).await?;
         }
 
         let _ = (db, opts.allow_private_ips);
-
-        let fonts = Arc::new(FsFontStore::new(cfg.data_dir.join("fonts")));
 
         let gateway_state = GatewayState {
             auth: auth.clone(),
@@ -481,7 +395,7 @@ impl XMediaApp {
             libraries_repo,
             bindings,
             activity,
-            fonts,
+            fonts: Arc::new(FsFontStore::new(cfg.data_dir.join("fonts"))),
             events: events.clone(),
             sse_limiter: SseConnectionLimiter::new(),
             ffmpeg,
@@ -490,49 +404,7 @@ impl XMediaApp {
             external_web_dir: cfg.external_web_dir,
         };
 
-        let merged_api_v1 = api_v1.merge(core_api_router().with_state(gateway_state.clone()));
-
-        let compression_predicate = DefaultPredicate::new()
-            .and(NotForContentType::const_new("audio/"))
-            .and(NotForContentType::const_new("video/"))
-            .and(NotForContentType::const_new("image/"))
-            .and(NotForContentType::const_new("font/"))
-            .and(NotForContentType::const_new("application/octet-stream"))
-            .and(NotForContentType::const_new("application/epub+zip"))
-            .and(NotForContentType::const_new("application/pdf"))
-            .and(NotForContentType::const_new("text/event-stream"));
-
-        let spa_service = axum::routing::any(static_files::serve_spa).with_state(gateway_state);
-
-        let mut router = Router::new()
-            .nest("/api/v1", merged_api_v1)
-            .merge(root_protocols)
-            .fallback_service(spa_service);
-        if opts.allow_permissive_cors {
-            router = router.layer(CorsLayer::permissive());
-        } else if !opts.cors_allow_origins.is_empty() {
-            let parsed_origins: Vec<HeaderValue> = opts
-                .cors_allow_origins
-                .iter()
-                .map(|o| o.trim())
-                .filter(|o| !o.is_empty())
-                .map(|o| {
-                    HeaderValue::from_str(o)
-                        .with_context(|| format!("invalid CORS allow-origin header value: '{o}'"))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            if !parsed_origins.is_empty() {
-                router = router.layer(
-                    CorsLayer::new()
-                        .allow_origin(AllowOrigin::list(parsed_origins))
-                        .allow_methods(Any)
-                        .allow_headers(Any),
-                );
-            }
-        }
-        let router = router
-            .layer(CompressionLayer::new().compress_when(compression_predicate))
-            .layer(TraceLayer::new_for_http());
+        let router = build_gateway_router(gateway_state, api_v1, root_protocols, &opts)?;
 
         Ok(Self {
             auth,
@@ -550,96 +422,302 @@ impl XMediaApp {
         })
     }
 
-    pub async fn import_local_book(
-        &self,
-        actor: &xmedia_core::domain::user::User,
-        filename: String,
-        data: bytes::Bytes,
-    ) -> xmedia_core::domain::error::DomainResult<(String, String)> {
-        #[cfg(feature = "book")]
-        {
-            let temp = ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
-            let book = self
-                .book_catalog
-                .upload_book_from_path(actor, &filename, temp.path())
-                .await?;
-            Ok((book.id.to_string(), book.metadata.title))
-        }
-        #[cfg(not(feature = "book"))]
-        {
-            let _ = (&self.temp_dir, actor, filename, data);
-            Err(xmedia_core::domain::error::DomainError::UnsupportedFormat(
-                "book module is not enabled".into(),
-            ))
-        }
+    pub fn into_embedded_host(self) -> (Arc<Self>, Router, Vec<MediaKind>) {
+        let router = self.router.clone();
+        let enabled_modules = self.enabled_modules.clone();
+        (Arc::new(self), router, enabled_modules)
     }
 
-    pub async fn import_local_comic(
+    pub async fn serve(
+        self,
+        bind: SocketAddr,
+        listener: tokio::net::TcpListener,
+        shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> anyhow::Result<()> {
+        tracing::info!("xmedia listening on http://{bind}");
+        if self.enabled_modules.contains(&MediaKind::Book) {
+            tracing::info!(
+                "Book OPDS 1.2 / 2.0: http://{bind}/opds/book/v1.2 | http://{bind}/opds/book/v2"
+            );
+        }
+        if self.enabled_modules.contains(&MediaKind::Comic) {
+            tracing::info!("Comic OPDS 1.2 + PSE: http://{bind}/opds/comic/v1.2");
+        }
+        if self.enabled_modules.contains(&MediaKind::Music) {
+            tracing::info!("Music OpenSubsonic API: http://{bind}/rest");
+        }
+        axum::serve(
+            listener,
+            self.router
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await
+        .context("http server error")
+    }
+
+    pub async fn import_local_media(
         &self,
-        actor: &xmedia_core::domain::user::User,
+        actor: &User,
+        kind: MediaKind,
         filename: String,
         data: bytes::Bytes,
-    ) -> xmedia_core::domain::error::DomainResult<(String, String)> {
+    ) -> DomainResult<(String, String)> {
+        match kind {
+            MediaKind::Book => {
+                #[cfg(feature = "book")]
+                {
+                    let temp =
+                        ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
+                    let book = self
+                        .book_catalog
+                        .upload_book_from_path(actor, &filename, temp.path())
+                        .await?;
+                    Ok((book.id.to_string(), book.metadata.title))
+                }
+                #[cfg(not(feature = "book"))]
+                {
+                    let _ = (&self.temp_dir, actor, filename, data);
+                    Err(DomainError::UnsupportedFormat(
+                        "book module is not enabled".into(),
+                    ))
+                }
+            }
+            MediaKind::Comic => {
+                #[cfg(feature = "comic")]
+                {
+                    let temp =
+                        ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
+                    let uploaded = self
+                        .comic_catalog
+                        .upload_archive_from_path(
+                            actor,
+                            xmedia_comic::application::dto::UploadArchivePathInput {
+                                filename,
+                                temp_path: temp.path().to_path_buf(),
+                                target_series_id: None,
+                                series_title_override: None,
+                            },
+                        )
+                        .await?;
+                    Ok((uploaded.series_id.to_string(), uploaded.series_title))
+                }
+                #[cfg(not(feature = "comic"))]
+                {
+                    let _ = (&self.temp_dir, actor, filename, data);
+                    Err(DomainError::UnsupportedFormat(
+                        "comic module is not enabled".into(),
+                    ))
+                }
+            }
+            MediaKind::Music => {
+                #[cfg(feature = "music")]
+                {
+                    let temp =
+                        ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
+                    let batch = self
+                        .music_ingest
+                        .upload_files_from_paths(
+                            actor,
+                            vec![xmedia_music::application::dto::UploadFilePathItem {
+                                filename,
+                                temp_path: temp.path().to_path_buf(),
+                            }],
+                        )
+                        .await?;
+                    let track = batch.uploaded_tracks.into_iter().next().ok_or_else(|| {
+                        DomainError::Validation(
+                            "no audio track produced from imported payload".into(),
+                        )
+                    })?;
+                    Ok((track.id.to_string(), track.title))
+                }
+                #[cfg(not(feature = "music"))]
+                {
+                    let _ = (&self.temp_dir, actor, filename, data);
+                    Err(DomainError::UnsupportedFormat(
+                        "music module is not enabled".into(),
+                    ))
+                }
+            }
+            MediaKind::Video => {
+                let _ = (&self.temp_dir, actor, filename, data);
+                Err(DomainError::UnsupportedFormat(
+                    "direct video payload import is not supported".into(),
+                ))
+            }
+        }
+    }
+}
+
+async fn connect_and_migrate_db(database_url: &str) -> anyhow::Result<(Db, bool)> {
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    #[cfg(feature = "book")]
+    xmedia_book::register_book_models(&mut models);
+    #[cfg(feature = "comic")]
+    xmedia_comic::register_comic_models(&mut models);
+    #[cfg(feature = "music")]
+    xmedia_music::register_music_models(&mut models);
+    #[cfg(feature = "video")]
+    xmedia_video::register_video_models(&mut models);
+
+    let mut db = Db::builder()
+        .models(models)
+        .connect(database_url)
+        .await
+        .map_err(|e| anyhow::anyhow!("database connection failed: {e}"))?;
+
+    let bindings_table_created = if !is_core_schema_initialized(&mut db).await {
+        tracing::info!(
+            "cold start detected: pushing unified database schema for core and all enabled modules"
+        );
+        db.push_schema()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to push unified database schema: {e}"))?;
         #[cfg(feature = "comic")]
-        {
-            let temp = ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
-            let uploaded = self
-                .comic_catalog
-                .upload_archive_from_path(
-                    actor,
-                    xmedia_comic::application::dto::UploadArchivePathInput {
-                        filename,
-                        temp_path: temp.path().to_path_buf(),
-                        target_series_id: None,
-                        series_title_override: None,
-                    },
-                )
-                .await?;
-            Ok((uploaded.series_id.to_string(), uploaded.series_title))
-        }
-        #[cfg(not(feature = "comic"))]
-        {
-            let _ = (&self.temp_dir, actor, filename, data);
-            Err(xmedia_core::domain::error::DomainError::UnsupportedFormat(
-                "comic module is not enabled".into(),
-            ))
-        }
-    }
-
-    pub async fn import_local_track(
-        &self,
-        actor: &xmedia_core::domain::user::User,
-        filename: String,
-        data: bytes::Bytes,
-    ) -> xmedia_core::domain::error::DomainResult<(String, String)> {
+        xmedia_comic::ensure_comic_indexes(&mut db)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         #[cfg(feature = "music")]
-        {
-            let temp = ScopedImportTempFile::write_in(&self.temp_dir, &filename, &data).await?;
-            let batch = self
-                .music_ingest
-                .upload_files_from_paths(
-                    actor,
-                    vec![xmedia_music::application::dto::UploadFilePathItem {
-                        filename,
-                        temp_path: temp.path().to_path_buf(),
-                    }],
-                )
-                .await?;
-            let track = batch.uploaded_tracks.into_iter().next().ok_or_else(|| {
-                xmedia_core::domain::error::DomainError::Validation(
-                    "no audio track produced from imported payload".into(),
-                )
-            })?;
-            Ok((track.id.to_string(), track.title))
+        xmedia_music::ensure_music_indexes(&mut db)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        #[cfg(feature = "video")]
+        xmedia_video::ensure_video_indexes(&mut db)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        false
+    } else {
+        let core_report = ensure_core_schema(&mut db, database_url)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        #[cfg(feature = "book")]
+        xmedia_book::ensure_book_schema(&mut db, database_url)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        #[cfg(feature = "comic")]
+        xmedia_comic::ensure_comic_schema(&mut db, database_url)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        #[cfg(feature = "music")]
+        xmedia_music::ensure_music_schema(&mut db, database_url)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        #[cfg(feature = "video")]
+        xmedia_video::ensure_video_schema(&mut db, database_url)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        core_report.bindings_table_created
+    };
+
+    Ok((db, bindings_table_created))
+}
+
+async fn backfill_admin_bindings(
+    users_repo: &dyn UserRepository,
+    bindings: &MediaBindingService,
+    batches: &[(MediaKind, Vec<uuid::Uuid>)],
+) -> anyhow::Result<()> {
+    let admin_ids: Vec<_> = users_repo
+        .list_all()
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?
+        .into_iter()
+        .filter(|u| u.role.is_admin())
+        .map(|u| u.id)
+        .collect();
+    if admin_ids.is_empty() {
+        return Ok(());
+    }
+    let mut total_bound = 0usize;
+    for (kind, ids) in batches {
+        if ids.is_empty() {
+            continue;
         }
-        #[cfg(not(feature = "music"))]
-        {
-            let _ = (&self.temp_dir, actor, filename, data);
-            Err(xmedia_core::domain::error::DomainError::UnsupportedFormat(
-                "music module is not enabled".into(),
-            ))
+        for &admin_id in &admin_ids {
+            total_bound += bindings
+                .bind_batch(admin_id, *kind, ids)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
     }
+    tracing::info!(
+        admins = admin_ids.len(),
+        total_bound,
+        "completed one-time upgrade backfill for user_media_bindings"
+    );
+    Ok(())
+}
+
+fn build_gateway_router(
+    gateway_state: GatewayState,
+    api_v1: Router,
+    root_protocols: Router,
+    opts: &XMediaInitOptions,
+) -> anyhow::Result<Router> {
+    let merged_api_v1 = api_v1.merge(core_api_router().with_state(gateway_state.clone()));
+
+    let compression_predicate = DefaultPredicate::new()
+        .and(NotForContentType::const_new("audio/"))
+        .and(NotForContentType::const_new("video/"))
+        .and(NotForContentType::const_new("image/"))
+        .and(NotForContentType::const_new("font/"))
+        .and(NotForContentType::const_new("application/octet-stream"))
+        .and(NotForContentType::const_new("application/epub+zip"))
+        .and(NotForContentType::const_new("application/pdf"))
+        .and(NotForContentType::const_new("text/event-stream"));
+
+    let spa_service = axum::routing::any(static_files::serve_spa).with_state(gateway_state);
+
+    let mut router = Router::new()
+        .nest("/api/v1", merged_api_v1)
+        .merge(root_protocols)
+        .fallback_service(spa_service);
+    if opts.allow_permissive_cors {
+        router = router.layer(CorsLayer::permissive());
+    } else if !opts.cors_allow_origins.is_empty() {
+        let parsed_origins: Vec<HeaderValue> = opts
+            .cors_allow_origins
+            .iter()
+            .map(|o| o.trim())
+            .filter(|o| !o.is_empty())
+            .map(|o| {
+                HeaderValue::from_str(o)
+                    .with_context(|| format!("invalid CORS allow-origin header value: '{o}'"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if !parsed_origins.is_empty() {
+            router = router.layer(
+                CorsLayer::new()
+                    .allow_origin(AllowOrigin::list(parsed_origins))
+                    .allow_methods([
+                        Method::GET,
+                        Method::POST,
+                        Method::PUT,
+                        Method::PATCH,
+                        Method::DELETE,
+                        Method::HEAD,
+                        Method::OPTIONS,
+                    ])
+                    .allow_headers(AllowHeaders::mirror_request())
+                    .allow_credentials(true),
+            );
+        }
+    }
+    Ok(router
+        .layer(CompressionLayer::new().compress_when(compression_predicate))
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
+                let uri = xmedia_core::http::redact_uri_for_log(req.uri());
+                tracing::debug_span!(
+                    "request",
+                    method = %req.method(),
+                    uri = %uri,
+                    version = ?req.version(),
+                )
+            }),
+        ))
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ mod smoke_and_overview_tests {
     async fn unified_gateway_all_four_domains_and_protocols_smoke_test() {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("xmedia.db");
-        let app_instance = XMediaApp::connect_and_init(XMediaConfig {
+        let app_instance = XMediaApp::init(XMediaConfig {
             data_dir: tmp.path().to_path_buf(),
             database_url: format!("sqlite:{}", db_path.display()),
             secret: "unified-gateway-secret".into(),
@@ -233,17 +233,14 @@ mod smoke_and_overview_tests {
     async fn disabled_permissive_cors_and_app_path_spa_exclusion() {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("xmedia_nocors.db");
-        let app_instance = XMediaApp::connect_and_init_with_cors(
-            XMediaConfig {
-                data_dir: tmp.path().to_path_buf(),
-                database_url: format!("sqlite:{}", db_path.display()),
-                secret: "no-cors-test-secret".into(),
-                jwt_ttl_secs: 3600,
-                ffmpeg_bin: "__missing_ffmpeg__".into(),
-                external_web_dir: None,
-            },
-            false,
-        )
+        let app_instance = XMediaApp::init(XMediaConfig {
+            data_dir: tmp.path().to_path_buf(),
+            database_url: format!("sqlite:{}", db_path.display()),
+            secret: "no-cors-test-secret".into(),
+            jwt_ttl_secs: 3600,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
         .await
         .unwrap();
 
@@ -291,7 +288,7 @@ mod smoke_and_overview_tests {
 
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("xmedia_pool.db");
-        let app_instance = XMediaApp::connect_and_init(XMediaConfig {
+        let app_instance = XMediaApp::init(XMediaConfig {
             data_dir: tmp.path().to_path_buf(),
             database_url: format!("sqlite:{}", db_path.display()),
             secret: "pool-overview-secret-0123456789".into(),
@@ -313,7 +310,10 @@ mod smoke_and_overview_tests {
             .unwrap();
         let admin = app_instance
             .auth
-            .authenticate_jwt(&admin_sess.token)
+            .authenticate(
+                xmedia_core::application::dto::AuthCredential::Jwt(&admin_sess.token),
+                None,
+            )
             .await
             .unwrap();
         app_instance
@@ -331,7 +331,7 @@ mod smoke_and_overview_tests {
             .unwrap();
         let member_sess = app_instance
             .auth
-            .login("member", "memberpassword123")
+            .login("member", "memberpassword123", None)
             .await
             .unwrap();
 
@@ -638,7 +638,10 @@ mod gateway_integration_tests {
             .unwrap();
         let admin = app_instance
             .auth
-            .authenticate_jwt(&admin_sess.token)
+            .authenticate(
+                xmedia_core::application::dto::AuthCredential::Jwt(&admin_sess.token),
+                None,
+            )
             .await
             .unwrap();
         app_instance
@@ -656,7 +659,7 @@ mod gateway_integration_tests {
             .unwrap();
         let member_sess = app_instance
             .auth
-            .login("member", "memberpassword123")
+            .login("member", "memberpassword123", None)
             .await
             .unwrap();
         (admin_sess.token, member_sess.token)
@@ -737,9 +740,7 @@ mod gateway_integration_tests {
         // 1. Default allow_private_ips == false blocks loopback requests
         {
             let tmp_blocked = TempDir::new().unwrap();
-            let app_blocked = XMediaApp::connect_and_init(make_cfg(&tmp_blocked))
-                .await
-                .unwrap();
+            let app_blocked = XMediaApp::init(make_cfg(&tmp_blocked)).await.unwrap();
             let (token, _) = setup_admin_and_member(&app_blocked).await;
 
             let (st_imp, imp_json) = send_req(
@@ -807,7 +808,7 @@ mod gateway_integration_tests {
         // 2. Opt-in allow_private_ips == true allows loopback mock server
         {
             let tmp_allowed = TempDir::new().unwrap();
-            let app_allowed = XMediaApp::connect_and_init_with_options(
+            let app_allowed = XMediaApp::init_with_options(
                 make_cfg(&tmp_allowed),
                 XMediaInitOptions {
                     allow_private_ips: true,
@@ -909,7 +910,7 @@ mod gateway_integration_tests {
         use tokio::sync::Barrier;
 
         let tmp = TempDir::new().unwrap();
-        let app_instance = XMediaApp::connect_and_init(make_cfg(&tmp)).await.unwrap();
+        let app_instance = XMediaApp::init(make_cfg(&tmp)).await.unwrap();
         let (admin_token, _) = setup_admin_and_member(&app_instance).await;
         let router = app_instance.router;
 
@@ -1015,7 +1016,7 @@ mod gateway_integration_tests {
     #[tokio::test]
     async fn unified_gateway_theme_defaults_and_online_items_cross_domain_e2e() {
         let tmp = TempDir::new().unwrap();
-        let app_instance = XMediaApp::connect_and_init(make_cfg(&tmp)).await.unwrap();
+        let app_instance = XMediaApp::init(make_cfg(&tmp)).await.unwrap();
         let (admin_token, member_token) = setup_admin_and_member(&app_instance).await;
         let router = app_instance.router;
 
@@ -1169,12 +1170,13 @@ mod gateway_integration_tests {
         use std::io::{Cursor, Write};
         use std::net::SocketAddr;
         use xmedia_core::application::dto::SetupAdminInput;
+        use xmedia_core::domain::library::MediaKind;
         use zip::ZipWriter;
         use zip::write::SimpleFileOptions;
 
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("xmedia_direct.db");
-        let app_instance = XMediaApp::connect_and_init(XMediaConfig {
+        let app_instance = XMediaApp::init(XMediaConfig {
             data_dir: tmp.path().to_path_buf(),
             database_url: format!("sqlite:{}", db_path.display()),
             secret: "direct-import-gateway-secret-32b!".into(),
@@ -1196,14 +1198,18 @@ mod gateway_integration_tests {
             .unwrap();
         let admin_user = app_instance
             .auth
-            .authenticate_jwt(&session.token)
+            .authenticate(
+                xmedia_core::application::dto::AuthCredential::Jwt(&session.token),
+                None,
+            )
             .await
             .unwrap();
 
         // 1. Direct book import without HTTP loopback
         let (book_id, book_title) = app_instance
-            .import_local_book(
+            .import_local_media(
                 &admin_user,
+                MediaKind::Book,
                 "Direct Book Sample.txt".into(),
                 Bytes::from_static(b"Chapter 1\n\nHello direct Rust book import!\n"),
             )
@@ -1229,8 +1235,9 @@ mod gateway_integration_tests {
             zip.finish().unwrap();
         }
         let (series_id, series_title) = app_instance
-            .import_local_comic(
+            .import_local_media(
                 &admin_user,
+                MediaKind::Comic,
                 "Direct Manga Vol.01.cbz".into(),
                 Bytes::from(cbz_buf),
             )
@@ -1259,7 +1266,12 @@ mod gateway_integration_tests {
         wav.resize(44 + data_bytes as usize, 0u8);
 
         let (track_id, track_title) = app_instance
-            .import_local_track(&admin_user, "Direct Song.wav".into(), Bytes::from(wav))
+            .import_local_media(
+                &admin_user,
+                MediaKind::Music,
+                "Direct Song.wav".into(),
+                Bytes::from(wav),
+            )
             .await
             .unwrap();
         assert!(!track_id.is_empty());
@@ -1346,7 +1358,7 @@ mod custom_font_and_preferences_tests {
     async fn custom_fonts_crud_csp_and_ui_font_preferences_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("xmedia_fonts.db");
-        let app_instance = XMediaApp::connect_and_init(XMediaConfig {
+        let app_instance = XMediaApp::init(XMediaConfig {
             data_dir: tmp.path().to_path_buf(),
             database_url: format!("sqlite:{}", db_path.display()),
             secret: "fonts-integration-secret".into(),
@@ -1624,6 +1636,116 @@ mod custom_font_and_preferences_tests {
             me_json["preferences"]["ui_font"].as_str(),
             Some(expected_spec.as_str())
         );
+
+        // 8b. Non-admin member can list & read global fonts, but cannot upload or delete them
+        let create_member_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/users")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"username":"member1","display_name":"Member","password":"password123","role":"member"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_member_res.status(), StatusCode::CREATED);
+
+        let member_login_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"username":"member1","password":"password123"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(member_login_res.status(), StatusCode::OK);
+        let member_login_json: serde_json::Value = serde_json::from_slice(
+            &to_bytes(member_login_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let member_token = member_login_json["token"].as_str().unwrap().to_string();
+
+        let member_list_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/fonts")
+                    .header(header::AUTHORIZATION, format!("Bearer {member_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(member_list_res.status(), StatusCode::OK);
+
+        let member_upload_body = build_multipart_body(
+            boundary,
+            &[("file", Some("LXGWWenKai-Regular.ttf"), valid_ttf)],
+        );
+        let member_upload_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fonts")
+                    .header(header::AUTHORIZATION, format!("Bearer {member_token}"))
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(member_upload_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(member_upload_res.status(), StatusCode::FORBIDDEN);
+
+        let member_del_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/fonts/{font_id}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {member_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(member_del_res.status(), StatusCode::FORBIDDEN);
+
+        // Missing /assets/* bundle and unknown /jellyfin/* return 404 (not SPA HTML)
+        for not_found_uri in ["/assets/nonexistent-chunk.js", "/jellyfin/nonexistent"] {
+            let nf_res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(not_found_uri)
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                nf_res.status(),
+                StatusCode::NOT_FOUND,
+                "uri={not_found_uri}"
+            );
+        }
 
         // 9. Delete font and confirm 404 on subsequent file fetch
         let del_res = app

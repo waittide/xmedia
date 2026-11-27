@@ -11,7 +11,6 @@ use xmedia::{
     DEFAULT_DEV_SECRET, XMediaApp, XMediaConfig, XMediaInitOptions,
     resolve_allow_private_ips_for_testing,
 };
-use xmedia_core::domain::library::MediaKind;
 use xmedia_core::infra::security::generate_random_secret_hex;
 
 #[derive(Debug, Parser)]
@@ -143,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     info!("connecting database ({})", redact_db_url(&database_url));
-    let app = XMediaApp::connect_and_init_with_options(
+    let app = XMediaApp::init_with_options(
         XMediaConfig {
             data_dir: cli.data_dir,
             database_url,
@@ -164,28 +163,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind {}", cli.bind))?;
 
-    info!("xmedia listening on http://{}", cli.bind);
-    if app.enabled_modules.contains(&MediaKind::Book) {
-        info!(
-            "Book OPDS 1.2 / 2.0: http://{}/opds/book/v1.2 | http://{}/opds/book/v2",
-            cli.bind, cli.bind
-        );
-    }
-    if app.enabled_modules.contains(&MediaKind::Comic) {
-        info!("Comic OPDS 1.2 + PSE: http://{}/opds/comic/v1.2", cli.bind);
-    }
-    if app.enabled_modules.contains(&MediaKind::Music) {
-        info!("Music OpenSubsonic API: http://{}/rest", cli.bind);
-    }
-
-    axum::serve(
-        listener,
-        app.router
-            .into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("http server error")?;
+    app.serve(cli.bind, listener, shutdown_signal()).await?;
 
     Ok(())
 }

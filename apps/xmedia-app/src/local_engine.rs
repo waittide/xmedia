@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use xmedia::{XMediaApp, XMediaConfig};
 use xmedia_core::application::auth::AuthService;
-use xmedia_core::application::dto::{AuthSessionDto, SetupAdminInput};
+use xmedia_core::application::dto::{AuthCredential, AuthSessionDto, SetupAdminInput};
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::MediaKind;
@@ -38,20 +38,9 @@ pub struct LocalImportedMedia {
 /// Direct in-process port for importing downloaded remote OPDS/Subsonic media into the
 /// standalone local library without issuing loopback TCP HTTP requests.
 pub trait LocalMediaImporter: Send + Sync {
-    fn import_book<'a>(
+    fn import_media<'a>(
         &'a self,
-        filename: String,
-        data: Bytes,
-    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>>;
-
-    fn import_comic<'a>(
-        &'a self,
-        filename: String,
-        data: Bytes,
-    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>>;
-
-    fn import_track<'a>(
-        &'a self,
+        kind: MediaKind,
         filename: String,
         data: Bytes,
     ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>>;
@@ -111,7 +100,7 @@ impl LocalIdentity {
 
 #[derive(Clone)]
 pub struct LocalEngine {
-    pub auth: Arc<AuthService>,
+    auth: Arc<AuthService>,
     pub libraries: Arc<LibraryService>,
     pub events: Arc<BroadcastEventHub>,
     pub enabled_modules: Vec<MediaKind>,
@@ -161,17 +150,14 @@ impl LocalEngine {
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "ffmpeg".to_string());
 
-        let app = XMediaApp::connect_and_init_with_cors(
-            XMediaConfig {
-                data_dir: data_dir.clone(),
-                database_url: format!("sqlite:{}", db_path.display()),
-                secret: identity.jwt_secret.clone(),
-                jwt_ttl_secs: LOCAL_JWT_TTL_SECS,
-                ffmpeg_bin,
-                external_web_dir,
-            },
-            false,
-        )
+        let app = XMediaApp::init(XMediaConfig {
+            data_dir: data_dir.clone(),
+            database_url: format!("sqlite:{}", db_path.display()),
+            secret: identity.jwt_secret.clone(),
+            jwt_ttl_secs: LOCAL_JWT_TTL_SECS,
+            ffmpeg_bin,
+            external_web_dir,
+        })
         .await?;
 
         let setup_status = app
@@ -199,12 +185,10 @@ impl LocalEngine {
             );
         }
 
-        let router = app.router.clone();
         let auth = app.auth.clone();
         let libraries = app.libraries.clone();
         let events = app.events.clone();
-        let enabled_modules = app.enabled_modules.clone();
-        let app = Arc::new(app);
+        let (app, router, enabled_modules) = app.into_embedded_host();
         let engine = Self {
             auth,
             libraries,
@@ -237,21 +221,31 @@ impl LocalEngine {
         self.identity.derive_secret_encryption_key()
     }
 
+    pub async fn verify_local_admin_token(&self, token: &str) -> bool {
+        matches!(
+            self.auth
+                .authenticate(AuthCredential::Jwt(token), None)
+                .await,
+            Ok(user) if user.is_active && user.role.is_admin()
+        )
+    }
+
     async fn resolve_local_actor(&self) -> Result<User, RemoteClientError> {
         let session = self
             .issue_auto_session()
             .await
             .map_err(|e| RemoteClientError::Internal(format!("Local auth session failed: {e}")))?;
         self.auth
-            .authenticate_jwt(&session.token)
+            .authenticate(AuthCredential::Jwt(&session.token), None)
             .await
             .map_err(|e| RemoteClientError::Internal(format!("Local actor lookup failed: {e}")))
     }
 }
 
 impl LocalMediaImporter for LocalEngine {
-    fn import_book<'a>(
+    fn import_media<'a>(
         &'a self,
+        kind: MediaKind,
         filename: String,
         data: Bytes,
     ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>> {
@@ -259,41 +253,9 @@ impl LocalMediaImporter for LocalEngine {
             let actor = self.resolve_local_actor().await?;
             let (id, title) = self
                 .app
-                .import_local_book(&actor, filename, data)
+                .import_local_media(&actor, kind, filename, data)
                 .await
-                .map_err(|err| map_import_error("book", err))?;
-            Ok(LocalImportedMedia { id, title })
-        })
-    }
-
-    fn import_comic<'a>(
-        &'a self,
-        filename: String,
-        data: Bytes,
-    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>> {
-        Box::pin(async move {
-            let actor = self.resolve_local_actor().await?;
-            let (id, title) = self
-                .app
-                .import_local_comic(&actor, filename, data)
-                .await
-                .map_err(|err| map_import_error("comic", err))?;
-            Ok(LocalImportedMedia { id, title })
-        })
-    }
-
-    fn import_track<'a>(
-        &'a self,
-        filename: String,
-        data: Bytes,
-    ) -> BoxImportFuture<'a, Result<LocalImportedMedia, RemoteClientError>> {
-        Box::pin(async move {
-            let actor = self.resolve_local_actor().await?;
-            let (id, title) = self
-                .app
-                .import_local_track(&actor, filename, data)
-                .await
-                .map_err(|err| map_import_error("music", err))?;
+                .map_err(|err| map_import_error(kind.as_str(), err))?;
             Ok(LocalImportedMedia { id, title })
         })
     }
@@ -395,7 +357,11 @@ mod tests {
         assert!(cookie_str.contains("SameSite=Strict"));
 
         // Change admin password via AuthService and restart LocalEngine (even with wiped identity)
-        let actor = engine.auth.authenticate_jwt(&session.token).await.unwrap();
+        let actor = engine
+            .auth
+            .authenticate(AuthCredential::Jwt(&session.token), None)
+            .await
+            .unwrap();
         engine
             .auth
             .update_user(
@@ -430,7 +396,8 @@ mod tests {
             .unwrap();
         let importer: &dyn LocalMediaImporter = &engine;
         let imported = importer
-            .import_book(
+            .import_media(
+                MediaKind::Book,
                 "Sample Novel.txt".to_string(),
                 Bytes::from_static(b"Chapter 1\n\nHello in-process import!"),
             )

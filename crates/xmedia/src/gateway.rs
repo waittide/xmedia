@@ -33,8 +33,8 @@ use xmedia_core::domain::library::{LibraryId, LibraryKind, MediaKind, ScanStatus
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{UserId, UserPreferences};
 use xmedia_core::http::{
-    AUTH_COOKIE_NAME, ApiError, ApiResult, ClientIp, attach_cookie, build_clear_cookie,
-    build_session_cookie, core_fonts_router, error_json_response, verify_cookie_csrf,
+    AUTH_COOKIE_NAME, ApiError, ApiResult, ClientIp, PeerIp, attach_cookie, clear_cookie,
+    core_fonts_router, error_json_response, extract_peer_ip, session_cookie, verify_cookie_csrf,
 };
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
@@ -224,11 +224,17 @@ async fn setup_status(State(state): State<GatewayState>) -> ApiResult<Json<Setup
 
 async fn setup_admin(
     State(state): State<GatewayState>,
+    PeerIp(peer_ip): PeerIp,
     headers: HeaderMap,
     Json(input): Json<SetupAdminInput>,
 ) -> ApiResult<Response> {
     let session = state.auth.setup_initial_admin(input).await?;
-    let cookie = build_session_cookie(&session.token, state.auth.token_ttl_seconds(), &headers);
+    let cookie = session_cookie(
+        &session.token,
+        state.auth.token_ttl_seconds(),
+        &headers,
+        peer_ip,
+    );
     let res = (StatusCode::CREATED, Json(session)).into_response();
     Ok(attach_cookie(res, cookie))
 }
@@ -236,14 +242,20 @@ async fn setup_admin(
 async fn login(
     State(state): State<GatewayState>,
     ClientIp(client_ip): ClientIp,
+    PeerIp(peer_ip): PeerIp,
     headers: HeaderMap,
     Json(input): Json<LoginInput>,
 ) -> ApiResult<Response> {
     let session = state
         .auth
-        .login_with_ip(&input.username, &input.password, client_ip)
+        .login(&input.username, &input.password, client_ip)
         .await?;
-    let cookie = build_session_cookie(&session.token, state.auth.token_ttl_seconds(), &headers);
+    let cookie = session_cookie(
+        &session.token,
+        state.auth.token_ttl_seconds(),
+        &headers,
+        peer_ip,
+    );
     let res = (StatusCode::OK, Json(session)).into_response();
     Ok(attach_cookie(res, cookie))
 }
@@ -286,16 +298,13 @@ async fn logout(State(state): State<GatewayState>, req: axum::extract::Request) 
             }
         }
     }
-    let cookie = build_clear_cookie(headers);
+    let cookie = clear_cookie(headers, extract_peer_ip(&parts));
     let res = Json(OkResponse { ok: true }).into_response();
     attach_cookie(res, cookie)
 }
 
-async fn get_me(
-    State(state): State<GatewayState>,
-    CoreWebAuth(user): CoreWebAuth,
-) -> ApiResult<Json<UserDto>> {
-    Ok(Json(state.auth.get_me(&user).await?))
+async fn get_me(CoreWebAuth(user): CoreWebAuth) -> Json<UserDto> {
+    Json(UserDto::from(user))
 }
 
 async fn update_preferences(
@@ -309,11 +318,17 @@ async fn update_preferences(
 async fn change_password(
     State(state): State<GatewayState>,
     CoreWebAuth(user): CoreWebAuth,
+    PeerIp(peer_ip): PeerIp,
     headers: HeaderMap,
     Json(input): Json<ChangePasswordInput>,
 ) -> ApiResult<Response> {
     let session = state.auth.change_own_password(&user, input).await?;
-    let cookie = build_session_cookie(&session.token, state.auth.token_ttl_seconds(), &headers);
+    let cookie = session_cookie(
+        &session.token,
+        state.auth.token_ttl_seconds(),
+        &headers,
+        peer_ip,
+    );
     let res = (StatusCode::OK, Json(session)).into_response();
     Ok(attach_cookie(res, cookie))
 }
@@ -358,9 +373,6 @@ async fn delete_user(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state.auth.delete_user(&user, UserId(id)).await?;
-    if !state.auth.has_activity_cleanup() {
-        state.activity.purge_user(UserId(id)).await?;
-    }
     Ok(Json(OkResponse { ok: true }))
 }
 
@@ -492,7 +504,7 @@ async fn system_overview(
     for &kind in state.enabled_modules.iter() {
         let matching: Vec<&LibraryDto> =
             libraries.iter().filter(|l| l.media_kind == kind).collect();
-        let item_count = state.bindings.list_bound_ids(user.id, kind).await?.len() as u64;
+        let item_count = state.bindings.count_bound_items(user.id, kind).await?;
         let scanning = matching.iter().any(|l| l.scan_status.is_scanning());
         domains.push(DomainStatSummary {
             media_kind: kind,
@@ -616,7 +628,7 @@ async fn events_stream(
     let rx = state.events.subscribe();
     let initial_scans = state
         .libraries_repo
-        .list_all()
+        .list(None)
         .await
         .unwrap_or_default()
         .into_iter()

@@ -9,7 +9,6 @@ use axum::middleware::Next;
 use axum::response::Response;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use url::Url;
-use xmedia_core::domain::user::UserRole;
 use xmedia_core::http::AUTH_COOKIE_NAME;
 
 use super::StandaloneGatewayState;
@@ -239,13 +238,14 @@ pub(super) async fn check_app_session_error(
         ));
     };
 
-    match state.local_engine.auth.authenticate_jwt(&token).await {
-        Ok(user) if user.is_active && user.role == UserRole::Admin => None,
-        _ => Some(app_error(
+    if state.local_engine.verify_local_admin_token(&token).await {
+        None
+    } else {
+        Some(app_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "Invalid or expired local session",
-        )),
+        ))
     }
 }
 

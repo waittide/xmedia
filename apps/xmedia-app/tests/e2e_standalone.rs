@@ -137,7 +137,7 @@ fn sample_wav_bytes(samples: u32) -> Vec<u8> {
 async fn spawn_remote_xmedia_server(username: &str, password: &str) -> RemoteXMediaServer {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("remote_xmedia.db");
-    let app = XMediaApp::connect_and_init(XMediaConfig {
+    let app = XMediaApp::init(XMediaConfig {
         data_dir: tmp.path().to_path_buf(),
         database_url: format!("sqlite:{}", db_path.display()),
         secret: "remote-server-secret-key-for-e2e".to_string(),
@@ -165,7 +165,7 @@ async fn spawn_remote_xmedia_server(username: &str, password: &str) -> RemoteXMe
     let url = format!("http://127.0.0.1:{}", addr.port());
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let router = app.router;
+    let (_, router, _) = app.into_embedded_host();
     tokio::spawn(async move {
         let _ = axum::serve(listener, router)
             .with_graceful_shutdown(async move {

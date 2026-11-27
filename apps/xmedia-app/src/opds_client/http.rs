@@ -10,6 +10,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
+use xmedia_core::domain::library::MediaKind;
 
 use super::helpers::{
     append_query_param, expand_search_template, resolve_import_filename_and_format,
@@ -556,8 +557,8 @@ impl OpdsClient {
         )?;
 
         let media_kind = match format.as_str() {
-            "cbz" | "zip" | "cbr" | "cb7" => "comic",
-            "epub" | "pdf" | "txt" | "mobi" | "azw3" | "fb2" => "book",
+            "cbz" | "zip" | "cbr" | "cb7" => MediaKind::Comic,
+            "epub" | "pdf" | "txt" | "mobi" | "azw3" | "fb2" => MediaKind::Book,
             other => {
                 return Err(OpdsError::Unsupported(format!(
                     "Unsupported OPDS import format '{other}'"
@@ -576,11 +577,9 @@ impl OpdsClient {
         let data = read_temp_file_bytes(&temp_guard, "OPDS download").await?;
         drop(temp_guard);
 
-        let imported = if media_kind == "comic" {
-            importer.import_comic(filename.clone(), data).await?
-        } else {
-            importer.import_book(filename.clone(), data).await?
-        };
+        let imported = importer
+            .import_media(media_kind, filename.clone(), data)
+            .await?;
         let title = if imported.title.trim().is_empty() {
             filename
         } else {
@@ -588,7 +587,7 @@ impl OpdsClient {
         };
 
         Ok(RemoteImportResultDto {
-            media_kind: media_kind.to_string(),
+            media_kind: media_kind.as_str().to_string(),
             imported_id: imported.id,
             title,
         })

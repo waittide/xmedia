@@ -6047,6 +6047,7 @@ dependencies = [
  "encoding_rs",
  "form_urlencoded",
  "futures-core",
+ "getrandom 0.4.3",
  "hex",
  "image",
  "jiff",

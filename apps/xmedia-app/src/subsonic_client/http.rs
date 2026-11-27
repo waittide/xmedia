@@ -8,6 +8,7 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
+use xmedia_core::domain::library::MediaKind;
 
 use super::parser::{
     build_subsonic_url, extract_subsonic_ok, json_value_items, parse_album_dto, parse_song_dto,
@@ -589,7 +590,9 @@ impl SubsonicClient {
         let data = read_temp_file_bytes(&temp_file, "Subsonic audio").await?;
         drop(temp_file);
 
-        let imported = importer.import_track(filename.clone(), data).await?;
+        let imported = importer
+            .import_media(MediaKind::Music, filename.clone(), data)
+            .await?;
         let title = if !imported.title.trim().is_empty() && imported.title != filename {
             imported.title
         } else {

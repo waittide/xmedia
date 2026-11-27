@@ -98,6 +98,8 @@ pub async fn serve_spa(State(state): State<GatewayState>, method: Method, uri: U
         || req_path.starts_with("/opds/")
         || req_path.starts_with("/rest/")
         || req_path == "/rest"
+        || req_path == "/jellyfin"
+        || req_path.starts_with("/jellyfin/")
         || req_path.starts_with("/_app/")
         || req_path == "/_app"
     {
@@ -128,6 +130,9 @@ pub async fn serve_spa(State(state): State<GatewayState>, method: Method, uri: U
         {
             return asset_response(&rel_str, bytes, is_hashed_asset);
         }
+        if rel_str.starts_with("assets/") {
+            return (StatusCode::NOT_FOUND, "Not Found").into_response();
+        }
         if let Some(bytes) = read_contained_external_file(ext_dir, Path::new("index.html")).await {
             return asset_response("index.html", bytes, false);
         }
@@ -137,6 +142,10 @@ pub async fn serve_spa(State(state): State<GatewayState>, method: Method, uri: U
         && let Some(embedded) = EmbeddedWebAssets::get(&rel_str)
     {
         return asset_response(&rel_str, embedded.data, is_hashed_asset);
+    }
+
+    if rel_str.starts_with("assets/") {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
 
     if let Some(index) = EmbeddedWebAssets::get("index.html") {
