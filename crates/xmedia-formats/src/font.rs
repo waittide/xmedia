@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,8 @@ use crate::error::{FormatError, FormatResult};
 const MAX_FONT_NAME_CHARS: usize = 128;
 const MAX_SFNT_TABLES: usize = 512;
 const MAX_NAME_RECORDS: usize = 1024;
+const MAX_TTC_FACES: usize = 64;
+const MAX_NAME_TABLE_READ_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -92,6 +95,100 @@ pub fn inspect_font_bytes(file_name: &str, bytes: &[u8]) -> FormatResult<Detecte
     })
 }
 
+/// Extracts distinct font family names from a seekable TTF / OTF / TTC stream by reading only
+/// SFNT table headers and `name` tables without loading full glyph outlines into memory.
+pub fn extract_font_families_from_reader<R: Read + Seek>(reader: &mut R) -> Vec<String> {
+    let mut header = [0u8; 12];
+    if reader.seek(SeekFrom::Start(0)).is_err() || reader.read_exact(&mut header).is_err() {
+        return Vec::new();
+    }
+    let Ok(format) = sniff_font_format(&header[..4]) else {
+        return Vec::new();
+    };
+
+    let sfnt_offsets: Vec<u64> = match format {
+        FontFormat::Ttf | FontFormat::Otf => vec![0],
+        FontFormat::Ttc => {
+            let num_fonts =
+                u32::from_be_bytes([header[8], header[9], header[10], header[11]]) as usize;
+            let count = num_fonts.min(MAX_TTC_FACES);
+            if count == 0 {
+                return Vec::new();
+            }
+            let mut raw_offsets = vec![0u8; count * 4];
+            if reader.read_exact(&mut raw_offsets).is_err() {
+                return Vec::new();
+            }
+            raw_offsets
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| u32::from_be_bytes(*b) as u64)
+                .collect()
+        }
+        FontFormat::Woff | FontFormat::Woff2 => return Vec::new(),
+    };
+
+    let mut families = Vec::new();
+    for offset in sfnt_offsets {
+        if let Some(name) = read_sfnt_family_at_offset(reader, offset)
+            && !families
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&name))
+        {
+            families.push(name);
+        }
+    }
+    families
+}
+
+fn read_sfnt_family_at_offset<R: Read + Seek>(reader: &mut R, sfnt_offset: u64) -> Option<String> {
+    reader.seek(SeekFrom::Start(sfnt_offset)).ok()?;
+    let mut dir_header = [0u8; 12];
+    reader.read_exact(&mut dir_header).ok()?;
+
+    let num_tables =
+        u16::from_be_bytes([dir_header[4], dir_header[5]]).min(MAX_SFNT_TABLES as u16) as usize;
+    if num_tables == 0 {
+        return None;
+    }
+
+    let mut records = vec![0u8; num_tables * 16];
+    reader.read_exact(&mut records).ok()?;
+
+    for rec in records.as_chunks::<16>().0 {
+        if &rec[0..4] == b"name" {
+            let tbl_offset = u32::from_be_bytes([rec[8], rec[9], rec[10], rec[11]]) as u64;
+            let tbl_len = u32::from_be_bytes([rec[12], rec[13], rec[14], rec[15]]) as usize;
+            if tbl_len < 6 {
+                return None;
+            }
+            let read_len = tbl_len.min(MAX_NAME_TABLE_READ_BYTES);
+            reader.seek(SeekFrom::Start(tbl_offset)).ok()?;
+            let mut name_buf = vec![0u8; read_len];
+            let n = read_up_to(reader, &mut name_buf)?;
+            if n < 6 {
+                return None;
+            }
+            return parse_name_table_prefer_cjk(&name_buf[..n]);
+        }
+    }
+    None
+}
+
+fn read_up_to<R: Read>(reader: &mut R, buf: &mut [u8]) -> Option<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match reader.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
+    Some(total)
+}
+
 fn sanitize_font_display_name(raw: &str) -> Option<String> {
     let filtered: String = raw
         .chars()
@@ -160,6 +257,17 @@ fn extract_sfnt_family_name(format: FontFormat, bytes: &[u8]) -> Option<String> 
 }
 
 fn parse_name_table(name_table: &[u8]) -> Option<String> {
+    parse_name_table_with_scorer(name_table, score_name_record)
+}
+
+fn parse_name_table_prefer_cjk(name_table: &[u8]) -> Option<String> {
+    parse_name_table_with_scorer(name_table, score_name_record_prefer_cjk)
+}
+
+fn parse_name_table_with_scorer(
+    name_table: &[u8],
+    scorer: fn(u16, u16, u16, u16) -> u32,
+) -> Option<String> {
     let header = name_table.get(..6)?;
     let count = u16::from_be_bytes([header[2], header[3]]).min(MAX_NAME_RECORDS as u16) as usize;
     let string_offset = u16::from_be_bytes([header[4], header[5]]) as usize;
@@ -201,7 +309,7 @@ fn parse_name_table(name_table: &[u8]) -> Option<String> {
             continue;
         };
 
-        let score = score_name_record(name_id, platform_id, encoding_id, language_id);
+        let score = scorer(name_id, platform_id, encoding_id, language_id);
         if best
             .as_ref()
             .is_none_or(|(best_score, _)| score > *best_score)
@@ -258,6 +366,31 @@ fn score_name_record(name_id: u16, platform_id: u16, encoding_id: u16, language_
     let lang_bonus = match (platform_id, language_id) {
         (3, 0x0409) | (0, 0) | (1, 0) => 2,
         (3, 0x0804 | 0x0404) => 1,
+        _ => 0,
+    };
+    name_rank + platform_rank + lang_bonus
+}
+
+fn score_name_record_prefer_cjk(
+    name_id: u16,
+    platform_id: u16,
+    encoding_id: u16,
+    language_id: u16,
+) -> u32 {
+    let name_rank = if name_id == 16 { 1000 } else { 500 };
+    let platform_rank = match (platform_id, encoding_id) {
+        (3, 1 | 10) => 40,
+        (3, _) => 30,
+        (0, _) => 25,
+        (1, 0) => 15,
+        (1, _) => 10,
+        _ => 5,
+    };
+    let lang_bonus = match (platform_id, language_id) {
+        (3, 0x0804) => 6,
+        (3, 0x0404 | 0x0c04) => 5,
+        (3, 0x0411 | 0x0412) => 4,
+        (3, 0x0409) | (0, 0) | (1, 0) => 2,
         _ => 0,
     };
     name_rank + platform_rank + lang_bonus

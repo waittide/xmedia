@@ -3724,12 +3724,14 @@ function buildTier1Cases() {
           );
           assert.equal(appearanceWidth, 1280, 'Expected /settings/appearance container width 1280px at 1440x900');
 
-          // Apply a typed local font family via inline text input + Apply button, then switch back via chip.
-          await cdp.type('[data-appearance-ui-font] input[maxlength="128"]', 'LXGW WenKai Mono');
-          await cdp.click('[data-appearance-ui-font] [data-font-apply-local-btn]');
+          // Apply a local font family directly via the unified FontPickerField dropdown combobox, then switch back via chip.
+          await cdp.click('[data-appearance-ui-font] [data-font-picker] button[role="combobox"]');
+          await cdp.waitForSelector('[role="listbox"] input', { visible: true, timeoutMs: 5000 });
+          await cdp.type('[role="listbox"] input', 'LXGW WenKai Mono');
+          await cdp.click('[role="listbox"] [role="option"]');
           await cdp.waitForFn(
             `getComputedStyle(document.body).fontFamily.includes('LXGW WenKai Mono')`,
-            { timeoutMs: 8000, label: 'Inline local font family applied to body' },
+            { timeoutMs: 8000, label: 'Dropdown local font family applied to body' },
           );
 
           await cdp.click(

@@ -78,3 +78,46 @@ async fn fs_font_store_rejects_empty_and_invalid_magic_payloads() {
     ));
     assert!(store.list().await.unwrap().is_empty());
 }
+
+#[test]
+fn scan_font_directories_extracts_and_deduplicates_installed_families() {
+    let tmp = TempDir::new().unwrap();
+    let sub = tmp.path().join("nested");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    // Minimal valid SFNT with 1 UTF-16BE name record ("霞鹜文楷")
+    let name_utf16: Vec<u8> = "霞鹜文楷"
+        .encode_utf16()
+        .flat_map(u16::to_be_bytes)
+        .collect();
+    let mut name_table = Vec::new();
+    name_table.extend_from_slice(&0u16.to_be_bytes());
+    name_table.extend_from_slice(&1u16.to_be_bytes());
+    name_table.extend_from_slice(&18u16.to_be_bytes());
+    name_table.extend_from_slice(&3u16.to_be_bytes());
+    name_table.extend_from_slice(&1u16.to_be_bytes());
+    name_table.extend_from_slice(&0x0804u16.to_be_bytes());
+    name_table.extend_from_slice(&16u16.to_be_bytes());
+    name_table.extend_from_slice(&(name_utf16.len() as u16).to_be_bytes());
+    name_table.extend_from_slice(&0u16.to_be_bytes());
+    name_table.extend_from_slice(&name_utf16);
+
+    let mut sfnt = Vec::new();
+    sfnt.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+    sfnt.extend_from_slice(&1u16.to_be_bytes());
+    sfnt.extend_from_slice(&16u16.to_be_bytes());
+    sfnt.extend_from_slice(&0u16.to_be_bytes());
+    sfnt.extend_from_slice(&0u16.to_be_bytes());
+    sfnt.extend_from_slice(b"name");
+    sfnt.extend_from_slice(&0u32.to_be_bytes());
+    sfnt.extend_from_slice(&28u32.to_be_bytes());
+    sfnt.extend_from_slice(&(name_table.len() as u32).to_be_bytes());
+    sfnt.extend_from_slice(&name_table);
+
+    std::fs::write(sub.join("LXGWWenKai-Regular.ttf"), &sfnt).unwrap();
+    std::fs::write(sub.join("LXGWWenKai-Bold.ttf"), &sfnt).unwrap();
+    std::fs::write(sub.join("README.txt"), b"ignored").unwrap();
+
+    let found = scan_font_directories(&[tmp.path().to_path_buf()]);
+    assert_eq!(found, vec!["霞鹜文楷".to_string()]);
+}

@@ -332,28 +332,207 @@ interface LocalFontDataLike {
   family?: string
 }
 
+const COMMON_CLIENT_FONT_CANDIDATES: readonly string[] = [
+  '霞鹜文楷',
+  'LXGW WenKai',
+  'LXGW WenKai Mono',
+  '思源宋体',
+  'Source Han Serif SC',
+  'Noto Serif CJK SC',
+  'Noto Serif SC',
+  '思源黑体',
+  'Source Han Sans SC',
+  'Noto Sans CJK SC',
+  'Noto Sans SC',
+  '更纱黑体 SC',
+  'Sarasa Gothic SC',
+  'Sarasa Mono SC',
+  '得意黑',
+  'Smiley Sans',
+  'HarmonyOS Sans SC',
+  'MiSans',
+  'OPPO Sans',
+  'PingFang SC',
+  'Hiragino Sans GB',
+  'Songti SC',
+  'STSong',
+  'Kaiti SC',
+  'STKaiti',
+  'Heiti SC',
+  'Microsoft YaHei',
+  'SimSun',
+  'NSimSun',
+  'SimHei',
+  'KaiTi',
+  'FangSong',
+  'DengXian',
+  'YouYuan',
+  'Inter',
+  'Roboto',
+  'Segoe UI',
+  'Georgia',
+  'Palatino',
+  'Times New Roman',
+  'JetBrains Mono',
+  'Fira Code',
+  'Cascadia Code',
+  'Cascadia Mono',
+  'Source Code Pro',
+  'Menlo',
+  'Consolas',
+]
+
+let probedClientFontsCache: string[] | null = null
+let hostSystemFontsLoaded = false
+let browserLocalFontsQueried = false
+
+function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.trim().toLowerCase()
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]'
+}
+
+function isFontsApiOnLocalMachine(): boolean {
+  if (typeof window === 'undefined') return false
+  const activeBase = getActiveAppServerBaseUrl()
+  if (activeBase) {
+    try {
+      return isLoopbackHost(new URL(activeBase).hostname)
+    } catch {
+      return false
+    }
+  }
+  return isLoopbackHost(window.location.hostname)
+}
+
+function probeInstalledClientFonts(): string[] {
+  if (probedClientFontsCache !== null) return probedClientFontsCache
+  if (typeof document === 'undefined') return []
+  try {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return []
+    const sample = '天地玄黄宇宙洪荒mmmmmmmmmmlli10O'
+    const size = '72px'
+    const baselines = ['monospace', 'sans-serif', 'serif'] as const
+    const baseWidths = baselines.map((base) => {
+      ctx.font = `${size} ${base}`
+      return ctx.measureText(sample).width
+    })
+    // In headless/non-graphical environments where measureText returns 0, skip heuristic results.
+    if (baseWidths.every((w) => w === 0)) {
+      probedClientFontsCache = []
+      return []
+    }
+    const detected: string[] = []
+    for (const candidate of COMMON_CLIENT_FONT_CANDIDATES) {
+      const safe = sanitizeFontFamilyName(candidate)
+      if (!safe) continue
+      const matched = baselines.some((base, idx) => {
+        ctx.font = `${size} "${safe}", ${base}`
+        return ctx.measureText(sample).width !== baseWidths[idx]
+      })
+      if (matched) {
+        detected.push(safe)
+      }
+    }
+    probedClientFontsCache = detected
+    return detected
+  } catch {
+    probedClientFontsCache = []
+    return []
+  }
+}
+
+function mergeSystemFontFamilies(groups: readonly (readonly string[])[]): string[] {
+  const byLower = new Map<string, string>()
+  for (const group of groups) {
+    for (const item of group) {
+      const safe = sanitizeFontFamilyName(item)
+      if (!safe) continue
+      const key = safe.toLowerCase()
+      if (!byLower.has(key)) {
+        byLower.set(key, safe)
+      }
+    }
+  }
+  const merged = [...byLower.values()].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' }),
+  )
+  localSystemFonts.value = merged
+  return merged
+}
+
+async function fetchHostSystemFonts(): Promise<string[]> {
+  if (!isFontsApiOnLocalMachine()) return []
+  try {
+    const res = await fetch(resolveFontsEndpoint('/system'), {
+      method: 'GET',
+      headers: buildFontsHeaders({ Accept: 'application/json' }),
+      credentials: 'include',
+    })
+    if (!res.ok) return []
+    const data = (await res.json()) as unknown
+    if (!Array.isArray(data)) return []
+    hostSystemFontsLoaded = true
+    return data.filter((v): v is string => typeof v === 'string')
+  } catch {
+    return []
+  }
+}
+
 export async function querySystemFontFamilies(): Promise<string[]> {
   if (typeof window === 'undefined' || !('queryLocalFonts' in window)) {
-    return []
+    return localSystemFonts.value
   }
   loadingLocalFonts.value = true
   try {
     const queryFn = (
       window as Window & { queryLocalFonts?: () => Promise<LocalFontDataLike[]> }
     ).queryLocalFonts
-    if (typeof queryFn !== 'function') return []
+    if (typeof queryFn !== 'function') return localSystemFonts.value
     const records = await queryFn.call(window)
-    const families = new Set<string>()
+    const families: string[] = []
     for (const item of records ?? []) {
       const fam = sanitizeFontFamilyName(item?.family ?? '')
-      if (fam) families.add(fam)
+      if (fam) families.push(fam)
     }
-    const sorted = [...families].sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: 'base' }),
-    )
-    localSystemFonts.value = sorted
-    return sorted
+    browserLocalFontsQueried = true
+    return mergeSystemFontFamilies([localSystemFonts.value, families])
+  } catch {
+    return localSystemFonts.value
   } finally {
     loadingLocalFonts.value = false
   }
+}
+
+export async function ensureLocalSystemFontsLoaded(options?: {
+  fromUserGesture?: boolean
+}): Promise<string[]> {
+  const probed = probeInstalledClientFonts()
+  if (probed.length > 0 && localSystemFonts.value.length === 0) {
+    mergeSystemFontFamilies([probed])
+  }
+
+  if (!hostSystemFontsLoaded && isFontsApiOnLocalMachine()) {
+    loadingLocalFonts.value = true
+    try {
+      const hostFonts = await fetchHostSystemFonts()
+      if (hostFonts.length > 0) {
+        mergeSystemFontFamilies([localSystemFonts.value, hostFonts])
+      }
+    } finally {
+      loadingLocalFonts.value = false
+    }
+  }
+
+  if (
+    options?.fromUserGesture &&
+    !browserLocalFontsQueried &&
+    !hostSystemFontsLoaded &&
+    supportsLocalFontAccess
+  ) {
+    await querySystemFontFamilies()
+  }
+
+  return localSystemFonts.value
 }

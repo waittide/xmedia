@@ -1,20 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuCheck, LuMonitor, LuUpload, LuX } from 'vue-icons-plus/lu'
+import { LuCheck, LuUpload, LuX } from 'vue-icons-plus/lu'
 import MdButton from '@/components/ui/MdButton.vue'
 import MdSelect, { type SelectOption } from '@/components/ui/MdSelect.vue'
-import MdTextField from '@/components/ui/MdTextField.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
   canManageCustomFonts,
   deleteCustomFont,
   ensureCustomFontsLoaded,
-  loadingLocalFonts,
+  ensureLocalSystemFontsLoaded,
   localSystemFonts,
-  querySystemFontFamilies,
   sanitizeFontFamilyName,
-  supportsLocalFontAccess,
   uploadedFonts,
   uploadCustomFontFiles,
   uploadingFonts,
@@ -43,7 +40,6 @@ const { t } = useI18n()
 const snackbarStore = useSnackbarStore()
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
-const customFamilyInput = ref('')
 const deletingFontId = ref<string | null>(null)
 
 const effectiveValue = computed<string>(() => {
@@ -51,10 +47,6 @@ const effectiveValue = computed<string>(() => {
   if (!raw) return 'system-ui'
   return raw
 })
-
-const sanitizedCustomInput = computed<string>(() =>
-  sanitizeFontFamilyName(customFamilyInput.value),
-)
 
 const selectOptions = computed<SelectOption[]>(() => {
   const opts: SelectOption[] = []
@@ -145,27 +137,14 @@ async function onFileInputChange(ev: Event): Promise<void> {
   }
 }
 
-async function handleLoadLocalFonts(): Promise<void> {
-  if (loadingLocalFonts.value) return
-  try {
-    const list = await querySystemFontFamilies()
-    if (list.length > 0) {
-      snackbarStore.show(t('theme.fonts.localLoadedToast', { count: list.length }))
-    } else {
-      snackbarStore.show(t('theme.fonts.localEmptyToast'))
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    snackbarStore.show({ message, tone: 'error' })
-  }
+function formatCustomOptionLabel(rawQuery: string): string | null {
+  const cleaned = sanitizeFontFamilyName(rawQuery)
+  if (!cleaned) return null
+  return t('theme.fonts.useCustomFontOption', { name: cleaned })
 }
 
-function handleApplyCustomFamily(): void {
-  const family = sanitizedCustomInput.value
-  if (!family) return
-  emit('update:modelValue', family)
-  customFamilyInput.value = ''
-  snackbarStore.show(t('theme.fonts.appliedToast', { name: family }))
+function handleDropdownOpen(): void {
+  void ensureLocalSystemFontsLoaded({ fromUserGesture: true })
 }
 
 async function handleDeleteFont(font: CustomFontDto): Promise<void> {
@@ -184,12 +163,13 @@ async function handleDeleteFont(font: CustomFontDto): Promise<void> {
 
 onMounted(() => {
   void ensureCustomFontsLoaded()
+  void ensureLocalSystemFontsLoaded()
 })
 </script>
 
 <template>
   <div data-font-picker class="flex flex-col" :class="compact ? 'gap-2.5' : 'gap-3'">
-    <!-- Primary Select + Upload / Local Font Actions -->
+    <!-- Unified Select (Presets + Uploaded + Local System Fonts) + Upload Action -->
     <div class="flex flex-wrap items-center gap-2">
       <div class="min-w-44 flex-1">
         <MdSelect
@@ -198,7 +178,10 @@ onMounted(() => {
           :size="compact ? 'sm' : 'md'"
           searchable
           :search-placeholder="t('theme.fonts.searchPlaceholder')"
+          :custom-option-label="formatCustomOptionLabel"
+          :normalize-custom-value="sanitizeFontFamilyName"
           :aria-label="ariaLabel || t('theme.uiFontTitle')"
+          @open="handleDropdownOpen"
           @update:model-value="handleSelectChange"
         />
       </div>
@@ -215,18 +198,6 @@ onMounted(() => {
         {{ t('theme.fonts.uploadBtn') }}
       </MdButton>
 
-      <MdButton
-        v-if="supportsLocalFontAccess"
-        variant="outlined"
-        :size="compact ? 'sm' : 'md'"
-        :icon="LuMonitor"
-        :loading="loadingLocalFonts"
-        data-font-local-btn
-        @click="handleLoadLocalFonts"
-      >
-        {{ t('theme.fonts.localBtn') }}
-      </MdButton>
-
       <input
         v-if="canManageCustomFonts"
         ref="fileInputRef"
@@ -237,30 +208,6 @@ onMounted(() => {
         data-font-file-input
         @change="onFileInputChange"
       />
-    </div>
-
-    <!-- Inline Local Font Name Input -->
-    <div class="flex items-center gap-2">
-      <div class="min-w-0 flex-1">
-        <MdTextField
-          v-model="customFamilyInput"
-          size="sm"
-          clearable
-          maxlength="128"
-          :placeholder="t('theme.fonts.localInputPlaceholder')"
-          :aria-label="t('theme.fonts.localInputPlaceholder')"
-          @enter="handleApplyCustomFamily"
-        />
-      </div>
-      <MdButton
-        variant="tonal"
-        size="sm"
-        :disabled="!sanitizedCustomInput"
-        data-font-apply-local-btn
-        @click="handleApplyCustomFamily"
-      >
-        {{ t('theme.fonts.applyBtn') }}
-      </MdButton>
     </div>
 
     <!-- Uploaded Font Chips (Selectable + Deletable) -->

@@ -1,14 +1,16 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use xmedia_formats::font::inspect_font_bytes;
+use xmedia_formats::font::{extract_font_families_from_reader, inspect_font_bytes};
 
 use crate::application::dto::CustomFontDto;
 use crate::application::ports::{BoxFuture, FontRepository};
@@ -288,4 +290,134 @@ async fn atomic_write_in_dir(
         )));
     }
     Ok(())
+}
+
+const MAX_SYSTEM_FONT_SCAN_DEPTH: usize = 5;
+const MAX_SYSTEM_FONT_FILES_SCANNED: usize = 2500;
+
+static SYSTEM_FONT_FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
+
+pub fn list_system_font_families() -> &'static [String] {
+    SYSTEM_FONT_FAMILIES.get_or_init(|| scan_font_directories(&default_system_font_dirs()))
+}
+
+pub(crate) fn scan_font_directories(roots: &[PathBuf]) -> Vec<String> {
+    let mut by_lower: BTreeMap<String, String> = BTreeMap::new();
+    let mut scanned_files = 0usize;
+
+    for root in roots {
+        if scanned_files >= MAX_SYSTEM_FONT_FILES_SCANNED {
+            break;
+        }
+        scan_font_dir_recursive(root, 0, &mut scanned_files, &mut by_lower);
+    }
+
+    let mut out: Vec<String> = by_lower.into_values().collect();
+    out.sort_by_cached_key(|s| s.to_lowercase());
+    out
+}
+
+fn scan_font_dir_recursive(
+    dir: &Path,
+    depth: usize,
+    scanned_files: &mut usize,
+    out: &mut BTreeMap<String, String>,
+) {
+    if depth > MAX_SYSTEM_FONT_SCAN_DEPTH || *scanned_files >= MAX_SYSTEM_FONT_FILES_SCANNED {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        if *scanned_files >= MAX_SYSTEM_FONT_FILES_SCANNED {
+            break;
+        }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if ft.is_dir() {
+            scan_font_dir_recursive(&path, depth + 1, scanned_files, out);
+            continue;
+        }
+        if !ft.is_file() && !ft.is_symlink() {
+            continue;
+        }
+        let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc") {
+            continue;
+        }
+        *scanned_files += 1;
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        for fam in extract_font_families_from_reader(&mut file) {
+            if fam.starts_with('.') {
+                continue;
+            }
+            let key = fam.to_lowercase();
+            out.entry(key).or_insert(fam);
+        }
+    }
+}
+
+fn default_system_font_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(windir) = std::env::var_os("WINDIR") {
+            dirs.push(PathBuf::from(windir).join("Fonts"));
+        } else {
+            dirs.push(PathBuf::from(r"C:\Windows\Fonts"));
+        }
+        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local_appdata)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/System/Library/Fonts"));
+        dirs.push(PathBuf::from("/Library/Fonts"));
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join("Library").join("Fonts"));
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        dirs.push(PathBuf::from("/system/fonts"));
+        dirs.push(PathBuf::from("/product/fonts"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+    {
+        dirs.push(PathBuf::from("/usr/share/fonts"));
+        dirs.push(PathBuf::from("/usr/local/share/fonts"));
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            dirs.push(PathBuf::from(xdg).join("fonts"));
+        } else if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(
+                PathBuf::from(&home)
+                    .join(".local")
+                    .join("share")
+                    .join("fonts"),
+            );
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join(".fonts"));
+        }
+    }
+
+    dirs
 }

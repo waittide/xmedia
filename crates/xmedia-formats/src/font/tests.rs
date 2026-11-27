@@ -222,3 +222,73 @@ fn inspect_font_bytes_rejects_empty_and_disguised_html_or_png_payloads() {
         Err(FormatError::UnsupportedFormat(_))
     ));
 }
+
+#[test]
+fn extract_font_families_from_reader_reads_ttc_faces_and_prefers_zh_cn() {
+    use std::io::Cursor;
+
+    let en_name = encode_utf16be("LXGW WenKai");
+    let zh_name = encode_utf16be("霞鹜文楷");
+    let face_a = build_synthetic_sfnt_with_names(
+        [0x00, 0x01, 0x00, 0x00],
+        &[
+            NameRecordSpec {
+                platform_id: 3,
+                encoding_id: 1,
+                language_id: 0x0409,
+                name_id: 16,
+                bytes: &en_name,
+            },
+            NameRecordSpec {
+                platform_id: 3,
+                encoding_id: 1,
+                language_id: 0x0804,
+                name_id: 16,
+                bytes: &zh_name,
+            },
+        ],
+    );
+
+    let mono_name = encode_utf16be("JetBrains Mono");
+    let face_b = build_synthetic_sfnt_with_names(
+        *b"OTTO",
+        &[NameRecordSpec {
+            platform_id: 3,
+            encoding_id: 1,
+            language_id: 0x0409,
+            name_id: 1,
+            bytes: &mono_name,
+        }],
+    );
+
+    // Build a 2-face TTC: 12-byte header + 2 * 4-byte offsets = 20 bytes
+    let face_a_offset = 20u32;
+    let face_b_offset = face_a_offset + face_a.len() as u32;
+
+    let fixup_face = |raw: Vec<u8>, base_offset: u32| -> Vec<u8> {
+        let mut out = raw;
+        let orig_tbl_offset = u32::from_be_bytes([out[20], out[21], out[22], out[23]]);
+        let new_tbl_offset = base_offset + orig_tbl_offset;
+        out[20..24].copy_from_slice(&new_tbl_offset.to_be_bytes());
+        out
+    };
+
+    let fixed_a = fixup_face(face_a, face_a_offset);
+    let fixed_b = fixup_face(face_b, face_b_offset);
+
+    let mut ttc = Vec::new();
+    ttc.extend_from_slice(b"ttcf");
+    ttc.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+    ttc.extend_from_slice(&2u32.to_be_bytes());
+    ttc.extend_from_slice(&face_a_offset.to_be_bytes());
+    ttc.extend_from_slice(&face_b_offset.to_be_bytes());
+    ttc.extend_from_slice(&fixed_a);
+    ttc.extend_from_slice(&fixed_b);
+
+    let mut cursor = Cursor::new(ttc);
+    let families = extract_font_families_from_reader(&mut cursor);
+    assert_eq!(
+        families,
+        vec!["霞鹜文楷".to_string(), "JetBrains Mono".to_string()]
+    );
+}

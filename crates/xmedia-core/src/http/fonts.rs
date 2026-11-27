@@ -21,7 +21,7 @@ use crate::http::WebAuth;
 use crate::http::{ApiError, ApiResult};
 #[cfg(feature = "server")]
 use crate::infra::fonts::FsFontStore;
-use crate::infra::fonts::MAX_FONT_FILE_BYTES;
+use crate::infra::fonts::{MAX_FONT_FILE_BYTES, list_system_font_families};
 
 pub const FONT_UPLOAD_BODY_LIMIT_BYTES: usize = MAX_FONT_FILE_BYTES as usize;
 const MAX_CUSTOM_NAME_FIELD_BYTES: usize = 512;
@@ -45,6 +45,7 @@ where
                 .post(authed_upload_fonts::<S>)
                 .layer(DefaultBodyLimit::max(FONT_UPLOAD_BODY_LIMIT_BYTES)),
         )
+        .route("/fonts/system", get(authed_list_system_fonts))
         .route("/fonts/{id}", delete(authed_delete_font::<S>))
         .route("/fonts/{id}/file", get(authed_get_font_file::<S>))
 }
@@ -61,8 +62,29 @@ where
                 .post(port_upload_fonts::<S>)
                 .layer(DefaultBodyLimit::max(FONT_UPLOAD_BODY_LIMIT_BYTES)),
         )
+        .route("/fonts/system", get(port_list_system_fonts))
         .route("/fonts/{id}", delete(port_delete_font::<S>))
         .route("/fonts/{id}/file", get(port_get_font_file::<S>))
+}
+
+#[cfg(feature = "server")]
+async fn authed_list_system_fonts(WebAuth(_actor): WebAuth) -> ApiResult<Json<Vec<String>>> {
+    list_host_system_fonts().await
+}
+
+async fn port_list_system_fonts() -> ApiResult<Json<Vec<String>>> {
+    list_host_system_fonts().await
+}
+
+pub async fn list_host_system_fonts() -> ApiResult<Json<Vec<String>>> {
+    let list = tokio::task::spawn_blocking(|| list_system_font_families().to_vec())
+        .await
+        .map_err(|e| {
+            ApiError(DomainError::Storage(format!(
+                "system font scan failed: {e}"
+            )))
+        })?;
+    Ok(Json(list))
 }
 
 #[cfg(feature = "server")]

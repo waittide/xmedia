@@ -21,6 +21,8 @@ const props = withDefaults(
     size?: 'sm' | 'md'
     searchable?: boolean
     searchPlaceholder?: string
+    customOptionLabel?: (query: string) => string | null
+    normalizeCustomValue?: (query: string) => string
     disabled?: boolean
     teleportTo?: string | HTMLElement | null
   }>(),
@@ -30,6 +32,8 @@ const props = withDefaults(
     size: 'md',
     searchable: false,
     searchPlaceholder: '',
+    customOptionLabel: undefined,
+    normalizeCustomValue: undefined,
     disabled: false,
     teleportTo: null,
   },
@@ -38,6 +42,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   change: [value: string]
+  open: []
 }>()
 
 const attrs = useAttrs()
@@ -74,10 +79,35 @@ const selectedOption = computed(
   () => props.options.find((opt) => opt.value === props.modelValue) ?? null,
 )
 
-const filteredOptions = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  if (!q) return props.options
-  return props.options.filter((opt) => opt.label.toLowerCase().includes(q))
+const filteredOptions = computed<SelectOption[]>(() => {
+  const rawQuery = query.value.trim()
+  const q = rawQuery.toLowerCase()
+  const base = q
+    ? props.options.filter(
+        (opt) => opt.label.toLowerCase().includes(q) || opt.value.toLowerCase().includes(q),
+      )
+    : props.options
+
+  if (!rawQuery || !props.customOptionLabel) {
+    return base
+  }
+
+  const customVal = props.normalizeCustomValue
+    ? props.normalizeCustomValue(rawQuery)
+    : rawQuery
+  if (!customVal) return base
+
+  const customLower = customVal.toLowerCase()
+  const exactExists = props.options.some(
+    (opt) =>
+      opt.value.toLowerCase() === customLower || opt.label.toLowerCase() === customLower,
+  )
+  if (exactExists) return base
+
+  const customLabel = props.customOptionLabel(customVal)
+  if (!customLabel) return base
+
+  return [...base, { value: customVal, label: customLabel }]
 })
 
 const showSearchBox = computed(() => props.searchable || props.options.length > 8)
@@ -130,6 +160,7 @@ async function openMenu(): Promise<void> {
   if (props.disabled) return
   open.value = true
   query.value = ''
+  emit('open')
   const currentIdx = props.options.findIndex((o) => o.value === props.modelValue)
   highlightedIdx.value = currentIdx >= 0 ? currentIdx : 0
   updatePosition()
