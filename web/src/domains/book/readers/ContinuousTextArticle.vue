@@ -10,11 +10,8 @@ import {
 } from 'vue-icons-plus/lu'
 import { MediaErrorState } from '@/components/domain'
 import { MdButton, MdCircularProgress, MdIconButton } from '@/components/ui'
+import { useReaderAppearance } from '@/domains/book/composables/useReaderAppearance'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
-import { usePreferencesStore } from '@/stores/preferences'
-import { useThemeStore } from '@/stores/theme'
-import { uploadedFonts } from '@/theme/customFonts'
-import { resolveFontStack } from '@/utils/format'
 import type { ContinuousChapterSection } from './useContinuousChapterReader'
 
 const props = withDefaults(
@@ -61,32 +58,39 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const preferencesStore = usePreferencesStore()
-const themeStore = useThemeStore()
+const appearance = useReaderAppearance()
 
 const scrollContainerRef = ref<HTMLElement | null>(null)
 
-const fontFamilyStyle = computed(() => {
-  void uploadedFonts.value.length
-  return resolveFontStack(preferencesStore.reader.font_family, themeStore.uiFont)
-})
+const scrollAreaStyle = computed(() => ({
+  paddingLeft: `calc(var(--safe-area-left) + ${appearance.marginLeftPx.value}px)`,
+  paddingRight: `calc(var(--safe-area-right) + ${appearance.marginRightPx.value}px)`,
+}))
 
-const fontSizePx = computed(() => preferencesStore.reader.font_size || 18)
-const lineHeightVal = computed(() => preferencesStore.reader.line_height || 1.85)
-const maxWidthPx = computed(() => Math.max(520, 920 - (preferencesStore.reader.margin_px || 48) * 2))
+const outerMarginStyle = computed(() => ({
+  backgroundColor: appearance.resolvedBgColor.value,
+  color: appearance.resolvedTextColor.value,
+  paddingTop: `calc(var(--safe-area-top) + ${appearance.marginTopPx.value}px)`,
+  paddingBottom: `calc(var(--safe-area-bottom) + ${appearance.marginBottomPx.value}px)`,
+}))
 
 const articleStyle = computed(() => ({
-  maxWidth: `${maxWidthPx.value}px`,
-  fontFamily: fontFamilyStyle.value,
+  fontFamily: appearance.fontStack.value,
 }))
 
 const paragraphContainerStyle = computed(() => ({
-  fontSize: `${fontSizePx.value}px`,
-  lineHeight: String(lineHeightVal.value),
+  fontSize: `${appearance.fontSizePx.value}px`,
+  lineHeight: String(appearance.lineHeight.value),
+  letterSpacing: `${appearance.letterSpacingEm.value}em`,
+}))
+
+const paragraphItemStyle = computed(() => ({
+  textIndent: `${appearance.paragraphIndentEm.value}em`,
+  marginBottom: `${appearance.paragraphSpacingPx.value}px`,
 }))
 
 const chapterTitleStyle = computed(() => ({
-  fontSize: `${Math.round(fontSizePx.value * 1.3)}px`,
+  fontSize: `${Math.round(appearance.fontSizePx.value * 1.3)}px`,
 }))
 
 defineExpose({
@@ -96,11 +100,16 @@ defineExpose({
 
 <template>
   <div
-    ref="scrollContainerRef"
-    class="h-full w-full overflow-y-auto bg-surface px-4 pt-20 pb-16 transition-colors duration-150 ease-standard sm:px-8"
-    @scroll.passive="emit('scroll')"
+    class="h-full w-full overflow-hidden transition-colors duration-150 ease-standard"
+    :style="outerMarginStyle"
   >
-    <div class="mx-auto w-full" :style="articleStyle">
+    <div
+      ref="scrollContainerRef"
+      class="h-full w-full overflow-y-auto pt-4 pb-8"
+      :style="scrollAreaStyle"
+      @scroll.passive="emit('scroll')"
+    >
+      <div class="mx-auto w-full max-w-4xl" :style="articleStyle">
       <!-- Primary Loading -->
       <div
         v-if="loading"
@@ -161,7 +170,7 @@ defineExpose({
               </div>
 
               <h1
-                class="mt-2 leading-snug tracking-tight text-on-surface"
+                class="mt-2 leading-snug tracking-tight"
                 :style="chapterTitleStyle"
               >
                 {{ item.title }}
@@ -181,13 +190,14 @@ defineExpose({
 
           <div
             v-if="item.paragraphs.length > 0"
-            class="space-y-4 text-on-surface select-text"
+            class="select-text"
             :style="paragraphContainerStyle"
           >
             <p
               v-for="(para, idx) in item.paragraphs"
               :key="`p-${item.pos}-${idx}`"
-              class="indent-[2em] break-words"
+              class="break-words last:!mb-0"
+              :style="paragraphItemStyle"
             >
               {{ para }}
             </p>
@@ -264,6 +274,7 @@ defineExpose({
           </MdButton>
         </div>
       </article>
+      </div>
     </div>
   </div>
 </template>

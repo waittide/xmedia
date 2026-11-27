@@ -27,6 +27,15 @@ export interface ReaderPreferences {
   font_size: number
   line_height: number
   margin_px: number
+  margin_top_px: number
+  margin_bottom_px: number
+  margin_left_px: number
+  margin_right_px: number
+  paragraph_indent_em: number
+  letter_spacing_em: number
+  paragraph_spacing_px: number
+  text_color?: string | null
+  bg_color?: string | null
   flow: ReadingFlow
   pdf_scale: number
 }

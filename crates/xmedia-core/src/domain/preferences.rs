@@ -41,7 +41,7 @@ pub struct UiPreferences {
 
 impl UiPreferences {
     pub(super) fn normalize(&mut self) {
-        self.seed_color = self.seed_color.as_deref().and_then(sanitize_seed_color);
+        self.seed_color = self.seed_color.as_deref().and_then(sanitize_hex_color);
         self.app_icon = self.app_icon.as_deref().and_then(sanitize_app_icon);
         self.ui_font = self.ui_font.as_deref().and_then(sanitize_font_spec);
     }
@@ -65,7 +65,16 @@ pub(crate) const DEFAULT_LINE_HEIGHT: f32 = 1.7;
 const MIN_LINE_HEIGHT: f32 = 1.0;
 const MAX_LINE_HEIGHT: f32 = 3.0;
 const DEFAULT_MARGIN_PX: u16 = 36;
+const DEFAULT_MARGIN_VERTICAL_PX: u16 = 24;
 pub(crate) const MAX_MARGIN_PX: u16 = 240;
+pub(crate) const DEFAULT_PARAGRAPH_INDENT_EM: f32 = 2.0;
+const MIN_PARAGRAPH_INDENT_EM: f32 = 0.0;
+pub(crate) const MAX_PARAGRAPH_INDENT_EM: f32 = 6.0;
+pub(crate) const DEFAULT_LETTER_SPACING_EM: f32 = 0.0;
+pub(crate) const MIN_LETTER_SPACING_EM: f32 = -0.10;
+pub(crate) const MAX_LETTER_SPACING_EM: f32 = 0.50;
+const DEFAULT_PARAGRAPH_SPACING_PX: u16 = 16;
+pub(crate) const MAX_PARAGRAPH_SPACING_PX: u16 = 80;
 const DEFAULT_PDF_SCALE: f32 = 1.25;
 pub(crate) const MIN_PDF_SCALE: f32 = 0.25;
 const MAX_PDF_SCALE: f32 = 4.0;
@@ -79,8 +88,8 @@ const DEFAULT_PLAYBACK_RATE: f32 = 1.0;
 const MIN_PLAYBACK_RATE: f32 = 0.25;
 pub(crate) const MAX_PLAYBACK_RATE: f32 = 4.0;
 
-/// Normalizes an MD3 seed color to lowercase `#rrggbb` (expanding `#rgb`).
-fn sanitize_seed_color(raw: &str) -> Option<String> {
+/// Normalizes a CSS hex color to lowercase `#rrggbb` (expanding `#rgb`).
+fn sanitize_hex_color(raw: &str) -> Option<String> {
     let hex = raw.trim().strip_prefix('#')?;
     if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -159,6 +168,18 @@ fn default_line_height() -> f32 {
 fn default_margin_px() -> u16 {
     DEFAULT_MARGIN_PX
 }
+fn default_margin_vertical_px() -> u16 {
+    DEFAULT_MARGIN_VERTICAL_PX
+}
+fn default_paragraph_indent_em() -> f32 {
+    DEFAULT_PARAGRAPH_INDENT_EM
+}
+fn default_letter_spacing_em() -> f32 {
+    DEFAULT_LETTER_SPACING_EM
+}
+fn default_paragraph_spacing_px() -> u16 {
+    DEFAULT_PARAGRAPH_SPACING_PX
+}
 fn default_pdf_scale() -> f32 {
     DEFAULT_PDF_SCALE
 }
@@ -173,6 +194,24 @@ pub struct BookReaderPreferences {
     pub line_height: f32,
     #[serde(default = "default_margin_px")]
     pub margin_px: u16,
+    #[serde(default = "default_margin_vertical_px")]
+    pub margin_top_px: u16,
+    #[serde(default = "default_margin_vertical_px")]
+    pub margin_bottom_px: u16,
+    #[serde(default = "default_margin_px")]
+    pub margin_left_px: u16,
+    #[serde(default = "default_margin_px")]
+    pub margin_right_px: u16,
+    #[serde(default = "default_paragraph_indent_em")]
+    pub paragraph_indent_em: f32,
+    #[serde(default = "default_letter_spacing_em")]
+    pub letter_spacing_em: f32,
+    #[serde(default = "default_paragraph_spacing_px")]
+    pub paragraph_spacing_px: u16,
+    #[serde(default)]
+    pub text_color: Option<String>,
+    #[serde(default)]
+    pub bg_color: Option<String>,
     #[serde(default)]
     pub flow: ReadingFlow,
     #[serde(default = "default_pdf_scale")]
@@ -195,6 +234,25 @@ impl BookReaderPreferences {
             DEFAULT_LINE_HEIGHT,
         );
         self.margin_px = self.margin_px.min(MAX_MARGIN_PX);
+        self.margin_top_px = self.margin_top_px.min(MAX_MARGIN_PX);
+        self.margin_bottom_px = self.margin_bottom_px.min(MAX_MARGIN_PX);
+        self.margin_left_px = self.margin_left_px.min(MAX_MARGIN_PX);
+        self.margin_right_px = self.margin_right_px.min(MAX_MARGIN_PX);
+        self.paragraph_indent_em = clamp_finite(
+            self.paragraph_indent_em,
+            MIN_PARAGRAPH_INDENT_EM,
+            MAX_PARAGRAPH_INDENT_EM,
+            DEFAULT_PARAGRAPH_INDENT_EM,
+        );
+        self.letter_spacing_em = clamp_finite(
+            self.letter_spacing_em,
+            MIN_LETTER_SPACING_EM,
+            MAX_LETTER_SPACING_EM,
+            DEFAULT_LETTER_SPACING_EM,
+        );
+        self.paragraph_spacing_px = self.paragraph_spacing_px.min(MAX_PARAGRAPH_SPACING_PX);
+        self.text_color = self.text_color.as_deref().and_then(sanitize_hex_color);
+        self.bg_color = self.bg_color.as_deref().and_then(sanitize_hex_color);
         self.pdf_scale = clamp_finite(
             self.pdf_scale,
             MIN_PDF_SCALE,
@@ -211,6 +269,15 @@ impl Default for BookReaderPreferences {
             font_size: DEFAULT_FONT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
             margin_px: DEFAULT_MARGIN_PX,
+            margin_top_px: DEFAULT_MARGIN_VERTICAL_PX,
+            margin_bottom_px: DEFAULT_MARGIN_VERTICAL_PX,
+            margin_left_px: DEFAULT_MARGIN_PX,
+            margin_right_px: DEFAULT_MARGIN_PX,
+            paragraph_indent_em: DEFAULT_PARAGRAPH_INDENT_EM,
+            letter_spacing_em: DEFAULT_LETTER_SPACING_EM,
+            paragraph_spacing_px: DEFAULT_PARAGRAPH_SPACING_PX,
+            text_color: None,
+            bg_color: None,
             flow: ReadingFlow::default(),
             pdf_scale: DEFAULT_PDF_SCALE,
         }

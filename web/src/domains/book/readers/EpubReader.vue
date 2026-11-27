@@ -6,16 +6,15 @@ import { getActiveAuthHeader } from '@/api/appHost'
 import { MediaErrorState } from '@/components/domain'
 import { MdCircularProgress, MdIconButton } from '@/components/ui'
 import { api } from '@/domains/book/api'
+import { useReaderAppearance } from '@/domains/book/composables/useReaderAppearance'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import type { ReadingLocation } from '@/domains/book/types'
 import { usePreferencesStore } from '@/stores/preferences'
-import { useThemeStore } from '@/stores/theme'
 import {
   buildUploadedFontFaceCss,
   ensureCustomFontsLoaded,
   uploadedFonts,
 } from '@/theme/customFonts'
-import { resolveFontStack } from '@/utils/format'
 
 const LOCATIONS_CACHE_PREFIX = 'xmedia.epub.locations:'
 const LOCATIONS_INDEX_KEY = 'xmedia.epub.locations.__index'
@@ -49,7 +48,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const preferencesStore = usePreferencesStore()
-const themeStore = useThemeStore()
+const appearance = useReaderAppearance()
 
 const mountEl = ref<HTMLElement | null>(null)
 const loading = ref(true)
@@ -202,30 +201,52 @@ function syncActiveRenditionCustomFonts(): void {
 function applyRenditionTheme(): void {
   if (!rendition) return
   syncActiveRenditionCustomFonts()
-  const scheme = themeStore.activeScheme
-  const r = preferencesStore.reader
-  const verticalPad = r.flow === 'scrolled' ? 64 : 16
-  const fontStack = resolveFontStack(r.font_family, themeStore.uiFont)
+  const bg = appearance.resolvedBgColor.value
+  const fg = appearance.resolvedTextColor.value
+  const linkColor = appearance.resolvedLinkColor.value
+  const fontStack = appearance.fontStack.value
+  const fontSize = appearance.fontSizePx.value
+  const lineHeight = appearance.lineHeight.value
+  const letterSpacing = appearance.letterSpacingEm.value
+  const paragraphIndent = appearance.paragraphIndentEm.value
+  const paragraphSpacing = appearance.paragraphSpacingPx.value
+
   rendition.themes.default({
     body: {
-      background: `${scheme.surface} !important`,
-      color: `${scheme['on-surface']} !important`,
+      background: `${bg} !important`,
+      color: `${fg} !important`,
       'font-family': `${fontStack} !important`,
-      'font-size': `${r.font_size}px !important`,
-      'line-height': `${r.line_height} !important`,
-      padding: `${verticalPad}px ${r.margin_px}px !important`,
+      'font-size': `${fontSize}px !important`,
+      'line-height': `${lineHeight} !important`,
+      'letter-spacing': `${letterSpacing}em !important`,
+      margin: '0 !important',
+      padding: '0 !important',
     },
-    'p, li, blockquote, dd, dt': {
+    p: {
+      color: `${fg} !important`,
       'font-family': `${fontStack} !important`,
-      'font-size': `${r.font_size}px !important`,
-      'line-height': `${r.line_height} !important`,
+      'font-size': `${fontSize}px !important`,
+      'line-height': `${lineHeight} !important`,
+      'letter-spacing': `${letterSpacing}em !important`,
+      'text-indent': `${paragraphIndent}em !important`,
+      'margin-top': '0 !important',
+      'margin-bottom': `${paragraphSpacing}px !important`,
     },
-    'div, span, section, article': {
+    'li, blockquote, dd, dt': {
+      color: `${fg} !important`,
       'font-family': `${fontStack} !important`,
-      'line-height': `${r.line_height} !important`,
+      'font-size': `${fontSize}px !important`,
+      'line-height': `${lineHeight} !important`,
+      'letter-spacing': `${letterSpacing}em !important`,
+    },
+    'div, span, section, article, h1, h2, h3, h4, h5, h6': {
+      color: `${fg} !important`,
+      'font-family': `${fontStack} !important`,
+      'line-height': `${lineHeight} !important`,
+      'letter-spacing': `${letterSpacing}em !important`,
     },
     a: {
-      color: `${scheme.primary} !important`,
+      color: `${linkColor} !important`,
     },
   })
 }
@@ -587,16 +608,38 @@ onMounted(() => {
 
 watch(
   () => [
-    themeStore.activeScheme,
-    themeStore.uiFont,
+    appearance.resolvedBgColor.value,
+    appearance.resolvedTextColor.value,
+    appearance.resolvedLinkColor.value,
+    appearance.fontStack.value,
+    appearance.fontSizePx.value,
+    appearance.lineHeight.value,
+    appearance.letterSpacingEm.value,
+    appearance.paragraphIndentEm.value,
+    appearance.paragraphSpacingPx.value,
     uploadedFonts.value,
-    preferencesStore.reader.font_family,
-    preferencesStore.reader.font_size,
-    preferencesStore.reader.line_height,
-    preferencesStore.reader.margin_px,
   ],
   () => {
     applyRenditionTheme()
+  },
+)
+
+watch(
+  () => [
+    appearance.marginTopPx.value,
+    appearance.marginBottomPx.value,
+    appearance.marginLeftPx.value,
+    appearance.marginRightPx.value,
+  ],
+  () => {
+    if (!rendition || !mountEl.value) return
+    requestAnimationFrame(() => {
+      if (!rendition || !mountEl.value) return
+      const rect = mountEl.value.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0 && typeof rendition.resize === 'function') {
+        rendition.resize(rect.width, rect.height)
+      }
+    })
   },
 )
 
@@ -623,7 +666,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="safe-pt safe-pb relative flex h-full w-full items-center justify-center overflow-hidden bg-surface pt-14 pb-10"
+    class="relative flex h-full w-full items-center justify-center overflow-hidden transition-colors duration-150 ease-standard"
+    :style="appearance.viewportFrameStyle.value"
   >
     <div
       v-if="loading"

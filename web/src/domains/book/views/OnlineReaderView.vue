@@ -18,11 +18,13 @@ import OnlineDownloadModal from '@/domains/book/components/OnlineDownloadModal.v
 import { useOnlineReader } from '@/domains/book/components/online-reader/useOnlineReader'
 import BookTocDrawer from '@/domains/book/components/reader/BookTocDrawer.vue'
 import BookTypographySheet from '@/domains/book/components/reader/BookTypographySheet.vue'
+import { useReaderAppearance } from '@/domains/book/composables/useReaderAppearance'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import ContinuousTextArticle from '@/domains/book/readers/ContinuousTextArticle.vue'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
+const readerAppearance = useReaderAppearance()
 
 const articleRef = ref<InstanceType<typeof ContinuousTextArticle> | null>(null)
 const contentScrollRef = computed<HTMLElement | null>(
@@ -116,6 +118,7 @@ function handleRetryPrimary(): void {
     :title="readerCtx?.name || ''"
     :subtitle="headerSubtitle"
     stage-bg-class="bg-surface text-on-surface"
+    :style="readerAppearance.stageStyle.value"
     :auto-hide="true"
     :lock-hud="
       combinedLoading ||

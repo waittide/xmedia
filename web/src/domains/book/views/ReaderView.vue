@@ -31,6 +31,7 @@ import BookSourceSwitchDialog from '@/domains/book/components/BookSourceSwitchDi
 import BookBookmarksSheet from '@/domains/book/components/reader/BookBookmarksSheet.vue'
 import BookTocDrawer from '@/domains/book/components/reader/BookTocDrawer.vue'
 import BookTypographySheet from '@/domains/book/components/reader/BookTypographySheet.vue'
+import { useReaderAppearance } from '@/domains/book/composables/useReaderAppearance'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onlineApi'
 import type { PdfFitMode, PdfReaderState } from '@/domains/book/readers/PdfReader.vue'
@@ -83,6 +84,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const preferencesStore = usePreferencesStore()
 const snackbarStore = useSnackbarStore()
+const readerAppearance = useReaderAppearance()
 
 const bookId = computed(() => String(route.params.id ?? ''))
 const book = ref<BookSummaryDto | null>(null)
@@ -488,6 +490,7 @@ onBeforeUnmount(() => {
     :title="book?.metadata.title || ''"
     :subtitle="progressSubtitle"
     stage-bg-class="bg-surface text-on-surface"
+    :style="!isPdf ? readerAppearance.stageStyle.value : undefined"
     :auto-hide="true"
     :lock-hud="loading || Boolean(loadError) || switchSourceOpen"
     :center-tap-mode="centerTapMode"

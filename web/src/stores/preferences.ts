@@ -27,8 +27,37 @@ export const DEFAULT_BOOK_PREFS: ReaderPreferences = {
   font_size: 17,
   line_height: 1.7,
   margin_px: 36,
+  margin_top_px: 24,
+  margin_bottom_px: 24,
+  margin_left_px: 36,
+  margin_right_px: 36,
+  paragraph_indent_em: 2.0,
+  letter_spacing_em: 0,
+  paragraph_spacing_px: 16,
+  text_color: null,
+  bg_color: null,
   flow: 'paginated',
   pdf_scale: 1.25,
+}
+
+function mergeReaderPrefs(raw?: Partial<ReaderPreferences> | null): ReaderPreferences {
+  if (!raw) return { ...DEFAULT_BOOK_PREFS }
+  const fallbackSideMargin =
+    typeof raw.margin_px === 'number' && Number.isFinite(raw.margin_px)
+      ? raw.margin_px
+      : DEFAULT_BOOK_PREFS.margin_px
+  return {
+    ...DEFAULT_BOOK_PREFS,
+    ...raw,
+    margin_left_px:
+      typeof raw.margin_left_px === 'number' && Number.isFinite(raw.margin_left_px)
+        ? raw.margin_left_px
+        : fallbackSideMargin,
+    margin_right_px:
+      typeof raw.margin_right_px === 'number' && Number.isFinite(raw.margin_right_px)
+        ? raw.margin_right_px
+        : fallbackSideMargin,
+  }
 }
 
 export const DEFAULT_COMIC_PREFS: ComicReaderPreferences = {
@@ -69,7 +98,7 @@ function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
 export const usePreferencesStore = defineStore('preferences', () => {
   const stored = readStoredPreferencesRaw()
 
-  const reader = ref<ReaderPreferences>({ ...DEFAULT_BOOK_PREFS, ...(stored.book ?? {}) })
+  const reader = ref<ReaderPreferences>(mergeReaderPrefs(stored.book))
   const comic = ref<ComicReaderPreferences>({ ...DEFAULT_COMIC_PREFS, ...(stored.comic ?? {}) })
   const playback = ref<PlaybackPreferences>({ ...DEFAULT_MUSIC_PREFS, ...(stored.music ?? {}) })
   const video = ref<VideoPlaybackPreferences>({ ...DEFAULT_VIDEO_PREFS, ...(stored.video ?? {}) })
@@ -193,7 +222,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
 
   function hydrateDomainPreferences(prefs: UserPreferences): void {
     clearPendingSync()
-    if (prefs.book) reader.value = { ...DEFAULT_BOOK_PREFS, ...prefs.book }
+    if (prefs.book) reader.value = mergeReaderPrefs(prefs.book)
     if (prefs.comic) comic.value = { ...DEFAULT_COMIC_PREFS, ...prefs.comic }
     if (prefs.music) playback.value = { ...DEFAULT_MUSIC_PREFS, ...prefs.music }
     if (prefs.video) video.value = { ...DEFAULT_VIDEO_PREFS, ...prefs.video }

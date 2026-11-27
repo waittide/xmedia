@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import FontPickerField from '@/components/FontPickerField.vue'
-import { useBookI18n } from '@/domains/book/i18n'
+import BookTypographySheet from '@/domains/book/components/reader/BookTypographySheet.vue'
 import { useComicI18n } from '@/domains/comic/i18n'
-import { AppSlider, MdCard, MdChip, MdSelect, MdSwitch } from '@/components/ui'
+import { MdCard, MdChip, MdSelect, MdSwitch } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import type {
   ComicFitMode,
   ComicReaderMode,
   MediaKind,
-  ReadingFlow,
   TranscodeProfile,
   VideoQualityProfile,
 } from '@/types/api'
@@ -29,7 +27,6 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
-const { t: bookT } = useBookI18n()
 const { t: comicT } = useComicI18n()
 const authStore = useAuthStore()
 const prefsStore = usePreferencesStore()
@@ -50,11 +47,6 @@ const activeAnchorDomain = computed<MediaKind | null>(() => {
   }
   return null
 })
-
-const bookFlowOptions = computed(() => [
-  { value: 'paginated', label: t('settings.bookFlowPaginated') },
-  { value: 'scrolled', label: t('settings.bookFlowScrolled') },
-])
 
 const comicModeOptions = computed(() => [
   { value: 'rtl_double', label: t('settings.comicModeRtlDouble') },
@@ -152,103 +144,7 @@ watch(
         </div>
       </div>
 
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:gap-x-8">
-        <div class="sm:col-span-2">
-          <label class="text-label-medium mb-1.5 block text-on-surface-variant">
-            {{ bookT('reader.fontFamily') }}
-          </label>
-          <FontPickerField
-            :model-value="prefsStore.reader.font_family"
-            allow-inherit
-            :aria-label="bookT('reader.fontFamily')"
-            @update:model-value="
-              prefsStore.updateReaderPreferences(
-                { font_family: $event },
-                { immediate: true, notifyOnError: true },
-              )
-            "
-          />
-        </div>
-
-        <div>
-          <label class="text-label-medium mb-1.5 block text-on-surface-variant">
-            {{ t('settings.bookFlowLabel') }}
-          </label>
-          <MdSelect
-            :model-value="prefsStore.reader.flow"
-            :options="bookFlowOptions"
-            @update:model-value="
-              prefsStore.updateReaderPreferences(
-                { flow: $event as ReadingFlow },
-                { immediate: true, notifyOnError: true },
-              )
-            "
-          />
-        </div>
-
-        <div>
-          <div class="mb-1.5 flex items-center justify-between">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ t('settings.bookFontSize') }}
-            </span>
-            <span class="text-label-medium font-mono tabular-nums text-on-surface">
-              {{ prefsStore.reader.font_size }} px
-            </span>
-          </div>
-          <AppSlider
-            :model-value="prefsStore.reader.font_size"
-            :min="14"
-            :max="30"
-            :step="1"
-            :aria-label="t('settings.bookFontSize')"
-            always-show-thumb
-            @update:model-value="prefsStore.updateReaderPreferences({ font_size: $event })"
-            @commit="void prefsStore.flushPendingSync()"
-          />
-        </div>
-
-        <div>
-          <div class="mb-1.5 flex items-center justify-between">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ bookT('reader.lineHeight') }}
-            </span>
-            <span class="text-label-medium font-mono tabular-nums text-on-surface">
-              {{ prefsStore.reader.line_height.toFixed(2) }}
-            </span>
-          </div>
-          <AppSlider
-            :model-value="prefsStore.reader.line_height"
-            :min="1.3"
-            :max="2.4"
-            :step="0.05"
-            :aria-label="bookT('reader.lineHeight')"
-            always-show-thumb
-            @update:model-value="prefsStore.updateReaderPreferences({ line_height: $event })"
-            @commit="void prefsStore.flushPendingSync()"
-          />
-        </div>
-
-        <div>
-          <div class="mb-1.5 flex items-center justify-between">
-            <span class="text-label-medium text-on-surface-variant">
-              {{ bookT('reader.margin') }}
-            </span>
-            <span class="text-label-medium font-mono tabular-nums text-on-surface">
-              {{ prefsStore.reader.margin_px }} px
-            </span>
-          </div>
-          <AppSlider
-            :model-value="prefsStore.reader.margin_px"
-            :min="16"
-            :max="120"
-            :step="8"
-            :aria-label="bookT('reader.margin')"
-            always-show-thumb
-            @update:model-value="prefsStore.updateReaderPreferences({ margin_px: $event })"
-            @commit="void prefsStore.flushPendingSync()"
-          />
-        </div>
-      </div>
+      <BookTypographySheet show-flow-mode :compact="false" />
     </MdCard>
 
     <!-- #comic: Comic Reader Defaults -->
