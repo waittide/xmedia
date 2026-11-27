@@ -462,4 +462,5 @@ export const videoSourceAdapter: OnlineSourceManagerAdapter<VideoSourceSummaryDt
   fetchSourceJson: onlineVideoApi.fetchSourceJson,
   getSourceVariable: onlineVideoApi.getSourceVariable,
   runLoginAction: onlineVideoApi.runLoginAction,
+  buildProxyImageUrl: onlineVideoApi.buildProxyImageUrl,
 }

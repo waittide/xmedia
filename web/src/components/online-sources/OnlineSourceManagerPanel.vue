@@ -208,6 +208,7 @@ function closeDebugSheet(): void {
       :get-source-variable="adapter.getSourceVariable"
       :run-login-action="adapter.runLoginAction"
       :update-source="adapter.updateSource"
+      :build-proxy-image-url="adapter.buildProxyImageUrl"
       @close="loginModalSource = null"
       @updated="handleSourceUpdated"
     />

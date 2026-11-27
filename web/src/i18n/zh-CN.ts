@@ -691,6 +691,11 @@ export default {
       openExternalPage: '{name}：点击打开外部页面',
       blockedRedirectUrl: '{name}：已拦截非 http/https 协议的跳转链接',
       executedAction: '已执行「{name}」',
+      qrcodeEmptyHint: '尚未生成二维码，请点击下方操作按钮获取',
+      qrcodeScanHint: '请使用对应客户端扫描二维码完成授权',
+      imageEmptyHint: '尚未加载图片，请点击获取或执行刷新动作',
+      imageLoadFailed: '图片加载失败，请重试或刷新',
+      clickToRefresh: '点击刷新',
       doneBtn: '完成',
     },
     edit: {

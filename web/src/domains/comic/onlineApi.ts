@@ -392,4 +392,5 @@ export const comicSourceAdapter: OnlineSourceManagerAdapter<ComicSourceSummaryDt
   fetchSourceJson: onlineComicApi.fetchSourceJson,
   getSourceVariable: onlineComicApi.getSourceVariable,
   runLoginAction: onlineComicApi.runLoginAction,
+  buildProxyImageUrl: onlineComicApi.buildProxyImageUrl,
 }

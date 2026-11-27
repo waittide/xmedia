@@ -411,4 +411,5 @@ export const musicSourceAdapter: OnlineSourceManagerAdapter<MusicSourceSummaryDt
   fetchSourceJson: onlineMusicApi.fetchSourceJson,
   getSourceVariable: onlineMusicApi.getSourceVariable,
   runLoginAction: onlineMusicApi.runLoginAction,
+  buildProxyImageUrl: onlineMusicApi.buildProxyImageUrl,
 }

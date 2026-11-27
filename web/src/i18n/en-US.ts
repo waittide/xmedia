@@ -691,6 +691,11 @@ export default {
       openExternalPage: '{name}: click to open external page',
       blockedRedirectUrl: '{name}: blocked non-http/https redirect URL',
       executedAction: 'Executed "{name}"',
+      qrcodeEmptyHint: 'No QR code generated yet. Click the action button below to fetch one.',
+      qrcodeScanHint: 'Scan the QR code with the corresponding app to authorize',
+      imageEmptyHint: 'No image loaded yet. Click to fetch or run the refresh action.',
+      imageLoadFailed: 'Failed to load image. Please retry or refresh.',
+      clickToRefresh: 'Click to refresh',
       doneBtn: 'Done',
     },
     edit: {

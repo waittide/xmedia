@@ -9,8 +9,10 @@ export interface LoginUiStyle {
 
 export interface LoginUiItem {
   name: string
+  /** Supported controls: `text` | `password` | `button` | `image` (`img`) | `qrcode` */
   type: string
   action?: string | null
+  url?: string | null
   style?: LoginUiStyle | null
 }
 
@@ -117,6 +119,11 @@ export interface OnlineSourceManagerAdapter<
     loginInfo: Record<string, string>,
     action?: string,
   ) => Promise<LoginActionResponseDto<S>>
+  buildProxyImageUrl: (
+    rawUrl: string | null | undefined,
+    sourceId?: string | null,
+    cacheBust?: string | number | null,
+  ) => string
 }
 
 export const SAFE_DATA_IMAGE_RE = /^data:image\/(png|jpeg|jpg|webp|gif|avif);base64,/i

@@ -213,14 +213,21 @@ export interface ChapterJsContextInput {
   url: string
 }
 
-export function buildOnlineCoverUrl(rawUrl: string | null | undefined): string {
+export function buildOnlineCoverUrl(
+  rawUrl: string | null | undefined,
+  sourceId?: string | null,
+): string {
   if (!rawUrl || !rawUrl.trim()) return ''
   const u = rawUrl.trim()
   if (u.toLowerCase().startsWith('data:')) {
     return isSafeDataImageUrl(u) ? u : ''
   }
   if (!isSafeHttpUrl(u)) return ''
-  return withAuthToken(`/api/v1/book/online/cover-proxy?url=${encodeURIComponent(u)}`)
+  const qs = new URLSearchParams({ url: u })
+  if (sourceId && sourceId.trim()) {
+    qs.set('source_id', sourceId.trim())
+  }
+  return withAuthToken(`/api/v1/book/online/cover-proxy?${qs.toString()}`)
 }
 
 export function buildOnlineDownloadFileUrl(jobId: string): string {

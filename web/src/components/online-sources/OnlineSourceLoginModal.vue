@@ -1,15 +1,20 @@
 <script setup lang="ts" generic="S extends OnlineSourceSummaryDto">
+import { renderSVG } from 'uqr'
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuCheckCircle2,
+  LuImage,
   LuKeyRound,
   LuLoader2,
+  LuQrCode,
+  LuRefreshCw,
 } from 'vue-icons-plus/lu'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
   extractApiError,
+  isSafeDataImageUrl,
   isSafeHttpUrl,
   type LoginActionResponseDto,
   type LoginUiItem,
@@ -28,6 +33,11 @@ const props = defineProps<{
     action?: string,
   ) => Promise<LoginActionResponseDto<S>>
   updateSource: (id: string, patch: UpdateSourcePatch) => Promise<S>
+  buildProxyImageUrl?: (
+    rawUrl: string | null | undefined,
+    sourceId?: string | null,
+    cacheBust?: string | number | null,
+  ) => string
 }>()
 
 const emit = defineEmits<{
@@ -39,6 +49,8 @@ const { t } = useI18n()
 const snackbar = useSnackbarStore()
 
 const formValues = reactive<Record<string, string>>({})
+const failedImageKeys = reactive<Record<string, boolean>>({})
+const imageRefreshRev = ref(0)
 const runningActionKey = ref<string | null>(null)
 const showVarEditor = ref(false)
 const rawVariableDraft = ref('')
@@ -50,14 +62,38 @@ const savingVar = ref(false)
 let actionSeq = 0
 let varLoadSeq = 0
 
+function normalizeItemType(item: LoginUiItem): string {
+  return (item.type ?? '').trim().toLowerCase()
+}
+
+function isTextOrPasswordItem(item: LoginUiItem): boolean {
+  const kind = normalizeItemType(item)
+  return kind === 'text' || kind === 'password'
+}
+
+function isImageItem(item: LoginUiItem): boolean {
+  const kind = normalizeItemType(item)
+  return kind === 'image' || kind === 'img'
+}
+
+function isQrCodeItem(item: LoginUiItem): boolean {
+  return normalizeItemType(item) === 'qrcode'
+}
+
+function isButtonItem(item: LoginUiItem): boolean {
+  return normalizeItemType(item) === 'button'
+}
+
 const hasCustomActionButtons = computed(() =>
-  Boolean(props.source?.login_ui.some((item) => item.type === 'button' && item.action?.trim())),
+  Boolean(
+    props.source?.login_ui.some(
+      (item) => (isButtonItem(item) || isImageItem(item) || isQrCodeItem(item)) && item.action?.trim(),
+    ),
+  ),
 )
 
 const hasInputFields = computed(() =>
-  Boolean(
-    props.source?.login_ui.some((item) => item.type === 'text' || item.type === 'password'),
-  ),
+  Boolean(props.source?.login_ui.some((item) => isTextOrPasswordItem(item))),
 )
 
 const showFallbackLoginSubmit = computed(
@@ -66,12 +102,20 @@ const showFallbackLoginSubmit = computed(
     !hasCustomActionButtons.value,
 )
 
+function clearFailedImageKeys(): void {
+  for (const k of Object.keys(failedImageKeys)) {
+    delete failedImageKeys[k]
+  }
+}
+
 function resetEditorState(): void {
   actionSeq += 1
   varLoadSeq += 1
   for (const k of Object.keys(formValues)) {
     delete formValues[k]
   }
+  clearFailedImageKeys()
+  imageRefreshRev.value = 0
   runningActionKey.value = null
   showVarEditor.value = false
   rawVariableDraft.value = ''
@@ -119,7 +163,7 @@ watch(
       delete formValues[k]
     }
     for (const item of src.login_ui) {
-      if (item.type === 'text' || item.type === 'password') {
+      if (isTextOrPasswordItem(item)) {
         formValues[item.name] = src.login_info[item.name] ?? ''
       }
     }
@@ -143,6 +187,13 @@ function toggleVarEditor(): void {
   }
 }
 
+function fieldSpanClass(item: LoginUiItem): string {
+  const basis = item.style?.layout_flex_basis_percent
+  if (basis === undefined || basis === null || basis >= 0.85) return 'col-span-4'
+  if (basis >= 0.4) return 'col-span-4 sm:col-span-2'
+  return 'col-span-2 sm:col-span-1'
+}
+
 function buttonSpanClass(item: LoginUiItem): string {
   const basis = item.style?.layout_flex_basis_percent ?? 0.5
   if (basis >= 0.85) return 'col-span-4'
@@ -151,7 +202,52 @@ function buttonSpanClass(item: LoginUiItem): string {
 }
 
 function isDividerButton(item: LoginUiItem): boolean {
-  return item.type === 'button' && (!item.action || !item.action.trim())
+  return isButtonItem(item) && (!item.action || !item.action.trim())
+}
+
+function rawMediaValueFor(item: LoginUiItem): string {
+  if (!props.source) return ''
+  return (props.source.login_info[item.name] ?? item.url ?? '').trim()
+}
+
+function resolveDisplayImageUrl(item: LoginUiItem): string {
+  const raw = rawMediaValueFor(item)
+  if (!raw) return ''
+  if (raw.toLowerCase().startsWith('data:')) {
+    return isSafeDataImageUrl(raw) ? raw : ''
+  }
+  if (!isSafeHttpUrl(raw)) return ''
+  if (props.buildProxyImageUrl) {
+    return props.buildProxyImageUrl(raw, props.source?.id ?? null, imageRefreshRev.value)
+  }
+  return raw
+}
+
+function renderQrSvgFor(item: LoginUiItem): string {
+  const raw = rawMediaValueFor(item)
+  if (!raw || raw.toLowerCase().startsWith('data:')) return ''
+  try {
+    return renderSVG(raw, {
+      ecc: 'M',
+      border: 2,
+      whiteColor: '#FFFFFF',
+      blackColor: '#111318',
+    })
+  } catch {
+    return ''
+  }
+}
+
+function markImageFailed(idx: number): void {
+  failedImageKeys[String(idx)] = true
+}
+
+function clearImageFailed(idx: number): void {
+  delete failedImageKeys[String(idx)]
+}
+
+function isImageFailed(idx: number): boolean {
+  return Boolean(failedImageKeys[String(idx)])
 }
 
 function openExternalUrlSafely(url: string): void {
@@ -180,6 +276,8 @@ async function executeLoginCall(
     if (showVarEditor.value) {
       void loadFullVariable(sourceId)
     }
+    clearFailedImageKeys()
+    imageRefreshRev.value += 1
     emit('updated', resp.source)
 
     const toasts = resp.diagnostics.toasts.map((v) => v.trim()).filter(Boolean)
@@ -308,8 +406,8 @@ async function saveRawVariable(): Promise<void> {
         <template v-for="(item, idx) in source.login_ui" :key="`ui-${idx}-${item.name}`">
           <!-- Text / Password Input -->
           <div
-            v-if="item.type === 'text' || item.type === 'password'"
-            class="col-span-4"
+            v-if="isTextOrPasswordItem(item)"
+            :class="fieldSpanClass(item)"
           >
             <label
               :for="fieldInputId(idx)"
@@ -320,11 +418,143 @@ async function saveRawVariable(): Promise<void> {
             <input
               :id="fieldInputId(idx)"
               v-model="formValues[item.name]"
-              :type="item.type === 'password' ? 'password' : 'text'"
-              :autocomplete="item.type === 'password' ? 'off' : undefined"
+              :type="normalizeItemType(item) === 'password' ? 'password' : 'text'"
+              :autocomplete="normalizeItemType(item) === 'password' ? 'off' : undefined"
               class="md-input h-9 w-full text-xs"
               :placeholder="t('onlineSources.login.inputPlaceholder', { name: item.name })"
             />
+          </div>
+
+          <!-- QR Code Display (local SVG via uqr or data:image/*) -->
+          <div
+            v-else-if="isQrCodeItem(item)"
+            data-login-ui-qrcode
+            :class="fieldSpanClass(item)"
+          >
+            <div class="mb-1 flex items-center justify-between gap-2">
+              <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
+                {{ item.name }}
+              </span>
+              <button
+                v-if="item.action?.trim()"
+                type="button"
+                :disabled="runningActionKey !== null"
+                class="inline-flex cursor-pointer items-center gap-1 text-[11px] text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                @click="triggerAction(item, idx)"
+              >
+                <LuRefreshCw
+                  class="h-3 w-3"
+                  :class="runningActionKey === actionKeyFor(item, idx) ? 'animate-spin' : ''"
+                />
+                <span>{{ t('onlineSources.login.clickToRefresh') }}</span>
+              </button>
+            </div>
+
+            <div
+              class="flex flex-col items-center justify-center gap-2.5 rounded-corner-lg bg-surface-container p-4 text-center"
+              :class="item.action?.trim() && runningActionKey === null ? 'cursor-pointer' : ''"
+              @click="item.action?.trim() && triggerAction(item, idx)"
+            >
+              <template v-if="rawMediaValueFor(item)">
+                <div
+                  class="flex items-center justify-center rounded-corner-md bg-white p-2.5 shadow-elevation-1"
+                >
+                  <img
+                    v-if="isSafeDataImageUrl(rawMediaValueFor(item))"
+                    :src="rawMediaValueFor(item)"
+                    :alt="item.name"
+                    class="h-44 w-44 object-contain select-none"
+                  />
+                  <!-- eslint-disable-next-line vue/no-v-html -->
+                  <div
+                    v-else-if="renderQrSvgFor(item)"
+                    data-qrcode-svg
+                    class="h-44 w-44 [&>svg]:h-full [&>svg]:w-full [&>svg]:block"
+                    v-html="renderQrSvgFor(item)"
+                  />
+                  <div
+                    v-else
+                    class="flex h-44 w-44 items-center justify-center px-3 text-xs text-error"
+                  >
+                    {{ t('onlineSources.login.imageLoadFailed') }}
+                  </div>
+                </div>
+                <p class="text-body-small text-on-surface-variant">
+                  {{ t('onlineSources.login.qrcodeScanHint') }}
+                </p>
+              </template>
+
+              <div
+                v-else
+                class="flex min-h-36 flex-col items-center justify-center gap-2 py-3 text-on-surface-variant"
+              >
+                <LuQrCode class="h-8 w-8 opacity-60" />
+                <p class="text-body-small max-w-xs">
+                  {{ t('onlineSources.login.qrcodeEmptyHint') }}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Image Display (Captcha / Remote QR Image / data:image/*) -->
+          <div
+            v-else-if="isImageItem(item)"
+            data-login-ui-image
+            :class="fieldSpanClass(item)"
+          >
+            <div class="mb-1 flex items-center justify-between gap-2">
+              <span class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
+                {{ item.name }}
+              </span>
+              <button
+                v-if="item.action?.trim()"
+                type="button"
+                :disabled="runningActionKey !== null"
+                class="inline-flex cursor-pointer items-center gap-1 text-[11px] text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                @click="triggerAction(item, idx)"
+              >
+                <LuRefreshCw
+                  class="h-3 w-3"
+                  :class="runningActionKey === actionKeyFor(item, idx) ? 'animate-spin' : ''"
+                />
+                <span>{{ t('onlineSources.login.clickToRefresh') }}</span>
+              </button>
+            </div>
+
+            <div
+              class="relative flex min-h-14 flex-col items-center justify-center rounded-corner-md bg-surface-container p-2.5 text-center"
+              :class="item.action?.trim() && runningActionKey === null ? 'cursor-pointer hover:bg-surface-container-high' : ''"
+              :title="item.action?.trim() ? t('onlineSources.login.clickToRefresh') : item.name"
+              @click="item.action?.trim() && triggerAction(item, idx)"
+            >
+              <template v-if="resolveDisplayImageUrl(item)">
+                <img
+                  v-if="!isImageFailed(idx)"
+                  :key="`${imageRefreshRev}-${resolveDisplayImageUrl(item)}`"
+                  :src="resolveDisplayImageUrl(item)"
+                  :alt="item.name"
+                  class="max-h-48 max-w-full rounded-corner-sm bg-white object-contain p-1 select-none"
+                  @load="clearImageFailed(idx)"
+                  @error="markImageFailed(idx)"
+                />
+                <p
+                  v-else
+                  class="text-body-small py-2 text-error"
+                >
+                  {{ t('onlineSources.login.imageLoadFailed') }}
+                </p>
+              </template>
+
+              <div
+                v-else
+                class="flex items-center justify-center gap-2 py-2 text-on-surface-variant"
+              >
+                <LuImage class="h-4 w-4 shrink-0 opacity-65" />
+                <span class="text-body-small">
+                  {{ t('onlineSources.login.imageEmptyHint') }}
+                </span>
+              </div>
+            </div>
           </div>
 
           <!-- Section Divider Label -->
@@ -337,7 +567,7 @@ async function saveRawVariable(): Promise<void> {
 
           <!-- Action Button -->
           <button
-            v-else-if="item.type === 'button'"
+            v-else-if="isButtonItem(item)"
             type="button"
             :disabled="runningActionKey !== null"
             class="md-btn md-btn-tonal md-state w-full justify-center"
