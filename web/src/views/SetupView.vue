@@ -28,6 +28,7 @@ import {
   MdLinearProgress,
   MdTextField,
 } from '@/components/ui'
+import { localizeApiErrorMessage } from '@/i18n/apiErrors'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
@@ -298,7 +299,7 @@ const scanStatusSummary = computed(() => {
     })
   }
   if (status.state === 'failed') {
-    return t('admin.scanFailed', { message: status.message })
+    return t('admin.scanFailed', { message: localizeApiErrorMessage(status.message) })
   }
   return t('setup.scanQueued')
 })

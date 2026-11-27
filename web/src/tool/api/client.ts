@@ -1,3 +1,5 @@
+import { localizeApiErrorMessage } from '@/i18n/apiErrors'
+
 export interface StreamProgressPayload {
   processed: number
   total: number | null
@@ -53,7 +55,7 @@ function createToolHttpError(
   } else if (checkStreamRouteMissing && rawText.trim()) {
     errMsg = rawText.trim()
   }
-  const error = new Error(errMsg) as ToolRequestError
+  const error = new Error(localizeApiErrorMessage(errMsg)) as ToolRequestError
   error.status = status
   if (checkStreamRouteMissing && status === 404 && rawText.trim() === 'Not Found') {
     error.streamRouteMissing = true
@@ -123,8 +125,9 @@ export async function toolStreamRequest<T>(
       finalData = frame.data
       receivedDone = true
     } else if (frame.type === 'error') {
-      const error = new Error(frame.message) as Error & { status?: number }
-      if (/not found|不存在|not a directory/i.test(frame.message)) {
+      const isNotFound = /not found|不存在|not a directory/i.test(frame.message)
+      const error = new Error(localizeApiErrorMessage(frame.message)) as Error & { status?: number }
+      if (isNotFound) {
         error.status = 404
       }
       throw error

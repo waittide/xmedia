@@ -27,6 +27,7 @@ import {
   MdLinearProgress,
   MdSheet,
 } from '@/components/ui'
+import { localizeApiErrorMessage } from '@/i18n/apiErrors'
 import { useAuthStore } from '@/stores/auth'
 import { useBackgroundDownloadTasks } from '@/stores/backgroundTasks'
 import { useEventsStore } from '@/stores/events'
@@ -147,7 +148,7 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
       })
     } else {
       metaText = t('transfers.statusFailed')
-      errorText = sc.error || undefined
+      errorText = sc.error ? localizeApiErrorMessage(sc.error) : undefined
     }
 
     items.push({

@@ -5,6 +5,7 @@ import {
   getActiveAuthToken,
   resolveAppApiUrl,
 } from '@/api/appHost'
+import { localizeApiErrorMessage } from '@/i18n/apiErrors'
 import type { CustomFontDto } from '@/types/api'
 
 export const DEFAULT_SANS_FONT_STACK =
@@ -233,7 +234,7 @@ async function extractErrorMessage(res: Response): Promise<string> {
   } catch {
     // ignore invalid error body
   }
-  return message
+  return localizeApiErrorMessage(message)
 }
 
 export async function refreshCustomFonts(): Promise<CustomFontDto[]> {

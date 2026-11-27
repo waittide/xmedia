@@ -12,6 +12,7 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
+import { localizeApiErrorMessage } from '@/i18n/apiErrors'
 import {
   MdButton,
   MdCard,
@@ -331,7 +332,9 @@ function formatScanStatus(lib: CoreLibraryDto): string {
       missing: s.missing,
     })
   }
-  if (s.state === 'failed') return t('admin.scanFailed', { message: s.message })
+  if (s.state === 'failed') {
+    return t('admin.scanFailed', { message: localizeApiErrorMessage(s.message) })
+  }
   return t('admin.scanIdle')
 }
 </script>

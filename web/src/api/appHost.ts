@@ -1,3 +1,4 @@
+import { localizeApiErrorMessage } from '@/i18n/apiErrors'
 import type { AuthSessionDto, MediaKind } from '@/types/api'
 
 export type RemoteProtocol = 'opds' | 'subsonic'
@@ -261,7 +262,7 @@ async function requestAppJson<T>(path: string, init: RequestInit = {}): Promise<
         // ignore invalid error body
       }
     }
-    throw new Error(message)
+    throw new Error(localizeApiErrorMessage(message))
   }
 
   if (res.status === 204) {

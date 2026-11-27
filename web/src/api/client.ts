@@ -4,6 +4,7 @@ import {
   getActiveAuthToken,
   resolveAppApiUrl,
 } from '@/api/appHost'
+import { localizeApiErrorMessage } from '@/i18n/apiErrors'
 import type {
   AuthSessionDto,
   CoreLibraryDto,
@@ -140,7 +141,7 @@ export async function requestJson<T>(
       unauthorizedHandler?.()
     }
 
-    throw new ApiRequestError(res.status, code, message)
+    throw new ApiRequestError(res.status, code, localizeApiErrorMessage(message))
   }
 
   if (res.status === 204) {
@@ -153,12 +154,20 @@ export async function requestJson<T>(
   }
   const contentType = res.headers.get('content-type') ?? ''
   if (contentType && !contentType.includes('json')) {
-    throw new ApiRequestError(res.status, 'invalid_response', 'Expected JSON response from server')
+    throw new ApiRequestError(
+      res.status,
+      'invalid_response',
+      localizeApiErrorMessage('Expected JSON response from server'),
+    )
   }
   try {
     return JSON.parse(text) as T
   } catch {
-    throw new ApiRequestError(res.status, 'invalid_json', 'Malformed JSON response from server')
+    throw new ApiRequestError(
+      res.status,
+      'invalid_json',
+      localizeApiErrorMessage('Malformed JSON response from server'),
+    )
   }
 }
 
