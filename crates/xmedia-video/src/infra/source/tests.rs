@@ -708,8 +708,8 @@ fn video_search_url_template_encodes_keyword_and_isolates_legado_options_json_in
         "searchUrl": "/search?q={{key}}&pg={{page}},{\"method\":\"POST\",\"body\":\"wd={{key}}&pg={{page}}\"}",
         "ruleSearch": {
             "list": "$.items[*]",
-            "title": "$.title",
-            "videoId": "$.id"
+            "name": "$.title",
+            "vodId": "$.id"
         }
     }))
     .unwrap();
@@ -822,8 +822,8 @@ fn video_search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixe
             "searchUrl": search_url,
             "ruleSearch": {
                 "list": "$.items[*]",
-                "title": "$.title",
-                "videoId": "$.id"
+                "name": "$.title",
+                "vodId": "$.id"
             }
         }))
         .unwrap()
@@ -1066,7 +1066,7 @@ async fn video_js_pipeline_url_blocks_option_injection_and_mutation_while_restor
         "sourceUrl": base,
         "sourceFormat": "rule",
         "searchUrl": "<js>'/search?q=' + key</js>",
-        "ruleSearch": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+        "ruleSearch": { "list": "$.items[*]", "name": "$.title", "vodId": "$.id" }
     }))
     .unwrap();
 
@@ -1075,7 +1075,7 @@ async fn video_js_pipeline_url_blocks_option_injection_and_mutation_while_restor
         "sourceUrl": base,
         "sourceFormat": "rule",
         "searchUrl": "<js>'/search-opt?q=' + encodeURIComponent(key) + ',{\"method\":\"POST\",\"body\":\"q=' + key + '\"}'</js>",
-        "ruleSearch": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+        "ruleSearch": { "list": "$.items[*]", "name": "$.title", "vodId": "$.id" }
     }))
     .unwrap();
 
@@ -1084,7 +1084,7 @@ async fn video_js_pipeline_url_blocks_option_injection_and_mutation_while_restor
         "sourceUrl": base,
         "sourceFormat": "rule",
         "exploreUrl": "@js:'/browse?cat=' + catId",
-        "ruleExplore": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+        "ruleExplore": { "list": "$.items[*]", "name": "$.title", "vodId": "$.id" }
     }))
     .unwrap();
 
@@ -1116,7 +1116,7 @@ async fn video_js_pipeline_url_blocks_option_injection_and_mutation_while_restor
         "sourceUrl": base,
         "sourceFormat": "rule",
         "searchUrl": "<js>'/search?q=' + key</js>,{\"method\":\"POST\"}",
-        "ruleSearch": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+        "ruleSearch": { "list": "$.items[*]", "name": "$.title", "vodId": "$.id" }
     }))
     .unwrap();
 

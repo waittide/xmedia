@@ -4,8 +4,6 @@ import {
   mergeOptionalField,
   mergeRuleSection,
   numVal,
-  pickFirstString,
-  pickPresentKey,
   readRuleMap,
   strVal,
 } from '@/components/online-sources/useOnlineSourceEdit'
@@ -14,70 +12,46 @@ import type { VideoSourceSummaryDto } from './onlineApi'
 
 export type VideoSourceEditTab = SourceEditFourTab
 
-export const CATEGORIES_ALIASES: Record<string, readonly string[]> = {
-  list: ['bookList'],
-  name: ['title'],
-}
-
-export const SEARCH_ALIASES: Record<string, readonly string[]> = {
-  list: ['bookList'],
-  vodId: ['id'],
-  name: ['title'],
-  coverUrl: ['posterUrl'],
-  typeName: ['category'],
-  detailUrl: ['bookUrl'],
-}
-
-export const DETAIL_ALIASES: Record<string, readonly string[]> = {
-  name: ['title'],
-  coverUrl: ['posterUrl'],
-  intro: ['description'],
-  playGroups: ['groups'],
-  episodes: ['chapterList'],
-  episodeName: ['chapterName'],
-  episodeUrl: ['chapterUrl'],
-}
-
 export const CATEGORIES_RULE_FIELDS: RuleFieldDef[] = [
-  { key: 'list', label: 'list', placeholder: 'list / bookList', fullWidth: true },
+  { key: 'list', label: 'list', placeholder: 'list', fullWidth: true },
   { key: 'id', label: 'id', placeholder: 'id' },
-  { key: 'name', label: 'name', placeholder: 'name / title' },
+  { key: 'name', label: 'name', placeholder: 'name' },
 ]
 
 export const SEARCH_RULE_FIELDS: RuleFieldDef[] = [
-  { key: 'list', label: 'list', placeholder: 'list / bookList', fullWidth: true },
-  { key: 'vodId', label: 'vodId', placeholder: 'vodId / id' },
-  { key: 'name', label: 'name', placeholder: 'name / title' },
-  { key: 'coverUrl', label: 'coverUrl', placeholder: 'coverUrl / posterUrl', fullWidth: true },
+  { key: 'list', label: 'list', placeholder: 'list', fullWidth: true },
+  { key: 'vodId', label: 'vodId', placeholder: 'vodId' },
+  { key: 'name', label: 'name', placeholder: 'name' },
+  { key: 'coverUrl', label: 'coverUrl', placeholder: 'coverUrl', fullWidth: true },
   { key: 'remarks', label: 'remarks', placeholder: 'remarks' },
   { key: 'year', label: 'year', placeholder: 'year' },
   { key: 'area', label: 'area', placeholder: 'area' },
-  { key: 'typeName', label: 'typeName', placeholder: 'typeName / category' },
-  { key: 'detailUrl', label: 'detailUrl', placeholder: 'detailUrl / bookUrl', fullWidth: true },
+  { key: 'typeName', label: 'typeName', placeholder: 'typeName' },
+  { key: 'detailUrl', label: 'detailUrl', placeholder: 'detailUrl', fullWidth: true },
 ]
 
 export const DETAIL_RULE_FIELDS: RuleFieldDef[] = [
   { key: 'requestUrl', label: 'requestUrl', placeholder: 'requestUrl', fullWidth: true },
   { key: 'init', label: 'init', placeholder: 'init', multiline: true, rows: 2, fullWidth: true },
-  { key: 'name', label: 'name', placeholder: 'name / title' },
-  { key: 'coverUrl', label: 'coverUrl', placeholder: 'coverUrl / posterUrl', fullWidth: true },
+  { key: 'name', label: 'name', placeholder: 'name' },
+  { key: 'coverUrl', label: 'coverUrl', placeholder: 'coverUrl', fullWidth: true },
   { key: 'year', label: 'year', placeholder: 'year' },
   { key: 'area', label: 'area', placeholder: 'area' },
   { key: 'actors', label: 'actors', placeholder: 'actors' },
   { key: 'director', label: 'director', placeholder: 'director' },
   { key: 'remarks', label: 'remarks', placeholder: 'remarks' },
-  { key: 'playGroups', label: 'playGroups', placeholder: 'playGroups / groups', fullWidth: true },
+  { key: 'playGroups', label: 'playGroups', placeholder: 'playGroups', fullWidth: true },
   { key: 'groupName', label: 'groupName', placeholder: 'groupName' },
   {
     key: 'episodes',
     label: 'episodes',
-    placeholder: 'episodes / chapterList',
+    placeholder: 'episodes',
     multiline: true,
     rows: 2,
     fullWidth: true,
   },
-  { key: 'episodeName', label: 'episodeName', placeholder: 'episodeName / chapterName' },
-  { key: 'episodeUrl', label: 'episodeUrl', placeholder: 'episodeUrl / chapterUrl' },
+  { key: 'episodeName', label: 'episodeName', placeholder: 'episodeName' },
+  { key: 'episodeUrl', label: 'episodeUrl', placeholder: 'episodeUrl' },
   { key: 'playUrl', label: 'playUrl', placeholder: 'playUrl', fullWidth: true },
   { key: 'intro', label: 'intro', placeholder: 'intro', multiline: true, rows: 3, fullWidth: true },
 ]
@@ -232,10 +206,10 @@ export function createDefaultFormState(): VideoSourceFormState {
     categoriesUrl: '',
     searchUrl: '',
     exploreUrl: '',
-    ruleCategories: readRuleMap(undefined, CATEGORIES_RULE_FIELDS, CATEGORIES_ALIASES),
-    ruleSearch: readRuleMap(undefined, SEARCH_RULE_FIELDS, SEARCH_ALIASES),
-    ruleExplore: readRuleMap(undefined, SEARCH_RULE_FIELDS, SEARCH_ALIASES),
-    ruleDetail: readRuleMap(undefined, DETAIL_RULE_FIELDS, DETAIL_ALIASES),
+    ruleCategories: readRuleMap(undefined, CATEGORIES_RULE_FIELDS),
+    ruleSearch: readRuleMap(undefined, SEARCH_RULE_FIELDS),
+    ruleExplore: readRuleMap(undefined, SEARCH_RULE_FIELDS),
+    ruleDetail: readRuleMap(undefined, DETAIL_RULE_FIELDS),
     rulePlay: readRuleMap(undefined, PLAY_RULE_FIELDS),
   }
 }
@@ -251,12 +225,10 @@ export function resolveVideoFormat(
   obj: Record<string, unknown>,
   srcSummary?: VideoSourceSummaryDto,
 ): string {
-  const raw = pickFirstString(obj, ['sourceFormat', 'mode']).trim().toLowerCase()
-  if (raw === 'applecms_v10' || raw === 'applecms' || raw === 'applecmsv10') {
-    return 'applecms_v10'
-  }
+  const raw = strVal(obj.sourceFormat).trim().toLowerCase()
+  if (raw === 'applecms_v10') return 'applecms_v10'
   if (raw === 'rule') return 'rule'
-  if (pickFirstString(obj, ['apiUrl', 'api_url']).trim() && !obj.ruleSearch) {
+  if (strVal(obj.apiUrl).trim() && !obj.ruleSearch) {
     return 'applecms_v10'
   }
   if (srcSummary && srcSummary.source_type === 0) return 'applecms_v10'
@@ -301,25 +273,23 @@ export function hydrateVideoSourceForm(
   obj: Record<string, unknown>,
   srcSummary?: VideoSourceSummaryDto,
 ): VideoSourceSnapshot {
-  keyMap.nameKey = pickPresentKey(obj, ['sourceName', 'name', 'bookSourceName'])
-  keyMap.urlKey = pickPresentKey(obj, ['sourceUrl', 'url', 'bookSourceUrl'])
-  keyMap.groupKey = pickPresentKey(obj, ['sourceGroup', 'group', 'bookSourceGroup'])
-  keyMap.commentKey = pickPresentKey(obj, ['sourceComment', 'comment', 'bookSourceComment'])
-  keyMap.formatKey = pickPresentKey(obj, ['sourceFormat', 'mode'])
-  keyMap.apiUrlKey = pickPresentKey(obj, ['apiUrl', 'api_url'])
-  keyMap.mediaHeaderKey = pickPresentKey(obj, ['mediaHeader', 'streamHeader'])
-  keyMap.checkKeywordKey = pickPresentKey(obj, ['checkKeyword', 'checkKeyWord'])
-  keyMap.categoriesUrlKey = pickPresentKey(obj, ['categoriesUrl', 'categoryUrl'])
-  keyMap.exploreUrlKey = pickPresentKey(obj, ['exploreUrl', 'browseUrl'])
+  keyMap.nameKey = 'sourceName'
+  keyMap.urlKey = 'sourceUrl'
+  keyMap.groupKey = 'sourceGroup'
+  keyMap.commentKey = 'sourceComment'
+  keyMap.formatKey = 'sourceFormat'
+  keyMap.apiUrlKey = 'apiUrl'
+  keyMap.mediaHeaderKey = 'mediaHeader'
+  keyMap.checkKeywordKey = 'checkKeyword'
+  keyMap.categoriesUrlKey = 'categoriesUrl'
+  keyMap.exploreUrlKey = 'exploreUrl'
 
-  form.sourceName =
-    pickFirstString(obj, ['sourceName', 'name', 'bookSourceName']) || srcSummary?.name || ''
-  form.sourceUrl =
-    pickFirstString(obj, ['sourceUrl', 'url', 'bookSourceUrl']) || srcSummary?.source_url || ''
+  form.sourceName = strVal(obj.sourceName) || srcSummary?.name || ''
+  form.sourceUrl = strVal(obj.sourceUrl) || srcSummary?.source_url || ''
   const rawGroup = obj[keyMap.groupKey]
   form.sourceGroup =
     rawGroup !== undefined ? strVal(rawGroup) : (srcSummary?.group_name ?? '')
-  form.sourceComment = pickFirstString(obj, ['sourceComment', 'comment', 'bookSourceComment'])
+  form.sourceComment = strVal(obj.sourceComment)
   form.sourceFormat = resolveVideoFormat(obj, srcSummary)
   form.enabled = srcSummary ? srcSummary.enabled : boolVal(obj.enabled, true)
   form.enabledExplore = boolVal(obj.enabledExplore, true)
@@ -327,24 +297,24 @@ export function hydrateVideoSourceForm(
   form.searchable = boolVal(obj.searchable, true)
   form.weight = srcSummary ? srcSummary.weight : numVal(obj.weight, 0)
   form.concurrentRate = strVal(obj.concurrentRate)
-  form.checkKeyword = pickFirstString(obj, ['checkKeyword', 'checkKeyWord'])
-  form.apiUrl = pickFirstString(obj, ['apiUrl', 'api_url'])
+  form.checkKeyword = strVal(obj.checkKeyword)
+  form.apiUrl = strVal(obj.apiUrl)
   form.preferredPlayFrom = normalizeListToCsv(obj.preferredPlayFrom)
   form.playUrlFilterRegex = strVal(obj.playUrlFilterRegex)
   form.header = strVal(obj.header)
-  form.mediaHeader = pickFirstString(obj, ['mediaHeader', 'streamHeader'])
+  form.mediaHeader = strVal(obj.mediaHeader)
   form.loginUrl = strVal(obj.loginUrl)
   form.loginUi = strVal(obj.loginUi)
   form.loginCheckJs = strVal(obj.loginCheckJs)
   form.jsLib = strVal(obj.jsLib)
-  form.categoriesUrl = pickFirstString(obj, ['categoriesUrl', 'categoryUrl'])
+  form.categoriesUrl = strVal(obj.categoriesUrl)
   form.searchUrl = strVal(obj.searchUrl)
-  form.exploreUrl = pickFirstString(obj, ['exploreUrl', 'browseUrl'])
+  form.exploreUrl = strVal(obj.exploreUrl)
 
-  form.ruleCategories = readRuleMap(obj.ruleCategories, CATEGORIES_RULE_FIELDS, CATEGORIES_ALIASES)
-  form.ruleSearch = readRuleMap(obj.ruleSearch, SEARCH_RULE_FIELDS, SEARCH_ALIASES)
-  form.ruleExplore = readRuleMap(obj.ruleExplore, SEARCH_RULE_FIELDS, SEARCH_ALIASES)
-  form.ruleDetail = readRuleMap(obj.ruleDetail, DETAIL_RULE_FIELDS, DETAIL_ALIASES)
+  form.ruleCategories = readRuleMap(obj.ruleCategories, CATEGORIES_RULE_FIELDS)
+  form.ruleSearch = readRuleMap(obj.ruleSearch, SEARCH_RULE_FIELDS)
+  form.ruleExplore = readRuleMap(obj.ruleExplore, SEARCH_RULE_FIELDS)
+  form.ruleDetail = readRuleMap(obj.ruleDetail, DETAIL_RULE_FIELDS)
   form.rulePlay = readRuleMap(obj.rulePlay, PLAY_RULE_FIELDS)
 
   return captureVideoSourceSnapshot(form)
@@ -413,29 +383,17 @@ export function buildMergedVideoSourceObject(
   mergeOptionalField(base, out, keyMap.exploreUrlKey, form.exploreUrl, snap?.exploreUrl)
 
   const sections: Array<
-    [
-      string,
-      Record<string, string>,
-      Record<string, string> | undefined,
-      RuleFieldDef[],
-      Record<string, readonly string[]> | undefined,
-    ]
+    [string, Record<string, string>, Record<string, string> | undefined, RuleFieldDef[]]
   > = [
-    [
-      'ruleCategories',
-      form.ruleCategories,
-      snap?.ruleCategories,
-      CATEGORIES_RULE_FIELDS,
-      CATEGORIES_ALIASES,
-    ],
-    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, SEARCH_RULE_FIELDS, SEARCH_ALIASES],
-    ['ruleExplore', form.ruleExplore, snap?.ruleExplore, SEARCH_RULE_FIELDS, SEARCH_ALIASES],
-    ['ruleDetail', form.ruleDetail, snap?.ruleDetail, DETAIL_RULE_FIELDS, DETAIL_ALIASES],
-    ['rulePlay', form.rulePlay, snap?.rulePlay, PLAY_RULE_FIELDS, undefined],
+    ['ruleCategories', form.ruleCategories, snap?.ruleCategories, CATEGORIES_RULE_FIELDS],
+    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, SEARCH_RULE_FIELDS],
+    ['ruleExplore', form.ruleExplore, snap?.ruleExplore, SEARCH_RULE_FIELDS],
+    ['ruleDetail', form.ruleDetail, snap?.ruleDetail, DETAIL_RULE_FIELDS],
+    ['rulePlay', form.rulePlay, snap?.rulePlay, PLAY_RULE_FIELDS],
   ]
 
-  for (const [key, map, initMap, fields, aliases] of sections) {
-    const merged = mergeRuleSection(base[key], map, initMap, fields, aliases)
+  for (const [key, map, initMap, fields] of sections) {
+    const merged = mergeRuleSection(base[key], map, initMap, fields)
     if (merged) out[key] = merged
     else delete out[key]
   }

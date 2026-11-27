@@ -5,7 +5,7 @@ import OnlineSourceEditShell from '@/components/online-sources/OnlineSourceEditS
 import {
   hasAnyRule,
   numVal,
-  pickFirstString,
+  strVal,
   useOnlineSourceEdit,
 } from '@/components/online-sources/useOnlineSourceEdit'
 import { MdSwitch, MdTextField } from '@/components/ui'
@@ -96,8 +96,8 @@ const {
     return null
   },
   validateJsonObject: (obj) => {
-    const name = pickFirstString(obj, ['sourceName', 'name']).trim()
-    const url = pickFirstString(obj, ['sourceUrl', 'url']).trim()
+    const name = strVal(obj.sourceName).trim()
+    const url = strVal(obj.sourceUrl).trim()
     if (!name && !url) return t('onlineSources.edit.nameAndUrlRequired')
     return null
   },

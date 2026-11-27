@@ -191,13 +191,13 @@ async fn extract_page_urls_self_closing_svg_and_math_do_not_swallow_trailing_url
     let raw_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "SelfCloseForeign",
         "sourceUrl": base,
-        "ruleContent": { "content": "@js:result" }
+        "rulePages": { "content": "@js:result" }
     }))
     .unwrap();
     let rule_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "SelfCloseForeignRule",
         "sourceUrl": base,
-        "ruleContent": {
+        "rulePages": {
             "content": "@js:result",
             "imageUrl": "@js:result + '?v=1'"
         }
@@ -1103,7 +1103,7 @@ fn merged_image_headers_overrides_json_accept_unless_image_header_specifies_acce
         "sourceName": "PagesAccept",
         "sourceUrl": "https://api.mangadex.org",
         "header": r#"{"Accept":"application/json"}"#,
-        "ruleContent": { "imageHeader": r#"{"accept":"image/png"}"# }
+        "rulePages": { "imageHeader": r#"{"accept":"image/png"}"# }
     }))
     .unwrap();
     assert_eq!(

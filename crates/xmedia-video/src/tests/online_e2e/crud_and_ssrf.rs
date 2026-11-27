@@ -177,7 +177,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &format!("/api/v1/video/sources/{apple_id}/login-action"),
         &admin_tok,
         serde_json::json!({
-            "form_data": {"token": "super-secret-val"},
+            "login_info": {"token": "super-secret-val"},
             "action": "login()"
         }),
     )
@@ -415,7 +415,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &app,
         &format!("/api/v1/video/sources/{suoni_id}/test"),
         &admin_tok,
-        serde_json::json!({ "mode": "explore" }),
+        serde_json::json!({ "mode": "browse" }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);

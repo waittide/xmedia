@@ -34,7 +34,7 @@ async fn online_music_items_favorites_progress_and_remote_e2e() {
         "sourceName": "Test Music Source",
         "sourceUrl": "https://music-item.test",
         "sourceGroup": "Test",
-        "ruleSearch": { "list": "$.items[*]", "title": "$.t", "trackId": "$.id" }
+        "ruleSearch": { "trackList": "$.items[*]", "title": "$.t", "trackId": "$.id" }
     });
     let (st_imp, _, b_imp) = send_json(
         &h.app,
@@ -346,13 +346,13 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
         "sourceUrl": base_url,
         "enabled": true,
         "ruleStream": {
-            "url": format!("{base_url}/stream/{{{{track.id}}}}"),
+            "requestUrl": format!("{base_url}/stream/{{{{track.id}}}}"),
             "streamUrl": "$.url",
             "format": "$.format",
             "bitrate": "$.br"
         },
         "ruleLyric": {
-            "url": format!("{base_url}/lyric/{{{{track.id}}}}"),
+            "requestUrl": format!("{base_url}/lyric/{{{{track.id}}}}"),
             "lyric": "$.lyric"
         }
     });

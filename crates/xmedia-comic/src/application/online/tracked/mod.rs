@@ -26,7 +26,6 @@ use super::{COMIC_IMAGE_PROXY_MAX_BYTES, ComicOnlineService};
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrackOnlineComicInput {
     pub source_id: Uuid,
-    #[serde(alias = "book_url")]
     pub comic_url: String,
     #[serde(default)]
     pub toc_url: Option<String>,

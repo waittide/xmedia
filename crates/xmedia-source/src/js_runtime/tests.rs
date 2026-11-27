@@ -374,9 +374,7 @@ fn bridge_java_cookie_cache_source_methods() {
         source.putLoginInfo({ user: 'alice' });
         var srcSummary = [
             source.sourceName,
-            source.bookSourceName,
             source.sourceUrl,
-            source.bookSourceUrl,
             source.getKey(),
             source.getVariable(),
             source.getLoginInfoMap().user,
@@ -425,9 +423,7 @@ fn bridge_java_cookie_cache_source_methods() {
     assert!(v["mvAfter"].is_null());
     assert_eq!(
         v["srcSummary"].as_str(),
-        Some(
-            "TestComic,TestComic,https://comic.example.com,https://comic.example.com,https://comic.example.com,v123,alice,user"
-        )
+        Some("TestComic,https://comic.example.com,https://comic.example.com,v123,alice,user")
     );
     assert_eq!(v["gStr"].as_str(), Some("val1"));
     assert_eq!(v["gElsLen"].as_u64(), Some(3));

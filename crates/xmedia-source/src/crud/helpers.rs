@@ -49,7 +49,7 @@ where
 }
 
 /// Synchronizes mutable metadata (`enabled`, `weight`, `group_name`) into `raw_json`
-/// using `group_key` (e.g. `"bookSourceGroup"` or `"sourceGroup"`).
+/// using the domain-specific `group_key`.
 pub fn sync_raw_json_fields(
     raw_json: &str,
     enabled: Option<bool>,

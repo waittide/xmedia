@@ -19,7 +19,7 @@ use crate::infra::source::session::extract_img_srcs_from_html;
 use xmedia_source::crud::{SourceRecord, SourceSpecAdapter};
 
 #[test]
-fn parse_comic_source_spec_supports_comic_and_legado_aliases_and_object_headers() {
+fn parse_comic_source_spec_uses_canonical_keys_and_object_headers() {
     let raw = r##"[
       {
         "sourceName": "Comic Native",
@@ -30,28 +30,17 @@ fn parse_comic_source_spec_supports_comic_and_legado_aliases_and_object_headers(
         "header": {"User-Agent": "ComicUA/1.0", "Host": "evil.example.com"},
         "imageHeader": {"Referer": "https://comic.example.com/", "Connection": "close"},
         "ruleDetail": {"name": "h1@text", "readingDirection": "@js:'ltr'"},
-        "ruleChapters": {"chapterList": "li.ep", "name": "a@text", "url": "a@href"},
+        "ruleToc": {"chapterList": "li.ep", "name": "a@text", "url": "a@href"},
         "rulePages": {
-          "pages": "#_imageList img@data-url",
+          "content": "#_imageList img@data-url",
           "imageHeader": "{\"X-Img-Token\":\"abc\"}"
         }
-      },
-      {
-        "bookSourceName": "Legado Comic",
-        "bookSourceUrl": "https://legado.example.com",
-        "bookSourceGroup": "Legado",
-        "bookSourceType": 2,
-        "header": "{\"User-Agent\":\"LegadoUA\",\"Referer\":\"https://old.example/\"}",
-        "imageHeader": "{\"referer\":\"https://new.example/\"}",
-        "ruleBookInfo": {"name": ".title@text"},
-        "ruleToc": {"chapterList": ".ch", "chapterName": "a@text", "chapterUrl": "a@href"},
-        "ruleContent": {"content": ".pages img@src"}
       }
     ]"##;
 
     let batch =
         <ComicSourceSpec as xmedia_source::crud::SourceSpecAdapter>::parse_batch(raw).unwrap();
-    assert_eq!(batch.len(), 2);
+    assert_eq!(batch.len(), 1);
 
     let (native, _) = &batch[0];
     assert_eq!(native.source_name, "Comic Native");
@@ -75,17 +64,12 @@ fn parse_comic_source_spec_supports_comic_and_legado_aliases_and_object_headers(
     );
     assert!(!native_headers.contains_key("Host"));
     assert!(!native_headers.contains_key("Connection"));
+}
 
-    let (legado, _) = &batch[1];
-    assert_eq!(legado.source_name, "Legado Comic");
-    assert_eq!(legado.source_type, 2);
-    assert_eq!(legado.effective_reading_direction(), ReadingDirection::Rtl);
-    let legado_headers = legado.image_headers(None);
-    assert_eq!(
-        legado_headers.get("referer").map(String::as_str),
-        Some("https://new.example/")
-    );
-    assert!(!legado_headers.contains_key("Referer"));
+#[test]
+fn parse_comic_source_spec_rejects_legacy_field_names() {
+    let raw = r#"{"bookSourceName":"Legacy","bookSourceUrl":"https://legacy.example.com"}"#;
+    assert!(ComicSourceSpec::parse_batch(raw).is_err());
 }
 
 #[test]
@@ -146,34 +130,19 @@ fn seeds_comic_json_parses_cleanly_with_all_five_verified_sources() {
 }
 
 #[test]
-fn sync_raw_json_fields_canonicalizes_legado_and_comic_group_key() {
-    let legado_raw =
-        r#"{"bookSourceName":"A","bookSourceUrl":"https://a","bookSourceGroup":"Old"}"#;
-    let (_, normalized_legado) = ComicSourceSpec::parse_batch(legado_raw).unwrap().remove(0);
-    let updated_legado = SourceRecord::sync_raw_json_fields(
-        &normalized_legado,
-        Some(false),
-        Some(50),
-        Some("New"),
-        ComicSourceSpec::JSON_GROUP_KEY,
-    );
-    let v1: serde_json::Value = serde_json::from_str(&updated_legado).unwrap();
-    assert_eq!(v1["sourceGroup"], "New");
-    assert!(v1.get("bookSourceGroup").is_none());
-    assert_eq!(v1["enabled"], false);
-    assert_eq!(v1["weight"], 50);
-
+fn sync_raw_json_fields_updates_comic_group_key() {
     let comic_raw = r#"{"sourceName":"B","sourceUrl":"https://b","sourceGroup":"Old"}"#;
     let updated_comic = SourceRecord::sync_raw_json_fields(
         comic_raw,
-        None,
-        None,
+        Some(false),
+        Some(50),
         Some("Manga"),
         ComicSourceSpec::JSON_GROUP_KEY,
     );
     let v2: serde_json::Value = serde_json::from_str(&updated_comic).unwrap();
     assert_eq!(v2["sourceGroup"], "Manga");
-    assert!(v2.get("bookSourceGroup").is_none());
+    assert_eq!(v2["enabled"], false);
+    assert_eq!(v2["weight"], 50);
 }
 
 #[test]
@@ -377,7 +346,7 @@ async fn engine_handles_paginated_chapters_paginated_pages_and_explore_fallback(
             "chapterUrl": "a@href",
             "nextTocUrl": "a.next@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "nextContentUrl": "a.next-page@href"
         }
@@ -460,9 +429,9 @@ async fn engine_handles_paginated_chapters_paginated_pages_and_explore_fallback(
 }
 
 #[test]
-fn sync_raw_json_fields_canonicalizes_source_group_after_clear_and_restore() {
-    let legado_raw = r#"{"bookSourceName":"BugRepro","bookSourceUrl":"https://ex.test","bookSourceGroup":"Original"}"#;
-    let (_, normalized) = ComicSourceSpec::parse_batch(legado_raw).unwrap().remove(0);
+fn sync_raw_json_fields_updates_source_group_after_clear_and_restore() {
+    let raw = r#"{"sourceName":"BugRepro","sourceUrl":"https://ex.test","sourceGroup":"Original"}"#;
+    let (_, normalized) = ComicSourceSpec::parse_batch(raw).unwrap().remove(0);
     let cleared = SourceRecord::sync_raw_json_fields(
         &normalized,
         None,
@@ -471,7 +440,6 @@ fn sync_raw_json_fields_canonicalizes_source_group_after_clear_and_restore() {
         ComicSourceSpec::JSON_GROUP_KEY,
     );
     let v_cleared: serde_json::Value = serde_json::from_str(&cleared).unwrap();
-    assert!(v_cleared.get("bookSourceGroup").is_none());
     assert!(v_cleared.get("sourceGroup").is_none());
 
     let restored = SourceRecord::sync_raw_json_fields(
@@ -483,7 +451,6 @@ fn sync_raw_json_fields_canonicalizes_source_group_after_clear_and_restore() {
     );
     let v_restored: serde_json::Value = serde_json::from_str(&restored).unwrap();
     assert_eq!(v_restored["sourceGroup"], "Restored");
-    assert!(v_restored.get("bookSourceGroup").is_none());
 }
 
 #[tokio::test]
@@ -560,19 +527,19 @@ async fn extract_page_urls_handles_html_wrappers_multiline_img_json_rule_and_svg
     let html_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "HtmlFrag",
         "sourceUrl": base,
-        "ruleContent": { "content": "#imgs@html" }
+        "rulePages": { "content": "#imgs@html" }
     }))
     .unwrap();
     let multiline_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "MultilineFrag",
         "sourceUrl": base,
-        "ruleContent": { "content": "@js:result" }
+        "rulePages": { "content": "@js:result" }
     }))
     .unwrap();
     let json_rule_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "JsonStrRule",
         "sourceUrl": base,
-        "ruleContent": {
+        "rulePages": {
             "content": "@js:result.images",
             "imageUrl": "@js:result + '?auth=1'"
         }
@@ -929,7 +896,7 @@ async fn chapters_and_pages_ignore_hash_javascript_and_redirect_cycles() {
             "chapterUrl": "a@href",
             "nextTocUrl": "a.next@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "nextContentUrl": "a.next-page@href"
         }
@@ -1057,13 +1024,13 @@ async fn extract_page_urls_handles_mixed_plain_and_img_and_html_wrapper_with_ima
     let mixed_plain_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "MixedPlain",
         "sourceUrl": base,
-        "ruleContent": { "content": "@js:result" }
+        "rulePages": { "content": "@js:result" }
     }))
     .unwrap();
     let mixed_rule_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "MixedRule",
         "sourceUrl": base,
-        "ruleContent": {
+        "rulePages": {
             "content": "@js:result",
             "imageUrl": "@js:result + '?tok=1'"
         }
@@ -1072,7 +1039,7 @@ async fn extract_page_urls_handles_mixed_plain_and_img_and_html_wrapper_with_ima
     let wrapper_rule_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "WrapperRule",
         "sourceUrl": base,
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "imageUrl": "@js:result + '?tok=1'"
         }
@@ -1284,7 +1251,7 @@ async fn fetch_chapters_and_pages_stop_on_302_redirect_alias_cycle() {
             "chapterUrl": "a@href",
             "nextTocUrl": "a.next@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "nextContentUrl": "a.next-page@href"
         }

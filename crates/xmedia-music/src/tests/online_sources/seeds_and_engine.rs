@@ -33,11 +33,11 @@ fn seeds_music_json_parses_cleanly_and_helpers_behave_correctly() {
     assert_eq!(parsed[3].0.source_name, "iTunes Search + LRCLIB");
 
     let custom_raw = r#"{
-        "name": "Custom",
-        "url": "https://example.test",
+        "sourceName": "Custom",
+        "sourceUrl": "https://example.test",
         "enabled": "false",
         "weight": "42",
-        "Header": {"User-Agent": "CustomUA"},
+        "header": {"User-Agent": "CustomUA"},
         "mediaHeader": {"Referer": "https://media.test/"},
         "supportedQualities": "128, 320 | flac"
     }"#;

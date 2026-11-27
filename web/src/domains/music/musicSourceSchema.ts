@@ -4,8 +4,6 @@ import {
   mergeOptionalField,
   mergeRuleSection,
   numVal,
-  pickFirstString,
-  pickPresentKey,
   readRuleMap,
   strVal,
 } from '@/components/online-sources/useOnlineSourceEdit'
@@ -13,49 +11,6 @@ import type { SourceEditFourTab } from '@/domains/shared/source-editor/types'
 import type { MusicSourceSummaryDto } from './onlineApi'
 
 export type MusicSourceEditTab = SourceEditFourTab
-
-export const MUSIC_SEARCH_ALIASES: Record<string, readonly string[]> = {
-  trackList: ['list', 'songList'],
-  trackId: ['id'],
-  title: ['name'],
-  artist: ['author', 'singer'],
-  coverUrl: ['picUrl'],
-  coverId: ['picId', 'pic_id'],
-  urlId: ['url_id'],
-  lyricId: ['lyric_id'],
-  playUrl: ['streamUrl'],
-  detailUrl: ['trackUrl'],
-  checkKeyWord: ['checkKeyword'],
-}
-
-export const MUSIC_TRACK_DETAIL_ALIASES: Record<string, readonly string[]> = {
-  requestUrl: ['url'],
-  trackId: ['id'],
-  title: ['name'],
-  artist: ['author', 'singer'],
-  coverUrl: ['picUrl'],
-  coverId: ['picId', 'pic_id'],
-  urlId: ['url_id'],
-  lyricId: ['lyric_id'],
-  playUrl: ['streamUrl'],
-}
-
-export const MUSIC_STREAM_ALIASES: Record<string, readonly string[]> = {
-  requestUrl: ['url'],
-  streamUrl: ['urlRule', 'playUrl'],
-}
-
-export const MUSIC_COVER_ALIASES: Record<string, readonly string[]> = {
-  requestUrl: ['url'],
-  coverUrl: ['urlRule'],
-}
-
-export const MUSIC_LYRIC_ALIASES: Record<string, readonly string[]> = {
-  requestUrl: ['url'],
-  lyric: ['syncedLyrics'],
-  translatedLyric: ['tlyric'],
-  plainLyric: ['plainLyrics'],
-}
 
 interface MusicFieldSpec {
   key: string
@@ -247,12 +202,12 @@ export function createDefaultMusicFormState(): MusicSourceFormState {
     jsLib: '',
     searchUrl: '',
     exploreUrl: '',
-    ruleSearch: readRuleMap(undefined, MUSIC_SEARCH_KEY_DEFS, MUSIC_SEARCH_ALIASES),
-    ruleExplore: readRuleMap(undefined, MUSIC_EXPLORE_KEY_DEFS, MUSIC_SEARCH_ALIASES),
-    ruleTrackDetail: readRuleMap(undefined, MUSIC_DETAIL_KEY_DEFS, MUSIC_TRACK_DETAIL_ALIASES),
-    ruleStream: readRuleMap(undefined, MUSIC_STREAM_KEY_DEFS, MUSIC_STREAM_ALIASES),
-    ruleCover: readRuleMap(undefined, MUSIC_COVER_KEY_DEFS, MUSIC_COVER_ALIASES),
-    ruleLyric: readRuleMap(undefined, MUSIC_LYRIC_KEY_DEFS, MUSIC_LYRIC_ALIASES),
+    ruleSearch: readRuleMap(undefined, MUSIC_SEARCH_KEY_DEFS),
+    ruleExplore: readRuleMap(undefined, MUSIC_EXPLORE_KEY_DEFS),
+    ruleTrackDetail: readRuleMap(undefined, MUSIC_DETAIL_KEY_DEFS),
+    ruleStream: readRuleMap(undefined, MUSIC_STREAM_KEY_DEFS),
+    ruleCover: readRuleMap(undefined, MUSIC_COVER_KEY_DEFS),
+    ruleLyric: readRuleMap(undefined, MUSIC_LYRIC_KEY_DEFS),
   }
 }
 
@@ -312,13 +267,13 @@ export function hydrateMusicSourceForm(
   obj: Record<string, unknown>,
   srcSummary?: MusicSourceSummaryDto,
 ): MusicSourceSnapshot {
-  keyMap.nameKey = pickPresentKey(obj, ['sourceName', 'name'])
-  keyMap.urlKey = pickPresentKey(obj, ['sourceUrl', 'url'])
-  keyMap.headerKey = pickPresentKey(obj, ['header', 'Header'])
-  keyMap.mediaHeaderKey = pickPresentKey(obj, ['mediaHeader', 'MediaHeader'])
+  keyMap.nameKey = 'sourceName'
+  keyMap.urlKey = 'sourceUrl'
+  keyMap.headerKey = 'header'
+  keyMap.mediaHeaderKey = 'mediaHeader'
 
-  form.sourceName = pickFirstString(obj, ['sourceName', 'name']) || srcSummary?.name || ''
-  form.sourceUrl = pickFirstString(obj, ['sourceUrl', 'url']) || srcSummary?.source_url || ''
+  form.sourceName = strVal(obj.sourceName) || srcSummary?.name || ''
+  form.sourceUrl = strVal(obj.sourceUrl) || srcSummary?.source_url || ''
   form.sourceGroup =
     obj.sourceGroup !== undefined ? strVal(obj.sourceGroup) : (srcSummary?.group_name ?? '')
   form.sourceComment = strVal(obj.sourceComment)
@@ -336,16 +291,12 @@ export function hydrateMusicSourceForm(
   form.searchUrl = strVal(obj.searchUrl)
   form.exploreUrl = strVal(obj.exploreUrl)
 
-  form.ruleSearch = readRuleMap(obj.ruleSearch, MUSIC_SEARCH_KEY_DEFS, MUSIC_SEARCH_ALIASES)
-  form.ruleExplore = readRuleMap(obj.ruleExplore, MUSIC_EXPLORE_KEY_DEFS, MUSIC_SEARCH_ALIASES)
-  form.ruleTrackDetail = readRuleMap(
-    obj.ruleTrackDetail,
-    MUSIC_DETAIL_KEY_DEFS,
-    MUSIC_TRACK_DETAIL_ALIASES,
-  )
-  form.ruleStream = readRuleMap(obj.ruleStream, MUSIC_STREAM_KEY_DEFS, MUSIC_STREAM_ALIASES)
-  form.ruleCover = readRuleMap(obj.ruleCover, MUSIC_COVER_KEY_DEFS, MUSIC_COVER_ALIASES)
-  form.ruleLyric = readRuleMap(obj.ruleLyric, MUSIC_LYRIC_KEY_DEFS, MUSIC_LYRIC_ALIASES)
+  form.ruleSearch = readRuleMap(obj.ruleSearch, MUSIC_SEARCH_KEY_DEFS)
+  form.ruleExplore = readRuleMap(obj.ruleExplore, MUSIC_EXPLORE_KEY_DEFS)
+  form.ruleTrackDetail = readRuleMap(obj.ruleTrackDetail, MUSIC_DETAIL_KEY_DEFS)
+  form.ruleStream = readRuleMap(obj.ruleStream, MUSIC_STREAM_KEY_DEFS)
+  form.ruleCover = readRuleMap(obj.ruleCover, MUSIC_COVER_KEY_DEFS)
+  form.ruleLyric = readRuleMap(obj.ruleLyric, MUSIC_LYRIC_KEY_DEFS)
 
   return {
     sourceGroup: form.sourceGroup,
@@ -415,35 +366,17 @@ export function buildMergedMusicSourceObject(
   mergeOptionalField(base, out, 'exploreUrl', form.exploreUrl, snap?.exploreUrl)
 
   const sections: Array<
-    [
-      string,
-      Record<string, string>,
-      Record<string, string> | undefined,
-      RuleFieldDef[],
-      Record<string, readonly string[]>,
-    ]
+    [string, Record<string, string>, Record<string, string> | undefined, RuleFieldDef[]]
   > = [
-    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, MUSIC_SEARCH_KEY_DEFS, MUSIC_SEARCH_ALIASES],
-    [
-      'ruleExplore',
-      form.ruleExplore,
-      snap?.ruleExplore,
-      MUSIC_EXPLORE_KEY_DEFS,
-      MUSIC_SEARCH_ALIASES,
-    ],
-    [
-      'ruleTrackDetail',
-      form.ruleTrackDetail,
-      snap?.ruleTrackDetail,
-      MUSIC_DETAIL_KEY_DEFS,
-      MUSIC_TRACK_DETAIL_ALIASES,
-    ],
-    ['ruleStream', form.ruleStream, snap?.ruleStream, MUSIC_STREAM_KEY_DEFS, MUSIC_STREAM_ALIASES],
-    ['ruleCover', form.ruleCover, snap?.ruleCover, MUSIC_COVER_KEY_DEFS, MUSIC_COVER_ALIASES],
-    ['ruleLyric', form.ruleLyric, snap?.ruleLyric, MUSIC_LYRIC_KEY_DEFS, MUSIC_LYRIC_ALIASES],
+    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, MUSIC_SEARCH_KEY_DEFS],
+    ['ruleExplore', form.ruleExplore, snap?.ruleExplore, MUSIC_EXPLORE_KEY_DEFS],
+    ['ruleTrackDetail', form.ruleTrackDetail, snap?.ruleTrackDetail, MUSIC_DETAIL_KEY_DEFS],
+    ['ruleStream', form.ruleStream, snap?.ruleStream, MUSIC_STREAM_KEY_DEFS],
+    ['ruleCover', form.ruleCover, snap?.ruleCover, MUSIC_COVER_KEY_DEFS],
+    ['ruleLyric', form.ruleLyric, snap?.ruleLyric, MUSIC_LYRIC_KEY_DEFS],
   ]
-  for (const [key, map, initMap, fields, aliases] of sections) {
-    const merged = mergeRuleSection(base[key], map, initMap, fields, aliases)
+  for (const [key, map, initMap, fields] of sections) {
+    const merged = mergeRuleSection(base[key], map, initMap, fields)
     if (merged) out[key] = merged
     else delete out[key]
   }

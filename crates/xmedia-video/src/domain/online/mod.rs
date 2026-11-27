@@ -57,7 +57,6 @@ fn non_empty_trimmed(raw: &str) -> Option<&str> {
 #[serde(rename_all = "snake_case")]
 pub enum VideoSourceFormat {
     #[default]
-    #[serde(alias = "applecms", alias = "applecmsV10")]
     ApplecmsV10,
     Rule,
 }
@@ -65,24 +64,24 @@ pub enum VideoSourceFormat {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoCategoriesRule {
-    #[serde(default, alias = "bookList", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub list: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub id: Option<String>,
-    #[serde(default, alias = "title", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSearchRule {
-    #[serde(default, alias = "bookList", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub list: Option<String>,
-    #[serde(default, alias = "id", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub vod_id: Option<String>,
-    #[serde(default, alias = "title", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub name: Option<String>,
-    #[serde(default, alias = "posterUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub remarks: Option<String>,
@@ -90,9 +89,9 @@ pub struct VideoSearchRule {
     pub year: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub area: Option<String>,
-    #[serde(default, alias = "category", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub type_name: Option<String>,
-    #[serde(default, alias = "bookUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub detail_url: Option<String>,
 }
 
@@ -103,11 +102,11 @@ pub struct VideoDetailRule {
     pub request_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub init: Option<String>,
-    #[serde(default, alias = "title", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub name: Option<String>,
-    #[serde(default, alias = "posterUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_url: Option<String>,
-    #[serde(default, alias = "description", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub intro: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub actors: Option<String>,
@@ -119,15 +118,15 @@ pub struct VideoDetailRule {
     pub area: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub remarks: Option<String>,
-    #[serde(default, alias = "groups", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub play_groups: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub group_name: Option<String>,
-    #[serde(default, alias = "chapterList", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub episodes: Option<String>,
-    #[serde(default, alias = "chapterName", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub episode_name: Option<String>,
-    #[serde(default, alias = "chapterUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub episode_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub play_url: Option<String>,
@@ -170,35 +169,15 @@ pub enum VideoSourceBackend<'a> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSourceSpec {
-    #[serde(
-        default,
-        alias = "name",
-        alias = "bookSourceName",
-        deserialize_with = "de_string_or_default"
-    )]
+    #[serde(default, deserialize_with = "de_string_or_default")]
     pub source_name: String,
-    #[serde(
-        default,
-        alias = "url",
-        alias = "bookSourceUrl",
-        deserialize_with = "de_string_or_default"
-    )]
+    #[serde(default, deserialize_with = "de_string_or_default")]
     pub source_url: String,
-    #[serde(
-        default,
-        alias = "group",
-        alias = "bookSourceGroup",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     source_group: Option<String>,
-    #[serde(
-        default,
-        alias = "comment",
-        alias = "bookSourceComment",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     source_comment: Option<String>,
-    #[serde(default, alias = "mode")]
+    #[serde(default)]
     source_format: Option<VideoSourceFormat>,
     #[serde(default = "default_true", deserialize_with = "de_bool_true")]
     enabled: bool,
@@ -214,11 +193,11 @@ pub struct VideoSourceSpec {
     custom_order: i64,
     #[serde(default, deserialize_with = "de_opt_string")]
     header: Option<String>,
-    #[serde(default, alias = "streamHeader", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     media_header: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     concurrent_rate: Option<String>,
-    #[serde(default, alias = "checkKeyWord", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     check_keyword: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub login_url: Option<String>,
@@ -230,7 +209,7 @@ pub struct VideoSourceSpec {
     js_lib: Option<String>,
 
     // AppleCMS v10 mode fields
-    #[serde(default, alias = "api_url", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     api_url: Option<String>,
     #[serde(default, deserialize_with = "de_string_vec_lenient")]
     pub preferred_play_from: Vec<String>,
@@ -240,9 +219,9 @@ pub struct VideoSourceSpec {
     // Generic Rule mode fields
     #[serde(default, deserialize_with = "de_opt_string")]
     search_url: Option<String>,
-    #[serde(default, alias = "browseUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     explore_url: Option<String>,
-    #[serde(default, alias = "categoryUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     categories_url: Option<String>,
     #[serde(default)]
     rule_categories: Option<VideoCategoriesRule>,

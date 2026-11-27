@@ -29,7 +29,6 @@ globalThis.book = {
     name: '',
     author: '',
     bookUrl: '',
-    comicUrl: '',
     tocUrl: '',
     coverUrl: '',
     abstract: '',
@@ -173,7 +172,6 @@ impl ReusableComicSession {
             "name": comic.name,
             "author": comic.author,
             "bookUrl": comic.book_url,
-            "comicUrl": comic.book_url,
             "tocUrl": comic.toc_url,
             "coverUrl": comic.cover_url.as_deref().unwrap_or(""),
             "abstract": comic.intro.as_deref().unwrap_or(""),
@@ -349,15 +347,16 @@ impl ReusableComicSession {
         comic_ctx: &ComicJsContext,
         chapter_ctx: &ComicChapterJsContext,
     ) -> Result<Vec<String>, String> {
-        let rule_pages =
-            self.source.rule_pages.clone().ok_or_else(|| {
-                format!("漫画源「{}」未配置 ruleContent", self.source.source_name)
-            })?;
+        let rule_pages = self
+            .source
+            .rule_pages
+            .clone()
+            .ok_or_else(|| format!("漫画源「{}」未配置 rulePages", self.source.source_name))?;
         let content_rule = rule_pages
             .content
             .as_deref()
             .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| "ruleContent 缺少 content/pages 规则".to_string())?;
+            .ok_or_else(|| "rulePages 缺少 content 规则".to_string())?;
 
         self.set_comic_context(comic_ctx)?;
         self.set_chapter_context(chapter_ctx)?;

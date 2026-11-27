@@ -4,8 +4,6 @@ import {
   mergeOptionalField,
   mergeRuleSection,
   numVal,
-  pickFirstString,
-  pickPresentKey,
   readRuleMap,
   strVal,
 } from '@/components/online-sources/useOnlineSourceEdit'
@@ -13,30 +11,6 @@ import type { SourceEditFourTab } from '@/domains/shared/source-editor/types'
 import type { ComicSourceSummaryDto } from './onlineApi'
 
 export type ComicSourceEditTab = SourceEditFourTab
-
-export const COMIC_SEARCH_ALIASES: Record<string, readonly string[]> = {
-  bookList: ['comicList', 'list'],
-  name: ['title'],
-  bookUrl: ['comicUrl', 'url'],
-  coverUrl: ['cover'],
-}
-
-export const COMIC_DETAIL_ALIASES: Record<string, readonly string[]> = {
-  name: ['title'],
-  coverUrl: ['cover'],
-  tocUrl: ['chaptersUrl'],
-}
-
-export const COMIC_TOC_ALIASES: Record<string, readonly string[]> = {
-  chapterName: ['name', 'title'],
-  chapterUrl: ['url'],
-  nextTocUrl: ['nextChaptersUrl'],
-}
-
-export const COMIC_PAGES_ALIASES: Record<string, readonly string[]> = {
-  content: ['pages', 'images'],
-  nextContentUrl: ['nextPageUrl'],
-}
 
 interface ComicRuleSpec {
   key: string
@@ -48,10 +22,10 @@ interface ComicRuleSpec {
 
 const SEARCH_SPECS: readonly ComicRuleSpec[] = [
   { key: 'checkKeyWord' },
-  { key: 'bookList', placeholder: 'bookList / comicList', fullWidth: true },
-  { key: 'name', placeholder: 'name / title' },
+  { key: 'bookList', fullWidth: true },
+  { key: 'name' },
   { key: 'author' },
-  { key: 'bookUrl', placeholder: 'bookUrl / comicUrl', fullWidth: true },
+  { key: 'bookUrl', fullWidth: true },
   { key: 'coverUrl', fullWidth: true },
   { key: 'kind' },
   { key: 'wordCount' },
@@ -65,9 +39,9 @@ const EXPLORE_SPECS: readonly ComicRuleSpec[] = SEARCH_SPECS.filter(
 
 const DETAIL_SPECS: readonly ComicRuleSpec[] = [
   { key: 'init', multiline: true, rows: 2, fullWidth: true },
-  { key: 'name', placeholder: 'name / title' },
+  { key: 'name' },
   { key: 'author' },
-  { key: 'tocUrl', placeholder: 'tocUrl / chaptersUrl', fullWidth: true },
+  { key: 'tocUrl', fullWidth: true },
   { key: 'coverUrl', fullWidth: true },
   { key: 'kind' },
   { key: 'status' },
@@ -90,7 +64,7 @@ const TOC_SPECS: readonly ComicRuleSpec[] = [
 ]
 
 const PAGES_SPECS: readonly ComicRuleSpec[] = [
-  { key: 'content', placeholder: 'content / pages', multiline: true, rows: 4, fullWidth: true },
+  { key: 'content', multiline: true, rows: 4, fullWidth: true },
   { key: 'title' },
   { key: 'imageUrl' },
   { key: 'nextContentUrl' },
@@ -235,11 +209,11 @@ export function createDefaultComicFormState(): ComicSourceFormState {
     jsLib: '',
     searchUrl: '',
     exploreUrl: '',
-    ruleSearch: readRuleMap(undefined, COMIC_SEARCH_KEY_DEFS, COMIC_SEARCH_ALIASES),
-    ruleExplore: readRuleMap(undefined, COMIC_EXPLORE_KEY_DEFS, COMIC_SEARCH_ALIASES),
-    ruleDetail: readRuleMap(undefined, COMIC_DETAIL_KEY_DEFS, COMIC_DETAIL_ALIASES),
-    ruleToc: readRuleMap(undefined, COMIC_TOC_KEY_DEFS, COMIC_TOC_ALIASES),
-    rulePages: readRuleMap(undefined, COMIC_PAGES_KEY_DEFS, COMIC_PAGES_ALIASES),
+    ruleSearch: readRuleMap(undefined, COMIC_SEARCH_KEY_DEFS),
+    ruleExplore: readRuleMap(undefined, COMIC_EXPLORE_KEY_DEFS),
+    ruleDetail: readRuleMap(undefined, COMIC_DETAIL_KEY_DEFS),
+    ruleToc: readRuleMap(undefined, COMIC_TOC_KEY_DEFS),
+    rulePages: readRuleMap(undefined, COMIC_PAGES_KEY_DEFS),
   }
 }
 
@@ -249,22 +223,21 @@ export function hydrateComicSourceForm(
   obj: Record<string, unknown>,
   srcSummary?: ComicSourceSummaryDto,
 ): ComicSourceSnapshot {
-  keyMap.nameKey = pickPresentKey(obj, ['sourceName', 'bookSourceName'])
-  keyMap.urlKey = pickPresentKey(obj, ['sourceUrl', 'bookSourceUrl'])
-  keyMap.groupKey = pickPresentKey(obj, ['sourceGroup', 'bookSourceGroup'])
-  keyMap.commentKey = pickPresentKey(obj, ['sourceComment', 'bookSourceComment'])
-  keyMap.typeKey = pickPresentKey(obj, ['sourceType', 'bookSourceType'])
-  keyMap.patternKey = pickPresentKey(obj, ['comicUrlPattern', 'bookUrlPattern'])
-  keyMap.detailRuleKey = pickPresentKey(obj, ['ruleDetail', 'ruleBookInfo'])
-  keyMap.tocRuleKey = pickPresentKey(obj, ['ruleToc', 'ruleChapters'])
-  keyMap.pagesRuleKey = pickPresentKey(obj, ['rulePages', 'ruleContent'])
+  keyMap.nameKey = 'sourceName'
+  keyMap.urlKey = 'sourceUrl'
+  keyMap.groupKey = 'sourceGroup'
+  keyMap.commentKey = 'sourceComment'
+  keyMap.typeKey = 'sourceType'
+  keyMap.patternKey = 'comicUrlPattern'
+  keyMap.detailRuleKey = 'ruleDetail'
+  keyMap.tocRuleKey = 'ruleToc'
+  keyMap.pagesRuleKey = 'rulePages'
 
-  form.sourceName = pickFirstString(obj, ['sourceName', 'bookSourceName']) || srcSummary?.name || ''
-  form.sourceUrl =
-    pickFirstString(obj, ['sourceUrl', 'bookSourceUrl']) || srcSummary?.source_url || ''
+  form.sourceName = strVal(obj.sourceName) || srcSummary?.name || ''
+  form.sourceUrl = strVal(obj.sourceUrl) || srcSummary?.source_url || ''
   const rawGroup = obj[keyMap.groupKey]
   form.sourceGroup = rawGroup !== undefined ? strVal(rawGroup) : (srcSummary?.group_name ?? '')
-  form.sourceComment = pickFirstString(obj, ['sourceComment', 'bookSourceComment'])
+  form.sourceComment = strVal(obj.sourceComment)
   form.sourceType = numVal(obj[keyMap.typeKey], srcSummary?.source_type ?? 2)
   const dir = strVal(obj.readingDirection).trim().toLowerCase()
   form.readingDirection =
@@ -280,7 +253,7 @@ export function hydrateComicSourceForm(
   form.concurrentRate = strVal(obj.concurrentRate)
   form.header = strVal(obj.header)
   form.imageHeader = strVal(obj.imageHeader)
-  form.comicUrlPattern = pickFirstString(obj, ['comicUrlPattern', 'bookUrlPattern'])
+  form.comicUrlPattern = strVal(obj.comicUrlPattern)
   form.loginUrl = strVal(obj.loginUrl)
   form.loginUi = strVal(obj.loginUi)
   form.loginCheckJs = strVal(obj.loginCheckJs)
@@ -288,15 +261,11 @@ export function hydrateComicSourceForm(
   form.searchUrl = strVal(obj.searchUrl)
   form.exploreUrl = strVal(obj.exploreUrl)
 
-  form.ruleSearch = readRuleMap(obj.ruleSearch, COMIC_SEARCH_KEY_DEFS, COMIC_SEARCH_ALIASES)
-  form.ruleExplore = readRuleMap(obj.ruleExplore, COMIC_EXPLORE_KEY_DEFS, COMIC_SEARCH_ALIASES)
-  form.ruleDetail = readRuleMap(
-    obj[keyMap.detailRuleKey],
-    COMIC_DETAIL_KEY_DEFS,
-    COMIC_DETAIL_ALIASES,
-  )
-  form.ruleToc = readRuleMap(obj[keyMap.tocRuleKey], COMIC_TOC_KEY_DEFS, COMIC_TOC_ALIASES)
-  form.rulePages = readRuleMap(obj[keyMap.pagesRuleKey], COMIC_PAGES_KEY_DEFS, COMIC_PAGES_ALIASES)
+  form.ruleSearch = readRuleMap(obj.ruleSearch, COMIC_SEARCH_KEY_DEFS)
+  form.ruleExplore = readRuleMap(obj.ruleExplore, COMIC_EXPLORE_KEY_DEFS)
+  form.ruleDetail = readRuleMap(obj[keyMap.detailRuleKey], COMIC_DETAIL_KEY_DEFS)
+  form.ruleToc = readRuleMap(obj[keyMap.tocRuleKey], COMIC_TOC_KEY_DEFS)
+  form.rulePages = readRuleMap(obj[keyMap.pagesRuleKey], COMIC_PAGES_KEY_DEFS)
 
   return {
     sourceGroup: form.sourceGroup,
@@ -376,40 +345,16 @@ export function buildMergedComicSourceObject(
   mergeOptionalField(base, out, 'exploreUrl', form.exploreUrl, snap?.exploreUrl)
 
   const sections: Array<
-    [
-      string,
-      Record<string, string>,
-      Record<string, string> | undefined,
-      RuleFieldDef[],
-      Record<string, readonly string[]>,
-    ]
+    [string, Record<string, string>, Record<string, string> | undefined, RuleFieldDef[]]
   > = [
-    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, COMIC_SEARCH_KEY_DEFS, COMIC_SEARCH_ALIASES],
-    [
-      'ruleExplore',
-      form.ruleExplore,
-      snap?.ruleExplore,
-      COMIC_EXPLORE_KEY_DEFS,
-      COMIC_SEARCH_ALIASES,
-    ],
-    [
-      keyMap.detailRuleKey,
-      form.ruleDetail,
-      snap?.ruleDetail,
-      COMIC_DETAIL_KEY_DEFS,
-      COMIC_DETAIL_ALIASES,
-    ],
-    [keyMap.tocRuleKey, form.ruleToc, snap?.ruleToc, COMIC_TOC_KEY_DEFS, COMIC_TOC_ALIASES],
-    [
-      keyMap.pagesRuleKey,
-      form.rulePages,
-      snap?.rulePages,
-      COMIC_PAGES_KEY_DEFS,
-      COMIC_PAGES_ALIASES,
-    ],
+    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, COMIC_SEARCH_KEY_DEFS],
+    ['ruleExplore', form.ruleExplore, snap?.ruleExplore, COMIC_EXPLORE_KEY_DEFS],
+    [keyMap.detailRuleKey, form.ruleDetail, snap?.ruleDetail, COMIC_DETAIL_KEY_DEFS],
+    [keyMap.tocRuleKey, form.ruleToc, snap?.ruleToc, COMIC_TOC_KEY_DEFS],
+    [keyMap.pagesRuleKey, form.rulePages, snap?.rulePages, COMIC_PAGES_KEY_DEFS],
   ]
-  for (const [key, map, initMap, fields, aliases] of sections) {
-    const merged = mergeRuleSection(base[key], map, initMap, fields, aliases)
+  for (const [key, map, initMap, fields] of sections) {
+    const merged = mergeRuleSection(base[key], map, initMap, fields)
     if (merged) out[key] = merged
     else delete out[key]
   }

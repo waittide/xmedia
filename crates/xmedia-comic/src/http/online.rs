@@ -73,7 +73,6 @@ struct OnlineExploreRequest {
 #[derive(Debug, Deserialize)]
 struct OnlineDetailRequest {
     source_id: Uuid,
-    #[serde(alias = "book_url")]
     comic_url: String,
     fallback_hint: Option<ComicJsContext>,
 }
@@ -82,7 +81,7 @@ struct OnlineDetailRequest {
 struct OnlineChaptersRequest {
     source_id: Uuid,
     toc_url: String,
-    #[serde(default, alias = "book")]
+    #[serde(default)]
     comic: ComicJsContext,
 }
 
@@ -91,7 +90,7 @@ struct OnlinePagesRequest {
     source_id: Uuid,
     chapter_url: String,
     comic_url: Option<String>,
-    #[serde(default, alias = "book")]
+    #[serde(default)]
     comic: ComicJsContext,
     #[serde(default)]
     chapter: ComicChapterJsContext,

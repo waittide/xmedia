@@ -249,7 +249,7 @@ pub(super) fn run_test_stages(
         }
     }
 
-    // Stage 2: ruleDetail / ruleBookInfo
+    // Stage 2: ruleDetail
     let run_detail = match mode {
         ComicSourceTestMode::Detail => {
             if next_comic_url.is_none() {
@@ -297,7 +297,7 @@ pub(super) fn run_test_stages(
                 };
                 let err = (!ok).then(|| {
                     if !has_detail {
-                        "漫画源未配置 ruleDetail / ruleBookInfo".into()
+                        "漫画源未配置 ruleDetail".into()
                     } else {
                         "ruleDetail 未能提取有效漫画标题".into()
                     }
@@ -445,7 +445,7 @@ pub(super) fn run_test_stages(
         }
     }
 
-    // Stage 4: rulePages / ruleContent
+    // Stage 4: rulePages
     let run_pages = match mode {
         ComicSourceTestMode::Pages => {
             if next_chapter_url.is_none() {
@@ -498,7 +498,7 @@ pub(super) fn run_test_stages(
                 } else {
                     format!("《{resolved_title}》未提取到图片页")
                 };
-                let err = (!ok).then(|| "ruleContent 未能提取出有效的图片 URL".into());
+                let err = (!ok).then(|| "rulePages 未能提取出有效的图片 URL".into());
                 out_chapter_index = Some(next_chapter_idx);
                 out_chapter_title = Some(resolved_title);
                 out_chapter_url = Some(ch_url.clone());
@@ -515,7 +515,7 @@ pub(super) fn run_test_stages(
                     .collect();
                 steps.push(SourceDebugStepDto {
                     stage: "pages".into(),
-                    label: "图片页规则 (ruleContent)".into(),
+                    label: "图片页规则 (rulePages)".into(),
                     ok,
                     elapsed_ms,
                     summary,
@@ -531,7 +531,7 @@ pub(super) fn run_test_stages(
                 out_chapter_url = Some(ch_url.clone());
                 steps.push(SourceDebugStepDto {
                     stage: "pages".into(),
-                    label: "图片页规则 (ruleContent)".into(),
+                    label: "图片页规则 (rulePages)".into(),
                     ok: false,
                     elapsed_ms,
                     summary: "图片页请求或解析失败".into(),
@@ -543,7 +543,7 @@ pub(super) fn run_test_stages(
     } else if mode == ComicSourceTestMode::Full && toc_succeeded_without_chapter_url {
         steps.push(SourceDebugStepDto {
             stage: "pages".into(),
-            label: "图片页规则 (ruleContent)".into(),
+            label: "图片页规则 (rulePages)".into(),
             ok: false,
             elapsed_ms: 0,
             summary: "目录未包含有效章节 URL".into(),

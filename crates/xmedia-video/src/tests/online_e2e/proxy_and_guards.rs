@@ -443,8 +443,8 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
         "sourceUrl": "https://video-guard.example",
         "sourceFormat": "rule",
         "searchUrl": "/search?q={{key}}",
-        "ruleSearch": { "list": "$.items", "title": "$.title", "detailUrl": "$.url" },
-        "ruleDetail": { "title": "$.title" },
+        "ruleSearch": { "list": "$.items", "name": "$.title", "detailUrl": "$.url" },
+        "ruleDetail": { "name": "$.title" },
         "rulePlay": { "requestUrl": "{{playUrl}}", "streamUrl": "$.url" }
     }]);
     let (st_imp, imp_res) = post_json(
@@ -1044,14 +1044,14 @@ async fn video_online_endpoints_enforce_cancel_on_future_drop() {
         "searchUrl": format!("{base}/step1?q={{{{key}}}}"),
         "ruleSearch": {
             "list": "$.items[*]",
-            "title": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Title'",
-            "videoId": "$.id"
+            "name": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Title'",
+            "vodId": "$.id"
         },
         "exploreUrl": format!("{base}/step1?p={{{{page}}}}"),
         "ruleExplore": {
             "list": "$.items[*]",
-            "title": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Browse'",
-            "videoId": "$.id"
+            "name": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Browse'",
+            "vodId": "$.id"
         },
         "ruleDetail": {
             "requestUrl": format!("{base}/step1"),
@@ -1223,8 +1223,8 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
         "exploreUrl": format!("<js>java.ajax('{base}/hop1'); '{base}/stall'</js>"),
         "ruleExplore": {
             "list": "$.items[*]",
-            "title": "@js:java.ajax(baseUrl.replace('/stall', '/after')); 'Item'",
-            "videoId": "$.id"
+            "name": "@js:java.ajax(baseUrl.replace('/stall', '/after')); 'Item'",
+            "vodId": "$.id"
         },
         "ruleDetail": {
             "requestUrl": format!("<js>java.ajax('{base}/hop1'); '{base}/stall'</js>"),

@@ -120,10 +120,10 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
 
     // 2. Import a login-capable source with sensitive loginInfo + variable
     let custom_source = serde_json::json!({
-        "bookSourceName": "Auth Comic",
-        "bookSourceUrl": "https://auth-comic.test",
-        "bookSourceGroup": "Private",
-        "bookSourceType": 2,
+        "sourceName": "Auth Comic",
+        "sourceUrl": "https://auth-comic.test",
+        "sourceGroup": "Private",
+        "sourceType": 2,
         "loginUrl": "@js:cookie.setCookie('https://auth-comic.test','sid=xyz');'logged-in:' + (result.user || '');",
         "loginUi": "[{\"name\":\"user\",\"type\":\"text\"},{\"name\":\"password\",\"type\":\"password\"}]",
         "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
@@ -140,14 +140,14 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
     let auth_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
 
-    // Run login-action with form_data alias & secret password
+    // Run login-action with login_info & secret password
     let (st_login, b_login) = json_request(
         &h.app,
         "POST",
         &format!("/api/v1/comic/sources/{auth_id}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
-            "form_data": { "user": "alice", "password": "top-secret-password" },
+            "login_info": { "user": "alice", "password": "top-secret-password" },
             "action": "source.setVariable('vip_token_123');'ok'"
         })),
     )
@@ -192,7 +192,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     assert_eq!(patch_val["group_name"], "UpdatedGroup");
     assert_eq!(patch_val["weight"], 77);
 
-    // Verify export canonicalizes group key to sourceGroup without duplicate bookSourceGroup
+    // Verify export updates the canonical sourceGroup key
     let (st_exp, b_exp) = json_request(
         &h.app,
         "GET",
@@ -204,7 +204,6 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     assert_eq!(st_exp, StatusCode::OK);
     let exp_json: serde_json::Value = serde_json::from_slice(&b_exp).unwrap();
     assert_eq!(exp_json["sourceGroup"], "UpdatedGroup");
-    assert!(exp_json.get("bookSourceGroup").is_none());
     assert_eq!(exp_json["enabled"], false);
 
     // Admin GET /sources sees all 6 (including disabled Auth Comic) with masked secrets
@@ -1324,10 +1323,10 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
 
     // 1. Import a Legado-format source with ruleDetail
     let detail_src = serde_json::json!({
-        "bookSourceName": "DetailTest",
-        "bookSourceUrl": base,
-        "bookSourceGroup": "OriginalGroup",
-        "bookSourceType": 2,
+        "sourceName": "DetailTest",
+        "sourceUrl": base,
+        "sourceGroup": "OriginalGroup",
+        "sourceType": 2,
         "ruleDetail": { "name": "h1.title@text", "tocUrl": "a.toc@href" }
     });
     let (st_imp, b_imp) = json_request(
@@ -1420,7 +1419,6 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     assert_eq!(st_exp, StatusCode::OK);
     let exp_val: serde_json::Value = serde_json::from_slice(&b_exp).unwrap();
     assert_eq!(exp_val["sourceGroup"], "Restored");
-    assert!(exp_val.get("bookSourceGroup").is_none());
 
     // 2. Source WITHOUT ruleDetail running Full mode with target_url still succeeds through toc + pages
     let no_detail_src = serde_json::json!({
@@ -1431,7 +1429,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
             "chapterName": "a@text",
             "chapterUrl": "a@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html"
         }
     });

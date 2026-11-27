@@ -47,33 +47,9 @@ export function numVal(v: unknown, fallback = 0): number {
   return fallback
 }
 
-export function pickPresentKey(
-  obj: Record<string, unknown>,
-  candidates: readonly string[],
-): string {
-  for (const k of candidates) {
-    if (k in obj && obj[k] !== undefined) return k
-  }
-  return candidates[0]!
-}
-
-export function pickFirstString(
-  obj: Record<string, unknown>,
-  candidates: readonly string[],
-): string {
-  for (const k of candidates) {
-    if (k in obj && obj[k] !== undefined && obj[k] !== null) {
-      const s = strVal(obj[k])
-      if (s !== '') return s
-    }
-  }
-  return ''
-}
-
 export function readRuleMap(
   rawRule: unknown,
   fields: RuleFieldDef[],
-  aliases?: Record<string, readonly string[]>,
 ): Record<string, string> {
   const out: Record<string, string> = {}
   const srcObj =
@@ -81,16 +57,7 @@ export function readRuleMap(
       ? (rawRule as Record<string, unknown>)
       : {}
   for (const f of fields) {
-    let val = srcObj[f.key]
-    if ((val === undefined || val === null) && aliases?.[f.key]) {
-      for (const alt of aliases[f.key]!) {
-        if (srcObj[alt] !== undefined && srcObj[alt] !== null) {
-          val = srcObj[alt]
-          break
-        }
-      }
-    }
-    out[f.key] = strVal(val)
+    out[f.key] = strVal(srcObj[f.key])
   }
   return out
 }
@@ -125,7 +92,6 @@ export function mergeRuleSection(
   editedMap: Record<string, string>,
   initialMap: Record<string, string> | undefined,
   fields: RuleFieldDef[],
-  aliases?: Record<string, readonly string[]>,
 ): Record<string, unknown> | undefined {
   const baseObj =
     baseRule && typeof baseRule === 'object' && !Array.isArray(baseRule)
@@ -139,15 +105,10 @@ export function mergeRuleSection(
     if (val === initVal) {
       continue
     }
-    let targetKey = f.key
-    if (baseObj && !(f.key in baseObj) && aliases?.[f.key]) {
-      const existingAlt = aliases[f.key]!.find((alt) => alt in baseObj)
-      if (existingAlt) targetKey = existingAlt
-    }
     if (val.trim().length > 0) {
-      merged[targetKey] = coerceEditedValue(baseObj?.[targetKey], val)
+      merged[f.key] = coerceEditedValue(baseObj?.[f.key], val)
     } else {
-      delete merged[targetKey]
+      delete merged[f.key]
     }
   }
   return Object.keys(merged).length > 0 ? merged : undefined

@@ -71,8 +71,6 @@ pub(super) fn install_bootstrap_globals(
         globalThis.source = {{
             sourceName: __srcName,
             sourceUrl: __srcUrl,
-            bookSourceName: __srcName,
-            bookSourceUrl: __srcUrl,
             header: __srcHeader,
             loginUrl: __loginUrl,
             rawJson: __rawJson,

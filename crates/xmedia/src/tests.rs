@@ -724,9 +724,9 @@ mod gateway_integration_tests {
 
         let base_url = format!("http://{addr}");
         let comic_source_json = serde_json::json!({
-            "bookSourceName": "Loopback Mock Comic",
-            "bookSourceUrl": base_url,
-            "bookSourceType": 2,
+            "sourceName": "Loopback Mock Comic",
+            "sourceUrl": base_url,
+            "sourceType": 2,
             "searchUrl": format!("{base_url}/search?q={{{{key}}}}"),
             "ruleSearch": {
                 "bookList": "$.items[*]",

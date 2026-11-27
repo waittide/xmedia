@@ -75,23 +75,13 @@ pub enum MusicRuleKind {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSearchRule {
-    #[serde(
-        default,
-        alias = "list",
-        alias = "songList",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub track_list: Option<String>,
-    #[serde(default, alias = "id", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub track_id: Option<String>,
-    #[serde(default, alias = "name", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub title: Option<String>,
-    #[serde(
-        default,
-        alias = "author",
-        alias = "singer",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub artist: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub album: Option<String>,
@@ -99,46 +89,36 @@ pub struct MusicSearchRule {
     pub duration: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub duration_unit: Option<String>,
-    #[serde(default, alias = "picUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_url: Option<String>,
-    #[serde(
-        default,
-        alias = "picId",
-        alias = "pic_id",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_id: Option<String>,
-    #[serde(default, alias = "url_id", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub url_id: Option<String>,
-    #[serde(default, alias = "lyric_id", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub lyric_id: Option<String>,
-    #[serde(default, alias = "streamUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub play_url: Option<String>,
-    #[serde(default, alias = "trackUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub detail_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub format: Option<String>,
-    #[serde(default, alias = "checkKeyword", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub check_key_word: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicTrackDetailRule {
-    #[serde(default, alias = "url", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub request_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub init: Option<String>,
-    #[serde(default, alias = "id", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub track_id: Option<String>,
-    #[serde(default, alias = "name", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub title: Option<String>,
-    #[serde(
-        default,
-        alias = "author",
-        alias = "singer",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub artist: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub album: Option<String>,
@@ -146,20 +126,15 @@ pub struct MusicTrackDetailRule {
     pub duration: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub duration_unit: Option<String>,
-    #[serde(default, alias = "picUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_url: Option<String>,
-    #[serde(
-        default,
-        alias = "picId",
-        alias = "pic_id",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_id: Option<String>,
-    #[serde(default, alias = "url_id", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub url_id: Option<String>,
-    #[serde(default, alias = "lyric_id", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub lyric_id: Option<String>,
-    #[serde(default, alias = "streamUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub play_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub lyric: Option<String>,
@@ -170,14 +145,9 @@ pub struct MusicTrackDetailRule {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicStreamRule {
-    #[serde(default, alias = "url", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub request_url: Option<String>,
-    #[serde(
-        default,
-        alias = "urlRule",
-        alias = "playUrl",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub stream_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub format: Option<String>,
@@ -192,31 +162,31 @@ pub struct MusicStreamRule {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicCoverRule {
-    #[serde(default, alias = "url", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub request_url: Option<String>,
-    #[serde(default, alias = "urlRule", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicLyricRule {
-    #[serde(default, alias = "url", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub request_url: Option<String>,
-    #[serde(default, alias = "syncedLyrics", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub lyric: Option<String>,
-    #[serde(default, alias = "tlyric", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub translated_lyric: Option<String>,
-    #[serde(default, alias = "plainLyrics", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub plain_lyric: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSourceSpec {
-    #[serde(default, alias = "name", deserialize_with = "de_string_or_default")]
+    #[serde(default, deserialize_with = "de_string_or_default")]
     pub source_name: String,
-    #[serde(default, alias = "url", deserialize_with = "de_string_or_default")]
+    #[serde(default, deserialize_with = "de_string_or_default")]
     pub source_url: String,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub source_group: Option<String>,
@@ -228,9 +198,9 @@ pub struct MusicSourceSpec {
     pub weight: i64,
     #[serde(default, deserialize_with = "de_i64_zero")]
     pub custom_order: i64,
-    #[serde(default, alias = "Header", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub header: Option<String>,
-    #[serde(default, alias = "MediaHeader", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub media_header: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub concurrent_rate: Option<String>,
@@ -878,10 +848,8 @@ pub enum MusicSourceTestMode {
     Full,
     Search,
     Explore,
-    #[serde(alias = "track_info")]
     Detail,
     Stream,
-    #[serde(alias = "lyrics")]
     Lyric,
 }
 

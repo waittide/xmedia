@@ -46,36 +46,23 @@ pub enum ComicSourceTestMode {
     Full,
     Search,
     Explore,
-    #[serde(alias = "book_info")]
     Detail,
-    #[serde(alias = "toc")]
     Chapters,
-    #[serde(alias = "content")]
     Pages,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComicSearchRule {
-    #[serde(
-        default,
-        alias = "comicList",
-        alias = "list",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub book_list: Option<String>,
-    #[serde(default, alias = "title", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub author: Option<String>,
-    #[serde(
-        default,
-        alias = "comicUrl",
-        alias = "url",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub book_url: Option<String>,
-    #[serde(default, alias = "cover", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub intro: Option<String>,
@@ -94,11 +81,11 @@ pub struct ComicSearchRule {
 pub struct ComicDetailRule {
     #[serde(default, deserialize_with = "de_opt_string")]
     pub init: Option<String>,
-    #[serde(default, alias = "title", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub author: Option<String>,
-    #[serde(default, alias = "cover", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub cover_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub intro: Option<String>,
@@ -112,7 +99,7 @@ pub struct ComicDetailRule {
     pub word_count: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub reading_direction: Option<String>,
-    #[serde(default, alias = "chaptersUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub toc_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub can_re_name: Option<String>,
@@ -125,16 +112,11 @@ pub struct ComicTocRule {
     pub pre_update_js: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub chapter_list: Option<String>,
-    #[serde(
-        default,
-        alias = "name",
-        alias = "title",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub chapter_name: Option<String>,
-    #[serde(default, alias = "url", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub chapter_url: Option<String>,
-    #[serde(default, alias = "nextChaptersUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub next_toc_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub update_time: Option<String>,
@@ -147,18 +129,13 @@ pub struct ComicTocRule {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComicPagesRule {
-    #[serde(
-        default,
-        alias = "pages",
-        alias = "images",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub content: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub title: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub image_url: Option<String>,
-    #[serde(default, alias = "nextPageUrl", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub next_content_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub replace_regex: Option<String>,
@@ -173,29 +150,16 @@ pub struct ComicPagesRule {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComicSourceSpec {
-    #[serde(
-        default,
-        alias = "bookSourceName",
-        deserialize_with = "de_string_or_default"
-    )]
+    #[serde(default, deserialize_with = "de_string_or_default")]
     pub source_name: String,
-    #[serde(
-        default,
-        alias = "bookSourceUrl",
-        deserialize_with = "de_string_or_default"
-    )]
+    #[serde(default, deserialize_with = "de_string_or_default")]
     pub source_url: String,
-    #[serde(default, alias = "bookSourceGroup", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub source_group: Option<String>,
-    #[serde(
-        default,
-        alias = "bookSourceComment",
-        deserialize_with = "de_opt_string"
-    )]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub source_comment: Option<String>,
     #[serde(
         default = "default_comic_source_type",
-        alias = "bookSourceType",
         deserialize_with = "de_comic_source_type"
     )]
     pub source_type: i64,
@@ -223,7 +187,7 @@ pub struct ComicSourceSpec {
     pub search_url: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub explore_url: Option<String>,
-    #[serde(default, alias = "bookUrlPattern", deserialize_with = "de_opt_string")]
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub comic_url_pattern: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub login_url: Option<String>,
@@ -239,11 +203,11 @@ pub struct ComicSourceSpec {
     pub rule_search: Option<ComicSearchRule>,
     #[serde(default)]
     pub rule_explore: Option<ComicSearchRule>,
-    #[serde(default, alias = "ruleBookInfo")]
+    #[serde(default)]
     pub rule_detail: Option<ComicDetailRule>,
-    #[serde(default, alias = "ruleChapters")]
+    #[serde(default)]
     pub rule_toc: Option<ComicTocRule>,
-    #[serde(default, alias = "ruleContent")]
+    #[serde(default)]
     pub rule_pages: Option<ComicPagesRule>,
 }
 
@@ -259,24 +223,6 @@ impl From<&ComicSourceSpec> for SourceMetadata {
             enabled_cookie_jar: src.enabled_cookie_jar,
             raw_json: None,
         }
-    }
-}
-
-fn canonicalize_group_key_in_value(val: &mut serde_json::Value) {
-    match val {
-        serde_json::Value::Array(arr) => {
-            for item in arr {
-                canonicalize_group_key_in_value(item);
-            }
-        }
-        serde_json::Value::Object(obj) => {
-            if let Some(legacy_group) = obj.remove("bookSourceGroup")
-                && !obj.contains_key("sourceGroup")
-            {
-                obj.insert("sourceGroup".into(), legacy_group);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -367,20 +313,8 @@ impl SourceSpecAdapter for ComicSourceSpec {
     const JSON_GROUP_KEY: &'static str = "sourceGroup";
 
     fn parse_batch(raw_json: &str) -> Result<Vec<(Self, String)>, String> {
-        let trimmed = raw_json.trim().trim_start_matches('\u{feff}').trim();
-        let normalized_cow: Cow<'_, str> = if trimmed.contains("bookSourceGroup")
-            && let Ok(mut parsed_val) = serde_json::from_str::<serde_json::Value>(trimmed)
-        {
-            canonicalize_group_key_in_value(&mut parsed_val);
-            match serde_json::to_string(&parsed_val) {
-                Ok(s) => Cow::Owned(s),
-                Err(_) => Cow::Borrowed(raw_json),
-            }
-        } else {
-            Cow::Borrowed(raw_json)
-        };
         xmedia_source::crud::parse_json_batch(
-            &normalized_cow,
+            raw_json,
             Self::ENTITY_LABEL,
             "未解析到有效漫画源（缺少 sourceName / sourceUrl）",
             Self::is_blank,
@@ -533,10 +467,8 @@ impl ComicSourceSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComicJsContext {
-    #[serde(alias = "title")]
     pub name: String,
     pub author: String,
-    #[serde(alias = "comic_url")]
     pub book_url: String,
     pub toc_url: String,
     pub cover_url: Option<String>,

@@ -9,7 +9,6 @@ pub enum VideoSourceTestMode {
     Full,
     Categories,
     Search,
-    #[serde(alias = "explore")]
     Browse,
     Detail,
     Play,

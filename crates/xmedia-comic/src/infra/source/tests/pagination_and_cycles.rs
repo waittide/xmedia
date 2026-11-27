@@ -165,7 +165,7 @@ async fn reader_op_timeout_and_cancel_interrupt_paginated_chapters_and_pages() {
             "chapterUrl": "a@href",
             "nextTocUrl": "a.next@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "nextContentUrl": "a.next-page@href"
         }
@@ -327,13 +327,13 @@ async fn extract_page_urls_html5_segmenter_blocks_inner_text_style_script_and_pr
     let imgs_no_rule: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "Html5NoRule",
         "sourceUrl": base,
-        "ruleContent": { "content": "#imgs@html" }
+        "rulePages": { "content": "#imgs@html" }
     }))
     .unwrap();
     let imgs_with_rule: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "Html5WithRule",
         "sourceUrl": base,
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "imageUrl": "@js:result + '?tok=1'"
         }
@@ -342,7 +342,7 @@ async fn extract_page_urls_html5_segmenter_blocks_inner_text_style_script_and_pr
     let raw_js_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "RawJs",
         "sourceUrl": base,
-        "ruleContent": { "content": "@js:result" }
+        "rulePages": { "content": "@js:result" }
     }))
     .unwrap();
 
@@ -659,7 +659,7 @@ async fn chapters_and_pages_support_post_options_pagination_relative_options_and
             "chapterUrl": "$.u || a@href",
             "nextTocUrl": "$.next || a.next@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "$.imgs || #imgs@html",
             "nextContentUrl": "$.next || a.next-page@href"
         }
@@ -1271,7 +1271,7 @@ async fn pagination_cycle_guard_handles_302_post_to_get_mixed_get_307_post_and_p
             "chapterUrl": "$.u || a@href",
             "nextTocUrl": "$.next || a.next@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "nextContentUrl": "a.next-page@href"
         }

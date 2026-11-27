@@ -26,7 +26,6 @@ pub struct ComicSourceTestInput {
     pub mode: ComicSourceTestMode,
     pub target_url: Option<String>,
     pub explore_url: Option<String>,
-    #[serde(alias = "book_url")]
     pub comic_url: Option<String>,
     pub toc_url: Option<String>,
     pub chapter_url: Option<String>,

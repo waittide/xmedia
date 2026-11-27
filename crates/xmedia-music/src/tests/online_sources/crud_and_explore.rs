@@ -339,7 +339,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         &format!("/sources/{id_a}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
-            "form_data": { "username": "alice", "password": MASKED_SECRET_PLACEHOLDER },
+            "login_info": { "username": "alice", "password": MASKED_SECRET_PLACEHOLDER },
             "action": "login()"
         })),
     )

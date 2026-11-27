@@ -74,7 +74,7 @@ async fn online_detail_chapters_pages_enforce_cancel_on_future_drop() {
             "chapterUrl": "a@href",
             "nextTocUrl": "a.next@href"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "#imgs@html",
             "nextContentUrl": "a.next@href"
         }
@@ -826,8 +826,8 @@ async fn online_search_enforces_source_concurrent_rate_throttling() {
 async fn caller_supplied_comic_urls_reject_legado_options_and_data_urls_with_400() {
     let h = setup_test_harness(true).await;
     let src_json = serde_json::json!([{
-        "bookSourceName": "GuardComicSource",
-        "bookSourceUrl": "https://comic-guard.example",
+        "sourceName": "GuardComicSource",
+        "sourceUrl": "https://comic-guard.example",
         "searchUrl": "/search?q={{key}}",
         "ruleSearch": { "bookList": "$.items", "name": "$.name", "bookUrl": "$.url" }
     }]);
@@ -913,8 +913,8 @@ async fn comic_online_search_enforces_cancel_on_future_drop() {
 
     let h = setup_test_harness(true).await;
     let src_json = serde_json::json!([{
-        "bookSourceName": "DropComicSearchSource",
-        "bookSourceUrl": base,
+        "sourceName": "DropComicSearchSource",
+        "sourceUrl": base,
         "searchUrl": format!("{base}/step1?q={{{{key}}}}"),
         "ruleSearch": {
             "bookList": "$.items[*]",
@@ -1011,8 +1011,8 @@ async fn comic_image_proxy_strips_static_range_from_source_headers() {
 
     let h = setup_test_harness(true).await;
     let src_json = serde_json::json!([{
-        "bookSourceName": "StaticRangeComicSource",
-        "bookSourceUrl": base,
+        "sourceName": "StaticRangeComicSource",
+        "sourceUrl": base,
         "header": r#"{"range":"bytes=0-5"}"#,
         "imageHeader": r#"{"Range":"bytes=0-10","Referer":"https://ok.example/"}"#
     }]);
@@ -1169,10 +1169,10 @@ async fn online_comic_items_favorites_progress_and_availability_e2e() {
 
     // Import one comic source so we have a valid online source_id.
     let src_json = serde_json::json!({
-        "bookSourceName": "Test Comic Source",
-        "bookSourceUrl": "https://comic-item.test",
-        "bookSourceGroup": "Test",
-        "bookSourceType": 2,
+        "sourceName": "Test Comic Source",
+        "sourceUrl": "https://comic-item.test",
+        "sourceGroup": "Test",
+        "sourceType": 2,
         "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
     });
     let (st_imp, b_imp) = json_request(
@@ -1507,7 +1507,7 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     let src_json = serde_json::json!([{
         "sourceName": "TrackedComicMock",
         "sourceUrl": base,
-        "ruleBookInfo": {
+        "ruleDetail": {
             "name": "$.name",
             "author": "$.author",
             "coverUrl": "$.cover",
@@ -1519,7 +1519,7 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
             "chapterName": "$.title",
             "chapterUrl": "$.url"
         },
-        "ruleContent": {
+        "rulePages": {
             "content": "@js:(result.pages||[]).join('\\n')"
         }
     }]);

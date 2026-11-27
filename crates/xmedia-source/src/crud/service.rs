@@ -30,7 +30,7 @@ pub trait SourceSpecAdapter: DeserializeOwned + Send + Sync + 'static {
     /// Human-readable domain label used in validation & not-found messages (e.g. `"书源"`, `"影视源"`).
     const ENTITY_LABEL: &'static str;
 
-    /// JSON property key storing the group name inside `raw_json` (e.g. `"bookSourceGroup"` or `"sourceGroup"`).
+    /// JSON property key storing the group name inside `raw_json`.
     const JSON_GROUP_KEY: &'static str;
 
     /// Returns `true` when a deserialized entry is empty/blank and should be skipped during batch import.

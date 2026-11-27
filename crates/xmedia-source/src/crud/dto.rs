@@ -86,7 +86,7 @@ pub struct ExportSourcesBatchRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginActionRequest {
-    #[serde(default, alias = "form_data")]
+    #[serde(default)]
     pub login_info: HashMap<String, String>,
     pub action: Option<String>,
 }
