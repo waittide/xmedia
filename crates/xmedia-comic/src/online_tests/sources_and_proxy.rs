@@ -95,7 +95,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let (st1, b1) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": seeds_raw })),
     )
@@ -108,7 +108,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let (st2, b2) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": seeds_raw })),
     )
@@ -131,7 +131,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": custom_source.to_string() })),
     )
@@ -144,7 +144,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let (st_login, b_login) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{auth_id}/login-action"),
+        &format!("/api/v1/plugins/{auth_id}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "user": "alice", "password": "top-secret-password" },
@@ -164,10 +164,10 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     );
 
     // Re-submit masked placeholder -> preserves secret instead of overwriting
-    let (st_login2, _) = json_request(
+    let (st_login2, b_login2) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{auth_id}/login-action"),
+        &format!("/api/v1/plugins/{auth_id}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "user": "alice", "password": "••••••••" },
@@ -176,12 +176,14 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     )
     .await;
     assert_eq!(st_login2, StatusCode::OK);
+    let login_val2: serde_json::Value = serde_json::from_slice(&b_login2).unwrap();
+    assert_eq!(login_val2["result"], "top-secret-password");
 
-    // 3. Disable Auth Comic and verify Admin vs Member visibility & authz
+    // 3. Disable Auth Comic and verify strict per-user plugin & runtime-state isolation
     let (st_patch, b_patch) = json_request(
         &h.app,
         "PATCH",
-        &format!("/api/v1/comic/sources/{auth_id}"),
+        &format!("/api/v1/plugins/{auth_id}"),
         &h.admin_token,
         Some(serde_json::json!({ "enabled": false, "group_name": "UpdatedGroup", "weight": 77 })),
     )
@@ -196,7 +198,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let (st_exp, b_exp) = json_request(
         &h.app,
         "GET",
-        &format!("/api/v1/comic/sources/{auth_id}/export"),
+        &format!("/api/v1/plugins/{auth_id}/export"),
         &h.admin_token,
         None,
     )
@@ -206,92 +208,101 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     assert_eq!(exp_json["sourceGroup"], "UpdatedGroup");
     assert_eq!(exp_json["enabled"], false);
 
-    // Admin GET /sources sees all 6 (including disabled Auth Comic) with masked secrets
-    let (st_adm_list, b_adm_list) =
-        json_request(&h.app, "GET", "/api/v1/comic/sources", &h.admin_token, None).await;
+    // Admin GET /api/v1/plugins?domain=comic sees all 6 (including disabled Auth Comic)
+    let (st_adm_list, b_adm_list) = json_request(
+        &h.app,
+        "GET",
+        "/api/v1/plugins?domain=comic",
+        &h.admin_token,
+        None,
+    )
+    .await;
     assert_eq!(st_adm_list, StatusCode::OK);
     let adm_list: Vec<serde_json::Value> = serde_json::from_slice(&b_adm_list).unwrap();
     assert_eq!(adm_list.len(), 6);
 
-    // Member GET /sources sees ONLY 5 enabled sources, secrets/cookies/variable stripped
+    // Member GET /api/v1/plugins initially sees [] (no cross-user sharing from admin)
     let (st_mem_list, b_mem_list) = json_request(
         &h.app,
         "GET",
-        "/api/v1/comic/sources",
+        "/api/v1/plugins?domain=comic",
         &h.member_token,
         None,
     )
     .await;
     assert_eq!(st_mem_list, StatusCode::OK);
     let mem_list: Vec<serde_json::Value> = serde_json::from_slice(&b_mem_list).unwrap();
-    assert_eq!(mem_list.len(), 5);
-    assert!(mem_list.iter().all(|s| s["enabled"] == true
-        && s["login_info"].as_object().unwrap().is_empty()
-        && s["login_ui"].as_array().unwrap().is_empty()
-        && s["cookie_hosts"].as_array().unwrap().is_empty()
-        && s["variable_preview"] == ""));
+    assert!(mem_list.is_empty());
 
-    // Member receives 403 Forbidden on all admin routes & disabled source access
+    // Member receives 404 Not Found when referencing admin's plugin ID across CRUD & online routes
     for (m, u, b) in [
-        (
-            "POST",
-            "/api/v1/comic/sources/import",
-            Some(serde_json::json!({"raw_json":"{}"})),
-        ),
-        (
-            "POST",
-            "/api/v1/comic/sources/reorder",
-            Some(serde_json::json!({"ordered_ids":[]})),
-        ),
-        (
-            "POST",
-            "/api/v1/comic/sources/batch",
-            Some(serde_json::json!({"ids":[auth_id],"action":"enable"})),
-        ),
-        (
-            "POST",
-            "/api/v1/comic/sources/export-batch",
-            Some(serde_json::json!({"ids":[auth_id]})),
-        ),
+        ("GET", format!("/api/v1/plugins/{auth_id}"), None),
         (
             "PATCH",
-            &format!("/api/v1/comic/sources/{auth_id}"),
+            format!("/api/v1/plugins/{auth_id}"),
             Some(serde_json::json!({"enabled":true})),
         ),
-        ("DELETE", &format!("/api/v1/comic/sources/{auth_id}"), None),
-        (
-            "GET",
-            &format!("/api/v1/comic/sources/{auth_id}/export"),
-            None,
-        ),
-        (
-            "GET",
-            &format!("/api/v1/comic/sources/{auth_id}/variable"),
-            None,
-        ),
+        ("DELETE", format!("/api/v1/plugins/{auth_id}"), None),
+        ("GET", format!("/api/v1/plugins/{auth_id}/export"), None),
+        ("GET", format!("/api/v1/plugins/{auth_id}/variable"), None),
         (
             "POST",
-            &format!("/api/v1/comic/sources/{auth_id}/login-action"),
+            format!("/api/v1/plugins/{auth_id}/login-action"),
             Some(serde_json::json!({"login_info":{}})),
         ),
         (
             "POST",
-            &format!("/api/v1/comic/sources/{auth_id}/test"),
+            format!("/api/v1/plugins/{auth_id}/test"),
             Some(serde_json::json!({"mode":"search"})),
         ),
         (
             "POST",
-            "/api/v1/comic/online/detail",
+            "/api/v1/plugins/export-batch?domain=comic".to_string(),
+            Some(serde_json::json!({"ids":[auth_id]})),
+        ),
+        (
+            "POST",
+            "/api/v1/comic/online/explore".to_string(),
+            Some(serde_json::json!({"source_id": auth_id, "page": 1})),
+        ),
+        (
+            "POST",
+            "/api/v1/comic/online/detail".to_string(),
             Some(
                 serde_json::json!({"source_id": auth_id, "comic_url": "https://auth-comic.test/1"}),
             ),
         ),
+        (
+            "POST",
+            "/api/v1/comic/online/chapters".to_string(),
+            Some(serde_json::json!({"source_id": auth_id, "toc_url": "https://auth-comic.test/1"})),
+        ),
+        (
+            "POST",
+            "/api/v1/comic/online/pages".to_string(),
+            Some(
+                serde_json::json!({"source_id": auth_id, "chapter_url": "https://auth-comic.test/1"}),
+            ),
+        ),
     ] {
-        let (st, _) = json_request(&h.app, m, u, &h.member_token, b).await;
-        assert_eq!(st, StatusCode::FORBIDDEN, "expected 403 on {m} {u}");
+        let (st, _) = json_request(&h.app, m, &u, &h.member_token, b).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "expected 404 on {m} {u}");
     }
 
-    // Member also gets 403 on image-proxy when referencing a disabled source_id
+    // Member batch operation targeting admin's plugin ID affects 0 rows
+    let (st_mem_batch, b_mem_batch) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/batch",
+        &h.member_token,
+        Some(serde_json::json!({ "ids": [auth_id], "action": "delete" })),
+    )
+    .await;
+    assert_eq!(st_mem_batch, StatusCode::OK);
+    let mem_batch_rep: serde_json::Value = serde_json::from_slice(&b_mem_batch).unwrap();
+    assert_eq!(mem_batch_rep["affected_count"], 0);
+
+    // Member also gets 404 on image-proxy when referencing admin's source_id
     let proxy_req = Request::builder()
         .uri(format!(
             "/api/v1/comic/online/image-proxy?source_id={auth_id}&url=https://auth-comic.test/p.png"
@@ -300,13 +311,62 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
         .body(Body::empty())
         .unwrap();
     let proxy_resp = h.app.clone().oneshot(proxy_req).await.unwrap();
-    assert_eq!(proxy_resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(proxy_resp.status(), StatusCode::NOT_FOUND);
 
-    // Admin variable, export-batch, reorder, batch, delete
+    // Member imports the same JSON rule -> receives a distinct id with isolated runtime state
+    let (st_mem_imp, b_mem_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
+        Some(serde_json::json!({ "raw_json": custom_source.to_string() })),
+    )
+    .await;
+    assert_eq!(st_mem_imp, StatusCode::OK);
+    let mem_imp_val: serde_json::Value = serde_json::from_slice(&b_mem_imp).unwrap();
+    assert_eq!(mem_imp_val["imported_count"], 1);
+    let mem_auth_id = mem_imp_val["sources"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(mem_auth_id, auth_id);
+    assert!(
+        mem_imp_val["sources"][0]["login_info"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        mem_imp_val["sources"][0]["cookie_hosts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(mem_imp_val["sources"][0]["variable_preview"], "");
+
+    // Member mutates their own variable/cookies/login_info without affecting admin's
+    let (st_mem_login, b_mem_login) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/plugins/{mem_auth_id}/login-action"),
+        &h.member_token,
+        Some(serde_json::json!({
+            "login_info": { "user": "bob", "password": "bob-secret-password" },
+            "action": "cookie.setCookie('https://auth-comic.test','sid=bob_sid');source.setVariable('bob_token_456');'bob-ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_mem_login, StatusCode::OK);
+    let mem_login_val: serde_json::Value = serde_json::from_slice(&b_mem_login).unwrap();
+    assert_eq!(mem_login_val["result"], "bob-ok");
+    assert_eq!(mem_login_val["source"]["login_info"]["user"], "bob");
+    assert_eq!(mem_login_val["source"]["variable_preview"], "bob_token_456");
+
+    // Admin variable, login_info, cookies, export-batch, reorder, batch, delete remain completely isolated
     let (st_var, b_var) = json_request(
         &h.app,
         "GET",
-        &format!("/api/v1/comic/sources/{auth_id}/variable"),
+        &format!("/api/v1/plugins/{auth_id}/variable"),
         &h.admin_token,
         None,
     )
@@ -315,10 +375,30 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let var_json: serde_json::Value = serde_json::from_slice(&b_var).unwrap();
     assert_eq!(var_json["variable"], "vip_token_123");
 
+    let (st_adm_chk, b_adm_chk) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/plugins/{auth_id}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "user": "alice", "password": "••••••••" },
+            "action": "JSON.stringify({u:source.getLoginInfoMap().user,p:source.getLoginInfoMap().password,c:cookie.getCookie('https://auth-comic.test')})"
+        })),
+    )
+    .await;
+    assert_eq!(st_adm_chk, StatusCode::OK);
+    let adm_chk_val: serde_json::Value = serde_json::from_slice(&b_adm_chk).unwrap();
+    let adm_inner: serde_json::Value =
+        serde_json::from_str(adm_chk_val["result"].as_str().unwrap()).unwrap();
+    assert_eq!(adm_inner["u"], "alice");
+    assert_eq!(adm_inner["p"], "top-secret-password");
+    assert!(adm_inner["c"].as_str().unwrap().contains("sid=xyz"));
+    assert!(!adm_inner["c"].as_str().unwrap().contains("bob_sid"));
+
     let (st_eb, b_eb) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/export-batch",
+        "/api/v1/plugins/export-batch?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "ids": [auth_id] })),
     )
@@ -330,7 +410,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let (st_reord, _) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/reorder",
+        "/api/v1/plugins/reorder?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "ordered_ids": [auth_id] })),
     )
@@ -340,7 +420,7 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     let (st_batch, b_batch) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/batch",
+        "/api/v1/plugins/batch",
         &h.admin_token,
         Some(serde_json::json!({ "ids": [auth_id], "action": "delete" })),
     )
@@ -348,6 +428,20 @@ async fn source_crud_idempotent_seed_import_authz_masking_and_login_action() {
     assert_eq!(st_batch, StatusCode::OK);
     let batch_rep: serde_json::Value = serde_json::from_slice(&b_batch).unwrap();
     assert_eq!(batch_rep["affected_count"], 1);
+
+    // Member's own plugin remains intact after admin deletes admin's copy
+    let (st_mem_after, b_mem_after) = json_request(
+        &h.app,
+        "GET",
+        "/api/v1/plugins?domain=comic",
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_mem_after, StatusCode::OK);
+    let mem_after: Vec<serde_json::Value> = serde_json::from_slice(&b_mem_after).unwrap();
+    assert_eq!(mem_after.len(), 1);
+    assert_eq!(mem_after[0]["id"], mem_auth_id);
 }
 
 #[derive(Deserialize)]
@@ -737,11 +831,25 @@ async fn mock_mangadex_webtoon_xkcd_full_e2e_replay_and_test_modes() {
     let rewritten_json = serde_json::to_string(&seed_arr).unwrap();
 
     let h = setup_test_harness(true).await;
+    let (st_adm_imp, b_adm_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/import?domain=comic",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": rewritten_json.clone() })),
+    )
+    .await;
+    assert_eq!(st_adm_imp, StatusCode::OK);
+    let adm_imp_val: serde_json::Value = serde_json::from_slice(&b_adm_imp).unwrap();
+    let adm_sources = adm_imp_val["sources"].as_array().unwrap();
+    let adm_md_id = adm_sources[0]["id"].as_str().unwrap().to_string();
+    let adm_xkcd_id = adm_sources[4]["id"].as_str().unwrap().to_string();
+
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": rewritten_json })),
     )
     .await;
@@ -750,7 +858,7 @@ async fn mock_mangadex_webtoon_xkcd_full_e2e_replay_and_test_modes() {
     let sources = imp_val["sources"].as_array().unwrap();
     let md_id = sources[0]["id"].as_str().unwrap().to_string();
     let wt_id = sources[2]["id"].as_str().unwrap().to_string();
-    let xkcd_id = sources[4]["id"].as_str().unwrap().to_string();
+    assert_ne!(md_id, adm_md_id);
 
     // 1. MangaDex EN full E2E
     let (st_s, b_s) = json_request(
@@ -939,7 +1047,7 @@ async fn mock_mangadex_webtoon_xkcd_full_e2e_replay_and_test_modes() {
     let (st_full, b_full) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{xkcd_id}/test"),
+        &format!("/api/v1/plugins/{adm_xkcd_id}/test"),
         &h.admin_token,
         Some(serde_json::json!({ "mode": "full", "keyword": "Plate" })),
     )
@@ -971,7 +1079,7 @@ async fn mock_mangadex_webtoon_xkcd_full_e2e_replay_and_test_modes() {
         let (st_m, b_m) = json_request(
             &h.app,
             "POST",
-            &format!("/api/v1/comic/sources/{xkcd_id}/test"),
+            &format!("/api/v1/plugins/{adm_xkcd_id}/test"),
             &h.admin_token,
             Some(body),
         )
@@ -987,7 +1095,7 @@ async fn mock_mangadex_webtoon_xkcd_full_e2e_replay_and_test_modes() {
         "POST",
         "/api/v1/comic/online/pages",
         &h.admin_token,
-        Some(serde_json::json!({ "source_id": md_id, "chapter_url": md_ch_url })),
+        Some(serde_json::json!({ "source_id": adm_md_id, "chapter_url": md_ch_url })),
     )
     .await;
     assert_eq!(st_adm_pg, StatusCode::OK);
@@ -1131,10 +1239,10 @@ async fn image_proxy_ssrf_svg_html_and_16mib_cap_and_search_error_isolation() {
             })
             .await
             .unwrap();
-        let app = Router::new().nest(
-            "/api/v1/comic",
-            rest_router(ComicHttpState::new(auth, services)),
-        );
+        let state = ComicHttpState::new(auth, services);
+        let app = Router::new()
+            .nest("/api/v1/plugins", crate::http::plugins_router(&state))
+            .nest("/api/v1/comic", rest_router(state));
 
         let ssrf_url = form_urlencoded::byte_serialize(format!("{base}/ok.png").as_bytes())
             .collect::<String>();
@@ -1234,8 +1342,8 @@ async fn image_proxy_ssrf_svg_html_and_16mib_cap_and_search_error_isolation() {
     let (st_imp, _) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": two_sources.to_string() })),
     )
     .await;
@@ -1332,7 +1440,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": detail_src.to_string() })),
     )
@@ -1345,7 +1453,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_500, b_500) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{detail_id}/test"),
+        &format!("/api/v1/plugins/{detail_id}/test"),
         &h.admin_token,
         Some(serde_json::json!({ "mode": "detail", "target_url": format!("{base}/err500") })),
     )
@@ -1359,7 +1467,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_emp, b_emp) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{detail_id}/test"),
+        &format!("/api/v1/plugins/{detail_id}/test"),
         &h.admin_token,
         Some(serde_json::json!({ "mode": "detail", "target_url": format!("{base}/empty200") })),
     )
@@ -1369,8 +1477,14 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     assert_eq!(v_emp["ok"], false, "expected ok=false on empty200: {v_emp}");
     assert_eq!(v_emp["steps"][0]["ok"], false);
 
-    let (st_list, b_list) =
-        json_request(&h.app, "GET", "/api/v1/comic/sources", &h.admin_token, None).await;
+    let (st_list, b_list) = json_request(
+        &h.app,
+        "GET",
+        "/api/v1/plugins?domain=comic",
+        &h.admin_token,
+        None,
+    )
+    .await;
     assert_eq!(st_list, StatusCode::OK);
     let list_val: Vec<serde_json::Value> = serde_json::from_slice(&b_list).unwrap();
     assert_eq!(list_val[0]["last_test_ok"], false);
@@ -1379,7 +1493,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_ok, b_ok) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{detail_id}/test"),
+        &format!("/api/v1/plugins/{detail_id}/test"),
         &h.admin_token,
         Some(serde_json::json!({ "mode": "detail", "target_url": format!("{base}/valid_detail") })),
     )
@@ -1393,7 +1507,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_clr, _) = json_request(
         &h.app,
         "PATCH",
-        &format!("/api/v1/comic/sources/{detail_id}"),
+        &format!("/api/v1/plugins/{detail_id}"),
         &h.admin_token,
         Some(serde_json::json!({ "group_name": "" })),
     )
@@ -1402,7 +1516,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_rst, _) = json_request(
         &h.app,
         "PATCH",
-        &format!("/api/v1/comic/sources/{detail_id}"),
+        &format!("/api/v1/plugins/{detail_id}"),
         &h.admin_token,
         Some(serde_json::json!({ "group_name": "Restored" })),
     )
@@ -1411,7 +1525,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_exp, b_exp) = json_request(
         &h.app,
         "GET",
-        &format!("/api/v1/comic/sources/{detail_id}/export"),
+        &format!("/api/v1/plugins/{detail_id}/export"),
         &h.admin_token,
         None,
     )
@@ -1436,7 +1550,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_imp2, b_imp2) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": no_detail_src.to_string() })),
     )
@@ -1448,7 +1562,7 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
     let (st_full_nd, b_full_nd) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{no_detail_id}/test"),
+        &format!("/api/v1/plugins/{no_detail_id}/test"),
         &h.admin_token,
         Some(
             serde_json::json!({ "mode": "full", "target_url": format!("{base}/no_detail_entry") }),
@@ -1521,7 +1635,7 @@ async fn member_explore_rejects_quickjs_injection_and_preserves_admin_secrets_an
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": src.to_string() })),
     )
@@ -1533,7 +1647,7 @@ async fn member_explore_rejects_quickjs_injection_and_preserves_admin_secrets_an
     let (st_login, _) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "apiToken": "super_secret_token" },
@@ -1542,6 +1656,48 @@ async fn member_explore_rejects_quickjs_injection_and_preserves_admin_secrets_an
     )
     .await;
     assert_eq!(st_login, StatusCode::OK);
+
+    // Member cannot access admin's plugin ID at all (404 Not Found)
+    let (st_cross, _) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/explore",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "explore_url": "/cat?p={{page}}",
+            "page": 1
+        })),
+    )
+    .await;
+    assert_eq!(st_cross, StatusCode::NOT_FOUND);
+
+    // Member imports their own copy and sets their own credentials
+    let (st_m_imp, b_m_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_m_imp, StatusCode::OK);
+    let m_imp_val: serde_json::Value = serde_json::from_slice(&b_m_imp).unwrap();
+    let mem_sid = m_imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+    assert_ne!(mem_sid, sid);
+
+    let (st_m_login, _) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/plugins/{mem_sid}/login-action"),
+        &h.member_token,
+        Some(serde_json::json!({
+            "login_info": { "apiToken": "member_secret_token" },
+            "action": "source.setVariable('MEMBER_SECRET_VAR');'ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_m_login, StatusCode::OK);
 
     let payloads = [
         format!(
@@ -1559,7 +1715,7 @@ async fn member_explore_rejects_quickjs_injection_and_preserves_admin_secrets_an
             "/api/v1/comic/online/explore",
             &h.member_token,
             Some(serde_json::json!({
-                "source_id": sid,
+                "source_id": mem_sid,
                 "explore_url": payload,
                 "page": 1
             })),
@@ -1574,14 +1730,14 @@ async fn member_explore_rejects_quickjs_injection_and_preserves_admin_secrets_an
 
     assert_eq!(exfil_hits.load(Ordering::SeqCst), 0);
 
-    // Configured category still works cleanly for Member
+    // Configured category works cleanly for Member on their own plugin
     let (st_ok, b_ok) = json_request(
         &h.app,
         "POST",
         "/api/v1/comic/online/explore",
         &h.member_token,
         Some(serde_json::json!({
-            "source_id": sid,
+            "source_id": mem_sid,
             "explore_url": "/cat?p={{page}}",
             "page": 1
         })),
@@ -1591,11 +1747,23 @@ async fn member_explore_rejects_quickjs_injection_and_preserves_admin_secrets_an
     let ok_val: serde_json::Value = serde_json::from_slice(&b_ok).unwrap();
     assert_eq!(ok_val["items"][0]["title"], "LegitCat");
 
-    // Admin variable must be untouched
+    // Both Member and Admin variables remain untouched and isolated
+    let (st_m_var, b_m_var) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/plugins/{mem_sid}/variable"),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_m_var, StatusCode::OK);
+    let m_var_val: serde_json::Value = serde_json::from_slice(&b_m_var).unwrap();
+    assert_eq!(m_var_val["variable"], "MEMBER_SECRET_VAR");
+
     let (st_var, b_var) = json_request(
         &h.app,
         "GET",
-        &format!("/api/v1/comic/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         &h.admin_token,
         None,
     )

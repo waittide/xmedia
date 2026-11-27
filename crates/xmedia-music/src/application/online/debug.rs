@@ -496,8 +496,7 @@ impl MusicOnlineService {
         id: Uuid,
         input: MusicSourceTestInput,
     ) -> DomainResult<MusicSourceTestReportDto> {
-        actor.ensure_admin()?;
-        let rec = self.sources.load_source(id).await?;
+        let rec = self.sources.load_owned_source(actor, id).await?;
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 

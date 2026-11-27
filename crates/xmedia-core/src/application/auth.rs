@@ -21,7 +21,7 @@ use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
 use crate::domain::repository::{
     BindingDeleteScope, OnlineItemDeleteScope, OnlineLibraryItemRepository, UserLookup,
-    UserMutation, UserRepository,
+    UserMutation, UserPluginRepository, UserRepository,
 };
 use crate::domain::user::{User, UserId, UserPreferences, UserRole, UserSecret, validate_password};
 
@@ -39,6 +39,7 @@ pub struct AuthService {
     activity: Option<Arc<ActivityService>>,
     online_items: Option<Arc<dyn OnlineLibraryItemRepository>>,
     bindings: Option<Arc<MediaBindingService>>,
+    plugins: Option<Arc<dyn UserPluginRepository>>,
     setup_lock: Arc<Mutex<()>>,
     throttled_verify_lock: Arc<Mutex<()>>,
     dummy_password_hash: Arc<OnceCell<String>>,
@@ -61,6 +62,7 @@ impl AuthService {
             activity: None,
             online_items: None,
             bindings: None,
+            plugins: None,
             setup_lock: Arc::new(Mutex::new(())),
             throttled_verify_lock: Arc::new(Mutex::new(())),
             dummy_password_hash: Arc::new(OnceCell::new()),
@@ -81,6 +83,11 @@ impl AuthService {
         self.activity = activity;
         self.online_items = online_items;
         self.bindings = bindings;
+        self
+    }
+
+    pub fn with_plugins_cleanup(mut self, plugins: Arc<dyn UserPluginRepository>) -> Self {
+        self.plugins = Some(plugins);
         self
     }
 
@@ -546,6 +553,9 @@ impl AuthService {
             online_items
                 .delete_scope(OnlineItemDeleteScope::User(target_id))
                 .await?;
+        }
+        if let Some(ref plugins) = self.plugins {
+            let _ = plugins.purge_user(target_id).await?;
         }
         if let Some(ref bindings) = self.bindings {
             let _ = bindings.purge(BindingDeleteScope::User(target_id)).await?;

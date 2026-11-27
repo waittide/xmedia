@@ -375,8 +375,7 @@ impl VideoOnlineService {
         input: VideoSourceTestInput,
         url_builder: &dyn VideoProxyUrlBuilder,
     ) -> DomainResult<VideoSourceTestReportDto> {
-        actor.ensure_admin()?;
-        let rec = self.load_source(id).await?;
+        let rec = self.source_crud.load_owned_source(actor, id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
 

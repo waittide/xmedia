@@ -1076,7 +1076,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": source_json.to_string() })),
     )
@@ -1088,7 +1088,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
     let (st, _, _) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "api_secret": "TOP_SECRET_999" },
@@ -1098,11 +1098,21 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
     .await;
     assert_eq!(st, StatusCode::OK);
 
-    let (st, _, body) = send_json(
+    let (st_cross, _, _) = send_json(
         &h.app,
         "POST",
         "/online/explore",
         &h.member_token,
+        Some(serde_json::json!({ "source_id": sid })),
+    )
+    .await;
+    assert_eq!(st_cross, StatusCode::NOT_FOUND);
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/online/explore",
+        &h.admin_token,
         Some(serde_json::json!({
             "source_id": sid,
             "explore_url": format!("{base}/cat-js?p={{{{page}}}}&l={{{{limit}}}}&calc={{{{1+1}}}}"),
@@ -1119,7 +1129,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
         &h.app,
         "POST",
         "/online/explore",
-        &h.member_token,
+        &h.admin_token,
         Some(serde_json::json!({
             "source_id": sid,
             "explore_url": format!("@js:java.toast(source.getLoginInfo()); source.setVariable('PWNED'); '{base}/custom-explore'")
@@ -1132,7 +1142,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
         &h.app,
         "POST",
         "/online/explore",
-        &h.member_token,
+        &h.admin_token,
         Some(serde_json::json!({
             "source_id": sid,
             "explore_url": format!("{base}/custom-explore?p={{{{page}}}}&l={{{{limit}}}}&leak={{{{java.toast(source.getLoginInfo())}}}}"),
@@ -1155,7 +1165,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
         &h.app,
         "POST",
         "/online/track-info",
-        &h.member_token,
+        &h.admin_token,
         Some(serde_json::json!({
             "source_id": sid,
             "track_id": "d1",
@@ -1177,7 +1187,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
         &h.app,
         "POST",
         "/online/lyrics",
-        &h.member_token,
+        &h.admin_token,
         Some(serde_json::json!({
             "source_id": sid,
             "track_id": "d1",
@@ -1191,7 +1201,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
         &h.app,
         "POST",
         "/online/lyrics",
-        &h.member_token,
+        &h.admin_token,
         Some(serde_json::json!({
             "source_id": sid,
             "track_id": "d1",
@@ -1206,7 +1216,7 @@ async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         &h.admin_token,
         None,
     )

@@ -64,10 +64,32 @@ async fn rule_play_subtitles_jsonpath_and_js_e2e() {
             "subtitles": "$.subs"
         }
     });
+    let (st_adm, adm_import) = post_json(
+        &app,
+        "/api/v1/plugins/import?domain=video",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_adm, StatusCode::OK);
+    let admin_sid = adm_import["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st_foreign, _) = post_json(
+        &app,
+        "/api/v1/video/online/play",
+        &member_tok,
+        serde_json::json!({
+            "source_id": admin_sid,
+            "play_url": format!("{origin}/api/play")
+        }),
+    )
+    .await;
+    assert_eq!(st_foreign, StatusCode::NOT_FOUND);
+
     let (st, import_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
     .await;
@@ -100,7 +122,7 @@ async fn rule_play_subtitles_jsonpath_and_js_e2e() {
 
 #[tokio::test]
 async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
     let origin_app = Router::new()
         .route(
             "/bad.m3u8",
@@ -133,8 +155,8 @@ async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
 
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({
             "raw_json": serde_json::json!({
                 "sourceName": "MalformedHlsSource",
@@ -175,7 +197,7 @@ async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
 
 #[tokio::test]
 async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n");
     for i in 0..120 {
@@ -236,8 +258,8 @@ async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8
 
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({
             "raw_json": serde_json::json!({
                 "sourceName": "LargeRangeHlsSource",
@@ -298,7 +320,7 @@ async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8
 
 #[tokio::test]
 async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream_range_hls_e2e() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let mut manifest = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n");
     for i in 0..80 {
@@ -376,8 +398,8 @@ async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream
 
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({
             "raw_json": serde_json::json!({
                 "sourceName": "XmlSvgGuardSource",
@@ -436,7 +458,7 @@ async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream
 
 #[tokio::test]
 async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let src_json = serde_json::json!([{
         "sourceName": "GuardVideoSource",
@@ -449,8 +471,8 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
     }]);
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
     .await;
@@ -711,7 +733,7 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
 
 #[tokio::test]
 async fn video_online_search_enforces_source_concurrent_rate_throttling() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let origin_app = Router::new().route(
         "/api/search",
@@ -747,8 +769,8 @@ async fn video_online_search_enforces_source_concurrent_rate_throttling() {
     });
     let (st_imp, imp_val) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({ "raw_json": src.to_string() }),
     )
     .await;
@@ -881,10 +903,30 @@ async fn subtitle_proxy_serves_vtt_converts_srt_injects_headers_and_enforces_sec
             "subtitles": "$.subs"
         }
     });
+    let (st_adm, adm_imp) = post_json(
+        &app,
+        "/api/v1/plugins/import?domain=video",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_adm, StatusCode::OK);
+    let admin_sid = adm_imp["sources"][0]["id"].as_str().unwrap();
+
+    let encoded_zh = urlencoding_param(&format!("{origin}/subs/zh.vtt"));
+    let (st_foreign_sub, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/subtitle-proxy?url={encoded_zh}&source_id={admin_sid}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_foreign_sub, StatusCode::NOT_FOUND);
+
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
     .await;
@@ -956,11 +998,11 @@ async fn subtitle_proxy_serves_vtt_converts_srt_injects_headers_and_enforces_sec
         );
     }
 
-    let (_tmp_h, app_hardened, adm_h, mem_h) = setup_test_app(false).await;
+    let (_tmp_h, app_hardened, _adm_h, mem_h) = setup_test_app(false).await;
     let (st_imp_h, imp_h) = post_json(
         &app_hardened,
-        "/api/v1/video/sources/import",
-        &adm_h,
+        "/api/v1/plugins/import?domain=video",
+        &mem_h,
         serde_json::json!({
             "raw_json": serde_json::json!({
                 "sourceName": "HardenedSubSource",
@@ -1027,7 +1069,7 @@ async fn video_online_endpoints_enforce_cancel_on_future_drop() {
         axum::serve(listener, origin_app).await.unwrap();
     });
 
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let src_json = serde_json::json!({
         "sourceName": "DropVideoSource",
@@ -1066,8 +1108,8 @@ async fn video_online_endpoints_enforce_cancel_on_future_drop() {
 
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
     .await;
@@ -1288,7 +1330,7 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
 
 #[tokio::test]
 async fn video_play_headers_applied_matches_build_sanitized_headers() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let origin_app = Router::new()
         .route(
@@ -1344,8 +1386,8 @@ async fn video_play_headers_applied_matches_build_sanitized_headers() {
 
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({
             "raw_json": serde_json::Value::Array(vec![forbidden_applecms, forbidden_rule, valid_rule]).to_string()
         }),
@@ -1401,7 +1443,7 @@ async fn video_play_headers_applied_matches_build_sanitized_headers() {
 
 #[tokio::test]
 async fn video_proxies_strip_static_range_from_source_media_headers() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let seen_hls_ranges: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_hls_referers: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1517,8 +1559,8 @@ async fn video_proxies_strip_static_range_from_source_media_headers() {
     });
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
     .await;

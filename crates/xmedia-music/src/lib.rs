@@ -45,6 +45,7 @@ use infra::source::{HttpMusicMediaProxy, MusicSourceEngine};
 use infra::storage::{LocalMusicScanner, LocalMusicStorage};
 use infra::transcoder::FfmpegAudioTranscoder;
 
+pub use infra::persistence::repositories::migrate_legacy_music_sources;
 pub use infra::persistence::{ensure_music_indexes, ensure_music_schema, register_music_models};
 
 pub fn init_music_module(

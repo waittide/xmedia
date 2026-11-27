@@ -137,3 +137,35 @@ pub(crate) struct UserMediaBindingModel {
 
     pub created_at: Timestamp,
 }
+
+#[derive(Debug, toasty::Model)]
+#[table = "user_plugins"]
+pub(crate) struct UserPluginModel {
+    #[key]
+    pub id: Uuid,
+
+    #[index]
+    pub user_id: Uuid,
+
+    #[index]
+    pub media_kind: String,
+
+    pub format: String,
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+
+    #[column(type = text)]
+    pub raw_source: String,
+
+    #[column(type = text)]
+    pub runtime_state: toasty::Json<serde_json::Value>,
+
+    pub last_test_ok: Option<bool>,
+    pub last_test_msg: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}

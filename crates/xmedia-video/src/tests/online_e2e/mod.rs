@@ -154,7 +154,9 @@ async fn setup_test_app(allow_private_ips: bool) -> (TempDir, Router, String, St
         .unwrap();
 
     let state = VideoHttpState::new(auth_svc, library_svc, video_services);
-    let app = Router::new().nest("/api/v1/video", rest_router(state));
+    let app = Router::new()
+        .nest("/api/v1/plugins", crate::http::plugins_router(&state))
+        .nest("/api/v1/video", rest_router(state));
 
     (tmp, app, admin_session.token, member_session.token)
 }

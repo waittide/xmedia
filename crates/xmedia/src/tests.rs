@@ -746,7 +746,7 @@ mod gateway_integration_tests {
             let (st_imp, imp_json) = send_req(
                 &app_blocked.router,
                 "POST",
-                "/api/v1/comic/sources/import",
+                "/api/v1/plugins/import?domain=comic",
                 Some(&token),
                 Body::from(serde_json::json!({ "raw_json": comic_source_json }).to_string()),
                 Some("application/json"),
@@ -822,7 +822,7 @@ mod gateway_integration_tests {
             let (st_imp, imp_json) = send_req(
                 &app_allowed.router,
                 "POST",
-                "/api/v1/comic/sources/import",
+                "/api/v1/plugins/import?domain=comic",
                 Some(&token),
                 Body::from(serde_json::json!({ "raw_json": comic_source_json }).to_string()),
                 Some("application/json"),
@@ -951,7 +951,7 @@ mod gateway_integration_tests {
                     let (st, json) = send_req(
                         &r,
                         "POST",
-                        &format!("/api/v1/{domain}/sources/import"),
+                        &format!("/api/v1/plugins/import?domain={domain}"),
                         Some(&tok),
                         Body::from(payload.as_str().to_owned()),
                         Some("application/json"),
@@ -981,7 +981,7 @@ mod gateway_integration_tests {
             let (st, listed) = send_req(
                 &router,
                 "GET",
-                &format!("/api/v1/{domain}/sources"),
+                &format!("/api/v1/plugins?domain={domain}"),
                 Some(&admin_token),
                 Body::empty(),
                 None,
@@ -1320,6 +1320,230 @@ mod gateway_integration_tests {
             legit_res.status(),
             StatusCode::OK,
             "legitimate client from distinct IP must not be locked out by attacker IP"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_sources_auto_migrate_to_first_admin_and_user_deletion_purges_isolated_plugins()
+    {
+        use xmedia_core::domain::repository::UserPluginRepository;
+
+        let tmp = TempDir::new().unwrap();
+        let cfg = make_cfg(&tmp);
+
+        // 1. Initialize schema, then insert legacy rows directly into `{book,comic,music,video}_sources`
+        let (mut boot_db, _) = crate::connect_and_migrate_db(&cfg.database_url)
+            .await
+            .unwrap();
+        let legacy_music_id = uuid::Uuid::now_v7();
+        let legacy_comic_id = uuid::Uuid::now_v7();
+        let legacy_music_hex = legacy_music_id.simple().to_string();
+        let legacy_comic_hex = legacy_comic_id.simple().to_string();
+        let now_str = "2026-01-01T00:00:00Z";
+
+        toasty::sql::statement(format!(
+            "INSERT INTO music_sources (id, name, source_url, group_name, enabled, weight, source_type, raw_json, runtime_state, created_at, updated_at) \
+             VALUES (X'{legacy_music_hex}', 'LegacyMusic', 'https://legacy-music.example', 'LegacyG', 1, 50, 0, \
+             '{{\"sourceName\":\"LegacyMusic\",\"sourceUrl\":\"https://legacy-music.example\",\"sourceGroup\":\"LegacyG\"}}', \
+             '{{\"variable\":\"legacy-var\",\"login_info\":{{}},\"cookies\":{{\"legacy-music.example\":\"sid=abc\"}},\"cache\":{{}},\"android_id\":\"0123456789abcdef\"}}', \
+             '{now_str}', '{now_str}')"
+        ))
+        .exec(&mut boot_db)
+        .await
+        .unwrap();
+
+        toasty::sql::statement(format!(
+            "INSERT INTO comic_sources (id, name, source_url, group_name, enabled, weight, source_type, raw_json, runtime_state, created_at, updated_at) \
+             VALUES (X'{legacy_comic_hex}', 'LegacyComic', 'https://legacy-comic.example', 'LegacyC', 1, 30, 0, \
+             '{{\"sourceName\":\"LegacyComic\",\"sourceUrl\":\"https://legacy-comic.example\",\"sourceGroup\":\"LegacyC\"}}', \
+             '{{\"variable\":\"\",\"login_info\":{{}},\"cookies\":{{}},\"cache\":{{}},\"android_id\":\"fedcba9876543210\"}}', \
+             '{now_str}', '{now_str}')"
+        ))
+        .exec(&mut boot_db)
+        .await
+        .unwrap();
+        drop(boot_db);
+
+        // 2. Boot app before any admin exists, then run POST /api/v1/auth/setup -> legacy sources migrate to first admin
+        let app = XMediaApp::init(cfg.clone()).await.unwrap();
+        let (st_setup, setup_json) = send_req(
+            &app.router,
+            "POST",
+            "/api/v1/auth/setup",
+            None,
+            Body::from(
+                serde_json::json!({
+                    "username": "admin",
+                    "display_name": "Admin",
+                    "password": "adminpassword123"
+                })
+                .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        assert_eq!(st_setup, StatusCode::CREATED);
+        let admin_tok = setup_json["token"].as_str().unwrap().to_string();
+
+        // Legacy `/api/v1/music/sources` route is gone (404 under /api/v1)
+        let (st_old_route, _) = send_req(
+            &app.router,
+            "GET",
+            "/api/v1/music/sources",
+            Some(&admin_tok),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_old_route, StatusCode::NOT_FOUND);
+
+        // Unified `/api/v1/plugins` returns both migrated plugins with preserved UUIDs and runtime variable/cookies!
+        let (st_all, all_plugins) = send_req(
+            &app.router,
+            "GET",
+            "/api/v1/plugins",
+            Some(&admin_tok),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_all, StatusCode::OK);
+        let all_arr = all_plugins.as_array().unwrap();
+        assert_eq!(all_arr.len(), 2);
+        let (st_var, var_json) = send_req(
+            &app.router,
+            "GET",
+            &format!("/api/v1/plugins/{legacy_music_id}/variable"),
+            Some(&admin_tok),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_var, StatusCode::OK);
+        assert_eq!(var_json["variable"], "legacy-var");
+
+        // 3. Create member user -> strict isolation (member sees 0 of admin's plugins and gets 404 on admin's IDs)
+        let (st_cu, cu_json) = send_req(
+            &app.router,
+            "POST",
+            "/api/v1/users",
+            Some(&admin_tok),
+            Body::from(
+                serde_json::json!({
+                    "username": "alice",
+                    "display_name": "Alice",
+                    "password": "alicepassword123",
+                    "role": "member"
+                })
+                .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        assert_eq!(st_cu, StatusCode::CREATED);
+        let alice_id = cu_json["id"].as_str().unwrap().to_string();
+
+        let (st_login, alice_sess) = send_req(
+            &app.router,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Body::from(
+                serde_json::json!({
+                    "username": "alice",
+                    "password": "alicepassword123"
+                })
+                .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        assert_eq!(st_login, StatusCode::OK);
+        let alice_tok = alice_sess["token"].as_str().unwrap().to_string();
+
+        let (st_alice_empty, alice_list0) = send_req(
+            &app.router,
+            "GET",
+            "/api/v1/plugins",
+            Some(&alice_tok),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_alice_empty, StatusCode::OK);
+        assert!(alice_list0.as_array().unwrap().is_empty());
+
+        let (st_cross, _) = send_req(
+            &app.router,
+            "GET",
+            &format!("/api/v1/plugins/{legacy_music_id}"),
+            Some(&alice_tok),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_cross, StatusCode::NOT_FOUND);
+
+        // 4. Alice imports her own music plugin -> invisible to Admin, purged when Admin deletes Alice
+        let (st_alice_imp, alice_imp) = send_req(
+            &app.router,
+            "POST",
+            "/api/v1/plugins/import?domain=music",
+            Some(&alice_tok),
+            Body::from(
+                serde_json::json!({
+                    "content": r#"{"sourceName":"AlicePrivate","sourceUrl":"https://alice-music.example","ruleSearch":{"songList":"$.songs"}}"#
+                })
+                .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        assert_eq!(st_alice_imp, StatusCode::OK);
+        let alice_plugin_id =
+            uuid::Uuid::parse_str(alice_imp["sources"][0]["id"].as_str().unwrap()).unwrap();
+
+        // Admin cannot access Alice's private plugin either!
+        let (st_admin_cross, _) = send_req(
+            &app.router,
+            "GET",
+            &format!("/api/v1/plugins/{alice_plugin_id}"),
+            Some(&admin_tok),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_admin_cross, StatusCode::NOT_FOUND);
+
+        // Delete Alice -> her plugin record in `user_plugins` is purged!
+        let (st_del_user, _) = send_req(
+            &app.router,
+            "DELETE",
+            &format!("/api/v1/users/{alice_id}"),
+            Some(&admin_tok),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_del_user, StatusCode::OK);
+
+        let (check_db, _) = crate::connect_and_migrate_db(&cfg.database_url)
+            .await
+            .unwrap();
+        let plugins_repo = crate::ToastyUserPluginRepository::new(check_db);
+        assert!(
+            plugins_repo
+                .find_by_id(alice_plugin_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            plugins_repo
+                .find_by_id(legacy_music_id)
+                .await
+                .unwrap()
+                .is_some()
         );
     }
 }

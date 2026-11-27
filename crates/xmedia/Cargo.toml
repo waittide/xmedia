@@ -38,6 +38,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 xmedia-core.workspace = true
+xmedia-source.workspace = true
 
 xmedia-book = { workspace = true, optional = true }
 xmedia-comic = { workspace = true, optional = true }

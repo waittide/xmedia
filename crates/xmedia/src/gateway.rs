@@ -30,7 +30,7 @@ use xmedia_core::application::dto::{
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::library::{LibraryId, LibraryKind, MediaKind, ScanStatus};
-use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::domain::repository::{LibraryRepository, UserPluginRepository};
 use xmedia_core::domain::user::{UserId, UserPreferences};
 use xmedia_core::http::{
     AUTH_COOKIE_NAME, ApiError, ApiResult, ClientIp, PeerIp, attach_cookie, clear_cookie,
@@ -137,6 +137,8 @@ impl FfmpegStatusCache {
 
 #[derive(Clone)]
 pub struct GatewayState {
+    pub db: toasty::Db,
+    pub plugins_repo: Arc<dyn UserPluginRepository>,
     pub auth: Arc<AuthService>,
     pub libraries: Arc<LibraryService>,
     pub libraries_repo: Arc<dyn LibraryRepository>,
@@ -229,6 +231,12 @@ async fn setup_admin(
     Json(input): Json<SetupAdminInput>,
 ) -> ApiResult<Response> {
     let session = state.auth.setup_initial_admin(input).await?;
+    let _ = crate::migrate_all_legacy_sources_to_user(
+        &state.db,
+        state.plugins_repo.as_ref(),
+        session.user.id.0,
+    )
+    .await;
     let cookie = session_cookie(
         &session.token,
         state.auth.token_ttl_seconds(),

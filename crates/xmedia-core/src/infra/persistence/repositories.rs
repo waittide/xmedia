@@ -15,7 +15,7 @@ use super::models::{LibraryModel, UserModel};
 
 pub use user_data::{
     ToastyOnlineLibraryItemRepository, ToastyUserActivityRepository,
-    ToastyUserMediaBindingRepository,
+    ToastyUserMediaBindingRepository, ToastyUserPluginRepository,
 };
 
 fn db_err(action: &str, err: impl std::fmt::Display) -> DomainError {

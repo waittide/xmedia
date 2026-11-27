@@ -37,6 +37,7 @@ use infra::source::tracked_store::TrackedBookStore;
 use infra::storage::{LocalBookScanner, LocalBookStorage};
 use xmedia_source::crud::SourceCrudService;
 
+pub use infra::persistence::repositories::migrate_legacy_book_sources;
 pub use infra::persistence::{ensure_book_schema, register_book_models};
 
 pub fn init_book_module(

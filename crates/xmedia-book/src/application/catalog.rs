@@ -223,11 +223,11 @@ impl BookCatalogService {
                     continue;
                 }
                 if !b.source.is_online_tracked()
-                    || actor.role.is_admin()
-                    || self
-                        .bindings
-                        .is_bound(actor.id, MediaKind::Book, b.id.0)
-                        .await?
+                    || (target_user_id == actor.id
+                        && self
+                            .bindings
+                            .is_bound(actor.id, MediaKind::Book, b.id.0)
+                            .await?)
                 {
                     candidate_ids.push(b.id.0);
                 }

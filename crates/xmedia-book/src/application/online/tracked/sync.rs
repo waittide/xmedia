@@ -18,8 +18,23 @@ impl BookOnlineService {
         book_id: BookId,
         mut input: SwitchTrackedSourceInput,
     ) -> DomainResult<TrackedTocResponseDto> {
-        actor.ensure_admin()?;
-        let new_src = self.sources.load_source(input.source_id).await?;
+        actor.ensure_active()?;
+        let new_src = self
+            .sources
+            .load_owned_source(actor, input.source_id)
+            .await?;
+        if !self
+            .catalog
+            .bindings()
+            .is_bound(
+                actor.id,
+                xmedia_core::domain::library::MediaKind::Book,
+                book_id.0,
+            )
+            .await?
+        {
+            return Err(DomainError::NotFound(format!("未找到书籍 {}", book_id.0)));
+        }
         input.book_url = Self::validate_caller_source_url(&input.book_url, &new_src.raw_json)?;
         if !input.toc_url.trim().is_empty() {
             input.toc_url = Self::validate_caller_source_url(&input.toc_url, &new_src.raw_json)?;

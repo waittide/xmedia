@@ -24,7 +24,7 @@ use xmedia_core::{ensure_core_schema, register_core_models};
 
 use super::sample_epub_bytes;
 use crate::http::state::BookHttpState;
-use crate::http::{opds_router, rest_router};
+use crate::http::{opds_router, plugins_router, rest_router};
 use crate::{ensure_book_schema, init_book_module, register_book_models};
 
 const TINY_PNG: &[u8] = &[
@@ -211,6 +211,7 @@ async fn setup_test_book_app() -> (
 
     let state = BookHttpState::new(auth, library_svc.clone(), book_services);
     let app = Router::new()
+        .nest("/api/v1/plugins", plugins_router(&state))
         .nest("/api/v1/book", rest_router(state.clone()))
         .nest("/opds/book", opds_router(state));
 
@@ -640,13 +641,13 @@ async fn series_and_rating_roundtrip_across_rest_pool_opds_v1_opds_v2_and_schema
 async fn online_items_http_crud_lookup_and_progress_roundtrip() {
     let (_tmp, token, _admin_user, _library_svc, app) = setup_test_book_app().await;
 
-    // 1. Import a book source via `/api/v1/book/sources/import`
+    // 1. Import a book source via `/api/v1/plugins/import?domain=book`
     let imp_res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/book/sources/import")
+                .uri("/api/v1/plugins/import?domain=book")
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -816,13 +817,13 @@ async fn online_items_http_crud_lookup_and_progress_roundtrip() {
         serde_json::from_slice(&to_bytes(clr_res.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert!(clr_json["progress"].is_null());
 
-    // 6. Disabling source via PATCH `/api/v1/book/sources/{source_id}` updates availability to `source_disabled`
+    // 6. Disabling source via PATCH `/api/v1/plugins/{source_id}` updates availability to `source_disabled`
     let dis_res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri(format!("/api/v1/book/sources/{source_id}"))
+                .uri(format!("/api/v1/plugins/{source_id}"))
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(Body::from(

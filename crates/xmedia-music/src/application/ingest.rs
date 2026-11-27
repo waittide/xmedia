@@ -326,11 +326,11 @@ impl MusicIngestService {
                 continue;
             }
             if matches!(tr.source, TrackSource::OnlineTracked(_))
-                && !actor.role.is_admin()
-                && !self
-                    .bindings
-                    .is_bound(actor.id, MediaKind::Music, tr.id.0)
-                    .await?
+                && (target_user_id != actor.id
+                    || !self
+                        .bindings
+                        .is_bound(actor.id, MediaKind::Music, tr.id.0)
+                        .await?)
             {
                 continue;
             }

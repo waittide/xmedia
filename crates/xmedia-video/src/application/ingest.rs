@@ -166,11 +166,11 @@ impl VideoIngestService {
                 .next()
             {
                 if show.online_tracked().is_some()
-                    && !actor.role.is_admin()
-                    && !self
-                        .bindings
-                        .is_bound(actor.id, MediaKind::Video, show.id.0)
-                        .await?
+                    && (target_user_id != actor.id
+                        || !self
+                            .bindings
+                            .is_bound(actor.id, MediaKind::Video, show.id.0)
+                            .await?)
                 {
                     continue;
                 }
@@ -185,11 +185,11 @@ impl VideoIngestService {
             {
                 let bid = video.binding_id();
                 if video.source.online_tracking_info().is_some()
-                    && !actor.role.is_admin()
-                    && !self
-                        .bindings
-                        .is_bound(actor.id, MediaKind::Video, bid)
-                        .await?
+                    && (target_user_id != actor.id
+                        || !self
+                            .bindings
+                            .is_bound(actor.id, MediaKind::Video, bid)
+                            .await?)
                 {
                     continue;
                 }

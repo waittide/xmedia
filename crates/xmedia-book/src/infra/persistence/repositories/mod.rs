@@ -6,7 +6,7 @@ use xmedia_core::domain::error::DomainError;
 
 pub use books::ToastyBookRepository;
 pub use reading::ToastyBookReadingRepository;
-pub use sources::ToastyBookSourceRepository;
+pub use sources::{ToastyBookSourceRepository, migrate_legacy_book_sources};
 
 pub(super) fn db_err(err: impl std::fmt::Display) -> DomainError {
     DomainError::Persistence(err.to_string())

@@ -6,7 +6,7 @@ pub mod watch;
 use toasty::Db;
 use xmedia_core::domain::error::DomainError;
 
-pub use sources::ToastyVideoSourceRepository;
+pub use sources::{ToastyVideoSourceRepository, migrate_legacy_video_sources};
 pub use watch::ToastyVideoWatchRepository;
 
 pub(super) fn db_err(err: impl std::fmt::Display) -> DomainError {

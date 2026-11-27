@@ -35,10 +35,14 @@ pub struct OnlineSourceInfo {
 
 #[async_trait]
 pub trait OnlineSourceDirectory: Send + Sync {
-    async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>>;
+    async fn list_sources(&self, user_id: UserId) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>>;
 
-    async fn find_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
-        Ok(self.list_sources().await?.remove(&id))
+    async fn find_source(
+        &self,
+        user_id: UserId,
+        id: Uuid,
+    ) -> DomainResult<Option<OnlineSourceInfo>> {
+        Ok(self.list_sources(user_id).await?.remove(&id))
     }
 }
 
@@ -228,8 +232,12 @@ impl OnlineLibraryService {
         }
     }
 
-    async fn single_dto(&self, item: OnlineLibraryItem) -> DomainResult<OnlineItemDto> {
-        let sources = self.sources.list_sources().await?;
+    async fn single_dto(
+        &self,
+        user_id: UserId,
+        item: OnlineLibraryItem,
+    ) -> DomainResult<OnlineItemDto> {
+        let sources = self.sources.list_sources(user_id).await?;
         Ok(Self::to_dto(item, &sources))
     }
 
@@ -261,7 +269,7 @@ impl OnlineLibraryService {
             .unwrap_or(DEFAULT_LIST_LIMIT)
             .clamp(1, MAX_LIST_LIMIT) as usize;
         let offset = query.offset.unwrap_or(0) as usize;
-        let sources = self.sources.list_sources().await?;
+        let sources = self.sources.list_sources(user_id).await?;
         let items = items
             .into_iter()
             .skip(offset)
@@ -273,7 +281,7 @@ impl OnlineLibraryService {
 
     pub async fn get(&self, user_id: UserId, id: Uuid) -> DomainResult<OnlineItemDto> {
         let item = self.load_owned(user_id, id).await?;
-        self.single_dto(item).await
+        self.single_dto(user_id, item).await
     }
 
     pub async fn lookup(
@@ -298,7 +306,7 @@ impl OnlineLibraryService {
             });
         }
         let all = self.repo.list_by_user(user_id, self.media_kind).await?;
-        let sources = self.sources.list_sources().await?;
+        let sources = self.sources.list_sources(user_id).await?;
         let items: Vec<OnlineItemDto> = OnlineLibraryItem::lookup_matching(all, &raw_refs)
             .into_iter()
             .map(|item| Self::to_dto(item, &sources))
@@ -338,13 +346,13 @@ impl OnlineLibraryService {
             Timestamp::now(),
         )?;
         if let Some(src_id) = verify_source_uuid
-            && self.sources.find_source(src_id).await?.is_none()
+            && self.sources.find_source(user_id, src_id).await?.is_none()
         {
             return Err(DomainError::NotFound("online source not found".into()));
         }
         self.repo.save(&item).await?;
         drop(guard);
-        self.single_dto(item).await
+        self.single_dto(user_id, item).await
     }
 
     pub async fn update(
@@ -356,7 +364,7 @@ impl OnlineLibraryService {
         let mut item = self.load_owned(user_id, id).await?;
         apply_online_mutation(&mut item, mutation, Timestamp::now())?;
         self.repo.save(&item).await?;
-        self.single_dto(item).await
+        self.single_dto(user_id, item).await
     }
 
     pub async fn delete(&self, user_id: UserId, id: Uuid) -> DomainResult<()> {

@@ -314,11 +314,11 @@ impl ComicCatalogService {
                 continue;
             };
             if s.source.online_tracking().is_some()
-                && !actor.role.is_admin()
-                && !self
-                    .bindings
-                    .is_bound(actor.id, MediaKind::Comic, s.id.0)
-                    .await?
+                && (target_user_id != actor.id
+                    || !self
+                        .bindings
+                        .is_bound(actor.id, MediaKind::Comic, s.id.0)
+                        .await?)
             {
                 continue;
             }

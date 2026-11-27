@@ -10,11 +10,13 @@ use tracing::info;
 use crate::domain::error::{DomainError, DomainResult};
 use models::{
     LibraryModel, OnlineLibraryItemModel, UserActivityDailyModel, UserMediaBindingModel, UserModel,
+    UserPluginModel,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CoreSchemaMigrationReport {
     pub bindings_table_created: bool,
+    pub plugins_table_created: bool,
 }
 
 pub fn register_core_models(set: &mut ModelSet) {
@@ -23,6 +25,7 @@ pub fn register_core_models(set: &mut ModelSet) {
     <OnlineLibraryItemModel as Model>::register(set);
     <UserActivityDailyModel as Model>::register(set);
     <UserMediaBindingModel as Model>::register(set);
+    <UserPluginModel as Model>::register(set);
 }
 
 pub async fn is_core_schema_initialized(db: &mut Db) -> bool {
@@ -107,6 +110,11 @@ async fn collect_missing_core_tables(
         <UserMediaBindingModel as Model>::register(&mut missing);
         labels.push("user_media_bindings");
         report.bindings_table_created = true;
+    }
+    if UserPluginModel::all().limit(1).exec(db).await.is_err() {
+        <UserPluginModel as Model>::register(&mut missing);
+        labels.push("user_plugins");
+        report.plugins_table_created = true;
     }
     (missing, labels, report)
 }

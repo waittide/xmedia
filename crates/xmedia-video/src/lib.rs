@@ -34,6 +34,7 @@ use infra::persistence::repositories::{
 use infra::source::{HttpVideoStreamTransport, VideoSourceEngine};
 use infra::storage::{LocalVideoScanner, LocalVideoStorage};
 
+pub use infra::persistence::repositories::migrate_legacy_video_sources;
 pub use infra::persistence::{ensure_video_indexes, ensure_video_schema, register_video_models};
 
 pub fn init_video_module(

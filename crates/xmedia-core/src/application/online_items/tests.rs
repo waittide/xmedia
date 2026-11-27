@@ -18,7 +18,10 @@ struct FakeSources(HashMap<Uuid, OnlineSourceInfo>);
 
 #[async_trait]
 impl OnlineSourceDirectory for FakeSources {
-    async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
+    async fn list_sources(
+        &self,
+        _user_id: UserId,
+    ) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
         Ok(self.0.clone())
     }
 }

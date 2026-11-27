@@ -377,7 +377,9 @@ fn inject_source_url_into_raw(item_raw: &mut String, effective_url: String) {
 }
 
 impl SourceSpecAdapter for VideoSourceSpec {
-    const ENTITY_LABEL: &'static str = "影视源";
+    const MEDIA_KIND: xmedia_core::domain::library::MediaKind =
+        xmedia_core::domain::library::MediaKind::Video;
+    const ENTITY_LABEL: &'static str = "视频插件";
     const JSON_GROUP_KEY: &'static str = "sourceGroup";
 
     fn is_blank(&self) -> bool {

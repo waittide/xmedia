@@ -82,8 +82,8 @@ async fn online_detail_chapters_pages_enforce_cancel_on_future_drop() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src.to_string() })),
     )
     .await;
@@ -195,7 +195,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": src.to_string() })),
     )
@@ -208,7 +208,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_l0, _) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "username": "alice_v0", "apiToken": "t0" },
@@ -226,7 +226,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
         json_request(
             &app_a,
             "POST",
-            &format!("/api/v1/comic/sources/{sid_a}/test"),
+            &format!("/api/v1/plugins/{sid_a}/test"),
             &tok_a,
             Some(serde_json::json!({ "mode": "search", "keyword": "k" })),
         )
@@ -237,7 +237,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_l1, _) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "username": "alice_v1", "apiToken": "t1_fresh" },
@@ -254,7 +254,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_v1, b_v1) = json_request(
         &h.app,
         "GET",
-        &format!("/api/v1/comic/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         &h.admin_token,
         None,
     )
@@ -266,7 +266,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_chk1, b_chk1) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "username": "alice_v1", "apiToken": "••••••••" },
@@ -280,7 +280,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
 
     // Subcase B: online/detail (sets cookie without changing variable/login_info) vs concurrent login-action
     let app_b = h.app.clone();
-    let tok_b = h.member_token.clone();
+    let tok_b = h.admin_token.clone();
     let sid_b = sid.clone();
     let base_b = base.clone();
     let detail_task = tokio::spawn(async move {
@@ -300,7 +300,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_l2, _) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "username": "alice_v2", "apiToken": "t2_fresh" },
@@ -317,7 +317,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_v2, b_v2) = json_request(
         &h.app,
         "GET",
-        &format!("/api/v1/comic/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         &h.admin_token,
         None,
     )
@@ -329,7 +329,7 @@ async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
     let (st_chk2, b_chk2) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "username": "alice_v2", "apiToken": "••••••••" },
@@ -368,7 +368,7 @@ async fn patch_and_import_upsert_concurrent_with_login_action_preserve_runtime_s
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": src.to_string() })),
     )
@@ -397,8 +397,8 @@ async fn patch_and_import_upsert_concurrent_with_login_action_preserve_runtime_s
         })
         .to_string();
 
-        let login_uri = format!("/api/v1/comic/sources/{sid}/login-action");
-        let patch_uri = format!("/api/v1/comic/sources/{sid}");
+        let login_uri = format!("/api/v1/plugins/{sid}/login-action");
+        let patch_uri = format!("/api/v1/plugins/{sid}");
 
         let (res_login, res_patch) = tokio::join!(
             json_request(
@@ -445,7 +445,7 @@ async fn patch_and_import_upsert_concurrent_with_login_action_preserve_runtime_s
             json_request(
                 &h.app,
                 "POST",
-                "/api/v1/comic/sources/import",
+                "/api/v1/plugins/import?domain=comic",
                 &h.admin_token,
                 Some(serde_json::json!({ "raw_json": import_payload })),
             ),
@@ -457,7 +457,7 @@ async fn patch_and_import_upsert_concurrent_with_login_action_preserve_runtime_s
         let (st_chk, b_chk) = json_request(
             &h.app,
             "POST",
-            &format!("/api/v1/comic/sources/{sid}/login-action"),
+            &format!("/api/v1/plugins/{sid}/login-action"),
             &h.admin_token,
             Some(serde_json::json!({
                 "login_info": { "user": format!("u{round}_b"), "apiToken": "••••••••" },
@@ -593,8 +593,8 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": sources.to_string() })),
     )
     .await;
@@ -670,8 +670,8 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
     let (st_seed_ck, _) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{opts_id}/login-action"),
-        &h.admin_token,
+        &format!("/api/v1/plugins/{opts_id}/login-action"),
+        &h.member_token,
         Some(serde_json::json!({
             "login_info": {},
             "action": format!("cookie.setCookie('{base}', 'session=s0');'ok'")
@@ -702,8 +702,8 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
     let (st_rot, _) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{opts_id}/login-action"),
-        &h.admin_token,
+        &format!("/api/v1/plugins/{opts_id}/login-action"),
+        &h.member_token,
         Some(serde_json::json!({
             "login_info": {},
             "action": format!("cookie.setCookie('{base}', 'session=s1_fresh');'ok'")
@@ -719,8 +719,8 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
     let (st_chk, b_chk) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/sources/{opts_id}/login-action"),
-        &h.admin_token,
+        &format!("/api/v1/plugins/{opts_id}/login-action"),
+        &h.member_token,
         Some(serde_json::json!({
             "login_info": {},
             "action": format!("cookie.getCookie('{base}')")
@@ -780,8 +780,8 @@ async fn online_search_enforces_source_concurrent_rate_throttling() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src.to_string() })),
     )
     .await;
@@ -834,8 +834,8 @@ async fn caller_supplied_comic_urls_reject_legado_options_and_data_urls_with_400
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_json.to_string() })),
     )
     .await;
@@ -925,8 +925,8 @@ async fn comic_online_search_enforces_cancel_on_future_drop() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_json.to_string() })),
     )
     .await;
@@ -1019,8 +1019,8 @@ async fn comic_image_proxy_strips_static_range_from_source_headers() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_json.to_string() })),
     )
     .await;
@@ -1178,8 +1178,8 @@ async fn online_comic_items_favorites_progress_and_availability_e2e() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_json.to_string() })),
     )
     .await;
@@ -1303,8 +1303,8 @@ async fn online_comic_items_favorites_progress_and_availability_e2e() {
     let (st_dis, _) = json_request(
         &h.app,
         "PATCH",
-        &format!("/api/v1/comic/sources/{source_id}"),
-        &h.admin_token,
+        &format!("/api/v1/plugins/{source_id}"),
+        &h.member_token,
         Some(serde_json::json!({ "enabled": false })),
     )
     .await;
@@ -1325,8 +1325,8 @@ async fn online_comic_items_favorites_progress_and_availability_e2e() {
     let (st_del_src, _) = json_request(
         &h.app,
         "DELETE",
-        &format!("/api/v1/comic/sources/{source_id}"),
-        &h.admin_token,
+        &format!("/api/v1/plugins/{source_id}"),
+        &h.member_token,
         None,
     )
     .await;
@@ -1526,7 +1526,7 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     let (st_imp, b_imp) = json_request(
         &h.app,
         "POST",
-        "/api/v1/comic/sources/import",
+        "/api/v1/plugins/import?domain=comic",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": src_json.to_string() })),
     )
@@ -1554,9 +1554,8 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     assert_eq!(tracked["series"]["title"], "追更示例漫");
     assert_eq!(tracked["chapters"].as_array().unwrap().len(), 1);
     assert_eq!(tracked["chapters"][0]["online_tracking"]["cached"], false);
-    let ch1_id = tracked["chapters"][0]["id"].as_str().unwrap().to_string();
 
-    // 2. Member cannot see admin's private OnlineTracked comic in OPDS or local pool until member tracks it
+    // 2. Member cannot see or bind admin's private OnlineTracked comic, nor use admin's source_id
     let basic_auth = format!("Basic {}", BASE64.encode("member:memberpassword123"));
     let unbound_feed_res = h
         .app
@@ -1578,8 +1577,7 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     let pool_items: Vec<serde_json::Value> = serde_json::from_slice(&b_pool).unwrap();
     assert!(pool_items.is_empty());
 
-    // Member tracks the same online comic -> deduplicates and reuses same pooled series_id
-    let (st_m_track, b_m_track) = json_request(
+    let (st_cross_track, _) = json_request(
         &h.app,
         "POST",
         "/api/v1/comic/online/track",
@@ -1591,17 +1589,82 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
         })),
     )
     .await;
+    assert_eq!(st_cross_track, StatusCode::NOT_FOUND);
+
+    let (st_bind_adm, b_bind_adm) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/bindings",
+        &h.member_token,
+        Some(serde_json::json!({ "item_ids": [series_id] })),
+    )
+    .await;
+    assert_eq!(st_bind_adm, StatusCode::OK);
+    let bind_adm_val: serde_json::Value = serde_json::from_slice(&b_bind_adm).unwrap();
+    assert_eq!(bind_adm_val["bound_count"], 0);
+
+    // Member imports their own plugin and tracks -> creates an independent per-user OnlineTracked series
+    let (st_m_imp, b_m_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/import?domain=comic",
+        &h.member_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_m_imp, StatusCode::OK);
+    let m_imp_val: serde_json::Value = serde_json::from_slice(&b_m_imp).unwrap();
+    let member_sid = m_imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+    assert_ne!(member_sid, sid);
+
+    let (st_m_track, b_m_track) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/track",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": member_sid,
+            "comic_url": format!("{base}/comic/1"),
+            "toc_url": format!("{base}/toc/1")
+        })),
+    )
+    .await;
     assert_eq!(st_m_track, StatusCode::OK);
     let member_tracked: serde_json::Value = serde_json::from_slice(&b_m_track).unwrap();
-    assert_eq!(member_tracked["series"]["id"].as_str().unwrap(), series_id);
+    let member_series_id = member_tracked["series"]["id"].as_str().unwrap().to_string();
+    assert_ne!(member_series_id, series_id);
+    let member_ch1_id = member_tracked["chapters"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    // Now OPDS 1.2 series & chapter feeds expose the tracked online comic to member
+    // Re-tracking the same URL with member's own plugin deduplicates for that user
+    let (st_m_retrack, b_m_retrack) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/track",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": member_sid,
+            "comic_url": format!("{base}/comic/1"),
+            "toc_url": format!("{base}/toc/1")
+        })),
+    )
+    .await;
+    assert_eq!(st_m_retrack, StatusCode::OK);
+    let member_retracked: serde_json::Value = serde_json::from_slice(&b_m_retrack).unwrap();
+    assert_eq!(
+        member_retracked["series"]["id"].as_str().unwrap(),
+        member_series_id
+    );
+
+    // OPDS 1.2 series & chapter feeds expose member's tracked online comic to member
     let feed_res = h
         .app
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/opds/comic/v1.2/series/{series_id}"))
+                .uri(format!("/opds/comic/v1.2/series/{member_series_id}"))
                 .header(header::AUTHORIZATION, &basic_auth)
                 .body(Body::empty())
                 .unwrap(),
@@ -1617,7 +1680,9 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     )
     .unwrap();
     assert!(feed_xml.contains("追更示例漫"));
-    assert!(feed_xml.contains(&format!("/opds/comic/v1.2/chapters/{ch1_id}/download")));
+    assert!(feed_xml.contains(&format!(
+        "/opds/comic/v1.2/chapters/{member_ch1_id}/download"
+    )));
 
     // 3. OPDS PSE page 0 request triggers on-demand CBZ caching transparently
     let pse_res = h
@@ -1625,7 +1690,7 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/opds/comic/v1.2/chapters/{ch1_id}/pse/0"))
+                .uri(format!("/opds/comic/v1.2/chapters/{member_ch1_id}/pse/0"))
                 .header(header::AUTHORIZATION, &basic_auth)
                 .body(Body::empty())
                 .unwrap(),
@@ -1644,7 +1709,9 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/opds/comic/v1.2/chapters/{ch1_id}/download"))
+                .uri(format!(
+                    "/opds/comic/v1.2/chapters/{member_ch1_id}/download"
+                ))
                 .header(header::AUTHORIZATION, &basic_auth)
                 .body(Body::empty())
                 .unwrap(),
@@ -1661,8 +1728,8 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     let (st_ref, b_ref) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/series/{series_id}/online/refresh"),
-        &h.admin_token,
+        &format!("/api/v1/comic/series/{member_series_id}/online/refresh"),
+        &h.member_token,
         None,
     )
     .await;
@@ -1675,8 +1742,8 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     let (st_cache, b_cache) = json_request(
         &h.app,
         "POST",
-        &format!("/api/v1/comic/series/{series_id}/online/cache"),
-        &h.admin_token,
+        &format!("/api/v1/comic/series/{member_series_id}/online/cache"),
+        &h.member_token,
         None,
     )
     .await;
@@ -1686,11 +1753,11 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     assert_eq!(cache_val["cached_now"], 1);
     assert!(cache_val["failed"].as_array().unwrap().is_empty());
 
-    // 6. Unbinding removes user visibility; auto-GC deletes pooled OnlineTracked series only at 0 bindings
+    // 6. Unbinding each single-user OnlineTracked series auto-GCs it immediately (deleted_from_pool == true)
     let (st_unb_m, b_unb_m) = json_request(
         &h.app,
         "DELETE",
-        &format!("/api/v1/comic/bindings/{series_id}"),
+        &format!("/api/v1/comic/bindings/{member_series_id}"),
         &h.member_token,
         None,
     )
@@ -1698,8 +1765,8 @@ async fn online_tracked_comic_hybrid_cache_opds_pse_and_refresh_e2e() {
     assert_eq!(st_unb_m, StatusCode::OK);
     let unb_m: serde_json::Value = serde_json::from_slice(&b_unb_m).unwrap();
     assert_eq!(unb_m["unbound"], true);
-    assert_eq!(unb_m["remaining_bindings"], 1);
-    assert_eq!(unb_m["deleted_from_pool"], false);
+    assert_eq!(unb_m["remaining_bindings"], 0);
+    assert_eq!(unb_m["deleted_from_pool"], true);
 
     let (st_unb_a, b_unb_a) = json_request(
         &h.app,

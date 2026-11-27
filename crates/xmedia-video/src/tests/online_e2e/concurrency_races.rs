@@ -81,7 +81,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
 
     let (st, import_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
@@ -91,7 +91,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
 
     let (st, login1) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &admin_tok,
         serde_json::json!({
             "login_info": {
@@ -113,7 +113,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
     let test_task = tokio::spawn(async move {
         post_json(
             &app_for_test,
-            &format!("/api/v1/video/sources/{sid_for_test}/test"),
+            &format!("/api/v1/plugins/{sid_for_test}/test"),
             &tok_for_test,
             serde_json::json!({ "mode": "search", "keyword": "Delayed" }),
         )
@@ -126,7 +126,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
 
     let (st, login2) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &admin_tok,
         serde_json::json!({
             "login_info": {
@@ -148,7 +148,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
 
     let (st, _, var_bytes) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         Some(&admin_tok),
         None,
     )
@@ -158,7 +158,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
     assert_eq!(var_json["variable"], "var_2");
 
     let (st, _, list_bytes) =
-        get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+        get_bytes_with_auth(&app, "/api/v1/plugins?domain=video", Some(&admin_tok), None).await;
     assert_eq!(st, StatusCode::OK);
     let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
     let rec = sources
@@ -188,7 +188,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
 
     let (st, _) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &admin_tok,
         serde_json::json!({
             "login_info": {
@@ -209,7 +209,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
 
     let (st, _, var_bytes2) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         Some(&admin_tok),
         None,
     )
@@ -219,7 +219,7 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
     assert_eq!(var_json2["variable"], "var_3");
 
     let (st, _, list_bytes2) =
-        get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+        get_bytes_with_auth(&app, "/api/v1/plugins?domain=video", Some(&admin_tok), None).await;
     assert_eq!(st, StatusCode::OK);
     let sources2: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes2).unwrap();
     let rec2 = sources2
@@ -254,7 +254,7 @@ async fn patch_weight_concurrent_with_login_action_has_zero_lost_updates_e2e() {
     let src_json = race_login_source_json("https://race-weight.example", 0, "race");
     let (st, import_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
@@ -277,7 +277,7 @@ async fn patch_weight_concurrent_with_login_action_has_zero_lost_updates_e2e() {
         let login_task = tokio::spawn(async move {
             post_json(
                 &app_login,
-                &format!("/api/v1/video/sources/{sid_login}/login-action"),
+                &format!("/api/v1/plugins/{sid_login}/login-action"),
                 &tok_login,
                 serde_json::json!({
                     "login_info": {
@@ -300,7 +300,7 @@ async fn patch_weight_concurrent_with_login_action_has_zero_lost_updates_e2e() {
             }
             patch_json(
                 &app_patch,
-                &format!("/api/v1/video/sources/{sid_patch}"),
+                &format!("/api/v1/plugins/{sid_patch}"),
                 &tok_patch,
                 serde_json::json!({ "weight": round }),
             )
@@ -315,7 +315,7 @@ async fn patch_weight_concurrent_with_login_action_has_zero_lost_updates_e2e() {
 
         let (st, _, var_bytes) = get_bytes_with_auth(
             &app,
-            &format!("/api/v1/video/sources/{sid}/variable"),
+            &format!("/api/v1/plugins/{sid}/variable"),
             Some(&admin_tok),
             None,
         )
@@ -329,7 +329,7 @@ async fn patch_weight_concurrent_with_login_action_has_zero_lost_updates_e2e() {
         );
 
         let (st, _, list_bytes) =
-            get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+            get_bytes_with_auth(&app, "/api/v1/plugins?domain=video", Some(&admin_tok), None).await;
         assert_eq!(st, StatusCode::OK);
         let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
         let rec = sources
@@ -355,7 +355,7 @@ async fn patch_weight_concurrent_with_login_action_has_zero_lost_updates_e2e() {
 
         let (st, cache_res) = post_json(
             &app,
-            &format!("/api/v1/video/sources/{sid}/login-action"),
+            &format!("/api/v1/plugins/{sid}/login-action"),
             &admin_tok,
             serde_json::json!({ "login_info": {}, "action": "readCache()" }),
         )
@@ -377,7 +377,7 @@ async fn patch_variable_concurrent_with_login_action_preserves_login_cookies_cac
     let src_json = race_login_source_json("https://race-var.example", 10, "race");
     let (st, import_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
@@ -401,7 +401,7 @@ async fn patch_variable_concurrent_with_login_action_preserves_login_cookies_cac
         let login_task = tokio::spawn(async move {
             post_json(
                 &app_login,
-                &format!("/api/v1/video/sources/{sid_login}/login-action"),
+                &format!("/api/v1/plugins/{sid_login}/login-action"),
                 &tok_login,
                 serde_json::json!({
                     "login_info": {
@@ -425,7 +425,7 @@ async fn patch_variable_concurrent_with_login_action_preserves_login_cookies_cac
             }
             patch_json(
                 &app_patch,
-                &format!("/api/v1/video/sources/{sid_patch}"),
+                &format!("/api/v1/plugins/{sid_patch}"),
                 &tok_patch,
                 serde_json::json!({ "variable": pv_clone }),
             )
@@ -440,7 +440,7 @@ async fn patch_variable_concurrent_with_login_action_preserves_login_cookies_cac
 
         let (st, _, var_bytes) = get_bytes_with_auth(
             &app,
-            &format!("/api/v1/video/sources/{sid}/variable"),
+            &format!("/api/v1/plugins/{sid}/variable"),
             Some(&admin_tok),
             None,
         )
@@ -454,7 +454,7 @@ async fn patch_variable_concurrent_with_login_action_preserves_login_cookies_cac
         );
 
         let (st, _, list_bytes) =
-            get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+            get_bytes_with_auth(&app, "/api/v1/plugins?domain=video", Some(&admin_tok), None).await;
         assert_eq!(st, StatusCode::OK);
         let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
         let rec = sources
@@ -474,7 +474,7 @@ async fn patch_variable_concurrent_with_login_action_preserves_login_cookies_cac
 
         let (st, cache_res) = post_json(
             &app,
-            &format!("/api/v1/video/sources/{sid}/login-action"),
+            &format!("/api/v1/plugins/{sid}/login-action"),
             &admin_tok,
             serde_json::json!({ "login_info": {}, "action": "readCache()" }),
         )
@@ -496,7 +496,7 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
     let initial_json = race_login_source_json("https://race-import.example", 0, "g_0");
     let (st, import_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": initial_json.to_string() }),
     )
@@ -519,7 +519,7 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
         let login_task = tokio::spawn(async move {
             post_json(
                 &app_login,
-                &format!("/api/v1/video/sources/{sid_login}/login-action"),
+                &format!("/api/v1/plugins/{sid_login}/login-action"),
                 &tok_login,
                 serde_json::json!({
                     "login_info": {
@@ -541,7 +541,7 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
             }
             post_json(
                 &app_import,
-                "/api/v1/video/sources/import",
+                "/api/v1/plugins/import?domain=video",
                 &tok_import,
                 serde_json::json!({ "raw_json": upsert_json.to_string() }),
             )
@@ -554,7 +554,7 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
 
         let (st, _, var_bytes) = get_bytes_with_auth(
             &app,
-            &format!("/api/v1/video/sources/{sid}/variable"),
+            &format!("/api/v1/plugins/{sid}/variable"),
             Some(&admin_tok),
             None,
         )
@@ -564,7 +564,7 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
         assert_eq!(var_json["variable"].as_str(), Some(var_val.as_str()));
 
         let (st, _, list_bytes) =
-            get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+            get_bytes_with_auth(&app, "/api/v1/plugins?domain=video", Some(&admin_tok), None).await;
         assert_eq!(st, StatusCode::OK);
         let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
         let rec = sources
@@ -580,7 +580,7 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
 
         let (st, cache_res) = post_json(
             &app,
-            &format!("/api/v1/video/sources/{sid}/login-action"),
+            &format!("/api/v1/plugins/{sid}/login-action"),
             &admin_tok,
             serde_json::json!({ "login_info": {}, "action": "readCache()" }),
         )
@@ -593,7 +593,7 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
 
 #[tokio::test]
 async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both_e2e() {
-    let (_tmp, app, admin_tok, _member_tok) = setup_test_app(true).await;
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
 
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -678,7 +678,7 @@ async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both
 
     let (st, import_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
@@ -686,9 +686,18 @@ async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both
     assert_eq!(st, StatusCode::OK);
     let sid = import_res["sources"][0]["id"].as_str().unwrap().to_string();
 
+    let (st_foreign, _) = post_json(
+        &app,
+        &format!("/api/v1/plugins/{sid}/login-action"),
+        &member_tok,
+        serde_json::json!({ "login_info": { "sid": "hijack" }, "action": "setSession()" }),
+    )
+    .await;
+    assert_eq!(st_foreign, StatusCode::NOT_FOUND);
+
     let (st, _) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &admin_tok,
         serde_json::json!({ "login_info": { "sid": "old_session" }, "action": "setSession()" }),
     )
@@ -714,7 +723,7 @@ async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both
 
     let (st, _) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &admin_tok,
         serde_json::json!({ "login_info": { "sid": "new_session" }, "action": "setSession()" }),
     )
@@ -728,7 +737,7 @@ async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both
 
     let (st, read_res) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &admin_tok,
         serde_json::json!({ "login_info": {}, "action": "readCookies()" }),
     )
@@ -738,7 +747,7 @@ async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both
 
     let (st, echo_res) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &admin_tok,
         serde_json::json!({ "login_info": {}, "action": "probeEcho()" }),
     )
@@ -750,6 +759,28 @@ async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both
     assert!(sent_cookie.contains("session_id=new_session"));
     assert!(sent_cookie.contains("cf_bm=browse_cookie_123"));
     assert!(!sent_cookie.contains("old_session"));
+
+    // Member importing the same plugin gets isolated cookies with zero leakage from admin
+    let (st_m_imp, m_imp) = post_json(
+        &app,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_m_imp, StatusCode::OK);
+    let member_sid = m_imp["sources"][0]["id"].as_str().unwrap();
+    assert_ne!(member_sid, sid);
+
+    let (st_m_read, m_read_res) = post_json(
+        &app,
+        &format!("/api/v1/plugins/{member_sid}/login-action"),
+        &member_tok,
+        serde_json::json!({ "login_info": {}, "action": "readCookies()" }),
+    )
+    .await;
+    assert_eq!(st_m_read, StatusCode::OK);
+    assert_eq!(m_read_res["result"], "|");
 
     srv.abort();
 }

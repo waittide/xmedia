@@ -3,17 +3,30 @@ pub mod online;
 pub mod rest;
 pub mod state;
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::response::Response;
 use xmedia_core::http::{
     into_range_http_response, into_stream_http_response, sanitize_download_filename,
 };
+use xmedia_source::crud::PluginRegistry;
 
 use crate::application::streaming::ResolvedVideoStream;
+pub use online::plugin_handler;
 use state::VideoHttpState;
 
 pub fn rest_router(state: VideoHttpState) -> Router {
     rest::router().merge(online::router()).with_state(state)
+}
+
+pub fn plugins_router(state: &VideoHttpState) -> Router {
+    xmedia_source::crud::plugins_router(
+        state.auth.clone(),
+        Arc::new(PluginRegistry::single(online::plugin_handler(
+            state.services.online.clone(),
+        ))),
+    )
 }
 
 pub fn jellyfin_router(state: VideoHttpState) -> Router {

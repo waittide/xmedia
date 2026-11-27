@@ -367,7 +367,9 @@ pub fn sanitize_novel_stem(name: &str) -> String {
 }
 
 impl SourceSpecAdapter for LegadoBookSource {
-    const ENTITY_LABEL: &'static str = "书源";
+    const MEDIA_KIND: xmedia_core::domain::library::MediaKind =
+        xmedia_core::domain::library::MediaKind::Book;
+    const ENTITY_LABEL: &'static str = "书籍插件";
     const JSON_GROUP_KEY: &'static str = "bookSourceGroup";
 
     fn parse_batch(raw_json: &str) -> Result<Vec<(Self, String)>, String> {

@@ -24,8 +24,7 @@ impl ComicOnlineService {
         id: Uuid,
         input: ComicSourceTestInput,
     ) -> DomainResult<ComicSourceTestReportDto> {
-        actor.ensure_admin()?;
-        let rec = self.source_crud.load_source(id).await?;
+        let rec = self.source_crud.load_owned_source(actor, id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
 

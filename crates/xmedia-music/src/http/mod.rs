@@ -3,17 +3,30 @@ pub mod rest;
 pub mod state;
 pub mod subsonic;
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::response::Response;
 use xmedia_core::http::{
     into_range_http_response, into_stream_http_response, sanitize_download_filename,
 };
+use xmedia_source::crud::PluginRegistry;
 
 use crate::application::streaming::ResolvedAudioStream;
+pub use online::plugin_handler;
 use state::MusicHttpState;
 
 pub fn rest_router(state: MusicHttpState) -> Router {
     rest::router().merge(online::router()).with_state(state)
+}
+
+pub fn plugins_router(state: &MusicHttpState) -> Router {
+    xmedia_source::crud::plugins_router(
+        state.auth.clone(),
+        Arc::new(PluginRegistry::single(online::plugin_handler(
+            state.services.online.clone(),
+        ))),
+    )
 }
 
 pub fn subsonic_router(state: MusicHttpState) -> Router {

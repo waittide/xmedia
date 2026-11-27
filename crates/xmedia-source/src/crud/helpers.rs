@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
 use uuid::Uuid;
+use xmedia_core::domain::library::MediaKind;
 
 use super::dto::{MASKED_SECRET_PLACEHOLDER, SourceSummaryDto, VARIABLE_PREVIEW_MAX_CHARS};
-use crate::model::{LoginUiItem, SourceRuntimeState};
+use crate::model::{LoginUiItem, PluginFormat, SourceRuntimeState};
 
 /// Parses a single JSON object or JSON array (stripping whitespace + UTF-8 BOM `\u{feff}`),
 /// preserving each item's serialized raw JSON string and skipping entries where `is_blank(&item)`
@@ -85,6 +86,8 @@ pub fn sync_raw_json_fields(
 
 pub struct SourceRecordSnapshot<'a> {
     pub id: Uuid,
+    pub domain: MediaKind,
+    pub format: PluginFormat,
     pub name: &'a str,
     pub source_url: &'a str,
     pub group_name: &'a str,
@@ -168,25 +171,21 @@ pub fn merge_login_info_preserving_masked(
 pub fn build_source_summary(
     rec: SourceRecordSnapshot<'_>,
     meta: ParsedSourceSummaryMeta,
-    is_admin: bool,
 ) -> SourceSummaryDto {
-    let (login_ui, login_info, variable_preview, cookie_hosts) = if is_admin {
-        let masked = mask_login_info(&rec.runtime_state.login_info, &meta.login_ui);
-        let preview: String = rec
-            .runtime_state
-            .variable
-            .chars()
-            .take(VARIABLE_PREVIEW_MAX_CHARS)
-            .collect();
-        let mut hosts: Vec<String> = rec.runtime_state.cookies.keys().cloned().collect();
-        hosts.sort();
-        (meta.login_ui, masked, preview, hosts)
-    } else {
-        (Vec::new(), HashMap::new(), String::new(), Vec::new())
-    };
+    let login_info = mask_login_info(&rec.runtime_state.login_info, &meta.login_ui);
+    let variable_preview: String = rec
+        .runtime_state
+        .variable
+        .chars()
+        .take(VARIABLE_PREVIEW_MAX_CHARS)
+        .collect();
+    let mut cookie_hosts: Vec<String> = rec.runtime_state.cookies.keys().cloned().collect();
+    cookie_hosts.sort();
 
     SourceSummaryDto {
         id: rec.id,
+        domain: rec.domain,
+        format: rec.format,
         name: rec.name.to_string(),
         source_url: rec.source_url.to_string(),
         group_name: rec.group_name.to_string(),
@@ -196,7 +195,7 @@ pub fn build_source_summary(
         weight: rec.weight,
         source_type: rec.source_type,
         has_login_url: meta.has_login_url,
-        login_ui,
+        login_ui: meta.login_ui,
         login_info,
         has_variable: !rec.runtime_state.variable.trim().is_empty(),
         variable_preview,
@@ -263,6 +262,7 @@ pub fn merge_runtime_state(
     merged.cookies.extend(new_state.cookies);
     merged.cache.extend(new_state.cache);
     merged.login_info.extend(new_state.login_info);
+    merged.settings.extend(new_state.settings);
     if !new_state.variable.is_empty() {
         merged.variable = new_state.variable;
     }
@@ -437,6 +437,17 @@ pub fn merge_runtime_state_with_base(
     }
     if allow_login_info_override {
         merge_map_with_base(&base.login_info, &mut merged.login_info, updated.login_info);
+    }
+    for key in base.settings.keys() {
+        if !updated.settings.contains_key(key) && merged.settings.get(key) == base.settings.get(key)
+        {
+            merged.settings.remove(key);
+        }
+    }
+    for (key, value) in updated.settings {
+        if base.settings.get(&key) != Some(&value) {
+            merged.settings.insert(key, value);
+        }
     }
 
     merged

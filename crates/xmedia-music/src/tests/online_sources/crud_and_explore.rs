@@ -270,16 +270,6 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         "weight": 10
     });
 
-    let (st, _, _) = send_json(
-        &h.app,
-        "POST",
-        "/sources/import",
-        &h.member_token,
-        Some(serde_json::json!({ "raw_json": source_one.to_string() })),
-    )
-    .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
-
     let bom_array = format!(
         "\u{feff}{}",
         serde_json::to_string(&vec![&source_one, &source_two_disabled]).unwrap()
@@ -287,7 +277,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": bom_array })),
     )
@@ -305,7 +295,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, _) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": big_source.to_string() })),
     )
@@ -315,7 +305,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/login-action"),
+        &format!("/api/v1/plugins/{id_a}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "username": "alice", "password": "topsecret" },
@@ -336,7 +326,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/login-action"),
+        &format!("/api/v1/plugins/{id_a}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "username": "alice", "password": MASKED_SECRET_PLACEHOLDER },
@@ -353,7 +343,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": updated_one.to_string() })),
     )
@@ -372,13 +362,143 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         serde_json::json!(["127.0.0.1"])
     );
 
-    let (st, _, body) = send_json(&h.app, "GET", "/sources", &h.member_token, None).await;
+    // Strict per-user isolation: member sees [] before importing their own plugins
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        "/api/v1/plugins?domain=music",
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let member_initial_list: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert!(member_initial_list.is_empty());
+
+    // Cross-user access against admin's plugins returns 404 Not Found
+    for (m, p, payload) in [
+        ("GET", format!("/api/v1/plugins/{id_a}"), None),
+        ("GET", format!("/api/v1/plugins/{id_a}/export"), None),
+        ("GET", format!("/api/v1/plugins/{id_a}/variable"), None),
+        (
+            "POST",
+            "/api/v1/plugins/export-batch?domain=music".into(),
+            Some(serde_json::json!({"ids": [id_a]})),
+        ),
+        (
+            "PATCH",
+            format!("/api/v1/plugins/{id_a}"),
+            Some(serde_json::json!({"weight": 1})),
+        ),
+        ("DELETE", format!("/api/v1/plugins/{id_a}"), None),
+        (
+            "POST",
+            format!("/api/v1/plugins/{id_a}/login-action"),
+            Some(serde_json::json!({"login_info": {}, "action": "login()"})),
+        ),
+        (
+            "POST",
+            format!("/api/v1/plugins/{id_a}/test"),
+            Some(serde_json::json!({"mode": "search"})),
+        ),
+        (
+            "POST",
+            "/online/explore".into(),
+            Some(serde_json::json!({"source_id": id_a})),
+        ),
+        (
+            "POST",
+            "/online/explore".into(),
+            Some(serde_json::json!({"source_id": id_b})),
+        ),
+        (
+            "POST",
+            "/online/track-info".into(),
+            Some(serde_json::json!({"source_id": id_a, "track_id": "track-1"})),
+        ),
+        (
+            "POST",
+            "/online/stream".into(),
+            Some(serde_json::json!({"source_id": id_a, "track_id": "track-1"})),
+        ),
+        (
+            "POST",
+            "/online/lyrics".into(),
+            Some(serde_json::json!({"source_id": id_a, "track_id": "track-1"})),
+        ),
+        (
+            "GET",
+            format!(
+                "/online/audio-proxy?url={}&source_id={id_a}",
+                url_encode_component(&format!("{base}/audio/song.mp3"))
+            ),
+            None,
+        ),
+        (
+            "GET",
+            format!(
+                "/online/cover-proxy?url={}&source_id={id_a}",
+                url_encode_component(&format!("{base}/cover/art.png"))
+            ),
+            None,
+        ),
+    ] {
+        let (st, _, _) = send_json(&h.app, m, &p, &h.member_token, payload).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "expected 404 on {m} {p}");
+    }
+
+    // Batch operation by member targeting admin's id_a affects 0 plugins and leaves admin's intact
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/batch",
+        &h.member_token,
+        Some(serde_json::json!({"ids": [id_a], "action": "disable"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let cross_batch: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(cross_batch["affected_count"], 0);
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/api/v1/plugins/{id_a}"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let admin_dto_check: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(admin_dto_check["enabled"], true);
+
+    // Member imports and manages their own isolated plugin and runtime state
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/import?domain=music",
+        &h.member_token,
+        Some(serde_json::json!({ "raw_json": source_one.to_string() })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let member_imp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(member_imp["imported_count"], 1);
+    let member_id_a = member_imp["sources"][0]["id"].as_str().unwrap().to_string();
+    assert_ne!(member_id_a, id_a);
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        "/api/v1/plugins?domain=music",
+        &h.member_token,
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     let member_list: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
     assert_eq!(member_list.len(), 1);
-    assert_eq!(member_list[0]["id"], id_a);
+    assert_eq!(member_list[0]["id"], member_id_a);
     assert!(member_list[0]["login_info"].as_object().unwrap().is_empty());
-    assert!(member_list[0]["login_ui"].as_array().unwrap().is_empty());
     assert_eq!(member_list[0]["variable_preview"], "");
     assert!(
         member_list[0]["cookie_hosts"]
@@ -387,56 +507,47 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
             .is_empty()
     );
 
-    for (m, p, payload) in [
-        ("GET", format!("/sources/{id_a}/export"), None),
-        ("GET", format!("/sources/{id_a}/variable"), None),
-        (
-            "POST",
-            "/sources/reorder".into(),
-            Some(serde_json::json!({"ordered_ids": [id_a]})),
-        ),
-        (
-            "POST",
-            "/sources/batch".into(),
-            Some(serde_json::json!({"ids": [id_a], "action": "disable"})),
-        ),
-        (
-            "PATCH",
-            format!("/sources/{id_a}"),
-            Some(serde_json::json!({"weight": 1})),
-        ),
-        ("DELETE", format!("/sources/{id_a}"), None),
-        (
-            "POST",
-            format!("/sources/{id_a}/test"),
-            Some(serde_json::json!({"mode": "search"})),
-        ),
-    ] {
-        let (st, _, _) = send_json(&h.app, m, &p, &h.member_token, payload).await;
-        assert_eq!(st, StatusCode::FORBIDDEN, "expected 403 on {m} {p}");
-    }
-
-    let (st, _, _) = send_json(
+    let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/online/explore",
+        &format!("/api/v1/plugins/{member_id_a}/login-action"),
         &h.member_token,
-        Some(serde_json::json!({"source_id": id_b})),
+        Some(serde_json::json!({
+            "login_info": { "username": "bob", "password": "membersecret" },
+            "action": "login()"
+        })),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
-    let (st, _, _) = send_json(
+    assert_eq!(st, StatusCode::OK);
+    let member_login: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        member_login["source"]["variable_preview"],
+        "tok_membersecret"
+    );
+
+    let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!(
-            "/online/audio-proxy?url={}&source_id={id_b}",
-            url_encode_component(&format!("{base}/audio/song.mp3"))
-        ),
-        &h.member_token,
+        &format!("/api/v1/plugins/{id_a}/variable"),
+        &h.admin_token,
         None,
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::OK);
+    let admin_var_isolated: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(admin_var_isolated["variable"], "tok_topsecret");
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        &format!("/api/v1/plugins/{member_id_a}/test"),
+        &h.member_token,
+        Some(serde_json::json!({"mode": "search"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let member_test: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(member_test["ok"], true);
 
     let (st, _, body) = send_json(
         &h.app,
@@ -470,7 +581,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         "POST",
         "/online/explore",
         &h.member_token,
-        Some(serde_json::json!({"source_id": id_a})),
+        Some(serde_json::json!({"source_id": member_id_a})),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -484,7 +595,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         "/online/track-info",
         &h.member_token,
         Some(serde_json::json!({
-            "source_id": id_a,
+            "source_id": member_id_a,
             "track_id": "track-1",
             "title": "Test Song",
             "artist": "Artist One",
@@ -516,7 +627,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         "/online/stream",
         &h.member_token,
         Some(serde_json::json!({
-            "source_id": id_a,
+            "source_id": member_id_a,
             "track_id": "track-1",
             "url_id": "url-1",
             "quality": "320"
@@ -534,7 +645,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         "/online/lyrics",
         &h.member_token,
         Some(serde_json::json!({
-            "source_id": id_a,
+            "source_id": member_id_a,
             "track_id": "track-1",
             "lyric_id": "lrc-1"
         })),
@@ -548,7 +659,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/test"),
+        &format!("/api/v1/plugins/{id_a}/test"),
         &h.admin_token,
         Some(serde_json::json!({"mode": "full"})),
     )
@@ -561,7 +672,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/test"),
+        &format!("/api/v1/plugins/{id_a}/test"),
         &h.admin_token,
         Some(serde_json::json!({"mode": "stream", "url_id": "url-1", "quality": "320"})),
     )
@@ -573,7 +684,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/test"),
+        &format!("/api/v1/plugins/{id_a}/test"),
         &h.admin_token,
         Some(serde_json::json!({"mode": "lyric", "lyric_id": "lrc-1"})),
     )
@@ -597,7 +708,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         &h.app,
         "GET",
         &format!(
-            "/online/cover-proxy?url={}&source_id={id_a}",
+            "/online/cover-proxy?url={}&source_id={member_id_a}",
             url_encode_component(&format!("{base}/cover/evil.svg"))
         ),
         &h.member_token,
@@ -682,7 +793,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         &h.app,
         "GET",
         &format!(
-            "/online/audio-proxy?url={}&source_id={id_a}",
+            "/online/audio-proxy?url={}&source_id={member_id_a}",
             url_encode_component(&format!("{base}/audio/evil.html"))
         ),
         &h.member_token,
@@ -695,7 +806,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         &h.app,
         "GET",
         &format!(
-            "/online/audio-proxy?url={}&source_id={id_a}",
+            "/online/audio-proxy?url={}&source_id={member_id_a}",
             url_encode_component(&format!("{base}/audio/missing.mp3"))
         ),
         &h.member_token,
@@ -708,7 +819,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         &h.app,
         "GET",
         &format!(
-            "/online/audio-proxy?url={}&source_id={id_a}",
+            "/online/audio-proxy?url={}&source_id={member_id_a}",
             url_encode_component(&format!("{base}/audio/ratelimit.mp3"))
         ),
         &h.member_token,
@@ -721,7 +832,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
         &h.app,
         "GET",
         &format!(
-            "/online/audio-proxy?url={}&source_id={id_a}",
+            "/online/audio-proxy?url={}&source_id={member_id_a}",
             url_encode_component(&format!("{base}/audio/oob.mp3"))
         ),
         &h.member_token,
@@ -745,7 +856,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/reorder",
+        "/api/v1/plugins/reorder?domain=music",
         &h.admin_token,
         Some(serde_json::json!({"ordered_ids": [id_b_uuid, id_a_uuid]})),
     )
@@ -757,7 +868,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, _) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_a}/export"),
+        &format!("/api/v1/plugins/{id_a}/export"),
         &h.admin_token,
         None,
     )
@@ -767,7 +878,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/export-batch",
+        "/api/v1/plugins/export-batch?domain=music",
         &h.admin_token,
         Some(serde_json::json!({"ids": [id_a_uuid]})),
     )
@@ -779,7 +890,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "PATCH",
-        &format!("/sources/{id_a}"),
+        &format!("/api/v1/plugins/{id_a}"),
         &h.admin_token,
         Some(serde_json::json!({
             "group_name": "  新分组  ",
@@ -795,7 +906,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_a}/variable"),
+        &format!("/api/v1/plugins/{id_a}/variable"),
         &h.admin_token,
         None,
     )
@@ -807,7 +918,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/batch",
+        "/api/v1/plugins/batch",
         &h.admin_token,
         Some(serde_json::json!({
             "ids": [id_a_uuid],
@@ -822,7 +933,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let (st, _, _) = send_json(
         &h.app,
         "DELETE",
-        &format!("/sources/{id_b}"),
+        &format!("/api/v1/plugins/{id_b}"),
         &h.admin_token,
         None,
     )
@@ -900,7 +1011,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": batch.to_string() })),
     )
@@ -915,7 +1026,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_a}/export"),
+        &format!("/api/v1/plugins/{id_a}/export"),
         &h.admin_token,
         None,
     )
@@ -927,7 +1038,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_b}/export"),
+        &format!("/api/v1/plugins/{id_b}/export"),
         &h.admin_token,
         None,
     )
@@ -941,7 +1052,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "PATCH",
-        &format!("/sources/{id_a}"),
+        &format!("/api/v1/plugins/{id_a}"),
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": updated_raw.to_string() })),
     )
@@ -953,7 +1064,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_a}/export"),
+        &format!("/api/v1/plugins/{id_a}/export"),
         &h.admin_token,
         None,
     )
@@ -966,7 +1077,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "PATCH",
-        &format!("/sources/{id_a}"),
+        &format!("/api/v1/plugins/{id_a}"),
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": updated_raw.to_string() })),
     )
@@ -978,7 +1089,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_a}/export"),
+        &format!("/api/v1/plugins/{id_a}/export"),
         &h.admin_token,
         None,
     )
@@ -990,7 +1101,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, _) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/login-action"),
+        &format!("/api/v1/plugins/{id_a}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "secret": "s1" },
@@ -1007,7 +1118,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
         send_json(
             &app_clone,
             "POST",
-            &format!("/sources/{id_clone}/test"),
+            &format!("/api/v1/plugins/{id_clone}/test"),
             &token_clone,
             Some(serde_json::json!({ "mode": "search" })),
         )
@@ -1019,7 +1130,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, _) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/login-action"),
+        &format!("/api/v1/plugins/{id_a}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "secret": "newer_s3" },
@@ -1038,7 +1149,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_a}/variable"),
+        &format!("/api/v1/plugins/{id_a}/variable"),
         &h.admin_token,
         None,
     )
@@ -1050,7 +1161,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{id_a}/login-action"),
+        &format!("/api/v1/plugins/{id_a}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({
             "login_info": { "secret": MASKED_SECRET_PLACEHOLDER },
@@ -1076,7 +1187,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
         send_json(
             &app_clone2,
             "POST",
-            &format!("/sources/{id_clone2}/test"),
+            &format!("/api/v1/plugins/{id_clone2}/test"),
             &token_clone2,
             Some(serde_json::json!({ "mode": "search" })),
         )
@@ -1088,7 +1199,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "PATCH",
-        &format!("/sources/{id_a}"),
+        &format!("/api/v1/plugins/{id_a}"),
         &h.admin_token,
         Some(serde_json::json!({
             "weight": 77,
@@ -1107,7 +1218,7 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{id_a}/variable"),
+        &format!("/api/v1/plugins/{id_a}/variable"),
         &h.admin_token,
         None,
     )
@@ -1116,7 +1227,14 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
     let var_after2: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(var_after2["variable"], "patched_concurrent");
 
-    let (st, _, body) = send_json(&h.app, "GET", "/sources", &h.admin_token, None).await;
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        "/api/v1/plugins?domain=music",
+        &h.admin_token,
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     let list: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
     let found = list.iter().find(|s| s["id"] == id_a).unwrap();
@@ -1347,7 +1465,7 @@ async fn regression_explore_categories_preserve_js_pipelines() {
     let (st, _, body) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": source_json.to_string() })),
     )
@@ -1359,18 +1477,28 @@ async fn regression_explore_categories_preserve_js_pipelines() {
     let (st, _, _) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{sid}/login-action"),
+        &format!("/api/v1/plugins/{sid}/login-action"),
         &h.admin_token,
         Some(serde_json::json!({ "login_info": {}, "action": "login()" })),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
 
-    let (st, _, body) = send_json(
+    let (st_cross, _, _) = send_json(
         &h.app,
         "POST",
         "/online/explore",
         &h.member_token,
+        Some(serde_json::json!({ "source_id": sid })),
+    )
+    .await;
+    assert_eq!(st_cross, StatusCode::NOT_FOUND);
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/online/explore",
+        &h.admin_token,
         Some(serde_json::json!({
             "source_id": sid,
             "page": 9,
@@ -1392,7 +1520,7 @@ async fn regression_explore_categories_preserve_js_pipelines() {
             &h.app,
             "POST",
             "/online/explore",
-            &h.member_token,
+            &h.admin_token,
             Some(serde_json::json!({
                 "source_id": sid,
                 "explore_url": chosen_url,
@@ -1415,7 +1543,7 @@ async fn regression_explore_categories_preserve_js_pipelines() {
             &h.app,
             "POST",
             "/online/explore",
-            &h.member_token,
+            &h.admin_token,
             Some(serde_json::json!({
                 "source_id": sid,
                 "explore_url": malicious
@@ -1428,7 +1556,7 @@ async fn regression_explore_categories_preserve_js_pipelines() {
     let (st, _, body) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         &h.admin_token,
         None,
     )
@@ -1475,7 +1603,7 @@ async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
     let (st_imp, _, b_imp) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
         Some(serde_json::json!({ "raw_json": src.to_string() })),
     )
@@ -1505,8 +1633,8 @@ async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
         })
         .to_string();
 
-        let login_uri = format!("/sources/{sid}/login-action");
-        let patch_uri = format!("/sources/{sid}");
+        let login_uri = format!("/api/v1/plugins/{sid}/login-action");
+        let patch_uri = format!("/api/v1/plugins/{sid}");
 
         let (res_login, res_patch) = tokio::join!(
             send_json(
@@ -1552,7 +1680,7 @@ async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
             send_json(
                 &h.app,
                 "POST",
-                "/sources/import",
+                "/api/v1/plugins/import?domain=music",
                 &h.admin_token,
                 Some(serde_json::json!({ "raw_json": import_payload })),
             ),
@@ -1582,7 +1710,7 @@ async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
             send_json(
                 &h.app,
                 "POST",
-                "/sources/import",
+                "/api/v1/plugins/import?domain=music",
                 &h.admin_token,
                 Some(serde_json::json!({ "raw_json": import_payload_b })),
             ),
@@ -1593,7 +1721,7 @@ async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
         let (st_var, _, b_var) = send_json(
             &h.app,
             "GET",
-            &format!("/sources/{sid}/variable"),
+            &format!("/api/v1/plugins/{sid}/variable"),
             &h.admin_token,
             None,
         )
@@ -1632,7 +1760,7 @@ async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
         let (st_exp, _, b_exp) = send_json(
             &h.app,
             "GET",
-            &format!("/sources/{sid}/export"),
+            &format!("/api/v1/plugins/{sid}/export"),
             &h.admin_token,
             None,
         )

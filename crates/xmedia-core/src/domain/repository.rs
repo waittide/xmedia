@@ -142,3 +142,44 @@ pub trait UserMediaBindingRepository: Send + Sync {
 
     async fn delete_scope(&self, scope: BindingDeleteScope) -> DomainResult<Vec<Uuid>>;
 }
+
+/// Domain-agnostic persisted plugin record strictly isolated per user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserPluginRow {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub media_kind: MediaKind,
+    pub format: String,
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+    pub raw_source: String,
+    pub runtime_state: serde_json::Value,
+    pub last_test_ok: Option<bool>,
+    pub last_test_msg: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// Persistence port for per-user isolated media plugins across all domains.
+#[async_trait]
+pub trait UserPluginRepository: Send + Sync {
+    async fn list_by_user(
+        &self,
+        user_id: UserId,
+        media_kind: Option<MediaKind>,
+    ) -> DomainResult<Vec<UserPluginRow>>;
+
+    async fn list_all(&self, media_kind: Option<MediaKind>) -> DomainResult<Vec<UserPluginRow>>;
+
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<UserPluginRow>>;
+
+    async fn save(&self, row: &UserPluginRow) -> DomainResult<()>;
+
+    async fn delete(&self, id: Uuid) -> DomainResult<()>;
+
+    async fn purge_user(&self, user_id: UserId) -> DomainResult<usize>;
+}

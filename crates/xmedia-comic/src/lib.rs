@@ -42,6 +42,7 @@ use infra::source::{ComicSourceEngine, http::HttpClientConfig};
 use infra::storage::LocalComicFileStorage;
 use infra::thumbnail::WebpThumbnailGenerator;
 
+pub use infra::persistence::repositories::migrate_legacy_comic_sources;
 pub use infra::persistence::{ensure_comic_indexes, ensure_comic_schema, register_comic_models};
 
 pub fn init_comic_module(

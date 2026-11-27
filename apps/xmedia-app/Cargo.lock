@@ -8475,6 +8475,7 @@ dependencies = [
  "xmedia-comic",
  "xmedia-core",
  "xmedia-music",
+ "xmedia-source",
  "xmedia-video",
 ]
 

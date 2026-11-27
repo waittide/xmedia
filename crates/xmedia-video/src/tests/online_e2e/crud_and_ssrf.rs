@@ -96,7 +96,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     ]);
     let (st, import_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": batch_json.to_string() }),
     )
@@ -107,7 +107,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     // Re-import idempotency check
     let (st, reimport_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": batch_json.to_string() }),
     )
@@ -118,13 +118,13 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
 
     // List sources & extract IDs
     let (st, _, list_bytes) =
-        get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+        get_bytes_with_auth(&app, "/api/v1/plugins?domain=video", Some(&admin_tok), None).await;
     assert_eq!(st, StatusCode::OK);
     let admin_sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
     assert_eq!(admin_sources.len(), 5);
 
-    let find_id = |name: &str| -> Uuid {
-        let s = admin_sources
+    let find_id = |sources: &[serde_json::Value], name: &str| -> Uuid {
+        let s = sources
             .iter()
             .find(|v| v["name"] == name)
             .expect("source exists")["id"]
@@ -132,49 +132,95 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
             .unwrap();
         Uuid::parse_str(s).unwrap()
     };
-    let apple_id = find_id("Mock AppleCMS");
-    let suoni_id = find_id("Mock Suoni NoSearch");
-    let peertube_id = find_id("PeerTube (Framatube)");
-    let archive_id = find_id("Internet Archive Video");
-    let disabled_id = find_id("Disabled Source");
+    let apple_id = find_id(&admin_sources, "Mock AppleCMS");
+    let suoni_id = find_id(&admin_sources, "Mock Suoni NoSearch");
+    let peertube_id = find_id(&admin_sources, "PeerTube (Framatube)");
+    let archive_id = find_id(&admin_sources, "Internet Archive Video");
+    let disabled_id = find_id(&admin_sources, "Disabled Source");
 
-    // 2. RBAC & Secret Masking
-    let (st, _, member_list_bytes) =
-        get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&member_tok), None).await;
-    assert_eq!(st, StatusCode::OK);
-    let member_sources: Vec<serde_json::Value> =
-        serde_json::from_slice(&member_list_bytes).unwrap();
-    assert_eq!(member_sources.len(), 4);
-
-    let (st, _) = post_json(
+    // 2. Per-user Plugin & Runtime State Isolation + Secret Masking
+    // Before importing, member sees an empty plugin list and gets 404 on admin's source IDs
+    let (st, _, member_list_bytes) = get_bytes_with_auth(
         &app,
-        "/api/v1/video/sources/import",
-        &member_tok,
-        serde_json::json!({"raw_json":"{}"}),
-    )
-    .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
-    let (st, _, _) = get_bytes_with_auth(
-        &app,
-        &format!("/api/v1/video/sources/{apple_id}/variable"),
+        "/api/v1/plugins?domain=video",
         Some(&member_tok),
         None,
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::OK);
+    let member_sources: Vec<serde_json::Value> =
+        serde_json::from_slice(&member_list_bytes).unwrap();
+    assert!(member_sources.is_empty());
+
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/plugins/{apple_id}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/plugins/{apple_id}/variable"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/plugins/{apple_id}/export"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
     let (st, _) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{apple_id}/test"),
+        &format!("/api/v1/plugins/{apple_id}/test"),
         &member_tok,
         serde_json::json!({"mode":"categories"}),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _) = post_json(
+        &app,
+        &format!("/api/v1/plugins/{apple_id}/login-action"),
+        &member_tok,
+        serde_json::json!({"login_info": {"token": "hijack"}, "action": "login()"}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _) = post_json(
+        &app,
+        "/api/v1/plugins/export-batch?domain=video",
+        &member_tok,
+        serde_json::json!({ "ids": [apple_id] }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // Batch action by member on admin's IDs affects 0 items and leaves admin's plugins intact
+    let (st, member_batch_on_admin) = post_json(
+        &app,
+        "/api/v1/plugins/batch",
+        &member_tok,
+        serde_json::json!({ "ids": [apple_id, suoni_id], "action": "delete" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(member_batch_on_admin["affected_count"], 0);
+    let (st, _, admin_check_bytes) =
+        get_bytes_with_auth(&app, "/api/v1/plugins?domain=video", Some(&admin_tok), None).await;
+    assert_eq!(st, StatusCode::OK);
+    let admin_check: Vec<serde_json::Value> = serde_json::from_slice(&admin_check_bytes).unwrap();
+    assert_eq!(admin_check.len(), 5);
 
     // Login action stores variable & masks sensitive password field in summary
     let (st, login_res) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{apple_id}/login-action"),
+        &format!("/api/v1/plugins/{apple_id}/login-action"),
         &admin_tok,
         serde_json::json!({
             "login_info": {"token": "super-secret-val"},
@@ -188,7 +234,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
 
     let (st, _, var_bytes) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/sources/{apple_id}/variable"),
+        &format!("/api/v1/plugins/{apple_id}/variable"),
         Some(&admin_tok),
         None,
     )
@@ -197,24 +243,83 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     let var_json: serde_json::Value = serde_json::from_slice(&var_bytes).unwrap();
     assert_eq!(var_json["variable"], "auth=super-secret-val");
 
-    // Non-admin member sees stripped login_ui / login_info / variable_preview
-    let (st, _, member_list_bytes2) =
-        get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&member_tok), None).await;
+    // Member can import & manage their own isolated plugins without inheriting admin's runtime state
+    let (st, m_imp_res) = post_json(
+        &app,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
+        serde_json::json!({ "raw_json": batch_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(m_imp_res["imported_count"], 5);
+
+    let (st, _, member_list_bytes2) = get_bytes_with_auth(
+        &app,
+        "/api/v1/plugins?domain=video",
+        Some(&member_tok),
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     let member_sources2: Vec<serde_json::Value> =
         serde_json::from_slice(&member_list_bytes2).unwrap();
+    assert_eq!(member_sources2.len(), 5);
+
+    let m_apple_id = find_id(&member_sources2, "Mock AppleCMS");
+    let m_suoni_id = find_id(&member_sources2, "Mock Suoni NoSearch");
+    let m_peertube_id = find_id(&member_sources2, "PeerTube (Framatube)");
+    let m_archive_id = find_id(&member_sources2, "Internet Archive Video");
+    assert_ne!(m_apple_id, apple_id);
+
     let member_apple = member_sources2
         .iter()
         .find(|s| s["name"] == "Mock AppleCMS")
         .unwrap();
     assert!(member_apple["login_info"].as_object().unwrap().is_empty());
-    assert!(member_apple["login_ui"].as_array().unwrap().is_empty());
+    assert_eq!(member_apple["login_ui"].as_array().unwrap().len(), 1);
     assert_eq!(member_apple["variable_preview"], "");
+
+    let (st, m_login_res) = post_json(
+        &app,
+        &format!("/api/v1/plugins/{m_apple_id}/login-action"),
+        &member_tok,
+        serde_json::json!({
+            "login_info": {"token": "member-own-secret"},
+            "action": "login()"
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(m_login_res["result"], "ok");
+    assert_eq!(m_login_res["source"]["login_info"]["token"], "••••••••");
+
+    let (st, _, m_var_bytes) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/plugins/{m_apple_id}/variable"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let m_var_json: serde_json::Value = serde_json::from_slice(&m_var_bytes).unwrap();
+    assert_eq!(m_var_json["variable"], "auth=member-own-secret");
+
+    let (st, _, admin_var_after) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/plugins/{apple_id}/variable"),
+        Some(&admin_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let admin_var_json: serde_json::Value = serde_json::from_slice(&admin_var_after).unwrap();
+    assert_eq!(admin_var_json["variable"], "auth=super-secret-val");
 
     // Reorder / batch / export-batch / patch / export
     let (st, _) = post_json(
         &app,
-        "/api/v1/video/sources/reorder",
+        "/api/v1/plugins/reorder?domain=video",
         &admin_tok,
         serde_json::json!({ "ordered_ids": [peertube_id, apple_id] }),
     )
@@ -223,7 +328,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
 
     let (st, export_batch_res) = post_json(
         &app,
-        "/api/v1/video/sources/export-batch",
+        "/api/v1/plugins/export-batch?domain=video",
         &admin_tok,
         serde_json::json!({ "ids": [apple_id, peertube_id] }),
     )
@@ -236,7 +341,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri(format!("/api/v1/video/sources/{archive_id}"))
+                .uri(format!("/api/v1/plugins/{archive_id}"))
                 .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
@@ -250,7 +355,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
 
     let (st, _, exp_bytes) = get_bytes_with_auth(
         &app,
-        &format!("/api/v1/video/sources/{archive_id}/export"),
+        &format!("/api/v1/plugins/{archive_id}/export"),
         Some(&admin_tok),
         None,
     )
@@ -260,7 +365,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     assert_eq!(exp_json["weight"], 89);
     assert_eq!(exp_json["sourceGroup"], "归档精选");
 
-    // 3. Multi-source Search
+    // 3. Multi-source Search (searches member's own enabled + searchable plugins)
     let (st, search_res) = post_json(
         &app,
         "/api/v1/video/online/search",
@@ -278,7 +383,15 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         .unwrap();
     assert_eq!(pt_hit["remarks"], "2:05");
 
-    // Disabled source rejected for non-admin
+    // Accessing another user's (admin's) source_id on online endpoints returns 404 Not Found
+    let (st, _) = post_json(
+        &app,
+        "/api/v1/video/online/categories",
+        &member_tok,
+        serde_json::json!({ "source_id": apple_id }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
     let (st, _) = post_json(
         &app,
         "/api/v1/video/online/categories",
@@ -286,14 +399,14 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         serde_json::json!({ "source_id": disabled_id }),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::NOT_FOUND);
 
     // 4. AppleCMS Categories -> Browse -> Detail (/share/ filtered out) -> Play
     let (st, cat_res) = post_json(
         &app,
         "/api/v1/video/online/categories",
         &member_tok,
-        serde_json::json!({ "source_id": apple_id }),
+        serde_json::json!({ "source_id": m_apple_id }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -303,7 +416,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &app,
         "/api/v1/video/online/browse",
         &member_tok,
-        serde_json::json!({ "source_id": apple_id, "category_id": "33", "page": 1 }),
+        serde_json::json!({ "source_id": m_apple_id, "category_id": "33", "page": 1 }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -313,7 +426,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &app,
         "/api/v1/video/online/detail",
         &member_tok,
-        serde_json::json!({ "source_id": apple_id, "video_id": "71070" }),
+        serde_json::json!({ "source_id": m_apple_id, "video_id": "71070" }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -327,7 +440,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &app,
         "/api/v1/video/online/play",
         &member_tok,
-        serde_json::json!({ "source_id": apple_id, "play_url": play_url, "group_name": "ikm3u8" }),
+        serde_json::json!({ "source_id": m_apple_id, "play_url": play_url, "group_name": "ikm3u8" }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -341,7 +454,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &app,
         "/api/v1/video/online/categories",
         &member_tok,
-        serde_json::json!({ "source_id": peertube_id }),
+        serde_json::json!({ "source_id": m_peertube_id }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -351,7 +464,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &app,
         "/api/v1/video/online/browse",
         &member_tok,
-        serde_json::json!({ "source_id": peertube_id, "page": 1 }),
+        serde_json::json!({ "source_id": m_peertube_id, "page": 1 }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -362,7 +475,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         "/api/v1/video/online/detail",
         &member_tok,
         serde_json::json!({
-            "source_id": peertube_id,
+            "source_id": m_peertube_id,
             "detail_url": format!("{origin}/peertube/api/v1/videos/pt-uuid-1")
         }),
     )
@@ -377,7 +490,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         &app,
         "/api/v1/video/online/categories",
         &member_tok,
-        serde_json::json!({ "source_id": archive_id }),
+        serde_json::json!({ "source_id": m_archive_id }),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -388,7 +501,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         "/api/v1/video/online/detail",
         &member_tok,
         serde_json::json!({
-            "source_id": archive_id,
+            "source_id": m_archive_id,
             "detail_url": format!("{origin}/archive/metadata/BigBuckBunny_124")
         }),
     )
@@ -399,10 +512,10 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         .unwrap();
     assert!(ia_ep_url.ends_with("/archive/files/BigBuckBunny_124/Content/big_buck_bunny_720p.mp4"));
 
-    // 6. Test endpoint (`full`, `explore` alias)
+    // 6. Test endpoint (`full`, `browse`) for both admin and member on their own plugins
     let (st, full_test) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{apple_id}/test"),
+        &format!("/api/v1/plugins/{apple_id}/test"),
         &admin_tok,
         serde_json::json!({ "mode": "full", "keyword": "流浪" }),
     )
@@ -413,7 +526,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
 
     let (st, suoni_test) = post_json(
         &app,
-        &format!("/api/v1/video/sources/{suoni_id}/test"),
+        &format!("/api/v1/plugins/{suoni_id}/test"),
         &admin_tok,
         serde_json::json!({ "mode": "browse" }),
     )
@@ -421,11 +534,21 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(suoni_test["ok"], true);
 
-    // 7. Poster proxy: raster OK + SVG/HTML rejected
+    let (st, m_suoni_test) = post_json(
+        &app,
+        &format!("/api/v1/plugins/{m_suoni_id}/test"),
+        &member_tok,
+        serde_json::json!({ "mode": "browse" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(m_suoni_test["ok"], true);
+
+    // 7. Poster proxy: raster OK + other user's source_id 404 + SVG/HTML rejected
     let (st, hdrs, png_body) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/poster-proxy?url={}&source_id={apple_id}",
+            "/api/v1/video/online/poster-proxy?url={}&source_id={m_apple_id}",
             urlencoding_param(&format!("{origin}/posters/earth2.png"))
         ),
         Some(&member_tok),
@@ -435,6 +558,18 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(png_body, PNG_1X1);
     assert_eq!(hdrs.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+
+    let (st_foreign_poster, _, _) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/poster-proxy?url={}&source_id={apple_id}",
+            urlencoding_param(&format!("{origin}/posters/earth2.png"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_foreign_poster, StatusCode::NOT_FOUND);
 
     let (st, _, _) = get_bytes_with_auth(
         &app,
@@ -464,7 +599,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     let (st, hdrs, part_bytes) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}&source_id={apple_id}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={m_apple_id}",
             urlencoding_param(&format!("{origin}/media/movie.mp4"))
         ),
         Some(&member_tok),
@@ -495,7 +630,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     let (st, hdrs, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}&source_id={apple_id}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={m_apple_id}",
             urlencoding_param(&format!("{origin}/media/movie.mp4"))
         ),
         Some(&member_tok),
@@ -508,7 +643,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/stream-proxy?url={}&source_id={apple_id}",
+            "/api/v1/video/online/stream-proxy?url={}&source_id={m_apple_id}",
             urlencoding_param(&format!("{origin}/media/html-page.mp4"))
         ),
         Some(&member_tok),
@@ -598,24 +733,24 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
             "nonexistent source_id must be rejected on {endpoint}"
         );
 
-        let (st_dis, _, _) = get_bytes_with_auth(
+        let (st_foreign, _, _) = get_bytes_with_auth(
             &app,
-            &format!("/api/v1/video/online/{endpoint}?url={target}&source_id={disabled_id}"),
+            &format!("/api/v1/video/online/{endpoint}?url={target}&source_id={apple_id}"),
             Some(&member_tok),
             None,
         )
         .await;
         assert_eq!(
-            st_dis,
-            StatusCode::FORBIDDEN,
-            "disabled source_id must be rejected for non-admin on {endpoint}"
+            st_foreign,
+            StatusCode::NOT_FOUND,
+            "another user's source_id must return 404 on {endpoint}"
         );
     }
 
     let (st, _, _) = get_bytes_with_auth(
         &app,
         &format!(
-            "/api/v1/video/online/hls-proxy?url={}&source_id={apple_id}",
+            "/api/v1/video/online/hls-proxy?url={}&source_id={m_apple_id}",
             urlencoding_param(&format!("{origin}/cdn/oversized.m3u8"))
         ),
         Some(&member_tok),
@@ -629,7 +764,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/v1/video/sources/{suoni_id}"))
+                .uri(format!("/api/v1/plugins/{suoni_id}"))
                 .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -640,7 +775,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
 
     let (st, batch_del) = post_json(
         &app,
-        "/api/v1/video/sources/batch",
+        "/api/v1/plugins/batch",
         &admin_tok,
         serde_json::json!({ "ids": [disabled_id], "action": "delete" }),
     )
@@ -650,7 +785,7 @@ async fn video_online_sources_crud_rbac_applecms_rule_and_proxies_e2e() {
 
     let (st, seed_imp) = post_json(
         &app,
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         serde_json::json!({ "raw_json": include_str!("../../../testdata/online_sources.json") }),
     )
@@ -666,17 +801,42 @@ async fn ssrf_blocks_loopback_and_redirects_when_allow_private_ips_is_false() {
     let (_tmp, app, admin_tok, member_tok) = setup_test_app(false).await;
     let (origin, _, mock_handle) = start_mock_video_origin().await;
 
+    let src_payload = serde_json::json!({
+        "raw_json": serde_json::json!({
+            "sourceName": "Loopback Source",
+            "apiUrl": format!("{origin}/applecms/api.php/provide/vod/"),
+            "enabled": true
+        }).to_string()
+    });
+    let (st_adm, adm_imp) = post_json(
+        &app,
+        "/api/v1/plugins/import?domain=video",
+        &admin_tok,
+        src_payload.clone(),
+    )
+    .await;
+    assert_eq!(st_adm, StatusCode::OK);
+    let admin_sid = adm_imp["sources"][0]["id"].as_str().unwrap();
+
+    // Member cannot use admin's source_id
+    let (st_foreign, _, _) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/stream-proxy?url={}&source_id={admin_sid}",
+            urlencoding_param(&format!("{origin}/media/movie.mp4"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_foreign, StatusCode::NOT_FOUND);
+
+    // Member imports their own plugin and hits SSRF guard
     let (st, imp) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
-        serde_json::json!({
-            "raw_json": serde_json::json!({
-                "sourceName": "Loopback Source",
-                "apiUrl": format!("{origin}/applecms/api.php/provide/vod/"),
-                "enabled": true
-            }).to_string()
-        }),
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
+        src_payload,
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -757,7 +917,7 @@ async fn ssrf_blocks_loopback_and_redirects_when_allow_private_ips_is_false() {
 
 #[tokio::test]
 async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
-    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
 
     let origin_app = Router::new()
         .route(
@@ -844,8 +1004,8 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
 
     let (st_imp, imp_res) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({
             "raw_json": serde_json::json!({
                 "sourceName": "SniffProxySource",

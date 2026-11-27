@@ -136,7 +136,32 @@ pub fn parse_login_ui_json(raw: Option<&str>) -> Vec<LoginUiItem> {
     serde_json::from_str::<Vec<LoginUiItem>>(trimmed).unwrap_or_default()
 }
 
-/// Persisted per-source runtime state (variables, login form values, cookies, cache).
+/// Persisted plugin source format (`json_rule` for Legado/JSON rules, `js_module` for Plugin v2 JS).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginFormat {
+    #[default]
+    JsonRule,
+    JsModule,
+}
+
+impl PluginFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::JsonRule => "json_rule",
+            Self::JsModule => "js_module",
+        }
+    }
+
+    pub fn from_db_str(raw: &str) -> Self {
+        match raw.trim() {
+            "js_module" | "js" => Self::JsModule,
+            _ => Self::JsonRule,
+        }
+    }
+}
+
+/// Persisted per-plugin runtime state (variables, login form values, cookies, cache, settings).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRuntimeState {
     #[serde(default)]
@@ -147,6 +172,8 @@ pub struct SourceRuntimeState {
     pub cookies: HashMap<String, String>,
     #[serde(default)]
     pub cache: HashMap<String, String>,
+    #[serde(default)]
+    pub settings: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub android_id: String,
 }

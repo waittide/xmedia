@@ -4,18 +4,20 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::Router;
-use axum::extract::{FromRef, Path};
-use axum::routing::post;
+use axum::extract::FromRef;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::online_items::OnlineSourceDirectory;
 use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::user::{User, UserRole};
 
 use super::*;
-use crate::model::{ExecutionDiagnostics, LoginUiItem, SourceCallOutput, default_true};
+use crate::model::{
+    ExecutionDiagnostics, LoginUiItem, PluginFormat, SourceCallOutput, default_true,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 struct SampleSpec {
@@ -34,7 +36,8 @@ struct SampleSpec {
 }
 
 impl SourceSpecAdapter for SampleSpec {
-    const ENTITY_LABEL: &'static str = "测试源";
+    const MEDIA_KIND: MediaKind = MediaKind::Music;
+    const ENTITY_LABEL: &'static str = "测试插件";
     const JSON_GROUP_KEY: &'static str = "sourceGroup";
 
     fn source_name(&self) -> &str {
@@ -111,6 +114,7 @@ impl SourceRepository for MemSourceRepo {
         let Some(rec) = g.iter_mut().find(|r| r.id == id) else {
             return Ok(None);
         };
+        rec.format = patch.format;
         rec.name = patch.name;
         rec.source_url = patch.source_url;
         rec.group_name = patch.group_name;
@@ -214,7 +218,7 @@ impl SourceRepository for MemSourceRepo {
 #[test]
 fn parse_json_batch_handles_bom_single_array_and_errors() {
     let bom_single = "\u{feff}  {\"name\":\"A\",\"url\":\"https://a.test\"}  ";
-    let res = parse_json_batch::<SampleSpec, _>(bom_single, "数据源", "为空", |s| {
+    let res = parse_json_batch::<SampleSpec, _>(bom_single, "插件", "为空", |s| {
         s.name.trim().is_empty() && s.url.trim().is_empty()
     })
     .unwrap();
@@ -225,19 +229,19 @@ fn parse_json_batch_handles_bom_single_array_and_errors() {
         {"name":"","url":""},
         {"name":"B","url":"https://b.test"}
     ]"#;
-    let res_arr = parse_json_batch::<SampleSpec, _>(array_with_blank, "数据源", "为空", |s| {
+    let res_arr = parse_json_batch::<SampleSpec, _>(array_with_blank, "插件", "为空", |s| {
         s.name.trim().is_empty() && s.url.trim().is_empty()
     })
     .unwrap();
     assert_eq!(res_arr.len(), 1);
     assert_eq!(res_arr[0].0.name, "B");
 
-    assert!(parse_json_batch::<SampleSpec, _>("  ", "数据源", "为空", |_| false).is_err());
+    assert!(parse_json_batch::<SampleSpec, _>("  ", "插件", "为空", |_| false).is_err());
     let bom_ws_err =
-        parse_json_batch::<SampleSpec, _>("\u{feff}   ", "数据源", "为空", |_| false).unwrap_err();
-    assert_eq!(bom_ws_err, "数据源 JSON 内容为空");
-    assert!(parse_json_batch::<SampleSpec, _>("123", "数据源", "为空", |_| false).is_err());
-    assert!(parse_json_batch::<SampleSpec, _>("{bad", "数据源", "为空", |_| false).is_err());
+        parse_json_batch::<SampleSpec, _>("\u{feff}   ", "插件", "为空", |_| false).unwrap_err();
+    assert_eq!(bom_ws_err, "插件 JSON 内容为空");
+    assert!(parse_json_batch::<SampleSpec, _>("123", "插件", "为空", |_| false).is_err());
+    assert!(parse_json_batch::<SampleSpec, _>("{bad", "插件", "为空", |_| false).is_err());
 }
 
 #[test]
@@ -257,7 +261,7 @@ fn sync_raw_json_fields_updates_and_clears_group_key() {
 }
 
 #[test]
-fn masking_and_build_source_summary_for_admin_and_member() {
+fn masking_and_build_source_summary_for_owner() {
     let login_ui = vec![
         LoginUiItem {
             name: "用户名".into(),
@@ -307,6 +311,8 @@ fn masking_and_build_source_summary_for_admin_and_member() {
 
     let snap = SourceRecordSnapshot {
         id: Uuid::nil(),
+        domain: MediaKind::Music,
+        format: PluginFormat::JsonRule,
         name: "Test",
         source_url: "https://example.com",
         group_name: "G1",
@@ -325,38 +331,15 @@ fn masking_and_build_source_summary_for_admin_and_member() {
         login_ui: login_ui.clone(),
     };
 
-    let admin_dto = build_source_summary(
-        SourceRecordSnapshot {
-            id: snap.id,
-            name: snap.name,
-            source_url: snap.source_url,
-            group_name: snap.group_name,
-            enabled: snap.enabled,
-            weight: snap.weight,
-            source_type: snap.source_type,
-            runtime_state: snap.runtime_state,
-            last_test_ok: snap.last_test_ok,
-            last_test_msg: snap.last_test_msg,
-            updated_at: snap.updated_at,
-        },
-        meta.clone(),
-        true,
-    );
+    let dto = build_source_summary(snap, meta);
+    assert_eq!(dto.domain, MediaKind::Music);
+    assert_eq!(dto.format, PluginFormat::JsonRule);
     assert_eq!(
-        admin_dto.login_info.get("pinCode").map(String::as_str),
+        dto.login_info.get("pinCode").map(String::as_str),
         Some(MASKED_SECRET_PLACEHOLDER)
     );
-    assert_eq!(admin_dto.variable_preview.chars().count(), 240);
-    assert_eq!(
-        admin_dto.cookie_hosts,
-        vec!["a.example.com", "b.example.com"]
-    );
-
-    let member_dto = build_source_summary(snap, meta, false);
-    assert!(member_dto.login_ui.is_empty());
-    assert!(member_dto.login_info.is_empty());
-    assert!(member_dto.variable_preview.is_empty());
-    assert!(member_dto.cookie_hosts.is_empty());
+    assert_eq!(dto.variable_preview.chars().count(), 240);
+    assert_eq!(dto.cookie_hosts, vec!["a.example.com", "b.example.com"]);
 }
 
 #[test]
@@ -398,24 +381,27 @@ fn test_report_diagnostics_reorder_dedup_and_runtime_merge() {
         login_info: HashMap::from([("u".into(), "a".into())]),
         cookies: HashMap::from([("h.test".into(), "a=1; b=2".into())]),
         cache: HashMap::from([("k1".into(), "val1".into())]),
+        settings: HashMap::from([("quality".into(), serde_json::json!("lossless"))]),
         android_id: "aid".into(),
     };
     let mut updated_clear = base.clone();
     updated_clear.variable.clear();
     updated_clear.cache.remove("k1");
     updated_clear.cookies.remove("h.test");
+    updated_clear.settings.remove("quality");
     let cleared = merge_runtime_state_with_base(&base, Some(base.clone()), updated_clear, true);
     assert!(cleared.variable.is_empty());
     assert!(!cleared.cache.contains_key("k1"));
     assert!(!cleared.cookies.contains_key("h.test"));
+    assert!(!cleared.settings.contains_key("quality"));
 }
 
 #[tokio::test]
-async fn generic_source_crud_service_and_prefixed_router_work_end_to_end() {
+async fn per_user_isolated_plugin_crud_and_unified_plugins_router_work() {
     let repo = Arc::new(MemSourceRepo::default());
     let svc = Arc::new(SourceCrudService::<SampleSpec>::new(repo));
 
-    let admin = User::new(
+    let alice = User::new(
         "admin",
         "Admin",
         "hash",
@@ -424,7 +410,7 @@ async fn generic_source_crud_service_and_prefixed_router_work_end_to_end() {
         UserRole::Admin,
     )
     .unwrap();
-    let member = User::new(
+    let bob = User::new(
         "member",
         "Member",
         "hash",
@@ -434,18 +420,18 @@ async fn generic_source_crud_service_and_prefixed_router_work_end_to_end() {
     )
     .unwrap();
 
-    // 1. Import JSON array + idempotent upsert
+    // 1. Alice imports 2 plugins + idempotent upsert
     let raw = r#"[
         {"name":"Alpha","url":"https://alpha.example","sourceGroup":"G1","enabled":true,"weight":10},
         {"name":"Beta","url":"https://beta.example","enabled":false,"weight":5}
     ]"#;
-    let report = svc.import_sources(&admin, raw).await.unwrap();
+    let report = svc.import_sources(&alice, raw).await.unwrap();
     assert_eq!(report.imported_count, 2);
     assert_eq!(report.updated_count, 0);
 
     let repeat = svc
         .import_sources(
-            &admin,
+            &alice,
             r#"{"name":"Alpha","url":"https://alpha.example","sourceGroup":"G2","enabled":true,"weight":20}"#,
         )
         .await
@@ -453,31 +439,54 @@ async fn generic_source_crud_service_and_prefixed_router_work_end_to_end() {
     assert_eq!(repeat.imported_count, 0);
     assert_eq!(repeat.updated_count, 1);
 
-    // 2. Member sees only enabled sources; OnlineSourceDirectory lists both with enabled flag
-    assert_eq!(svc.list_sources(&admin).await.unwrap().len(), 2);
-    assert_eq!(svc.list_sources(&member).await.unwrap().len(), 1);
-    let dir_map = OnlineSourceDirectory::list_sources(svc.as_ref())
-        .await
-        .unwrap();
-    assert_eq!(dir_map.len(), 2);
-
     let beta_id = report.sources[1].id;
     let alpha_id = report.sources[0].id;
 
+    // 2. Strict per-user isolation: Bob sees 0 of Alice's plugins, cannot read/edit/delete Alice's plugins,
+    //    and importing the same URL creates Bob's own isolated plugin record and runtime state!
+    assert_eq!(svc.list_sources(&alice).await.unwrap().len(), 2);
+    assert!(svc.list_sources(&bob).await.unwrap().is_empty());
+    assert!(svc.get_source(&bob, alpha_id).await.is_err());
+    assert!(svc.delete_source(&bob, alpha_id).await.is_err());
+    assert_eq!(
+        OnlineSourceDirectory::list_sources(svc.as_ref(), alice.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        OnlineSourceDirectory::list_sources(svc.as_ref(), bob.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let bob_import = svc
+        .import_sources(
+            &bob,
+            r#"{"name":"Alpha","url":"https://alpha.example","sourceGroup":"BobGroup","enabled":true,"weight":5}"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_import.imported_count, 1);
+    let bob_alpha_id = bob_import.sources[0].id;
+    assert_ne!(bob_alpha_id, alpha_id);
+
     // 3. Reorder, toggle enabled, update variable, login action preserving masked secret, export & delete
     let reordered = svc
-        .reorder_sources(&admin, vec![beta_id, alpha_id])
+        .reorder_sources(&alice, vec![beta_id, alpha_id])
         .await
         .unwrap();
     assert_eq!(reordered[0].id, beta_id);
     assert_eq!(reordered[0].weight, 20);
 
-    let toggled = svc.set_source_enabled(&admin, beta_id, true).await.unwrap();
+    let toggled = svc.set_source_enabled(&alice, beta_id, true).await.unwrap();
     assert!(toggled.enabled);
 
     let updated = svc
         .update_source(
-            &admin,
+            &alice,
             alpha_id,
             UpdateSourceInput {
                 variable: Some("var-xyz".into()),
@@ -488,13 +497,18 @@ async fn generic_source_crud_service_and_prefixed_router_work_end_to_end() {
         .unwrap();
     assert!(updated.has_variable);
     assert_eq!(
-        svc.get_source_variable(&admin, alpha_id).await.unwrap(),
+        svc.get_source_variable(&alice, alpha_id).await.unwrap(),
         "var-xyz"
+    );
+    // Bob's plugin variable remains empty (strict runtime state isolation)
+    assert_eq!(
+        svc.get_source_variable(&bob, bob_alpha_id).await.unwrap(),
+        ""
     );
 
     let login_res = svc
         .run_login_action_with(
-            &admin,
+            &alice,
             alpha_id,
             HashMap::from([("pinCode".into(), "9988".into())]),
             Some("login()".into()),
@@ -520,16 +534,31 @@ async fn generic_source_crud_service_and_prefixed_router_work_end_to_end() {
     );
 
     let batch_json = svc
-        .export_sources_batch_json(&admin, vec![beta_id, alpha_id])
+        .export_sources_batch_json(&alice, vec![beta_id, alpha_id])
         .await
         .unwrap();
     assert!(batch_json.contains("Alpha"));
     assert!(batch_json.contains("Beta"));
 
+    // Bob attempting batch delete on Alice's plugin affects 0 items
+    let cross_del = svc
+        .batch_sources(
+            &bob,
+            BatchSourcesInput {
+                domain: None,
+                ids: vec![beta_id],
+                action: BatchSourceAction::Delete,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_del.affected_count, 0);
+
     let del_report = svc
         .batch_sources(
-            &admin,
+            &alice,
             BatchSourcesInput {
+                domain: None,
                 ids: vec![beta_id],
                 action: BatchSourceAction::Delete,
             },
@@ -537,28 +566,27 @@ async fn generic_source_crud_service_and_prefixed_router_work_end_to_end() {
         .await
         .unwrap();
     assert_eq!(del_report.affected_count, 1);
-    assert_eq!(svc.list_sources(&admin).await.unwrap().len(), 1);
+    assert_eq!(svc.list_sources(&alice).await.unwrap().len(), 1);
+    assert_eq!(svc.list_sources(&bob).await.unwrap().len(), 1);
 
-    // 4. Verify `sources_prefixed_crud_router` merges cleanly with `/sources/{id}/test` in Axum 0.8
+    // 4. Verify `plugins_stateful_router` compiles & mounts cleanly in Axum 0.8
     #[derive(Clone)]
     struct TestHttpState {
         auth: Arc<AuthService>,
-        crud: Arc<SourceCrudService<SampleSpec>>,
+        registry: Arc<PluginRegistry>,
     }
     impl FromRef<TestHttpState> for Arc<AuthService> {
         fn from_ref(s: &TestHttpState) -> Self {
             s.auth.clone()
         }
     }
-    impl FromRef<TestHttpState> for Arc<SourceCrudService<SampleSpec>> {
+    impl FromRef<TestHttpState> for Arc<PluginRegistry> {
         fn from_ref(s: &TestHttpState) -> Self {
-            s.crud.clone()
+            s.registry.clone()
         }
     }
-    let _router: Router<TestHttpState> = Router::new()
-        .merge(sources_prefixed_crud_router::<TestHttpState, SampleSpec>())
-        .route(
-            "/sources/{id}/test",
-            post(|Path(_id): Path<Uuid>| async { "ok" }),
-        );
+    let _router: Router<TestHttpState> = Router::new().nest(
+        "/api/v1/plugins",
+        plugins_stateful_router::<TestHttpState>(),
+    );
 }

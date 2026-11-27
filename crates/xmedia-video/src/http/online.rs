@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::header::{
@@ -12,20 +14,19 @@ use serde::Deserialize;
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth};
-use xmedia_source::crud::{LoginActionRequest, sources_prefixed_crud_router};
+use xmedia_source::crud::{CrudPluginDomainHandler, PluginDomainHandler};
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
 use crate::application::dto::{ShowDetailDto, VideoSummaryDto};
 use crate::application::online::{
-    CacheTrackedShowInput, HlsProxyOutcome, LoginActionResponseDto, OnlineVideoBrowseResponseDto,
+    CacheTrackedShowInput, HlsProxyOutcome, OnlineVideoBrowseResponseDto,
     OnlineVideoCategoriesResponseDto, OnlineVideoDetailResponseDto, OnlineVideoPlayResponseDto,
     OnlineVideoSearchResponseDto, ProxyStreamOutcome, ProxyStreamPayload, TrackOnlineVideoInput,
     TrackOnlineVideoResultDto, TrackedVideoPlayResponseDto, VideoCacheReportDto,
-    VideoSourceTestInput, VideoSourceTestReportDto,
+    VideoOnlineService, VideoSourceTestInput,
 };
 use crate::application::ports::VideoProxyUrlBuilder;
 use crate::domain::id::{ShowId, VideoId};
-use crate::domain::online::VideoSourceSpec;
 use crate::http::state::VideoHttpState;
 
 pub fn encode_query_component(val: &str) -> String {
@@ -85,14 +86,35 @@ impl VideoProxyUrlBuilder for RestVideoProxyUrlBuilder {
     }
 }
 
+pub fn plugin_handler(online: Arc<VideoOnlineService>) -> Arc<dyn PluginDomainHandler> {
+    let crud = online.source_crud().clone();
+    let online_login = online.clone();
+    let online_test = online;
+    CrudPluginDomainHandler::into_arc(
+        crud,
+        move |user, id, req| {
+            let svc = online_login.clone();
+            async move {
+                svc.run_login_action(&user, id, req.login_info, req.action)
+                    .await
+            }
+        },
+        move |user, id, payload| {
+            let svc = online_test.clone();
+            async move {
+                let input: VideoSourceTestInput = serde_json::from_value(payload)
+                    .map_err(|e| DomainError::Validation(format!("视频插件测试参数无效: {e}")))?;
+                let out = svc
+                    .test_source(&user, id, input, &RestVideoProxyUrlBuilder)
+                    .await?;
+                serde_json::to_value(out).map_err(|e| DomainError::Storage(e.to_string()))
+            }
+        },
+    )
+}
+
 pub fn router() -> Router<VideoHttpState> {
     Router::new()
-        .merge(sources_prefixed_crud_router::<
-            VideoHttpState,
-            VideoSourceSpec,
-        >())
-        .route("/sources/{id}/login-action", post(run_login_action))
-        .route("/sources/{id}/test", post(test_source))
         // Online video endpoints & proxies
         .route("/online/categories", post(online_categories))
         .route("/online/search", post(online_search))
@@ -174,34 +196,6 @@ struct TrackedPlayQuery {
 
 fn require_query_source_id(source_id: Option<Uuid>) -> Result<Uuid, DomainError> {
     source_id.ok_or_else(|| DomainError::Validation("缺少必填参数 source_id".into()))
-}
-
-async fn run_login_action(
-    State(state): State<VideoHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<LoginActionRequest>,
-) -> ApiResult<Json<LoginActionResponseDto>> {
-    let out = state
-        .services
-        .online
-        .run_login_action(&user, id, req.login_info, req.action)
-        .await?;
-    Ok(Json(out))
-}
-
-async fn test_source(
-    State(state): State<VideoHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<VideoSourceTestInput>,
-) -> ApiResult<Json<VideoSourceTestReportDto>> {
-    let out = state
-        .services
-        .online
-        .test_source(&user, id, req, &RestVideoProxyUrlBuilder)
-        .await?;
-    Ok(Json(out))
 }
 
 async fn online_categories(

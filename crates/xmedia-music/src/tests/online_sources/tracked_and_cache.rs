@@ -39,8 +39,8 @@ async fn online_music_items_favorites_progress_and_remote_e2e() {
     let (st_imp, _, b_imp) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=music",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_json.to_string() })),
     )
     .await;
@@ -264,6 +264,7 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
 
     let state = MusicHttpState::new(auth_svc, library_svc, music_services);
     let app = Router::new()
+        .nest("/api/v1/plugins", crate::http::plugins_router(&state))
         .nest("/api/v1/music", rest_router(state.clone()))
         .nest("/rest", crate::http::subsonic_router(state));
 
@@ -359,7 +360,7 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
     let (st_imp, _, b_imp) = send_json(
         &app,
         "POST",
-        "/api/v1/music/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &admin_session.token,
         Some(serde_json::json!({ "raw_json": source_spec.to_string() })),
     )
@@ -438,7 +439,8 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
     let pool_val: serde_json::Value = serde_json::from_slice(&b_pool).unwrap();
     assert_eq!(pool_val["total"], 0);
 
-    let (st_mem_track, _, b_mem_track) = send_json(
+    // Member cannot track using admin's source_id (404 Not Found)
+    let (st_mem_cross_src, _, _) = send_json(
         &app,
         "POST",
         "/api/v1/music/online/track",
@@ -446,9 +448,52 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
         Some(track_payload.clone()),
     )
     .await;
+    assert_eq!(st_mem_cross_src, StatusCode::NOT_FOUND);
+
+    // Member cannot bind admin's OnlineTracked track
+    let (st_mem_bind, _, b_mem_bind) = send_json(
+        &app,
+        "POST",
+        "/api/v1/music/bindings",
+        &member_session.token,
+        Some(serde_json::json!({ "item_ids": [track_id] })),
+    )
+    .await;
+    assert_eq!(st_mem_bind, StatusCode::OK);
+    let mem_bind_val: serde_json::Value = serde_json::from_slice(&b_mem_bind).unwrap();
+    assert_eq!(mem_bind_val["bound_count"], 0);
+
+    // Member imports their own plugin and tracks independently (per-source_id OnlineTracked)
+    let (st_mem_imp, _, b_mem_imp) = send_json(
+        &app,
+        "POST",
+        "/api/v1/plugins/import?domain=music",
+        &member_session.token,
+        Some(serde_json::json!({ "raw_json": source_spec.to_string() })),
+    )
+    .await;
+    assert_eq!(st_mem_imp, StatusCode::OK);
+    let mem_imp_val: serde_json::Value = serde_json::from_slice(&b_mem_imp).unwrap();
+    let member_source_id = mem_imp_val["sources"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(member_source_id, source_id);
+
+    let mut member_track_payload = track_payload.clone();
+    member_track_payload["source_id"] = serde_json::Value::String(member_source_id);
+    let (st_mem_track, _, b_mem_track) = send_json(
+        &app,
+        "POST",
+        "/api/v1/music/online/track",
+        &member_session.token,
+        Some(member_track_payload),
+    )
+    .await;
     assert_eq!(st_mem_track, StatusCode::OK);
     let mem_tracked: serde_json::Value = serde_json::from_slice(&b_mem_track).unwrap();
-    assert_eq!(mem_tracked["id"], track_id);
+    let member_track_id = mem_tracked["id"].as_str().unwrap().to_string();
+    assert_ne!(member_track_id, track_id);
 
     let (st_dup, _, b_dup) = send_json(
         &app,
@@ -581,7 +626,7 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
     let (st_unb_m, _, b_unb_m) = send_json(
         &app,
         "DELETE",
-        &format!("/api/v1/music/bindings/{track_id}"),
+        &format!("/api/v1/music/bindings/{member_track_id}"),
         &member_session.token,
         None,
     )
@@ -589,8 +634,8 @@ async fn online_tracked_music_hybrid_cache_and_opensubsonic_e2e() {
     assert_eq!(st_unb_m, StatusCode::OK);
     let unb_m: serde_json::Value = serde_json::from_slice(&b_unb_m).unwrap();
     assert_eq!(unb_m["unbound"], true);
-    assert_eq!(unb_m["remaining_bindings"], 1);
-    assert_eq!(unb_m["deleted_from_pool"], false);
+    assert_eq!(unb_m["remaining_bindings"], 0);
+    assert_eq!(unb_m["deleted_from_pool"], true);
 
     let (st_unb_a, _, b_unb_a) = send_json(
         &app,

@@ -28,8 +28,8 @@ use crate::application::online::{
 };
 use crate::domain::book::BookId;
 use crate::domain::online::{BookJsContext, ChapterJsContext};
-use crate::http::rest_router;
 use crate::http::state::BookHttpState;
+use crate::http::{plugins_router, rest_router};
 use crate::infra::source::BookSourceEngine;
 use crate::infra::source::http::HttpClientConfig;
 use crate::{ensure_book_schema, init_book_module, register_book_models};
@@ -405,15 +405,44 @@ async fn deleting_user_cleans_up_online_items_entries() {
         .import_sources(&admin, &raw_source)
         .await
         .unwrap();
-    let source_id = imported.sources[0].id;
+    let admin_source_id = imported.sources[0].id;
 
-    let _member_user = xmedia_core::domain::repository::UserRepository::find(
+    let member_user = xmedia_core::domain::repository::UserRepository::find(
         users.as_ref(),
         xmedia_core::domain::repository::UserLookup::Id(member.id),
     )
     .await
     .unwrap()
     .unwrap();
+    assert!(matches!(
+        book_services
+            .online_items
+            .upsert(
+                member.id,
+                xmedia_core::application::online_items::UpsertOnlineItemInput {
+                    source_kind: xmedia_core::domain::online_item::OnlineItemSourceKind::Online,
+                    source_id: admin_source_id.to_string(),
+                    item_key: "https://example.com/b/1".into(),
+                    title: "测试书".into(),
+                    subtitle: Some("作者".into()),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    extra: None,
+                    favorite: Some(true),
+                    progress: None,
+                },
+            )
+            .await,
+        Err(xmedia_core::domain::error::DomainError::NotFound(_))
+    ));
+
+    let member_imported = book_services
+        .sources
+        .import_sources(&member_user, &raw_source)
+        .await
+        .unwrap();
+    let source_id = member_imported.sources[0].id;
     book_services
         .online_items
         .upsert(
@@ -520,7 +549,9 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
     let member_session = auth.login("member", "password123", None).await.unwrap();
 
     let state = BookHttpState::new(auth.clone(), lib_svc.clone(), book_services.clone());
-    let app = Router::new().nest("/api/v1/book", rest_router(state));
+    let app = Router::new()
+        .nest("/api/v1/plugins", plugins_router(&state))
+        .nest("/api/v1/book", rest_router(state));
 
     // 1. Import source & set long variable (> 240 chars)
     let raw_source = serde_json::json!({
@@ -548,12 +579,12 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         .await
         .unwrap();
 
-    // Admin gets full untruncated variable via GET /sources/{id}/variable
+    // Admin gets full untruncated variable via GET /api/v1/plugins/{id}/variable
     let var_admin_res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/v1/book/sources/{source_id}/variable"))
+                .uri(format!("/api/v1/plugins/{source_id}/variable"))
                 .header("authorization", format!("Bearer {}", admin_session.token))
                 .body(Body::empty())
                 .unwrap(),
@@ -569,26 +600,46 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
     .unwrap();
     assert_eq!(var_json["variable"], long_var);
 
-    // Non-admin gets 403 Forbidden
-    let var_member_res = app
+    // Other user does not see admin's plugins and gets 404 Not Found on admin's source_id
+    let list_member_res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/v1/book/sources/{source_id}/variable"))
+                .uri("/api/v1/plugins?domain=book")
                 .header("authorization", format!("Bearer {}", member_session.token))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(var_member_res.status(), StatusCode::FORBIDDEN);
+    assert_eq!(list_member_res.status(), StatusCode::OK);
+    let list_member_json: serde_json::Value = serde_json::from_slice(
+        &to_bytes(list_member_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(list_member_json, serde_json::json!([]));
+
+    let var_member_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/plugins/{source_id}/variable"))
+                .header("authorization", format!("Bearer {}", member_session.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(var_member_res.status(), StatusCode::NOT_FOUND);
 
     // Export endpoint includes X-Content-Type-Options: nosniff
     let export_res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/v1/book/sources/{source_id}/export"))
+                .uri(format!("/api/v1/plugins/{source_id}/export"))
                 .header("authorization", format!("Bearer {}", admin_session.token))
                 .body(Body::empty())
                 .unwrap(),
@@ -692,7 +743,7 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         .unwrap();
     assert_eq!(default_member_res.status(), StatusCode::NOT_FOUND);
 
-    // Non-admin member can manually track the same online book -> reuses deduplicated pool entry
+    // Member cannot track via admin's source_id; importing their own plugin creates an isolated OnlineTracked book
     let member_user = auth
         .authenticate(
             xmedia_core::application::dto::AuthCredential::Jwt(&member_session.token),
@@ -700,12 +751,48 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         )
         .await
         .unwrap();
+    assert!(
+        book_services
+            .sources
+            .list_sources(&member_user)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        book_services
+            .online
+            .track_online_book(
+                &member_user,
+                TrackOnlineBookInput {
+                    source_id,
+                    book_url: "https://contract.example/b/1".into(),
+                    toc_url: String::new(),
+                    name: "清理验证书".into(),
+                    author: "作者".into(),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    last_chapter: None,
+                },
+            )
+            .await,
+        Err(xmedia_core::domain::error::DomainError::NotFound(_))
+    ));
+    let member_imported = book_services
+        .sources
+        .import_sources(&member_user, &raw_source)
+        .await
+        .unwrap();
+    let member_source_id = member_imported.sources[0].id;
+    assert_ne!(member_source_id, source_id);
+
     let tracked_by_member = book_services
         .online
         .track_online_book(
             &member_user,
             TrackOnlineBookInput {
-                source_id,
+                source_id: member_source_id,
                 book_url: "https://contract.example/b/1".into(),
                 toc_url: String::new(),
                 name: "清理验证书".into(),
@@ -718,17 +805,17 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         )
         .await
         .unwrap();
-    assert_eq!(tracked_by_member.id, tracked.id);
+    assert_ne!(tracked_by_member.id, tracked.id);
 
-    // Unbinding one user preserves the pooled book for the other; unbinding the last user GCs it
+    // Unbinding member's isolated OnlineTracked book GCs it without touching admin's tracked book
     let unbind_member = book_services
         .catalog
-        .unbind_book(&member_user, tracked.id, None)
+        .unbind_book(&member_user, tracked_by_member.id, None)
         .await
         .unwrap();
     assert!(unbind_member.unbound);
-    assert_eq!(unbind_member.remaining_bindings, 1);
-    assert!(!unbind_member.deleted_from_pool);
+    assert_eq!(unbind_member.remaining_bindings, 0);
+    assert!(unbind_member.deleted_from_pool);
 
     let default_admin_res = app
         .clone()
@@ -844,7 +931,9 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
         Arc::new(crate::infra::persistence::repositories::ToastyBookSourceRepository::new(db));
 
     let state = BookHttpState::new(auth_svc, lib_svc, book_services);
-    let app = Router::new().nest("/api/v1/book", rest_router(state));
+    let app = Router::new()
+        .nest("/api/v1/plugins", plugins_router(&state))
+        .nest("/api/v1/book", rest_router(state));
 
     // Import target source + 80 filler sources so import_sources upsert spans multiple DB calls
     let target_url = format!("http://{addr}");
@@ -873,7 +962,7 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/book/sources/import")
+                .uri("/api/v1/plugins/import?domain=book")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", admin_session.token))
                 .body(Body::from(
@@ -897,13 +986,13 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
         .unwrap()
         .to_string();
 
-    // 1. Concurrent POST /sources/import (81-item upsert) + login-action setting variable/login_info/cookie/cache
+    // 1. Concurrent POST /plugins/import (81-item upsert) + login-action setting variable/login_info/cookie/cache
     let mut upsert_batch = batch.clone();
     upsert_batch[80]["weight"] = serde_json::json!(25);
     let import_req = app.clone().oneshot(
         Request::builder()
             .method("POST")
-            .uri("/api/v1/book/sources/import")
+            .uri("/api/v1/plugins/import?domain=book")
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {}", admin_session.token))
             .body(Body::from(
@@ -918,7 +1007,7 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/v1/book/sources/{sid}/login-action"))
+                    .uri(format!("/api/v1/plugins/{sid}/login-action"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {}", admin_session.token))
                     .body(Body::from(
@@ -940,11 +1029,11 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
     assert_eq!(r_imp.unwrap().status(), StatusCode::OK);
     assert_eq!(r_login.status(), StatusCode::OK);
 
-    // 2. Concurrent PATCH /sources/{id} (updating weight & group_name) + login-action updating variable & cookie
+    // 2. Concurrent PATCH /plugins/{id} (updating weight & group_name) + login-action updating variable & cookie
     let patch_req = app.clone().oneshot(
         Request::builder()
             .method("PATCH")
-            .uri(format!("/api/v1/book/sources/{sid}"))
+            .uri(format!("/api/v1/plugins/{sid}"))
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {}", admin_session.token))
             .body(Body::from(
@@ -955,7 +1044,7 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
     let login_req2 = app.clone().oneshot(
         Request::builder()
             .method("POST")
-            .uri(format!("/api/v1/book/sources/{sid}/login-action"))
+            .uri(format!("/api/v1/plugins/{sid}/login-action"))
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {}", admin_session.token))
             .body(Body::from(
@@ -973,11 +1062,11 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
     assert_eq!(r_patch.unwrap().status(), StatusCode::OK);
     assert_eq!(r_login2.unwrap().status(), StatusCode::OK);
 
-    // 3. Concurrent slow POST /sources/{id}/test + login-action updating variable/cache/cookie
+    // 3. Concurrent slow POST /plugins/{id}/test + login-action updating variable/cache/cookie
     let test_req = app.clone().oneshot(
         Request::builder()
             .method("POST")
-            .uri(format!("/api/v1/book/sources/{sid}/test"))
+            .uri(format!("/api/v1/plugins/{sid}/test"))
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {}", admin_session.token))
             .body(Body::from(
@@ -991,7 +1080,7 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/v1/book/sources/{sid}/login-action"))
+                    .uri(format!("/api/v1/plugins/{sid}/login-action"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {}", admin_session.token))
                     .body(Body::from(
@@ -1098,7 +1187,9 @@ async fn caller_supplied_book_urls_reject_legado_options_and_data_urls_with_400(
         .await
         .unwrap();
     let state = BookHttpState::new(auth_svc, lib_svc, book_services);
-    let app = Router::new().nest("/api/v1/book", rest_router(state));
+    let app = Router::new()
+        .nest("/api/v1/plugins", plugins_router(&state))
+        .nest("/api/v1/book", rest_router(state));
 
     let src_json = serde_json::json!([{
         "bookSourceName": "GuardSource",
@@ -1111,7 +1202,7 @@ async fn caller_supplied_book_urls_reject_legado_options_and_data_urls_with_400(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/book/sources/import")
+                .uri("/api/v1/plugins/import?domain=book")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", admin.token))
                 .body(Body::from(
@@ -1207,7 +1298,7 @@ async fn caller_supplied_book_urls_reject_legado_options_and_data_urls_with_400(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/book/sources/import")
+                .uri("/api/v1/plugins/import?domain=book")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", admin.token))
                 .body(Body::from(
@@ -1423,7 +1514,9 @@ async fn book_online_search_enforces_cancel_on_future_drop() {
         .await
         .unwrap();
     let state = BookHttpState::new(auth_svc, lib_svc, book_services);
-    let app = Router::new().nest("/api/v1/book", rest_router(state));
+    let app = Router::new()
+        .nest("/api/v1/plugins", plugins_router(&state))
+        .nest("/api/v1/book", rest_router(state));
 
     let src_json = serde_json::json!([{
         "bookSourceName": "DropBookSearchSource",
@@ -1440,7 +1533,7 @@ async fn book_online_search_enforces_cancel_on_future_drop() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/book/sources/import")
+                .uri("/api/v1/plugins/import?domain=book")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", admin.token))
                 .body(Body::from(
@@ -1630,7 +1723,9 @@ async fn book_online_non_search_and_test_enforce_cancel_on_future_drop() {
         .await
         .unwrap();
     let state = BookHttpState::new(auth_svc, lib_svc, book_services);
-    let app = Router::new().nest("/api/v1/book", rest_router(state));
+    let app = Router::new()
+        .nest("/api/v1/plugins", plugins_router(&state))
+        .nest("/api/v1/book", rest_router(state));
 
     let src_json = serde_json::json!([{
         "bookSourceName": "DropBookNonSearchSource",
@@ -1662,7 +1757,7 @@ async fn book_online_non_search_and_test_enforce_cancel_on_future_drop() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/book/sources/import")
+                .uri("/api/v1/plugins/import?domain=book")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", admin.token))
                 .body(Body::from(
@@ -1691,7 +1786,7 @@ async fn book_online_non_search_and_test_enforce_cancel_on_future_drop() {
             serde_json::json!({ "source_id": sid, "chapter_url": format!("{base}/content1") }),
         ),
         (
-            &format!("/api/v1/book/sources/{sid}/test") as &str,
+            &format!("/api/v1/plugins/{sid}/test") as &str,
             serde_json::json!({ "mode": "full", "keyword": "drop" }),
         ),
     ] {

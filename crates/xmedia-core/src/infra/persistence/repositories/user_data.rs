@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
@@ -11,11 +12,13 @@ use crate::domain::library::MediaKind;
 use crate::domain::online_item::{OnlineItemSourceKind, OnlineLibraryItem};
 use crate::domain::repository::{
     BindingCountQuery, BindingDeleteScope, OnlineItemDeleteScope, OnlineLibraryItemRepository,
-    UserMediaBindingRepository,
+    UserMediaBindingRepository, UserPluginRepository, UserPluginRow,
 };
 use crate::domain::user::UserId;
 
-use super::super::models::{OnlineLibraryItemModel, UserActivityDailyModel, UserMediaBindingModel};
+use super::super::models::{
+    OnlineLibraryItemModel, UserActivityDailyModel, UserMediaBindingModel, UserPluginModel,
+};
 
 #[derive(Clone)]
 pub struct ToastyOnlineLibraryItemRepository {
@@ -515,5 +518,195 @@ impl UserMediaBindingRepository for ToastyUserMediaBindingRepository {
                 Ok(Vec::new())
             }
         }
+    }
+}
+
+fn plugin_err(action: &str, e: impl std::fmt::Display) -> DomainError {
+    DomainError::Persistence(format!("{action} user plugin failed: {e}"))
+}
+
+#[derive(Clone)]
+pub struct ToastyUserPluginRepository {
+    db: Db,
+    book_cache_dir: Option<PathBuf>,
+}
+
+impl ToastyUserPluginRepository {
+    pub fn new(db: Db) -> Self {
+        Self {
+            db,
+            book_cache_dir: None,
+        }
+    }
+
+    pub fn with_book_cache_dir(db: Db, book_cache_dir: PathBuf) -> Self {
+        Self {
+            db,
+            book_cache_dir: Some(book_cache_dir),
+        }
+    }
+
+    fn model_to_domain(m: UserPluginModel) -> DomainResult<UserPluginRow> {
+        Ok(UserPluginRow {
+            id: m.id,
+            user_id: m.user_id,
+            media_kind: MediaKind::parse(&m.media_kind)?,
+            format: m.format,
+            name: m.name,
+            source_url: m.source_url,
+            group_name: m.group_name,
+            enabled: m.enabled,
+            weight: m.weight,
+            source_type: m.source_type,
+            raw_source: m.raw_source,
+            runtime_state: m.runtime_state.0,
+            last_test_ok: m.last_test_ok,
+            last_test_msg: m.last_test_msg,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        })
+    }
+
+    async fn cleanup_book_cache(&self, id: Uuid) {
+        if let Some(ref cache_dir) = self.book_cache_dir {
+            let src_cache = cache_dir.join(id.to_string());
+            if let Err(err) = tokio::fs::remove_dir_all(&src_cache).await
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(plugin_id = %id, error = %err, "failed to remove plugin book cache dir");
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl UserPluginRepository for ToastyUserPluginRepository {
+    async fn list_by_user(
+        &self,
+        user_id: UserId,
+        media_kind: Option<MediaKind>,
+    ) -> DomainResult<Vec<UserPluginRow>> {
+        let mut db = self.db.clone();
+        let rows = UserPluginModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(|e| plugin_err("list by user", e))?;
+        rows.into_iter()
+            .filter(|m| media_kind.is_none_or(|k| m.media_kind == k.as_str()))
+            .map(Self::model_to_domain)
+            .collect()
+    }
+
+    async fn list_all(&self, media_kind: Option<MediaKind>) -> DomainResult<Vec<UserPluginRow>> {
+        let mut db = self.db.clone();
+        let rows = match media_kind {
+            Some(k) => UserPluginModel::filter_by_media_kind(k.as_str().to_string())
+                .exec(&mut db)
+                .await
+                .map_err(|e| plugin_err("list by media_kind", e))?,
+            None => UserPluginModel::all()
+                .exec(&mut db)
+                .await
+                .map_err(|e| plugin_err("list all", e))?,
+        };
+        rows.into_iter().map(Self::model_to_domain).collect()
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<UserPluginRow>> {
+        let mut db = self.db.clone();
+        let row = UserPluginModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| plugin_err("find by id", e))?;
+        row.map(Self::model_to_domain).transpose()
+    }
+
+    async fn save(&self, row: &UserPluginRow) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let existing = UserPluginModel::filter_by_id(row.id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| plugin_err("probe", e))?;
+        if let Some(mut rec) = existing {
+            rec.update()
+                .user_id(row.user_id)
+                .media_kind(row.media_kind.as_str().to_string())
+                .format(row.format.clone())
+                .name(row.name.clone())
+                .source_url(row.source_url.clone())
+                .group_name(row.group_name.clone())
+                .enabled(row.enabled)
+                .weight(row.weight)
+                .source_type(row.source_type)
+                .raw_source(row.raw_source.clone())
+                .runtime_state(toasty::Json(row.runtime_state.clone()))
+                .last_test_ok(row.last_test_ok)
+                .last_test_msg(row.last_test_msg.clone())
+                .updated_at(row.updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(|e| plugin_err("update", e))?;
+        } else {
+            toasty::create!(UserPluginModel {
+                id: row.id,
+                user_id: row.user_id,
+                media_kind: row.media_kind.as_str().to_string(),
+                format: row.format.clone(),
+                name: row.name.clone(),
+                source_url: row.source_url.clone(),
+                group_name: row.group_name.clone(),
+                enabled: row.enabled,
+                weight: row.weight,
+                source_type: row.source_type,
+                raw_source: row.raw_source.clone(),
+                runtime_state: toasty::Json(row.runtime_state.clone()),
+                last_test_ok: row.last_test_ok,
+                last_test_msg: row.last_test_msg.clone(),
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            })
+            .exec(&mut db)
+            .await
+            .map_err(|e| plugin_err("insert", e))?;
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, id: Uuid) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        UserPluginModel::filter_by_id(id)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(|e| plugin_err("delete", e))?;
+        self.cleanup_book_cache(id).await;
+        Ok(())
+    }
+
+    async fn purge_user(&self, user_id: UserId) -> DomainResult<usize> {
+        let mut db = self.db.clone();
+        let rows = UserPluginModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(|e| plugin_err("list purge", e))?;
+        let count = rows.len();
+        let book_ids: Vec<Uuid> = rows
+            .iter()
+            .filter(|r| r.media_kind == MediaKind::Book.as_str())
+            .map(|r| r.id)
+            .collect();
+        if count > 0 {
+            UserPluginModel::filter_by_user_id(user_id.0)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(|e| plugin_err("purge user", e))?;
+        }
+        for id in book_ids {
+            self.cleanup_book_cache(id).await;
+        }
+        Ok(count)
     }
 }

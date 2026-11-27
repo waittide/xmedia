@@ -4,7 +4,7 @@ mod series;
 
 use xmedia_core::domain::error::DomainError;
 
-pub use super::source_repository::ToastyComicSourceRepository;
+pub use super::source_repository::{ToastyComicSourceRepository, migrate_legacy_comic_sources};
 pub use chapters::ToastyChapterRepository;
 pub use reading::ToastyComicReadingRepository;
 pub use series::ToastySeriesRepository;

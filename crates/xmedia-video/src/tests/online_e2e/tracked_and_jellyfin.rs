@@ -47,15 +47,26 @@ async fn online_video_items_favorites_episode_progress_and_availability_e2e() {
         "sourceType": 1,
         "apiUrl": "https://video-item.test/api.php/provide/vod"
     });
+    let (st_adm, adm_val) = post_json(
+        &app,
+        "/api/v1/plugins/import?domain=video",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_adm, StatusCode::OK);
+    let admin_source_id = adm_val["sources"][0]["id"].as_str().unwrap().to_string();
+
     let (st_imp, imp_val) = post_json(
         &app,
-        "/api/v1/video/sources/import",
-        &admin_tok,
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
         serde_json::json!({ "raw_json": src_json.to_string() }),
     )
     .await;
     assert_eq!(st_imp, StatusCode::OK);
     let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+    assert_ne!(source_id, admin_source_id);
 
     let (st_put, item) = send_json_with_method(
         &app,
@@ -139,10 +150,20 @@ async fn online_video_items_favorites_episode_progress_and_availability_e2e() {
     assert_eq!(prog["progress"]["unit_group"], "Backup Line");
     assert_eq!(prog["progress"]["unit_index"], 2);
 
+    // Admin cannot mutate member's plugin (404 Not Found), and disabling admin's own plugin does not affect member
+    let (st_adm_patch_member, _) = patch_json(
+        &app,
+        &format!("/api/v1/plugins/{source_id}"),
+        &admin_tok,
+        serde_json::json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(st_adm_patch_member, StatusCode::NOT_FOUND);
+
     let (st_dis, _) = patch_json(
         &app,
-        &format!("/api/v1/video/sources/{source_id}"),
-        &admin_tok,
+        &format!("/api/v1/plugins/{source_id}"),
+        &member_tok,
         serde_json::json!({ "enabled": false }),
     )
     .await;
@@ -301,7 +322,7 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
     let (st_imp, imp_val) = send_json_with_method(
         &app,
         "POST",
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_tok,
         Some(serde_json::json!({ "raw_json": source_spec.to_string() })),
     )
@@ -344,7 +365,8 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
     .await;
     assert_eq!(st_iso, StatusCode::NOT_FOUND);
 
-    let (st_member_mv, member_mv_val) = send_json_with_method(
+    // Member cannot track using admin's source_id (404) and cannot bind admin's OnlineTracked item
+    let (st_foreign_track, _) = send_json_with_method(
         &app,
         "POST",
         "/api/v1/video/online/track",
@@ -355,14 +377,53 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
         })),
     )
     .await;
+    assert_eq!(st_foreign_track, StatusCode::NOT_FOUND);
+
+    let (st_bind_foreign, bind_foreign_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/bindings",
+        &member_tok,
+        Some(serde_json::json!({ "item_ids": [movie_id] })),
+    )
+    .await;
+    assert_eq!(st_bind_foreign, StatusCode::OK, "{bind_foreign_val}");
+    assert_eq!(bind_foreign_val["bound_count"], 0);
+    assert_eq!(bind_foreign_val["total_requested"], 0);
+
+    // Member imports their own isolated plugin and tracks their own OnlineTracked movie
+    let (st_m_imp, m_imp_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/plugins/import?domain=video",
+        &member_tok,
+        Some(serde_json::json!({ "raw_json": source_spec.to_string() })),
+    )
+    .await;
+    assert_eq!(st_m_imp, StatusCode::OK, "{m_imp_val}");
+    let member_src_id = m_imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+    assert_ne!(member_src_id, source_id);
+
+    let (st_member_mv, member_mv_val) = send_json_with_method(
+        &app,
+        "POST",
+        "/api/v1/video/online/track",
+        &member_tok,
+        Some(serde_json::json!({
+            "source_id": member_src_id,
+            "video_id": "101"
+        })),
+    )
+    .await;
     assert_eq!(st_member_mv, StatusCode::OK, "{member_mv_val}");
-    assert_eq!(member_mv_val["video"]["id"].as_str().unwrap(), movie_id);
-    assert_eq!(member_mv_val["added_episodes"], 0);
+    let member_movie_id = member_mv_val["video"]["id"].as_str().unwrap().to_string();
+    assert_ne!(member_movie_id, movie_id);
+    assert_eq!(member_mv_val["added_episodes"], 1);
 
     let (st_play, play_val) = send_json_with_method(
         &app,
         "GET",
-        &format!("/api/v1/video/videos/{movie_id}/online/play?token={member_tok}"),
+        &format!("/api/v1/video/videos/{member_movie_id}/online/play?token={member_tok}"),
         &member_tok,
         None,
     )
@@ -395,7 +456,7 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/v1/video/videos/{movie_id}/stream?quality=direct&token={member_tok}"
+                    "/api/v1/video/videos/{movie_id}/stream?quality=direct&token={admin_tok}"
                 ))
                 .header(header::RANGE, "bytes=0-15")
                 .body(Body::empty())
@@ -480,13 +541,13 @@ async fn online_tracked_video_movie_show_play_cache_and_refresh_e2e() {
     .await;
     assert_eq!(st_ub1, StatusCode::OK, "{ub1_val}");
     assert_eq!(ub1_val["unbound"], true);
-    assert_eq!(ub1_val["remaining_bindings"], 1);
-    assert_eq!(ub1_val["deleted_from_pool"], false);
+    assert_eq!(ub1_val["remaining_bindings"], 0);
+    assert_eq!(ub1_val["deleted_from_pool"], true);
 
     let (st_ub2, ub2_val) = send_json_with_method(
         &app,
         "DELETE",
-        &format!("/api/v1/video/bindings/{movie_id}"),
+        &format!("/api/v1/video/bindings/{member_movie_id}"),
         &member_tok,
         None,
     )
@@ -586,6 +647,7 @@ async fn jellyfin_api_local_and_online_tracked_video_e2e() {
 
     let state = VideoHttpState::new(auth_svc, library_svc, video_services);
     let app = Router::new()
+        .nest("/api/v1/plugins", crate::http::plugins_router(&state))
         .nest("/api/v1/video", rest_router(state.clone()))
         .nest("/jellyfin", crate::http::jellyfin_router(state));
 
@@ -698,7 +760,7 @@ async fn jellyfin_api_local_and_online_tracked_video_e2e() {
     let (st_imp, imp_val) = send_json_with_method(
         &app,
         "POST",
-        "/api/v1/video/sources/import",
+        "/api/v1/plugins/import?domain=video",
         &admin_session.token,
         Some(serde_json::json!({ "raw_json": src_spec.to_string() })),
     )

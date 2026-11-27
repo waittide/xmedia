@@ -208,9 +208,9 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
     let (st_imp, _, b_imp) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
+        "/api/v1/plugins/import?domain=music",
         &h.admin_token,
-        Some(serde_json::json!({ "raw_json": raw_src })),
+        Some(serde_json::json!({ "raw_json": raw_src.clone() })),
     )
     .await;
     assert_eq!(st_imp, StatusCode::OK);
@@ -220,7 +220,7 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
     let (st_test, _, b_test) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{sid}/test"),
+        &format!("/api/v1/plugins/{sid}/test"),
         &h.admin_token,
         Some(serde_json::json!({ "mode": "search", "keyword": "q" })),
     )
@@ -229,7 +229,7 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
     let test_json: serde_json::Value = serde_json::from_slice(&b_test).unwrap();
     assert_eq!(test_json["sample_titles"][0], "Good Track");
 
-    let login_uri = format!("/sources/{sid}/login-action");
+    let login_uri = format!("/api/v1/plugins/{sid}/login-action");
     let (st_set, _, _) = send_json(
         &h.app,
         "POST",
@@ -259,7 +259,7 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
     let (st_var, _, b_var) = send_json(
         &h.app,
         "GET",
-        &format!("/sources/{sid}/variable"),
+        &format!("/api/v1/plugins/{sid}/variable"),
         &h.admin_token,
         None,
     )
@@ -331,6 +331,34 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
     assert!(ck_res.contains("kA=valA"), "missing kA=valA in {ck_res}");
     assert!(ck_res.contains("kB=valB"), "missing kB=valB in {ck_res}");
 
+    let (st_cross_px, _, _) = send_json(
+        &h.app,
+        "GET",
+        &format!(
+            "/online/audio-proxy?url={}&source_id={sid}",
+            url_encode_component(&format!("{base}/audio/disguised-html.bin"))
+        ),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_cross_px, StatusCode::NOT_FOUND);
+
+    let (st_mem_imp, _, b_mem_imp) = send_json(
+        &h.app,
+        "POST",
+        "/api/v1/plugins/import?domain=music",
+        &h.member_token,
+        Some(serde_json::json!({ "raw_json": raw_src })),
+    )
+    .await;
+    assert_eq!(st_mem_imp, StatusCode::OK);
+    let mem_imp_json: serde_json::Value = serde_json::from_slice(&b_mem_imp).unwrap();
+    let member_sid = mem_imp_json["sources"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
     for path in [
         "/audio/disguised-html.bin",
         "/audio/disguised-svg.bin",
@@ -345,7 +373,7 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
             &h.app,
             "GET",
             &format!(
-                "/online/audio-proxy?url={}&source_id={sid}",
+                "/online/audio-proxy?url={}&source_id={member_sid}",
                 url_encode_component(&format!("{base}{path}"))
             ),
             &h.member_token,
@@ -463,8 +491,8 @@ async fn online_music_endpoints_block_param_and_options_injection_and_support_re
     let (st_imp, _, b_imp) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=music",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_json.to_string() })),
     )
     .await;
@@ -472,6 +500,19 @@ async fn online_music_endpoints_block_param_and_options_injection_and_support_re
     let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
     let sid_tmpl = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
     let sid_pt = imp_val["sources"][1]["id"].as_str().unwrap().to_string();
+
+    let (st_cross, _, _) = send_json(
+        &h.app,
+        "POST",
+        "/online/stream",
+        &h.admin_token,
+        Some(serde_json::json!({
+            "source_id": &sid_tmpl,
+            "track_id": "1"
+        })),
+    )
+    .await;
+    assert_eq!(st_cross, StatusCode::NOT_FOUND);
 
     let (st_search, _, b_search) = send_json(
         &h.app,
@@ -612,8 +653,8 @@ async fn music_online_search_enforces_source_concurrent_rate_throttling() {
     let (st_imp, _, b_imp) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=music",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src.to_string() })),
     )
     .await;
@@ -763,8 +804,8 @@ async fn music_online_browse_enforces_cancel_on_future_drop() {
     let (st1, _, b1) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=music",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_track_info.to_string() })),
     )
     .await;
@@ -788,8 +829,8 @@ async fn music_online_browse_enforces_cancel_on_future_drop() {
     let (st2, _, b2) = send_json(
         &h.app,
         "POST",
-        "/sources/import",
-        &h.admin_token,
+        "/api/v1/plugins/import?domain=music",
+        &h.member_token,
         Some(serde_json::json!({ "raw_json": src_slow_single.to_string() })),
     )
     .await;
@@ -1158,12 +1199,12 @@ async fn music_stream_sanitizes_dangerous_schemes_and_aligns_headers_applied_wit
 
     let import_src = |raw: serde_json::Value| {
         let app = h.app.clone();
-        let token = h.admin_token.clone();
+        let token = h.member_token.clone();
         async move {
             let (st, _, b) = send_json(
                 &app,
                 "POST",
-                "/sources/import",
+                "/api/v1/plugins/import?domain=music",
                 &token,
                 Some(serde_json::json!({ "raw_json": raw.to_string() })),
             )
@@ -1244,8 +1285,8 @@ async fn music_stream_sanitizes_dangerous_schemes_and_aligns_headers_applied_wit
     let (st_dbg, _, b_dbg) = send_json(
         &h.app,
         "POST",
-        &format!("/sources/{sid_rule_hdr_only}/test"),
-        &h.admin_token,
+        &format!("/api/v1/plugins/{sid_rule_hdr_only}/test"),
+        &h.member_token,
         Some(serde_json::json!({ "mode": "stream", "track_id": "ok" })),
     )
     .await;

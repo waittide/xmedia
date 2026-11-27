@@ -270,7 +270,9 @@ fn sync_music_source_group(spec: MusicSourceSpec, item_raw: String) -> (MusicSou
 }
 
 impl SourceSpecAdapter for MusicSourceSpec {
-    const ENTITY_LABEL: &'static str = "音源";
+    const MEDIA_KIND: xmedia_core::domain::library::MediaKind =
+        xmedia_core::domain::library::MediaKind::Music;
+    const ENTITY_LABEL: &'static str = "音乐插件";
     const JSON_GROUP_KEY: &'static str = "sourceGroup";
 
     fn parse_batch(raw_json: &str) -> Result<Vec<(Self, String)>, String> {

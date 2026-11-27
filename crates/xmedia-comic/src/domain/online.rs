@@ -309,7 +309,9 @@ impl ComicSourceSpec {
 }
 
 impl SourceSpecAdapter for ComicSourceSpec {
-    const ENTITY_LABEL: &'static str = "漫画源";
+    const MEDIA_KIND: xmedia_core::domain::library::MediaKind =
+        xmedia_core::domain::library::MediaKind::Comic;
+    const ENTITY_LABEL: &'static str = "漫画插件";
     const JSON_GROUP_KEY: &'static str = "sourceGroup";
 
     fn parse_batch(raw_json: &str) -> Result<Vec<(Self, String)>, String> {

@@ -860,6 +860,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
+                domain: None,
                 ids: vec![id1, id3],
                 action: BatchBookSourceAction::Disable,
             },
@@ -872,6 +873,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
+                domain: None,
                 ids: vec![id2],
                 action: BatchBookSourceAction::Enable,
             },
@@ -883,6 +885,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
+                domain: None,
                 ids: vec![id1, id2],
                 action: BatchBookSourceAction::SetGroup {
                     group_name: "精选".into(),
@@ -912,6 +915,7 @@ async fn batch_source_operations_enable_disable_group_export_and_delete() {
         .batch_sources(
             &admin,
             BatchBookSourcesInput {
+                domain: None,
                 ids: vec![id1, id3],
                 action: BatchBookSourceAction::Delete,
             },
@@ -1059,12 +1063,44 @@ async fn start_download_enforces_admin_and_source_consistency_for_tracked_books(
         "got {err_toc:?}"
     );
 
-    let job = online_svc
+    let cross_user_dl_err = online_svc
         .start_download(
             &member,
             StartDownloadInput {
                 book_id: None,
                 source_id: src_a,
+                book_name: "权限测试书".into(),
+                author: "作者".into(),
+                book_url: format!("http://{addr}/book"),
+                toc_url: format!("http://{addr}/toc"),
+                cover_url: None,
+                intro: None,
+                format: OnlineDownloadFormat::Txt,
+                start_chapter: None,
+                end_chapter: None,
+                import_to_library: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(cross_user_dl_err, DomainError::NotFound(_)),
+        "got {cross_user_dl_err:?}"
+    );
+
+    let member_imported = online_svc
+        .sources()
+        .import_sources(&member, &raw_sources)
+        .await
+        .unwrap();
+    let member_src_a = member_imported.sources[0].id;
+
+    let job = online_svc
+        .start_download(
+            &member,
+            StartDownloadInput {
+                book_id: None,
+                source_id: member_src_a,
                 book_name: "权限测试书".into(),
                 author: "作者".into(),
                 book_url: format!("http://{addr}/book"),
@@ -1165,15 +1201,24 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
 
     assert!(
         online_svc
-            .search(&member, "书", Some(vec![dis_id]), 1)
+            .sources()
+            .list_sources(&member)
+            .await
+            .unwrap()
+            .is_empty(),
+        "member must not see admin's plugins"
+    );
+    assert!(
+        online_svc
+            .search(&member, "书", Some(vec![en_id]), 1)
             .await
             .is_err()
     );
     assert!(matches!(
         online_svc
-            .fetch_book_info(&member, dis_id, &format!("http://{addr}/book/1"), None)
+            .fetch_book_info(&member, en_id, &format!("http://{addr}/book/1"), None)
             .await,
-        Err(DomainError::Forbidden(_))
+        Err(DomainError::NotFound(_))
     ));
     assert!(matches!(
         online_svc
@@ -1184,7 +1229,7 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
                 Default::default()
             )
             .await,
-        Err(DomainError::Forbidden(_))
+        Err(DomainError::NotFound(_))
     ));
     assert!(matches!(
         online_svc
@@ -1197,7 +1242,7 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
                 false
             )
             .await,
-        Err(DomainError::Forbidden(_))
+        Err(DomainError::NotFound(_))
     ));
     assert!(matches!(
         online_svc
@@ -1216,8 +1261,34 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
                 }
             )
             .await,
-        Err(DomainError::Forbidden(_))
+        Err(DomainError::NotFound(_))
     ));
+    assert!(matches!(
+        online_svc
+            .test_source(&member, en_id, SourceTestInput::default())
+            .await,
+        Err(DomainError::NotFound(_))
+    ));
+
+    let _member_dis_id = online_svc
+        .sources()
+        .import_sources(&member, &raw_disabled)
+        .await
+        .unwrap()
+        .sources[0]
+        .id;
+    assert!(
+        online_svc.search(&member, "书", None, 1).await.is_err(),
+        "default search must skip disabled plugins"
+    );
+
+    let member_en_id = online_svc
+        .sources()
+        .import_sources(&member, &raw_enabled)
+        .await
+        .unwrap()
+        .sources[0]
+        .id;
 
     let admin_info = online_svc
         .fetch_book_info(&admin, en_id, &format!("http://{addr}/book/1"), None)
@@ -1232,13 +1303,53 @@ async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
         "admin should see diagnostics.logs"
     );
     let member_info = online_svc
-        .fetch_book_info(&member, en_id, &format!("http://{addr}/book/1"), None)
+        .fetch_book_info(
+            &member,
+            member_en_id,
+            &format!("http://{addr}/book/1"),
+            None,
+        )
         .await
         .unwrap();
     assert!(
         member_info.diagnostics.logs.is_empty(),
         "non-admin must have diagnostics.logs stripped"
     );
+
+    let member_tracked = online_svc
+        .track_online_book(
+            &member,
+            TrackOnlineBookInput {
+                source_id: member_en_id,
+                name: "书一".into(),
+                author: String::new(),
+                book_url: format!("http://{addr}/book/1"),
+                toc_url: format!("http://{addr}/toc"),
+                cover_url: None,
+                intro: None,
+                kind: None,
+                last_chapter: None,
+            },
+        )
+        .await
+        .unwrap();
+    online_svc
+        .sources()
+        .set_source_enabled(&member, member_en_id, false)
+        .await
+        .unwrap();
+    assert!(matches!(
+        online_svc
+            .get_tracked_toc(&member, member_tracked.id, true)
+            .await,
+        Err(DomainError::Forbidden(_))
+    ));
+    assert!(matches!(
+        online_svc
+            .get_tracked_chapter(&member, member_tracked.id, 0, false)
+            .await,
+        Err(DomainError::Forbidden(_))
+    ));
 
     server_handle.abort();
 }
@@ -1278,7 +1389,7 @@ async fn switch_tracked_source_preserves_old_state_on_failure_and_updates_cover_
         axum::serve(listener, mock_app).await.unwrap();
     });
 
-    let (_tmp, admin, online_svc) = setup_test_online_service().await;
+    let (_tmp, admin, member, online_svc) = setup_test_online_service_with_member().await;
     let raw_sources = serde_json::json!([
         {
             "bookSourceName": "旧源",
@@ -1323,6 +1434,104 @@ async fn switch_tracked_source_preserves_old_state_on_failure_and_updates_cover_
         .get_tracked_chapter(&admin, tracked.id, 0, false)
         .await
         .unwrap();
+
+    // Cross-user isolation + member self-ownership on switch_tracked_source
+    assert!(matches!(
+        online_svc
+            .switch_tracked_source(
+                &member,
+                tracked.id,
+                SwitchTrackedSourceInput {
+                    source_id: new_src,
+                    book_url: format!("http://{addr}/book-new"),
+                    toc_url: format!("http://{addr}/toc-new"),
+                    cover_url: None,
+                    intro: None,
+                    last_chapter: None,
+                    clear_cache: true,
+                },
+            )
+            .await,
+        Err(DomainError::NotFound(_))
+    ));
+    let member_imported = online_svc
+        .sources()
+        .import_sources(&member, &raw_sources)
+        .await
+        .unwrap();
+    let member_old_src = member_imported.sources[0].id;
+    let member_new_src = member_imported.sources[1].id;
+    assert!(matches!(
+        online_svc
+            .switch_tracked_source(
+                &member,
+                tracked.id,
+                SwitchTrackedSourceInput {
+                    source_id: member_new_src,
+                    book_url: format!("http://{addr}/book-new"),
+                    toc_url: format!("http://{addr}/toc-new"),
+                    cover_url: None,
+                    intro: None,
+                    last_chapter: None,
+                    clear_cache: true,
+                },
+            )
+            .await,
+        Err(DomainError::NotFound(_))
+    ));
+    let member_tracked = online_svc
+        .track_online_book(
+            &member,
+            TrackOnlineBookInput {
+                source_id: member_old_src,
+                name: "成员换源书".into(),
+                author: "作者".into(),
+                book_url: format!("http://{addr}/book-old"),
+                toc_url: format!("http://{addr}/toc-old"),
+                cover_url: None,
+                intro: None,
+                kind: None,
+                last_chapter: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        online_svc
+            .switch_tracked_source(
+                &member,
+                member_tracked.id,
+                SwitchTrackedSourceInput {
+                    source_id: new_src,
+                    book_url: format!("http://{addr}/book-new"),
+                    toc_url: format!("http://{addr}/toc-new"),
+                    cover_url: None,
+                    intro: None,
+                    last_chapter: None,
+                    clear_cache: true,
+                },
+            )
+            .await,
+        Err(DomainError::NotFound(_))
+    ));
+    let member_switched = online_svc
+        .switch_tracked_source(
+            &member,
+            member_tracked.id,
+            SwitchTrackedSourceInput {
+                source_id: member_new_src,
+                book_url: format!("http://{addr}/book-new"),
+                toc_url: format!("http://{addr}/toc-new"),
+                cover_url: None,
+                intro: None,
+                last_chapter: None,
+                clear_cache: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(member_switched.source_id, member_new_src);
+    assert_eq!(member_switched.total_chapters, 2);
 
     assert!(
         online_svc
@@ -1449,10 +1658,69 @@ async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking(
     assert_eq!(updated.variable_preview.chars().count(), 240);
     let full_var = src_crud.get_source_variable(&admin, sid).await.unwrap();
     assert_eq!(full_var, long_var);
+
+    // Per-user isolation: member cannot see or mutate admin's plugin, and owns their own copy
+    assert!(src_crud.list_sources(&member).await.unwrap().is_empty());
+    assert!(matches!(
+        src_crud.get_source(&member, sid).await,
+        Err(DomainError::NotFound(_))
+    ));
     assert!(matches!(
         src_crud.get_source_variable(&member, sid).await,
-        Err(DomainError::Forbidden(_))
+        Err(DomainError::NotFound(_))
     ));
+    assert!(matches!(
+        src_crud
+            .update_source(&member, sid, UpdateBookSourceInput::default())
+            .await,
+        Err(DomainError::NotFound(_))
+    ));
+    assert!(matches!(
+        src_crud.delete_source(&member, sid).await,
+        Err(DomainError::NotFound(_))
+    ));
+    assert!(matches!(
+        online_svc
+            .run_login_action(&member, sid, HashMap::new(), None)
+            .await,
+        Err(DomainError::NotFound(_))
+    ));
+
+    let member_report = src_crud.import_sources(&member, &dup_batch).await.unwrap();
+    assert_eq!(member_report.imported_count, 1);
+    let member_sid = member_report.sources[0].id;
+    assert_ne!(member_sid, sid);
+    src_crud
+        .update_source(
+            &member,
+            member_sid,
+            UpdateBookSourceInput {
+                variable: Some("member-var".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        src_crud
+            .get_source_variable(&member, member_sid)
+            .await
+            .unwrap(),
+        "member-var"
+    );
+    let member_login = online_svc
+        .run_login_action(
+            &member,
+            member_sid,
+            HashMap::from([("昵称".into(), "成员甲".into())]),
+            Some("save()".to_string()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(member_login.result, "ok");
+    src_crud.delete_source(&member, member_sid).await.unwrap();
+    assert!(src_crud.list_sources(&member).await.unwrap().is_empty());
+    assert_eq!(src_crud.list_sources(&admin).await.unwrap().len(), 1);
 
     let exported_single: serde_json::Value =
         serde_json::from_str(&src_crud.export_source_json(&admin, sid).await.unwrap()).unwrap();

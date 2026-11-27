@@ -815,7 +815,7 @@ async fn audio_proxy_requires_enabled_source_and_enforces_2gib_content_length_an
         .await
         .unwrap();
 
-    let imported = music_services
+    let admin_imported = music_services
         .online
         .sources_crud()
         .import_sources(
@@ -828,8 +828,22 @@ async fn audio_proxy_requires_enabled_source_and_enforces_2gib_content_length_an
         )
         .await
         .unwrap();
-    let enabled_id = imported.sources[0].id;
-    let disabled_id = imported.sources[1].id;
+    let admin_enabled_id = admin_imported.sources[0].id;
+    let admin_disabled_id = admin_imported.sources[1].id;
+
+    let member_imported = music_services
+        .online
+        .sources_crud()
+        .import_sources(
+            &member,
+            &serde_json::json!([
+                { "sourceName": "EnabledSrc", "sourceUrl": base, "enabled": true }
+            ])
+            .to_string(),
+        )
+        .await
+        .unwrap();
+    let enabled_id = member_imported.sources[0].id;
 
     let state = MusicHttpState::new(auth_svc, library_svc, music_services);
     let app = rest_router(state);
@@ -875,25 +889,27 @@ async fn audio_proxy_requires_enabled_source_and_enforces_2gib_content_length_an
     assert_eq!(unknown_resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(upstream_hits.load(Ordering::SeqCst), 0);
 
-    // 3. Disabled source_id for non-admin -> 403 Forbidden (0 upstream hits!)
-    let disabled_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/online/audio-proxy?url={valid_target}&source_id={disabled_id}"
-                ))
-                .header(
-                    header::AUTHORIZATION,
-                    format!("Bearer {}", member_sess.token),
-                )
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(disabled_resp.status(), StatusCode::FORBIDDEN);
-    assert_eq!(upstream_hits.load(Ordering::SeqCst), 0);
+    // 3. Cross-user source_id (owned by admin) -> 404 Not Found (0 upstream hits!)
+    for cross_id in [admin_enabled_id, admin_disabled_id] {
+        let cross_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/online/audio-proxy?url={valid_target}&source_id={cross_id}"
+                    ))
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", member_sess.token),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(upstream_hits.load(Ordering::SeqCst), 0);
+    }
 
     // 4. Content-Length = 2 GiB + 1 -> 400 Bad Request
     let over_target = url_encode_component(&format!("{base}/audio/too-large.flac"));

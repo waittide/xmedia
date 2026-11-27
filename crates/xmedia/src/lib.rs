@@ -21,19 +21,20 @@ use xmedia_core::application::bindings::MediaBindingService;
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::domain::repository::UserRepository;
+use xmedia_core::domain::repository::{UserPluginRepository, UserRepository};
 use xmedia_core::domain::user::User;
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::fonts::FsFontStore;
 use xmedia_core::infra::persistence::repositories::{
     ToastyLibraryRepository, ToastyOnlineLibraryItemRepository, ToastyUserActivityRepository,
-    ToastyUserMediaBindingRepository, ToastyUserRepository,
+    ToastyUserMediaBindingRepository, ToastyUserPluginRepository, ToastyUserRepository,
 };
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{
     ensure_core_schema, ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
 };
+use xmedia_source::crud::{PluginDomainHandler, PluginRegistry, plugins_router};
 
 use gateway::{FfmpegStatusCache, GatewayState, SseConnectionLimiter, core_api_router};
 
@@ -181,6 +182,11 @@ impl XMediaApp {
         let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
         let binding_repo = Arc::new(ToastyUserMediaBindingRepository::new(db.clone()));
         let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
+        let plugins_repo: Arc<dyn UserPluginRepository> =
+            Arc::new(ToastyUserPluginRepository::with_book_cache_dir(
+                db.clone(),
+                cfg.data_dir.join("online_book_cache"),
+            ));
         let activity = Arc::new(ActivityService::new(Arc::new(
             ToastyUserActivityRepository::new(db.clone()),
         )));
@@ -200,7 +206,8 @@ impl XMediaApp {
                     Some(activity.clone()),
                     Some(online_items_repo),
                     Some(bindings.clone()),
-                ),
+                )
+                .with_plugins_cleanup(plugins_repo.clone()),
         );
         let libraries = Arc::new(
             LibraryService::new(libraries_repo.clone(), events.clone(), lifecycles)
@@ -213,6 +220,8 @@ impl XMediaApp {
 
         #[allow(unused_mut)]
         let mut enabled_modules = Vec::new();
+        #[allow(unused_mut)]
+        let mut plugin_handlers: Vec<Arc<dyn PluginDomainHandler>> = Vec::new();
         #[allow(unused_mut)]
         let mut api_v1 = Router::new();
         #[allow(unused_mut)]
@@ -253,6 +262,9 @@ impl XMediaApp {
                 backfill_batches.push((MediaKind::Book, ids));
             }
 
+            plugin_handlers.push(xmedia_book::http::plugin_handler(
+                book_services.online.clone(),
+            ));
             let book_state = xmedia_book::http::state::BookHttpState::new(
                 auth.clone(),
                 libraries.clone(),
@@ -290,6 +302,9 @@ impl XMediaApp {
                 backfill_batches.push((MediaKind::Comic, ids));
             }
 
+            plugin_handlers.push(xmedia_comic::http::plugin_handler(
+                comic_services.online.clone(),
+            ));
             let comic_state =
                 xmedia_comic::http::state::ComicHttpState::new(auth.clone(), comic_services);
             api_v1 = api_v1.nest(
@@ -328,6 +343,9 @@ impl XMediaApp {
                 backfill_batches.push((MediaKind::Music, ids));
             }
 
+            plugin_handlers.push(xmedia_music::http::plugin_handler(
+                music_services.online.clone(),
+            ));
             let music_state = xmedia_music::http::state::MusicHttpState::new(
                 auth.clone(),
                 libraries.clone(),
@@ -368,6 +386,9 @@ impl XMediaApp {
                 backfill_batches.push((MediaKind::Video, ids));
             }
 
+            plugin_handlers.push(xmedia_video::http::plugin_handler(
+                video_services.online.clone(),
+            ));
             let video_state = xmedia_video::http::state::VideoHttpState::new(
                 auth.clone(),
                 libraries.clone(),
@@ -383,13 +404,20 @@ impl XMediaApp {
             );
         }
 
+        let plugin_registry = Arc::new(PluginRegistry::new(plugin_handlers));
+        api_v1 = api_v1.nest("/plugins", plugins_router(auth.clone(), plugin_registry));
+
         if bindings_table_created {
             backfill_admin_bindings(users_repo.as_ref(), &bindings, &backfill_batches).await?;
         }
+        migrate_legacy_sources_to_first_admin(&db, users_repo.as_ref(), plugins_repo.as_ref())
+            .await?;
 
-        let _ = (db, opts.allow_private_ips);
+        let _ = opts.allow_private_ips;
 
         let gateway_state = GatewayState {
+            db,
+            plugins_repo,
             auth: auth.clone(),
             libraries: libraries.clone(),
             libraries_repo,
@@ -647,6 +675,71 @@ async fn backfill_admin_bindings(
         total_bound,
         "completed one-time upgrade backfill for user_media_bindings"
     );
+    Ok(())
+}
+
+pub(crate) async fn migrate_all_legacy_sources_to_user(
+    db: &Db,
+    plugins_repo: &dyn UserPluginRepository,
+    owner_user_id: uuid::Uuid,
+) -> DomainResult<usize> {
+    #[allow(unused_mut)]
+    let mut migrated = 0usize;
+    #[cfg(feature = "book")]
+    {
+        let mut db_clone = db.clone();
+        migrated +=
+            xmedia_book::migrate_legacy_book_sources(&mut db_clone, owner_user_id, plugins_repo)
+                .await?;
+    }
+    #[cfg(feature = "comic")]
+    {
+        let mut db_clone = db.clone();
+        migrated +=
+            xmedia_comic::migrate_legacy_comic_sources(&mut db_clone, owner_user_id, plugins_repo)
+                .await?;
+    }
+    #[cfg(feature = "music")]
+    {
+        let mut db_clone = db.clone();
+        migrated +=
+            xmedia_music::migrate_legacy_music_sources(&mut db_clone, owner_user_id, plugins_repo)
+                .await?;
+    }
+    #[cfg(feature = "video")]
+    {
+        let mut db_clone = db.clone();
+        migrated +=
+            xmedia_video::migrate_legacy_video_sources(&mut db_clone, owner_user_id, plugins_repo)
+                .await?;
+    }
+    let _ = (db, plugins_repo, owner_user_id);
+    if migrated > 0 {
+        tracing::info!(
+            owner_user_id = %owner_user_id,
+            migrated,
+            "migrated legacy global sources into isolated user_plugins"
+        );
+    }
+    Ok(migrated)
+}
+
+async fn migrate_legacy_sources_to_first_admin(
+    db: &Db,
+    users_repo: &dyn UserRepository,
+    plugins_repo: &dyn UserPluginRepository,
+) -> anyhow::Result<()> {
+    let first_admin = users_repo
+        .list_all()
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?
+        .into_iter()
+        .find(|u| u.role.is_admin());
+    if let Some(admin) = first_admin {
+        migrate_all_legacy_sources_to_user(db, plugins_repo, admin.id.0)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    }
     Ok(())
 }
 

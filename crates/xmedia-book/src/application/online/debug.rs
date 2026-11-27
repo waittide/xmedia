@@ -543,8 +543,7 @@ impl BookOnlineService {
         id: Uuid,
         input: SourceTestInput,
     ) -> DomainResult<SourceTestReportDto> {
-        actor.ensure_admin()?;
-        let rec = self.sources.load_source(id).await?;
+        let rec = self.sources.load_owned_source(actor, id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 

@@ -9,7 +9,8 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 use xmedia_core::application::online_items::{OnlineSourceDirectory, OnlineSourceInfo};
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::user::User;
+use xmedia_core::domain::library::MediaKind;
+use xmedia_core::domain::user::{User, UserId};
 
 use super::dto::{
     BatchSourceAction, BatchSourcesInput, BatchSourcesReportDto, ImportSourcesReportDto,
@@ -22,15 +23,18 @@ use super::helpers::{
 };
 use super::repository::{SourceMetadataUpdate, SourceRecord, SourceRepository};
 use crate::concurrency::{AsyncLockMap, weak_lock};
-use crate::model::{SourceCallError, SourceCallOutput, SourceRuntimeState};
+use crate::model::{PluginFormat, SourceCallError, SourceCallOutput, SourceRuntimeState};
 
-/// Adapter connecting a domain-specific rule specification (`LegadoBookSource`, `ComicSourceSpec`,
+/// Adapter connecting a domain-specific plugin specification (`LegadoBookSource`, `ComicSourceSpec`,
 /// `MusicSourceSpec`, `VideoSourceSpec`) to [`SourceCrudService`].
 pub trait SourceSpecAdapter: DeserializeOwned + Send + Sync + 'static {
-    /// Human-readable domain label used in validation & not-found messages (e.g. `"书源"`, `"影视源"`).
+    /// Media domain to which this plugin specification belongs.
+    const MEDIA_KIND: MediaKind;
+
+    /// Human-readable label used in validation & not-found messages (e.g. `"书籍插件"`, `"音乐插件"`).
     const ENTITY_LABEL: &'static str;
 
-    /// JSON property key storing the group name inside `raw_json`.
+    /// JSON property key storing the group name inside `raw_json` for rule-mode plugins.
     const JSON_GROUP_KEY: &'static str;
 
     /// Returns `true` when a deserialized entry is empty/blank and should be skipped during batch import.
@@ -44,6 +48,16 @@ pub trait SourceSpecAdapter: DeserializeOwned + Send + Sync + 'static {
         parse_json_batch(raw_json, Self::ENTITY_LABEL, &empty_hint, Self::is_blank)
     }
 
+    /// Parses either a JSON rule batch or a JS module plugin into `(Spec, raw_source, PluginFormat)` tuples.
+    fn parse_plugin_batch(raw_source: &str) -> Result<Vec<(Self, String, PluginFormat)>, String> {
+        Self::parse_batch(raw_source).map(|items| {
+            items
+                .into_iter()
+                .map(|(spec, raw)| (spec, raw, PluginFormat::JsonRule))
+                .collect()
+        })
+    }
+
     fn source_name(&self) -> &str;
     fn effective_source_url(&self) -> Cow<'_, str>;
     fn group_name(&self) -> Option<&str>;
@@ -53,11 +67,11 @@ pub trait SourceSpecAdapter: DeserializeOwned + Send + Sync + 'static {
     fn summary_meta(&self) -> ParsedSourceSummaryMeta;
 }
 
-/// Generic online source CRUD, import/export, weight reorder, runtime-state merge, and login-action
-/// application service reusable across all media domains.
+/// Generic per-user isolated plugin CRUD, import/export, weight reorder, runtime-state merge, and
+/// login-action application service reusable across all media domains.
 pub struct SourceCrudService<Spec: SourceSpecAdapter> {
     repo: Arc<dyn SourceRepository>,
-    seed_import_lock: tokio::sync::Mutex<()>,
+    user_import_locks: AsyncLockMap<Uuid>,
     state_locks: AsyncLockMap<Uuid>,
     _marker: PhantomData<fn() -> Spec>,
 }
@@ -66,7 +80,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
     pub fn new(repo: Arc<dyn SourceRepository>) -> Self {
         Self {
             repo,
-            seed_import_lock: tokio::sync::Mutex::new(()),
+            user_import_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             state_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             _marker: PhantomData,
         }
@@ -76,16 +90,20 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         weak_lock(&self.state_locks, id)
     }
 
-    /// Loads candidate sources for search/browse ordered by weight desc then name asc.
+    fn user_import_lock(&self, user_id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+        weak_lock(&self.user_import_locks, user_id)
+    }
+
+    /// Loads candidate plugins owned by `actor` for search/browse ordered by weight desc then name asc.
     pub async fn select_sources(
         &self,
         actor: &User,
         source_ids: Option<&[Uuid]>,
     ) -> DomainResult<Vec<SourceRecord>> {
-        let mut sources = self.repo.list_all().await?;
-        let is_admin = actor.role.is_admin();
+        actor.ensure_active()?;
+        let mut sources = self.repo.list_by_user(actor.id.0).await?;
         if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
-            sources.retain(|s| filter_ids.contains(&s.id) && (is_admin || s.enabled));
+            sources.retain(|s| filter_ids.contains(&s.id));
         } else {
             sources.retain(|s| s.enabled);
         }
@@ -99,7 +117,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         Ok(sources)
     }
 
-    pub fn record_to_summary(rec: &SourceRecord, is_admin: bool) -> SourceSummaryDto {
+    pub fn record_to_summary(rec: &SourceRecord) -> SourceSummaryDto {
         let meta = serde_json::from_str::<Spec>(&rec.raw_json)
             .ok()
             .map(|spec| spec.summary_meta())
@@ -108,6 +126,8 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         build_source_summary(
             SourceRecordSnapshot {
                 id: rec.id,
+                domain: Spec::MEDIA_KIND,
+                format: rec.format,
                 name: &rec.name,
                 source_url: &rec.source_url,
                 group_name: &rec.group_name,
@@ -120,10 +140,10 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
                 updated_at: rec.updated_at,
             },
             meta,
-            is_admin,
         )
     }
 
+    /// Internal lookup by plugin `id` for background tasks whose item ownership was already verified.
     pub async fn load_source(&self, id: Uuid) -> DomainResult<SourceRecord> {
         self.repo
             .find_by_id(id)
@@ -131,41 +151,50 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             .ok_or_else(|| DomainError::NotFound(format!("未找到{} {id}", Spec::ENTITY_LABEL)))
     }
 
-    pub async fn load_source_for_actor(
-        &self,
-        actor: &User,
-        id: Uuid,
-    ) -> DomainResult<SourceRecord> {
+    /// Loads a plugin record strictly owned by `actor`, returning `NotFound` if missing or owned by another user.
+    pub async fn load_owned_source(&self, actor: &User, id: Uuid) -> DomainResult<SourceRecord> {
+        actor.ensure_active()?;
         let rec = self.load_source(id).await?;
-        if !actor.role.is_admin() && !rec.enabled {
-            return Err(DomainError::Forbidden(format!(
-                "该{}已被禁用",
+        if rec.user_id != actor.id.0 {
+            return Err(DomainError::NotFound(format!(
+                "未找到{} {id}",
                 Spec::ENTITY_LABEL
             )));
         }
         Ok(rec)
     }
 
+    pub async fn has_owned_source(&self, actor: &User, id: Uuid) -> DomainResult<bool> {
+        actor.ensure_active()?;
+        Ok(self
+            .repo
+            .find_by_id(id)
+            .await?
+            .is_some_and(|rec| rec.user_id == actor.id.0))
+    }
+
+    pub async fn load_source_for_actor(
+        &self,
+        actor: &User,
+        id: Uuid,
+    ) -> DomainResult<SourceRecord> {
+        self.load_owned_source(actor, id).await
+    }
+
     pub async fn get_source(&self, actor: &User, id: Uuid) -> DomainResult<SourceSummaryDto> {
-        let rec = self.load_source_for_actor(actor, id).await?;
-        Ok(Self::record_to_summary(&rec, actor.role.is_admin()))
+        let rec = self.load_owned_source(actor, id).await?;
+        Ok(Self::record_to_summary(&rec))
     }
 
     pub async fn list_sources(&self, actor: &User) -> DomainResult<Vec<SourceSummaryDto>> {
-        let mut rows = self.repo.list_all().await?;
-        if !actor.role.is_admin() {
-            rows.retain(|r| r.enabled);
-        }
+        actor.ensure_active()?;
+        let mut rows = self.repo.list_by_user(actor.id.0).await?;
         rows.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
-        Ok(rows
-            .iter()
-            .map(|r| Self::record_to_summary(r, actor.role.is_admin()))
-            .collect())
+        Ok(rows.iter().map(Self::record_to_summary).collect())
     }
 
     pub async fn get_source_variable(&self, actor: &User, id: Uuid) -> DomainResult<String> {
-        actor.ensure_admin()?;
-        let rec = self.load_source(id).await?;
+        let rec = self.load_owned_source(actor, id).await?;
         Ok(rec.runtime_state.variable)
     }
 
@@ -203,21 +232,21 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             .await
     }
 
-    /// Creates or upserts a single source from `raw_json` (admin only).
+    /// Creates or upserts a single plugin owned by `actor`.
     pub async fn create_or_upsert_source(
         &self,
         actor: &User,
-        raw_json: &str,
+        raw_source: &str,
     ) -> DomainResult<SourceSummaryDto> {
-        actor.ensure_admin()?;
-        let parsed = Spec::parse_batch(raw_json).map_err(DomainError::Validation)?;
+        actor.ensure_active()?;
+        let parsed = Spec::parse_plugin_batch(raw_source).map_err(DomainError::Validation)?;
         if parsed.len() != 1 {
             return Err(DomainError::Validation(format!(
-                "单条创建仅支持提交 1 条{} JSON",
+                "单条创建仅支持提交 1 条{}",
                 Spec::ENTITY_LABEL
             )));
         }
-        let mut report = self.import_parsed_batch(parsed).await?;
+        let mut report = self.import_parsed_batch(actor.id.0, parsed).await?;
         report
             .sources
             .pop()
@@ -227,28 +256,21 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
     pub async fn import_sources(
         &self,
         actor: &User,
-        raw_json: &str,
+        raw_source: &str,
     ) -> DomainResult<ImportSourcesReportDto> {
-        actor.ensure_admin()?;
-        let parsed_batch = Spec::parse_batch(raw_json).map_err(DomainError::Validation)?;
-        self.import_parsed_batch(parsed_batch).await
-    }
-
-    /// Seeds built-in default sources without an actor check when the repository is empty or idempotently.
-    pub async fn import_seed_sources(
-        &self,
-        raw_json: &str,
-    ) -> DomainResult<ImportSourcesReportDto> {
-        let parsed_batch = Spec::parse_batch(raw_json).map_err(DomainError::Validation)?;
-        self.import_parsed_batch(parsed_batch).await
+        actor.ensure_active()?;
+        let parsed_batch = Spec::parse_plugin_batch(raw_source).map_err(DomainError::Validation)?;
+        self.import_parsed_batch(actor.id.0, parsed_batch).await
     }
 
     async fn import_parsed_batch(
         &self,
-        parsed_batch: Vec<(Spec, String)>,
+        user_id: Uuid,
+        parsed_batch: Vec<(Spec, String, PluginFormat)>,
     ) -> DomainResult<ImportSourcesReportDto> {
-        let _seed_guard = self.seed_import_lock.lock().await;
-        let existing_all = self.repo.list_all().await?;
+        let user_lock = self.user_import_lock(user_id);
+        let _import_guard = user_lock.lock().await;
+        let existing_all = self.repo.list_by_user(user_id).await?;
         let mut existing_by_key: HashMap<(String, String), SourceRecord> = existing_all
             .into_iter()
             .map(|m| ((m.source_url.clone(), m.name.clone()), m))
@@ -260,7 +282,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         let mut out: Vec<SourceSummaryDto> = Vec::with_capacity(parsed_batch.len());
         let now = Timestamp::now();
 
-        for (src, item_raw) in parsed_batch {
+        for (src, item_raw, format) in parsed_batch {
             let name = src.source_name().trim().to_string();
             let group_name = src.group_name().unwrap_or_default().trim().to_string();
             let effective_url = src.effective_source_url().into_owned();
@@ -274,6 +296,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
                 let lock = self.state_lock_for(id);
                 let _guard = lock.lock().await;
                 let patch = SourceMetadataUpdate {
+                    format,
                     name: existing_rec.name.clone(),
                     source_url: existing_rec.source_url.clone(),
                     group_name: group_name.clone(),
@@ -285,7 +308,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
                     updated_at: now,
                 };
                 if let Some(rec) = self.repo.update_metadata_if_exists(id, patch).await? {
-                    let summary = Self::record_to_summary(&rec, true);
+                    let summary = Self::record_to_summary(&rec);
                     if let Some(&pos) = out_by_id.get(&rec.id) {
                         out[pos] = summary;
                     } else {
@@ -299,9 +322,12 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             }
 
             let mut rt = SourceRuntimeState::default();
-            rt.ensure_android_id(&effective_url);
+            rt.ensure_android_id(&format!("{user_id}:{effective_url}"));
             let rec = SourceRecord {
                 id: Uuid::now_v7(),
+                user_id,
+                domain: Spec::MEDIA_KIND,
+                format,
                 name,
                 source_url: effective_url,
                 group_name,
@@ -318,7 +344,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             self.repo.save(&rec).await?;
             imported_count += 1;
             out_by_id.insert(rec.id, out.len());
-            out.push(Self::record_to_summary(&rec, true));
+            out.push(Self::record_to_summary(&rec));
             existing_by_key.insert(key, rec);
         }
 
@@ -335,12 +361,12 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         id: Uuid,
         input: UpdateSourceInput,
     ) -> DomainResult<SourceSummaryDto> {
-        actor.ensure_admin()?;
+        actor.ensure_active()?;
         let parsed_raw = if let Some(raw) = input.raw_json {
-            let mut batch = Spec::parse_batch(&raw).map_err(DomainError::Validation)?;
+            let mut batch = Spec::parse_plugin_batch(&raw).map_err(DomainError::Validation)?;
             if batch.len() != 1 {
                 return Err(DomainError::Validation(format!(
-                    "编辑单条{}时仅支持提交 1 条{} JSON",
+                    "编辑单条{}时仅支持提交 1 条{}",
                     Spec::ENTITY_LABEL,
                     Spec::ENTITY_LABEL
                 )));
@@ -352,10 +378,11 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
 
         let lock = self.state_lock_for(id);
         let _guard = lock.lock().await;
-        let mut rec = self.load_source(id).await?;
+        let mut rec = self.load_owned_source(actor, id).await?;
         let now = Timestamp::now();
 
-        if let Some((parsed, clean_raw)) = parsed_raw {
+        if let Some((parsed, clean_raw, format)) = parsed_raw {
+            rec.format = format;
             rec.name = parsed.source_name().trim().to_string();
             rec.source_url = parsed.effective_source_url().into_owned();
             rec.group_name = parsed.group_name().unwrap_or_default().trim().to_string();
@@ -373,7 +400,9 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         if let Some(ref g) = input.group_name {
             rec.group_name = g.trim().to_string();
         }
-        if input.enabled.is_some() || input.weight.is_some() || input.group_name.is_some() {
+        if rec.format == PluginFormat::JsonRule
+            && (input.enabled.is_some() || input.weight.is_some() || input.group_name.is_some())
+        {
             rec.raw_json = sync_raw_json_fields(
                 &rec.raw_json,
                 input.enabled,
@@ -384,6 +413,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         }
 
         let patch = SourceMetadataUpdate {
+            format: rec.format,
             name: rec.name,
             source_url: rec.source_url,
             group_name: rec.group_name,
@@ -399,7 +429,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             .update_metadata_if_exists(id, patch)
             .await?
             .ok_or_else(|| DomainError::NotFound(format!("未找到{} {id}", Spec::ENTITY_LABEL)))?;
-        Ok(Self::record_to_summary(&updated, true))
+        Ok(Self::record_to_summary(&updated))
     }
 
     pub async fn set_source_enabled(
@@ -424,8 +454,8 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         actor: &User,
         ordered_ids: Vec<Uuid>,
     ) -> DomainResult<Vec<SourceSummaryDto>> {
-        actor.ensure_admin()?;
-        let rows = self.repo.list_all().await?;
+        actor.ensure_active()?;
+        let rows = self.repo.list_by_user(actor.id.0).await?;
         let targets =
             compute_reorder_targets(rows, &ordered_ids, |r| r.id, |r| r.weight, |r| &r.name);
 
@@ -447,10 +477,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             }
         }
 
-        Ok(persisted
-            .iter()
-            .map(|r| Self::record_to_summary(r, true))
-            .collect())
+        Ok(persisted.iter().map(Self::record_to_summary).collect())
     }
 
     pub async fn batch_sources(
@@ -458,7 +485,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         actor: &User,
         input: BatchSourcesInput,
     ) -> DomainResult<BatchSourcesReportDto> {
-        actor.ensure_admin()?;
+        actor.ensure_active()?;
         if input.ids.is_empty() {
             return Err(DomainError::Validation(format!(
                 "请至少选择一条{}",
@@ -473,6 +500,12 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         for id in unique_ids {
             let lock = self.state_lock_for(id);
             let _guard = lock.lock().await;
+            let Some(rec) = self.repo.find_by_id(id).await? else {
+                continue;
+            };
+            if rec.user_id != actor.id.0 {
+                continue;
+            }
             match &input.action {
                 BatchSourceAction::Enable => {
                     if self
@@ -502,10 +535,8 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
                     }
                 }
                 BatchSourceAction::Delete => {
-                    if self.repo.find_by_id(id).await?.is_some() {
-                        self.repo.delete(id).await?;
-                        affected_count += 1;
-                    }
+                    self.repo.delete(id).await?;
+                    affected_count += 1;
                 }
             }
         }
@@ -513,10 +544,18 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         Ok(BatchSourcesReportDto { affected_count })
     }
 
+    pub async fn export_source(
+        &self,
+        actor: &User,
+        id: Uuid,
+    ) -> DomainResult<(String, PluginFormat)> {
+        let rec = self.load_owned_source(actor, id).await?;
+        Ok((rec.raw_json, rec.format))
+    }
+
     pub async fn export_source_json(&self, actor: &User, id: Uuid) -> DomainResult<String> {
-        actor.ensure_admin()?;
-        let rec = self.load_source(id).await?;
-        Ok(rec.raw_json)
+        let (raw, _) = self.export_source(actor, id).await?;
+        Ok(raw)
     }
 
     pub async fn export_sources_batch_json(
@@ -524,14 +563,14 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
         actor: &User,
         ids: Vec<Uuid>,
     ) -> DomainResult<String> {
-        actor.ensure_admin()?;
+        actor.ensure_active()?;
         if ids.is_empty() {
             return Err(DomainError::Validation(format!(
                 "请至少选择一条{}",
                 Spec::ENTITY_LABEL
             )));
         }
-        let all = self.repo.list_all().await?;
+        let all = self.repo.list_by_user(actor.id.0).await?;
         let mut by_id: HashMap<Uuid, &str> =
             all.iter().map(|r| (r.id, r.raw_json.as_str())).collect();
         format_export_batch_json(&ids, &mut by_id).map_err(|msg| {
@@ -544,10 +583,10 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
     }
 
     pub async fn delete_source(&self, actor: &User, id: Uuid) -> DomainResult<()> {
-        actor.ensure_admin()?;
+        actor.ensure_active()?;
         let lock = self.state_lock_for(id);
         let _guard = lock.lock().await;
-        let _ = self.load_source(id).await?;
+        let _ = self.load_owned_source(actor, id).await?;
         self.repo.delete(id).await
     }
 
@@ -572,8 +611,7 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             + Send
             + 'static,
     {
-        actor.ensure_admin()?;
-        let rec = self.load_source(id).await?;
+        let rec = self.load_owned_source(actor, id).await?;
         let parsed: Spec = serde_json::from_str(&rec.raw_json).map_err(|e| {
             DomainError::Validation(format!("{} JSON 无效: {e}", Spec::ENTITY_LABEL))
         })?;
@@ -592,17 +630,20 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
 
         self.persist_runtime_state_with_base(id, &base_state, out.state, true)
             .await?;
-        let refreshed = self.load_source(id).await?;
+        let refreshed = self.load_owned_source(actor, id).await?;
 
         Ok(LoginActionResponseDto {
             result: out.data,
             diagnostics: out.diagnostics,
-            source: Self::record_to_summary(&refreshed, true),
+            source: Self::record_to_summary(&refreshed),
         })
     }
 
-    async fn directory_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
-        let rows = self.repo.list_all().await?;
+    async fn directory_sources(
+        &self,
+        user_id: UserId,
+    ) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
+        let rows = self.repo.list_by_user(user_id.0).await?;
         Ok(rows
             .into_iter()
             .map(|r| {
@@ -617,21 +658,34 @@ impl<Spec: SourceSpecAdapter> SourceCrudService<Spec> {
             .collect())
     }
 
-    async fn directory_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
-        Ok(self.repo.find_by_id(id).await?.map(|r| OnlineSourceInfo {
-            name: r.name,
-            enabled: r.enabled,
-        }))
+    async fn directory_source(
+        &self,
+        user_id: UserId,
+        id: Uuid,
+    ) -> DomainResult<Option<OnlineSourceInfo>> {
+        Ok(self
+            .repo
+            .find_by_id(id)
+            .await?
+            .filter(|r| r.user_id == user_id.0)
+            .map(|r| OnlineSourceInfo {
+                name: r.name,
+                enabled: r.enabled,
+            }))
     }
 }
 
 #[async_trait]
 impl<Spec: SourceSpecAdapter> OnlineSourceDirectory for SourceCrudService<Spec> {
-    async fn list_sources(&self) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
-        self.directory_sources().await
+    async fn list_sources(&self, user_id: UserId) -> DomainResult<HashMap<Uuid, OnlineSourceInfo>> {
+        self.directory_sources(user_id).await
     }
 
-    async fn find_source(&self, id: Uuid) -> DomainResult<Option<OnlineSourceInfo>> {
-        self.directory_source(id).await
+    async fn find_source(
+        &self,
+        user_id: UserId,
+        id: Uuid,
+    ) -> DomainResult<Option<OnlineSourceInfo>> {
+        self.directory_source(user_id, id).await
     }
 }

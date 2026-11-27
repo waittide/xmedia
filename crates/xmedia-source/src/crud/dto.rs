@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xmedia_core::domain::library::MediaKind;
 
-use crate::model::{ExecutionDiagnostics, LoginUiItem};
+use crate::model::{ExecutionDiagnostics, LoginUiItem, PluginFormat};
 
 pub const MASKED_SECRET_PLACEHOLDER: &str = "••••••••";
 pub const VARIABLE_PREVIEW_MAX_CHARS: usize = 240;
@@ -12,6 +13,8 @@ pub const VARIABLE_PREVIEW_MAX_CHARS: usize = 240;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceSummaryDto {
     pub id: Uuid,
+    pub domain: MediaKind,
+    pub format: PluginFormat,
     pub name: String,
     pub source_url: String,
     pub group_name: String,
@@ -44,6 +47,7 @@ pub struct UpdateSourceInput {
     pub enabled: Option<bool>,
     pub weight: Option<i64>,
     pub group_name: Option<String>,
+    #[serde(alias = "content")]
     pub raw_json: Option<String>,
     pub variable: Option<String>,
 }
@@ -59,6 +63,8 @@ pub enum BatchSourceAction {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BatchSourcesInput {
+    #[serde(default)]
+    pub domain: Option<MediaKind>,
     pub ids: Vec<Uuid>,
     #[serde(flatten)]
     pub action: BatchSourceAction,
@@ -69,18 +75,31 @@ pub struct BatchSourcesReportDto {
     pub affected_count: usize,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ListPluginsQuery {
+    pub domain: Option<MediaKind>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportSourcesRequest {
+    #[serde(default)]
+    pub domain: Option<MediaKind>,
+    #[serde(alias = "content")]
     pub raw_json: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReorderSourcesRequest {
+    #[serde(default)]
+    pub domain: Option<MediaKind>,
     pub ordered_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportSourcesBatchRequest {
+    #[serde(default)]
+    pub domain: Option<MediaKind>,
     pub ids: Vec<Uuid>,
 }
 

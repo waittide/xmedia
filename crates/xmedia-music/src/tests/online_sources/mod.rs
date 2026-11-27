@@ -139,7 +139,8 @@ pub(super) async fn setup_online_test_harness(allow_private_ips: bool) -> Online
         .unwrap();
 
     let state = MusicHttpState::new(auth_svc, library_svc, music_services);
-    let app = rest_router(state);
+    let app =
+        rest_router(state.clone()).nest("/api/v1/plugins", crate::http::plugins_router(&state));
 
     OnlineTestHarness {
         _tmp: tmp,

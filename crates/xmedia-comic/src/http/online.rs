@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderValue;
@@ -9,28 +11,48 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
+use xmedia_core::domain::error::DomainError;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth};
-use xmedia_source::crud::{LoginActionRequest, sources_prefixed_crud_router};
+use xmedia_source::crud::{CrudPluginDomainHandler, PluginDomainHandler};
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
 use crate::application::dto::{ChapterItemDto, SeriesDetailDto};
 use crate::application::online::{
-    ComicCacheReportDto, ComicSourceTestInput, ComicSourceTestReportDto, LoginActionResponseDto,
-    OnlineComicChaptersResponseDto, OnlineComicDetailResponseDto, OnlineComicExploreResponseDto,
-    OnlineComicPagesResponseDto, OnlineComicSearchResponseDto, TrackOnlineComicInput,
+    ComicCacheReportDto, ComicOnlineService, ComicSourceTestInput, OnlineComicChaptersResponseDto,
+    OnlineComicDetailResponseDto, OnlineComicExploreResponseDto, OnlineComicPagesResponseDto,
+    OnlineComicSearchResponseDto, TrackOnlineComicInput,
 };
 use crate::domain::id::{ChapterId, SeriesId};
-use crate::domain::online::{ComicChapterJsContext, ComicJsContext, ComicSourceSpec};
+use crate::domain::online::{ComicChapterJsContext, ComicJsContext};
 use crate::http::state::ComicHttpState;
+
+pub fn plugin_handler(online: Arc<ComicOnlineService>) -> Arc<dyn PluginDomainHandler> {
+    let crud = online.source_crud().clone();
+    let online_login = online.clone();
+    let online_test = online;
+    CrudPluginDomainHandler::into_arc(
+        crud,
+        move |user, id, req| {
+            let svc = online_login.clone();
+            async move {
+                svc.run_login_action(&user, id, req.login_info, req.action)
+                    .await
+            }
+        },
+        move |user, id, payload| {
+            let svc = online_test.clone();
+            async move {
+                let input: ComicSourceTestInput = serde_json::from_value(payload)
+                    .map_err(|e| DomainError::Validation(format!("漫画插件测试参数无效: {e}")))?;
+                let out = svc.test_source(&user, id, input).await?;
+                serde_json::to_value(out).map_err(|e| DomainError::Storage(e.to_string()))
+            }
+        },
+    )
+}
 
 pub fn router() -> Router<ComicHttpState> {
     Router::new()
-        .merge(sources_prefixed_crud_router::<
-            ComicHttpState,
-            ComicSourceSpec,
-        >())
-        .route("/sources/{id}/login-action", post(run_login_action))
-        .route("/sources/{id}/test", post(test_source))
         // Online comic search / explore / detail / chapters / pages / image-proxy
         .route("/online/search", post(online_search))
         .route("/online/explore", post(online_explore))
@@ -100,30 +122,6 @@ struct OnlinePagesRequest {
 struct ImageProxyQuery {
     url: String,
     source_id: Option<Uuid>,
-}
-
-async fn run_login_action(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<LoginActionRequest>,
-) -> ApiResult<Json<LoginActionResponseDto>> {
-    let out = state
-        .services
-        .online
-        .run_login_action(&user, id, req.login_info, req.action)
-        .await?;
-    Ok(Json(out))
-}
-
-async fn test_source(
-    State(state): State<ComicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<ComicSourceTestInput>,
-) -> ApiResult<Json<ComicSourceTestReportDto>> {
-    let out = state.services.online.test_source(&user, id, req).await?;
-    Ok(Json(out))
 }
 
 async fn online_search(

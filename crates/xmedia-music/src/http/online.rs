@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::header::{
@@ -15,28 +17,46 @@ use xmedia_core::domain::error::DomainError;
 use xmedia_core::http::{
     ApiError, ApiResult, WebAuth, parse_http_range_spec, sanitize_download_filename,
 };
-use xmedia_source::crud::{LoginActionRequest, sources_prefixed_crud_router};
+use xmedia_source::crud::{CrudPluginDomainHandler, PluginDomainHandler};
 use xmedia_source::proxy::{IMAGE_PROXY_CACHE_CONTROL, IMAGE_PROXY_CSP};
 
 use crate::application::dto::TrackDto;
 use crate::application::online::{
-    LoginActionResponseDto, MusicSourceTestInput, MusicSourceTestReportDto,
-    OnlineMusicExploreResponseDto, OnlineMusicResolvedTrackDto, OnlineMusicSearchResponseDto,
-    OnlineMusicStreamResponseDto, StructuredLyricsDto, TrackOnlineMusicBatchInput,
-    TrackOnlineMusicInput,
+    MusicOnlineService, MusicSourceTestInput, OnlineMusicExploreResponseDto,
+    OnlineMusicResolvedTrackDto, OnlineMusicSearchResponseDto, OnlineMusicStreamResponseDto,
+    StructuredLyricsDto, TrackOnlineMusicBatchInput, TrackOnlineMusicInput,
 };
 use crate::domain::catalog::TrackId;
-use crate::domain::online::{MusicSourceSpec, MusicTrackContext};
+use crate::domain::online::MusicTrackContext;
 use crate::http::state::MusicHttpState;
+
+pub fn plugin_handler(online: Arc<MusicOnlineService>) -> Arc<dyn PluginDomainHandler> {
+    let crud = online.sources_crud().clone();
+    let online_login = online.clone();
+    let online_test = online;
+    CrudPluginDomainHandler::into_arc(
+        crud,
+        move |user, id, req| {
+            let svc = online_login.clone();
+            async move {
+                svc.run_login_action(&user, id, req.login_info, req.action)
+                    .await
+            }
+        },
+        move |user, id, payload| {
+            let svc = online_test.clone();
+            async move {
+                let input: MusicSourceTestInput = serde_json::from_value(payload)
+                    .map_err(|e| DomainError::Validation(format!("音乐插件测试参数无效: {e}")))?;
+                let out = svc.test_source(&user, id, input).await?;
+                serde_json::to_value(out).map_err(|e| DomainError::Storage(e.to_string()))
+            }
+        },
+    )
+}
 
 pub fn router() -> Router<MusicHttpState> {
     Router::new()
-        .merge(sources_prefixed_crud_router::<
-            MusicHttpState,
-            MusicSourceSpec,
-        >())
-        .route("/sources/{id}/login-action", post(run_login_action))
-        .route("/sources/{id}/test", post(test_source))
         // Online search / explore / track-info / stream / lyrics / proxies
         .route("/online/search", post(online_search))
         .route("/online/explore", post(online_explore))
@@ -229,30 +249,6 @@ fn encode_attachment_disposition(filename: &str) -> Option<HeaderValue> {
         "attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_name}"
     ))
     .ok()
-}
-
-async fn run_login_action(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<LoginActionRequest>,
-) -> ApiResult<Json<LoginActionResponseDto>> {
-    let out = state
-        .services
-        .online
-        .run_login_action(&user, id, req.login_info, req.action)
-        .await?;
-    Ok(Json(out))
-}
-
-async fn test_source(
-    State(state): State<MusicHttpState>,
-    WebAuth(user): WebAuth,
-    Path(id): Path<Uuid>,
-    Json(req): Json<MusicSourceTestInput>,
-) -> ApiResult<Json<MusicSourceTestReportDto>> {
-    let out = state.services.online.test_source(&user, id, req).await?;
-    Ok(Json(out))
 }
 
 async fn online_search(

@@ -137,6 +137,7 @@ pub(super) async fn setup_test_harness(allow_private_ips: bool) -> TestHarness {
 
     let state = ComicHttpState::new(auth, comic_services);
     let app = Router::new()
+        .nest("/api/v1/plugins", crate::http::plugins_router(&state))
         .nest("/api/v1/comic", rest_router(state.clone()))
         .nest("/opds/comic", crate::http::opds_router(state));
 
