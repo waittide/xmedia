@@ -8454,7 +8454,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -8480,7 +8480,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "anyhow",
@@ -8512,7 +8512,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-book"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -8538,7 +8538,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-comic"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -8560,7 +8560,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2",
@@ -8592,7 +8592,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-formats"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -8614,7 +8614,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-music"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -8636,7 +8636,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-source"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -8662,7 +8662,7 @@ dependencies = [
 
 [[package]]
 name = "xmedia-video"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",

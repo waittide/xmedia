@@ -9,8 +9,11 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::config::ProviderCredentials;
 
-pub const DEFAULT_TOOL_USER_AGENT: &str =
-    "xmedia-tool/0.1.0 (https://github.com/xmedia-org/xmedia)";
+pub const DEFAULT_TOOL_USER_AGENT: &str = concat!(
+    "xmedia-tool/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/xmedia-org/xmedia)"
+);
 const MAX_REDIRECT_HOPS: usize = 6;
 const MAX_CACHED_HTTP_CLIENTS: usize = 64;
 
